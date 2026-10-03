@@ -12,6 +12,12 @@ The selected design uses one Rust runtime owner and one lazily started Codex app
 
 `codex.rs` starts the installed binary, initializes app-server, correlates responses, and forwards notifications and reverse requests. Transport framing and writes are bounded. The child uses a separate Unix process group. Shutdown signals the group, reaps the provider leader, and kills remaining group members. Unsupported reverse requests receive an explicit protocol error.
 
+## Checkouts
+
+Each thread records a `Checkout`. A local thread runs in the repository's own checkout. A worktree thread runs in a Git worktree on a fresh `z1/<id>` branch from the repository's HEAD, under `<data dir>/worktrees/<repository>/z1-<id>`. The runtime creates the worktree outside the owner loop when the thread is created, which happens on the first send. A repository without commits cannot start one.
+
+`ThreadSnapshot::root` resolves the directory a thread runs in. The Codex `cwd`, the checkout lease, and the workspace view, file and diff reads all go through it. Leases are keyed by that root, so a worktree thread never waits on the local checkout or another worktree. Two local threads still exclude each other. The renderer scopes workspace, file and diff queries by `CheckoutRef`. Local threads share the repository-scoped cache entry. Worktrees are not removed yet.
+
 ## Durable conversation behavior
 
 A submit carries a caller operation ID. The owner validates the prompt and checkout lease, then commits the local turn and receipt together. Reusing the same ID and input returns the original turn. Reusing the ID for different input fails.

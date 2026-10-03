@@ -16,7 +16,7 @@ import {
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { PanelLeftCloseIcon, PanelLeftIcon, PlusIcon } from "lucide-react";
-import { ipc, native, setThreadSnapshot } from "./ipc";
+import { checkoutKey, ipc, native, setThreadSnapshot } from "./ipc";
 import { Sidebar, SidebarBrand } from "./Sidebar";
 import { SidebarFooter } from "./SidebarFooter";
 import { SettingsSidebar } from "./settings/SettingsPage";
@@ -73,12 +73,11 @@ export function Workbench() {
   const list = workspaces.data ?? [];
   const views = useQueries({
     queries: list.map((workspace) => ({
-      queryKey: ["workspace", workspace.id],
-      queryFn: () => ipc.workspace(workspace.id),
+      queryKey: checkoutKey("workspace", { workspaceId: workspace.id }),
+      queryFn: () => ipc.workspace({ workspaceId: workspace.id }),
     })),
   });
   const workspaceId = selection.workspace ?? list[0]?.id;
-  const view = views[list.findIndex((w) => w.id === workspaceId)];
   useLayoutEffect(() => {
     if (settingsOpen && !wasSettingsOpen.current && !previousFocus.current)
       previousFocus.current =
@@ -298,7 +297,6 @@ export function Workbench() {
             <ChatView
               key={workspaceId}
               workspaceId={workspaceId}
-              view={view?.data}
               threadId={selection.thread}
               onSelectWorkspace={selectWorkspace}
               workspaces={list}

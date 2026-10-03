@@ -37,9 +37,9 @@ type Reply<T> = oneshot::Sender<Result<T>>;
 enum Command {
     List(Reply<Vec<Workspace>>),
     OpenWorkspace(PathBuf, Reply<Workspace>),
-    Workspace(WorkspaceId, Reply<Workspace>),
+    Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, PathBuf)>),
     Threads(WorkspaceId, Reply<Vec<ThreadSummary>>),
-    Create(WorkspaceId, Reply<ThreadSnapshot>),
+    Create(WorkspaceId, Checkout, Reply<ThreadSnapshot>),
     Snapshot(ThreadId, bool, Reply<ThreadSnapshot>),
     Models(Reply<Vec<ModelOption>>),
     Settings(ThreadId, SessionSettings, Reply<ThreadSnapshot>),
@@ -52,6 +52,7 @@ enum Command {
 pub struct App {
     commands: mpsc::Sender<Command>,
     changes: broadcast::Sender<ChangeHint>,
+    worktrees: PathBuf,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
@@ -98,6 +99,7 @@ impl App {
             thread.revision += 1;
             store.save(thread)?;
         }
+        let worktrees = config.data_dir.join("worktrees");
         let (commands, rx) = mpsc::channel(128);
         let (changes, _) = broadcast::channel(256);
         let (provider_events, signals) = mpsc::channel(512);
@@ -124,7 +126,11 @@ impl App {
             }
             .run(rx, signals, completions),
         );
-        Ok(Self { commands, changes })
+        Ok(Self {
+            commands,
+            changes,
+            worktrees,
+        })
     }
     async fn call<T>(&self, build: impl FnOnce(Reply<T>) -> Command) -> Result<T> {
         let (tx, rx) = oneshot::channel();
@@ -147,35 +153,63 @@ impl App {
             .map_err(|e| AppError::new("repository", e))??;
         self.call(|r| Command::OpenWorkspace(root, r)).await
     }
-    async fn workspace(&self, id: WorkspaceId) -> Result<Workspace> {
-        self.call(|r| Command::Workspace(id, r)).await
+    async fn checkout(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+    ) -> Result<(Workspace, PathBuf)> {
+        self.call(|r| Command::Checkout(id, thread, r)).await
     }
-    pub async fn workspace_view(&self, id: WorkspaceId) -> Result<WorkspaceView> {
-        let w = self.workspace(id.clone()).await?;
+    pub async fn workspace_view(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+    ) -> Result<WorkspaceView> {
+        let (w, root) = self.checkout(id.clone(), thread).await?;
         let threads = self.call(|r| Command::Threads(id, r)).await?;
-        tokio::task::spawn_blocking(move || repo::inspect(w, threads))
+        tokio::task::spawn_blocking(move || repo::inspect(Workspace { root, ..w }, threads))
             .await
             .map_err(|e| AppError::new("repository", e))?
     }
-    pub async fn read_file(&self, id: WorkspaceId, path: String) -> Result<FileView> {
-        let w = self.workspace(id).await?;
-        tokio::task::spawn_blocking(move || repo::read_file(&w.root, &path))
+    pub async fn read_file(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+        path: String,
+    ) -> Result<FileView> {
+        let (_, root) = self.checkout(id, thread).await?;
+        tokio::task::spawn_blocking(move || repo::read_file(&root, &path))
             .await
             .map_err(|e| AppError::new("repository", e))?
     }
     pub async fn read_diff(
         &self,
         id: WorkspaceId,
+        thread: Option<ThreadId>,
         path: String,
         basis: DiffBasis,
     ) -> Result<DiffView> {
-        let w = self.workspace(id).await?;
-        tokio::task::spawn_blocking(move || repo::diff(&w.root, &path, basis))
+        let (_, root) = self.checkout(id, thread).await?;
+        tokio::task::spawn_blocking(move || repo::diff(&root, &path, basis))
             .await
             .map_err(|e| AppError::new("repository", e))?
     }
-    pub async fn create_thread(&self, id: WorkspaceId) -> Result<ThreadSnapshot> {
-        self.call(|r| Command::Create(id, r)).await
+    pub async fn create_thread(
+        &self,
+        id: WorkspaceId,
+        mode: CheckoutMode,
+    ) -> Result<ThreadSnapshot> {
+        let checkout = match mode {
+            CheckoutMode::Local => Checkout::Local,
+            CheckoutMode::Worktree => {
+                let (w, _) = self.checkout(id.clone(), None).await?;
+                let worktrees = self.worktrees.join(&w.label);
+                tokio::task::spawn_blocking(move || repo::add_worktree(&w.root, &worktrees))
+                    .await
+                    .map_err(|e| AppError::new("repository", e))??
+            }
+        };
+        self.call(|r| Command::Create(id, checkout, r)).await
     }
     pub async fn thread(&self, id: ThreadId) -> Result<ThreadSnapshot> {
         self.call(|r| Command::Snapshot(id, false, r)).await
@@ -262,7 +296,7 @@ struct Owner {
     store: Store,
     workspaces: HashMap<WorkspaceId, Workspace>,
     threads: HashMap<ThreadId, ThreadSnapshot>,
-    leases: HashMap<WorkspaceId, ThreadId>,
+    leases: HashMap<PathBuf, ThreadId>,
     routes: HashMap<ApprovalId, Route>,
     provider: Option<Codex>,
     epoch: u64,
@@ -385,11 +419,27 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
-            Command::Workspace(id, reply) => {
-                let _ =
-                    reply.send(self.workspaces.get(&id).cloned().ok_or_else(|| {
+            Command::Checkout(id, thread, reply) => {
+                let result = (|| {
+                    let w = self.workspaces.get(&id).ok_or_else(|| {
                         AppError::new("missing_workspace", "Repository not found.")
-                    }));
+                    })?;
+                    let root = match thread {
+                        None => w.root.clone(),
+                        Some(thread) => {
+                            let t = self.thread(&thread)?;
+                            if t.workspace_id != id {
+                                return Err(AppError::new(
+                                    "missing_thread",
+                                    "Conversation not found in this repository.",
+                                ));
+                            }
+                            t.root(w).to_path_buf()
+                        }
+                    };
+                    Ok((w.clone(), root))
+                })();
+                let _ = reply.send(result);
             }
             Command::Threads(id, reply) => {
                 let rows = self
@@ -400,7 +450,7 @@ impl Owner {
                     .collect();
                 let _ = reply.send(Ok(rows));
             }
-            Command::Create(workspace_id, reply) => {
+            Command::Create(workspace_id, checkout, reply) => {
                 let result = (|| {
                     if !self.workspaces.contains_key(&workspace_id) {
                         return Err(AppError::new("missing_workspace", "Repository not found."));
@@ -413,6 +463,7 @@ impl Owner {
                         revision: 1,
                         session: SessionState::Draft,
                         settings: SessionSettings::default(),
+                        checkout,
                         turns: vec![],
                         approvals: vec![],
                         diagnostic: None,
@@ -460,7 +511,9 @@ impl Owner {
                         SessionState::Connecting
                             | SessionState::Running
                             | SessionState::Interrupting
-                    ) || self.leases.contains_key(&thread.workspace_id)
+                    ) || self
+                        .leases
+                        .contains_key(thread.root(&self.workspaces[&thread.workspace_id]))
                     {
                         return Err(AppError::new(
                             "busy",
@@ -644,7 +697,10 @@ impl Owner {
                 "Load the model list before continuing this conversation.",
             ));
         }
-        if self.leases.contains_key(&thread.workspace_id) {
+        let root = thread
+            .root(&self.workspaces[&thread.workspace_id])
+            .to_path_buf();
+        if self.leases.contains_key(&root) {
             return Err(AppError::new(
                 "checkout_busy",
                 "Another conversation is running in this checkout.",
@@ -673,7 +729,7 @@ impl Owner {
         }
         t.revision += 1;
         self.store.accept(&t, request_id, &input, &receipt)?;
-        self.leases.insert(t.workspace_id.clone(), t.id.clone());
+        self.leases.insert(root, t.id.clone());
         let _ = self.changes.send(ChangeHint::from(&t));
         self.threads.insert(t.id.clone(), t);
         Ok((receipt, true))
@@ -815,7 +871,7 @@ impl Owner {
             Ok(t) => t,
             Err(_) => return,
         };
-        let root = self.workspaces[&t.workspace_id].root.clone();
+        let root = t.root(&self.workspaces[&t.workspace_id]).to_path_buf();
         let native = t.native_thread_id.clone();
         let provider = self.provider.clone().unwrap();
         let settings = t.settings.clone();
@@ -924,7 +980,8 @@ impl Owner {
                                 };
                                 turn.execution = Execution::Failed { reason: e.message };
                             }
-                            self.leases.remove(&t.workspace_id);
+                            self.leases
+                                .remove(t.root(&self.workspaces[&t.workspace_id]));
                         }
                         self.commit(&id)?;
                     }
@@ -1242,13 +1299,14 @@ impl Owner {
                     }
                 }
                 t.session = SessionState::Ready;
-                self.leases.remove(&t.workspace_id);
                 for approval in &mut t.approvals {
                     if approval.turn_id == turn.id && approval.state == ApprovalState::Pending {
                         approval.state = ApprovalState::Expired;
                         self.routes.remove(&approval.id);
                     }
                 }
+                self.leases
+                    .remove(t.root(&self.workspaces[&t.workspace_id]));
                 self.commit(&id)?;
                 return Ok(());
             }

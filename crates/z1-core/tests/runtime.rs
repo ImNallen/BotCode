@@ -33,6 +33,23 @@ impl Fixture {
             peer,
         }
     }
+    fn commit(&self) {
+        std::fs::write(self.repository.join("README.md"), "fixture\n").unwrap();
+        for args in [
+            &["add", "README.md"][..],
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "initial",
+            ],
+        ] {
+            git_output(&self.repository, args);
+        }
+    }
     fn calls(&self) -> Vec<serde_json::Value> {
         std::fs::read_to_string(self.peer.parent().unwrap().join("calls.jsonl"))
             .unwrap_or_default()
@@ -57,7 +74,9 @@ async fn wait(
 }
 async fn conversation(app: &App, f: &Fixture) -> ThreadSnapshot {
     let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
-    app.create_thread(workspace.id).await.unwrap()
+    app.create_thread(workspace.id, CheckoutMode::Local)
+        .await
+        .unwrap()
 }
 #[tokio::test]
 async fn receipts_prevent_duplicate_prompts_and_reject_different_input() {
@@ -159,7 +178,7 @@ async fn routes_multiple_approvals_by_callback_and_expires_old_clicks() {
             .unwrap()
     };
     let view = app
-        .workspace_view(snapshot.workspace_id.clone())
+        .workspace_view(snapshot.workspace_id.clone(), None)
         .await
         .unwrap();
     assert!(summary(view).awaiting_approval);
@@ -180,7 +199,7 @@ async fn routes_multiple_approvals_by_callback_and_expires_old_clicks() {
     })
     .await;
     let view = app
-        .workspace_view(snapshot.workspace_id.clone())
+        .workspace_view(snapshot.workspace_id.clone(), None)
         .await
         .unwrap();
     assert!(!summary(view).awaiting_approval);
@@ -269,8 +288,14 @@ async fn canonical_checkout_lease_and_confirmed_interrupt() {
     let first = app.open_workspace(f.repository.clone()).await.unwrap();
     let second = app.open_workspace(f.repository.join(".")).await.unwrap();
     assert_eq!(first.id, second.id);
-    let a = app.create_thread(first.id.clone()).await.unwrap();
-    let b = app.create_thread(first.id).await.unwrap();
+    let a = app
+        .create_thread(first.id.clone(), CheckoutMode::Local)
+        .await
+        .unwrap();
+    let b = app
+        .create_thread(first.id, CheckoutMode::Local)
+        .await
+        .unwrap();
     app.submit(a.id.clone(), "hold".into(), "hold".into())
         .await
         .unwrap();
@@ -768,6 +793,10 @@ fn legacy_snapshots_default_settings() {
         revision: 1,
         session: SessionState::Draft,
         settings: SessionSettings::default(),
+        checkout: Checkout::Worktree {
+            path: "/legacy".into(),
+            branch: "z1/legacy".into(),
+        },
         turns: vec![Turn {
             id: TurnId::default(),
             prompt: "hello".into(),
@@ -784,12 +813,14 @@ fn legacy_snapshots_default_settings() {
     };
     let mut value = serde_json::to_value(thread).unwrap();
     value.as_object_mut().unwrap().remove("settings");
+    value.as_object_mut().unwrap().remove("checkout");
     value["turns"][0]
         .as_object_mut()
         .unwrap()
         .remove("settings");
     let restored: ThreadSnapshot = serde_json::from_value(value).unwrap();
     assert_eq!(restored.settings, SessionSettings::default());
+    assert_eq!(restored.checkout, Checkout::Local);
     assert!(restored.turns[0].settings.is_none());
 }
 #[tokio::test]
@@ -812,6 +843,192 @@ async fn provider_loss_invalidates_catalog_and_reloads_on_request() {
             .filter(|call| call["method"] == "model/list")
             .count(),
         4
+    );
+    app.shutdown().await.unwrap();
+}
+fn worktree(checkout: &Checkout) -> (std::path::PathBuf, String) {
+    match checkout {
+        Checkout::Worktree { path, branch } => (path.clone(), branch.clone()),
+        Checkout::Local => panic!("expected a worktree checkout"),
+    }
+}
+fn git_output(root: &std::path::Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+#[tokio::test]
+async fn worktree_threads_start_codex_in_their_own_checkout() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let local = app
+        .create_thread(workspace.id.clone(), CheckoutMode::Local)
+        .await
+        .unwrap();
+    assert_eq!(local.checkout, Checkout::Local);
+    let isolated = app
+        .create_thread(workspace.id.clone(), CheckoutMode::Worktree)
+        .await
+        .unwrap();
+    let (path, branch) = worktree(&isolated.checkout);
+    let id = branch.strip_prefix("z1/").unwrap();
+    assert_eq!(id.len(), 8);
+    assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(
+        path,
+        f.config
+            .data_dir
+            .join("worktrees/repository")
+            .canonicalize()
+            .unwrap()
+            .join(format!("z1-{id}"))
+    );
+    assert_eq!(git_output(&path, &["branch", "--show-current"]), branch);
+    for thread in [&local, &isolated] {
+        app.submit(thread.id.clone(), thread.id.to_string(), "hello".into())
+            .await
+            .unwrap();
+        wait(&app, &thread.id, |t| {
+            matches!(t.turns[0].execution, Execution::Completed)
+        })
+        .await;
+    }
+    let cwds: Vec<_> = f
+        .calls()
+        .into_iter()
+        .filter(|v| v["method"] == "thread/start")
+        .map(|v| v["params"]["cwd"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        cwds,
+        vec![
+            workspace.root.to_string_lossy().into_owned(),
+            path.to_string_lossy().into_owned()
+        ]
+    );
+    let summary = app
+        .workspace_view(workspace.id, None)
+        .await
+        .unwrap()
+        .threads
+        .into_iter()
+        .find(|t| t.id == isolated.id)
+        .unwrap();
+    assert_eq!(summary.checkout, isolated.checkout);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn worktree_threads_run_beside_a_busy_local_checkout() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let held = app
+        .create_thread(workspace.id.clone(), CheckoutMode::Local)
+        .await
+        .unwrap();
+    let blocked = app
+        .create_thread(workspace.id.clone(), CheckoutMode::Local)
+        .await
+        .unwrap();
+    let isolated = app
+        .create_thread(workspace.id, CheckoutMode::Worktree)
+        .await
+        .unwrap();
+    app.submit(held.id.clone(), "hold".into(), "hold".into())
+        .await
+        .unwrap();
+    wait(&app, &held.id, |t| {
+        matches!(t.turns[0].execution, Execution::Running)
+    })
+    .await;
+    assert_eq!(
+        app.submit(blocked.id.clone(), "blocked".into(), "hello".into())
+            .await
+            .unwrap_err()
+            .code,
+        "checkout_busy"
+    );
+    app.submit(isolated.id.clone(), "isolated".into(), "hello".into())
+        .await
+        .unwrap();
+    wait(&app, &isolated.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn worktree_requires_a_commit() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    assert_eq!(
+        app.create_thread(workspace.id.clone(), CheckoutMode::Worktree)
+            .await
+            .unwrap_err()
+            .code,
+        "worktree_unavailable"
+    );
+    let view = app.workspace_view(workspace.id, None).await.unwrap();
+    assert!(view.threads.is_empty());
+    assert!(!f.config.data_dir.join("worktrees").exists());
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn worktree_views_inspect_the_thread_checkout() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let isolated = app
+        .create_thread(workspace.id.clone(), CheckoutMode::Worktree)
+        .await
+        .unwrap();
+    let (path, branch) = worktree(&isolated.checkout);
+    std::fs::write(path.join("only-here.txt"), "worktree\n").unwrap();
+    let view = app
+        .workspace_view(workspace.id.clone(), Some(isolated.id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(view.branch, branch);
+    assert_eq!(view.workspace.root, path);
+    assert_eq!(view.workspace.id, workspace.id);
+    assert_eq!(view.files, vec!["README.md", "only-here.txt"]);
+    let local = app
+        .workspace_view(workspace.id.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(local.workspace.root, workspace.root);
+    assert_eq!(local.files, vec!["README.md"]);
+    assert!(matches!(
+        app.read_file(workspace.id.clone(), Some(isolated.id.clone()), "only-here.txt".into())
+            .await
+            .unwrap(),
+        FileView::Text { contents, .. } if contents == "worktree\n"
+    ));
+    assert!(
+        app.read_file(workspace.id, None, "only-here.txt".into())
+            .await
+            .is_err()
+    );
+    let other = f.repository.with_file_name("other");
+    std::fs::create_dir(&other).unwrap();
+    git_output(&other, &["init", "-q"]);
+    let other = app.open_workspace(other).await.unwrap();
+    assert_eq!(
+        app.workspace_view(other.id, Some(isolated.id))
+            .await
+            .unwrap_err()
+            .code,
+        "missing_thread"
     );
     app.shutdown().await.unwrap();
 }

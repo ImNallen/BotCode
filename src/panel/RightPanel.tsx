@@ -13,7 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { WorkspaceView } from "../ipc";
+import type { CheckoutRef, WorkspaceView } from "../ipc";
 import { cn } from "../lib/cn";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
@@ -79,13 +79,13 @@ const targetsTypingContext = (target: EventTarget | null) =>
   ) !== null;
 
 export function RightPanel({
-  workspaceId,
+  checkout,
   view,
   state,
   onChange,
   maximized,
 }: {
-  workspaceId: string;
+  checkout: CheckoutRef;
   view: WorkspaceView | undefined;
   state: PanelState;
   onChange: (state: PanelState) => void;
@@ -260,14 +260,14 @@ export function RightPanel({
               <Launcher available={available} onOpen={open} />
             ) : active.kind === "diff" ? (
               <DiffSurface
-                workspaceId={workspaceId}
+                checkout={checkout}
                 view={view}
                 onOpenFile={handleOpenFile}
               />
             ) : (
               <FilesSurface
                 key="files"
-                workspaceId={workspaceId}
+                checkout={checkout}
                 view={view}
                 path={active.kind === "file" ? active.path : null}
                 onOpenFile={handleOpenFile}

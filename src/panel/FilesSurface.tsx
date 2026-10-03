@@ -10,7 +10,7 @@ import {
   WrapTextIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { ipc, type WorkspaceView } from "../ipc";
+import { checkoutKey, ipc, type CheckoutRef, type WorkspaceView } from "../ipc";
 import { cn } from "../lib/cn";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import {
@@ -32,12 +32,12 @@ const FILE_SURFACE_SUBHEADER_CLASS =
 export const WORD_WRAP_KEY = "z1.wordWrap";
 
 export function FilesSurface({
-  workspaceId,
+  checkout,
   view,
   path,
   onOpenFile,
 }: {
-  workspaceId: string;
+  checkout: CheckoutRef;
   view: WorkspaceView | undefined;
   path: string | null;
   onOpenFile: (path: string) => void;
@@ -91,11 +91,7 @@ export function FilesSurface({
           )}
         >
           {path ? (
-            <SourceView
-              workspaceId={workspaceId}
-              path={path}
-              wordWrap={wordWrap}
-            />
+            <SourceView checkout={checkout} path={path} wordWrap={wordWrap} />
           ) : null}
         </div>
         {showExplorer ? (
@@ -108,7 +104,7 @@ export function FilesSurface({
             )}
           >
             <FileExplorer
-              workspaceId={workspaceId}
+              checkout={checkout}
               projectName={projectName}
               files={files}
               selectedPath={path}
@@ -122,18 +118,18 @@ export function FilesSurface({
 }
 
 function SourceView({
-  workspaceId,
+  checkout,
   path,
   wordWrap,
 }: {
-  workspaceId: string;
+  checkout: CheckoutRef;
   path: string;
   wordWrap: boolean;
 }) {
   const theme = useResolvedTheme();
   const file = useQuery({
-    queryKey: ["file", workspaceId, path],
-    queryFn: () => ipc.file(workspaceId, path),
+    queryKey: [...checkoutKey("file", checkout), path],
+    queryFn: () => ipc.file(checkout, path),
   });
   if (file.isPending)
     return (

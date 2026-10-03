@@ -1,9 +1,10 @@
 // Layout and classes follow pingdotgg/t3code v0.0.45 components/Sidebar.tsx,
-// sidebar/SidebarChrome.tsx and sidebar/SidebarThreadHeader.tsx (MIT).
+// sidebar/SidebarChrome.tsx, sidebar/SidebarThreadHeader.tsx and ThreadStatusIndicators.tsx (MIT).
 import { useState, type ComponentProps } from "react";
 import {
   CircleDashedIcon,
   ShieldQuestionIcon,
+  FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
   PlusIcon,
@@ -14,6 +15,7 @@ import {
 import type { Workspace, WorkspaceView } from "./ipc";
 import { cn } from "./lib/cn";
 import { formatSidebarTime } from "./lib/time";
+import { basename } from "./panel/panelState";
 import { ProjectBadge } from "./ProjectBadge";
 import { OpenAI } from "./ui/icons";
 import { Button } from "./ui/controls";
@@ -69,7 +71,10 @@ export function Sidebar({
       view
         ? view.threads.map((thread) => ({
             workspace: view.workspace,
-            branch: view.branch,
+            branch:
+              thread.checkout.kind === "worktree"
+                ? thread.checkout.branch
+                : view.branch,
             thread,
           }))
         : [],
@@ -292,11 +297,16 @@ function ThreadRow({
           </div>
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
             {row.branch ? (
-              <span className="flex min-w-0 flex-1 text-muted-foreground/40">
-                <span className="inline-flex min-w-0 max-w-full overflow-hidden whitespace-nowrap">
-                  <span className="min-w-0 truncate">{row.branch}</span>
+              <>
+                {row.thread.checkout.kind === "worktree" ? (
+                  <WorktreeIndicator {...row.thread.checkout} />
+                ) : null}
+                <span className="flex min-w-0 flex-1 text-muted-foreground/40">
+                  <span className="inline-flex min-w-0 max-w-full overflow-hidden whitespace-nowrap">
+                    <span className="min-w-0 truncate">{row.branch}</span>
+                  </span>
                 </span>
-              </span>
+              </>
             ) : (
               <span className="flex-1" />
             )}
@@ -312,6 +322,20 @@ function ThreadRow({
         </div>
       </div>
     </li>
+  );
+}
+
+function WorktreeIndicator({ path, branch }: { path: string; branch: string }) {
+  const label = `Worktree: ${basename(path)} (${branch})`;
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      className="inline-flex items-center justify-center"
+    >
+      <FolderGit2Icon className="size-3 text-muted-foreground/40" />
+    </span>
   );
 }
 

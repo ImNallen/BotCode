@@ -10,15 +10,17 @@ import {
   Minimize2Icon,
   PanelRightIcon,
 } from "lucide-react";
-import { ipc, setThreadSnapshot } from "../ipc";
+import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
 import type {
   ApprovalDecision,
+  CheckoutMode,
+  CheckoutRef,
   Thread,
   Workspace,
-  WorkspaceView,
   SessionSettings,
 } from "../ipc";
 import { cn } from "../lib/cn";
+import { usePreferences } from "../settings/preferences";
 import { ProjectBadge } from "../ProjectBadge";
 import {
   WorkspaceBreadcrumb,
@@ -29,7 +31,7 @@ import {
 import { Toggle } from "../ui/controls";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import { RightPanel, emptyPanel, type PanelState } from "../panel/RightPanel";
-import { openFile } from "../panel/panelState";
+import { closeFiles, openFile } from "../panel/panelState";
 import { FileLinkProvider, type FileLinks } from "./ChatMarkdown";
 import { ApprovalDrawer } from "./ApprovalDrawer";
 import { Composer } from "./Composer";
@@ -39,14 +41,12 @@ const busyKinds = new Set(["connecting", "running", "interrupting"]);
 
 export function ChatView({
   workspaceId,
-  view,
   threadId,
   workspaces,
   onSelectWorkspace,
   onOpenRepository,
 }: {
   workspaceId: string;
-  view: WorkspaceView | undefined;
   threadId: string | undefined;
   workspaces: Workspace[];
   onSelectWorkspace: (workspaceId: string) => void;
@@ -58,12 +58,19 @@ export function ChatView({
   const [maximized, setMaximized] = useState(false);
   const [panel, setPanel] = useState<PanelState>(emptyPanel);
   const [draft, setDraft] = useState("");
-  const createdDraft = useRef<string | undefined>(undefined);
+  const [createdDraft, setCreatedDraft] = useState<Thread>();
   const [draftSettings, setDraftSettings] = useState<SessionSettings>({
     model: null,
     effort: null,
     permissionMode: "approval-required",
   });
+  const { newThreadCheckout } = usePreferences().preferences;
+  const [draftCheckout, setDraftCheckout] =
+    useState<CheckoutMode>(newThreadCheckout);
+  useEffect(
+    () => setDraftCheckout(newThreadCheckout),
+    [threadId, newThreadCheckout],
+  );
   const [error, setError] = useState<string>();
   const overlay = useRef<HTMLDivElement>(null);
   const [clearance, setClearance] = useState(0);
@@ -78,7 +85,7 @@ export function ChatView({
   }, []);
   useEffect(() => {
     setDraft("");
-    createdDraft.current = undefined;
+    setCreatedDraft(undefined);
   }, [threadId]);
   const query = useQuery({
     queryKey: ["thread", threadId],
@@ -92,6 +99,19 @@ export function ChatView({
     enabled: Boolean(threadId),
   });
   const thread = threadId ? query.data : undefined;
+  const checkout: CheckoutRef = {
+    workspaceId,
+    threadId: thread?.checkout.kind === "worktree" ? thread.id : undefined,
+  };
+  const [panelCheckout, setPanelCheckout] = useState(checkout.threadId);
+  if (panelCheckout !== checkout.threadId) {
+    setPanelCheckout(checkout.threadId);
+    setPanel(closeFiles);
+  }
+  const { data: view } = useQuery({
+    queryKey: checkoutKey("workspace", checkout),
+    queryFn: () => ipc.workspace(checkout),
+  });
   const settings = thread?.settings ?? draftSettings;
   const models = useQuery({
     queryKey: ["models"],
@@ -125,12 +145,12 @@ export function ChatView({
   }, [sessionKind, client]);
   const send = useMutation({
     mutationFn: async (text: string) => {
-      let target = threadId ?? createdDraft.current;
+      let target = threadId ?? createdDraft?.id;
       if (!target) {
-        const created = await ipc.create(workspaceId);
+        const created = await ipc.create(workspaceId, draftCheckout);
         setThreadSnapshot(client, created);
         target = created.id;
-        createdDraft.current = target;
+        setCreatedDraft(created);
         void client.invalidateQueries({ queryKey: ["workspace"] });
       }
       if (!threadId) {
@@ -146,7 +166,7 @@ export function ChatView({
       return target;
     },
     onSuccess: (target) => {
-      createdDraft.current = undefined;
+      setCreatedDraft(undefined);
       setDraft("");
       setError(undefined);
       if (!threadId) {
@@ -464,6 +484,15 @@ export function ChatView({
                         ) : null
                       }
                       disabled={Boolean(approval)}
+                      checkout={
+                        isDraft && !createdDraft
+                          ? {
+                              kind: "draft",
+                              mode: draftCheckout,
+                              onChange: setDraftCheckout,
+                            }
+                          : (thread ?? createdDraft)?.checkout
+                      }
                       branch={view?.branch || undefined}
                       settings={settings}
                       models={models.data ?? []}
@@ -493,7 +522,7 @@ export function ChatView({
       </div>
       {panelOpen ? (
         <RightPanel
-          workspaceId={workspaceId}
+          checkout={checkout}
           view={view}
           state={panel}
           onChange={setPanel}

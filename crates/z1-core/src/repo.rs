@@ -21,6 +21,33 @@ pub fn open(path: &Path) -> Result<PathBuf> {
     let root = PathBuf::from(String::from_utf8_lossy(&bytes).trim()).canonicalize()?;
     Ok(root)
 }
+pub fn add_worktree(root: &Path, worktrees: &Path) -> Result<Checkout> {
+    git(root, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).map_err(|_| {
+        AppError::new(
+            "worktree_unavailable",
+            "Commit to this repository before starting a worktree.",
+        )
+    })?;
+    let id = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let branch = format!("z1/{id}");
+    let path = worktrees.join(format!("z1-{id}"));
+    std::fs::create_dir_all(worktrees)?;
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            &path.to_string_lossy(),
+            "HEAD",
+        ],
+    )?;
+    Ok(Checkout::Worktree {
+        path: path.canonicalize()?,
+        branch,
+    })
+}
 fn relative(path: &str) -> Result<&Path> {
     let p = Path::new(path);
     if p.as_os_str().is_empty()

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,6 +255,22 @@ pub enum ApprovalDecision {
     Decline,
     Cancel,
 }
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Checkout {
+    #[default]
+    Local,
+    Worktree {
+        path: PathBuf,
+        branch: String,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CheckoutMode {
+    Local,
+    Worktree,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSnapshot {
@@ -266,11 +282,19 @@ pub struct ThreadSnapshot {
     pub session: SessionState,
     #[serde(default)]
     pub settings: SessionSettings,
+    #[serde(default)]
+    pub checkout: Checkout,
     pub turns: Vec<Turn>,
     pub approvals: Vec<Approval>,
     pub diagnostic: Option<String>,
 }
 impl ThreadSnapshot {
+    pub fn root<'a>(&'a self, workspace: &'a Workspace) -> &'a Path {
+        match &self.checkout {
+            Checkout::Local => &workspace.root,
+            Checkout::Worktree { path, .. } => path,
+        }
+    }
     pub fn stamp_completions(&mut self) {
         let now = now_ms();
         for turn in &mut self.turns {
@@ -288,6 +312,7 @@ impl ThreadSnapshot {
             id: self.id.clone(),
             title: self.title.clone(),
             session: self.session.clone(),
+            checkout: self.checkout.clone(),
             updated_at_ms: self.turns.iter().rev().find_map(|turn| turn.started_at_ms),
             awaiting_approval: self
                 .approvals
@@ -302,6 +327,7 @@ pub struct ThreadSummary {
     pub id: ThreadId,
     pub title: String,
     pub session: SessionState,
+    pub checkout: Checkout,
     pub updated_at_ms: Option<u64>,
     pub awaiting_approval: bool,
 }

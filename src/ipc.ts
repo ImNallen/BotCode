@@ -97,6 +97,14 @@ const modelOption = z.object({
     z.object({ reasoningEffort: z.string(), description: z.string() }),
   ),
 });
+const checkout = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("local") }),
+  z.object({
+    kind: z.literal("worktree"),
+    path: z.string(),
+    branch: z.string(),
+  }),
+]);
 const thread = z.object({
   id,
   workspaceId: id,
@@ -105,6 +113,7 @@ const thread = z.object({
   revision: z.number(),
   session,
   settings,
+  checkout,
   turns: z.array(
     z.object({
       id,
@@ -125,6 +134,7 @@ const threadSummary = z.object({
   id,
   title: z.string(),
   session,
+  checkout,
   updatedAtMs: z.number().nullable(),
   awaitingApproval: z.boolean(),
 });
@@ -165,6 +175,13 @@ export type ModelOption = z.infer<typeof modelOption>;
 export type Approval = z.infer<typeof approval>;
 export type Item = z.infer<typeof item>;
 export type ApprovalDecision = "accept" | "decline" | "cancel";
+export type Checkout = z.infer<typeof checkout>;
+export type CheckoutMode = Checkout["kind"];
+export type CheckoutRef = { workspaceId: string; threadId?: string };
+export const checkoutKey = (
+  scope: "workspace" | "file" | "diff",
+  { workspaceId, threadId }: CheckoutRef,
+) => [scope, workspaceId, threadId ?? null];
 async function call<S extends z.ZodType>(
   command: string,
   args: Record<string, unknown>,
@@ -187,14 +204,26 @@ async function call<S extends z.ZodType>(
 export const ipc = {
   workspaces: () => call("list_workspaces", {}, z.array(workspace)),
   openWorkspace: (path: string) => call("open_workspace", { path }, workspace),
-  workspace: (workspaceId: string) =>
-    call("workspace_view", { workspaceId }, workspaceView),
-  file: (workspaceId: string, path: string) =>
-    call("read_file", { workspaceId, path }, file),
-  diff: (workspaceId: string, path: string, basis: "staged" | "unstaged") =>
-    call("read_diff", { workspaceId, path, basis }, diff),
-  create: (workspaceId: string) =>
-    call("create_thread", { workspaceId }, thread),
+  workspace: ({ workspaceId, threadId }: CheckoutRef) =>
+    call(
+      "workspace_view",
+      { workspaceId, threadId: threadId ?? null },
+      workspaceView,
+    ),
+  file: ({ workspaceId, threadId }: CheckoutRef, path: string) =>
+    call("read_file", { workspaceId, threadId: threadId ?? null, path }, file),
+  diff: (
+    { workspaceId, threadId }: CheckoutRef,
+    path: string,
+    basis: "staged" | "unstaged",
+  ) =>
+    call(
+      "read_diff",
+      { workspaceId, threadId: threadId ?? null, path, basis },
+      diff,
+    ),
+  create: (workspaceId: string, mode: CheckoutMode) =>
+    call("create_thread", { workspaceId, mode }, thread),
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),
   resume: (threadId: string) => call("open_thread", { threadId }, thread),
   models: () => call("list_models", {}, z.array(modelOption)),
@@ -240,8 +269,8 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       const { summary } = hint.data;
       if (summary.session.kind === "unavailable")
         void client.resetQueries({ queryKey: ["models"] });
-      client.setQueryData<WorkspaceView>(
-        ["workspace", hint.data.workspaceId],
+      client.setQueriesData<WorkspaceView>(
+        { queryKey: ["workspace", hint.data.workspaceId] },
         (view) =>
           view && {
             ...view,

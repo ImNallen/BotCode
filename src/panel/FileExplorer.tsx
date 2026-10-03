@@ -10,6 +10,7 @@ import {
 import { useIsFetching, useQueryClient } from "@tanstack/react-query";
 import { ChevronsDownUpIcon, ChevronsUpDownIcon } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
+import { checkoutKey, type CheckoutRef } from "../ipc";
 import { Button } from "../ui/controls";
 import { RefreshIcon } from "./chrome";
 import { T3_PIERRE_ICONS } from "./FileEntryIcon";
@@ -40,13 +41,13 @@ const directoryItem = (
 };
 
 export function FileExplorer({
-  workspaceId,
+  checkout,
   projectName,
   files,
   selectedPath,
   onOpenFile,
 }: {
-  workspaceId: string;
+  checkout: CheckoutRef;
   projectName: string;
   files: readonly string[];
   selectedPath: string | null;
@@ -55,7 +56,7 @@ export function FileExplorer({
   const theme = useResolvedTheme();
   const client = useQueryClient();
   const refreshing =
-    useIsFetching({ queryKey: ["workspace", workspaceId] }) > 0;
+    useIsFetching({ queryKey: checkoutKey("workspace", checkout) }) > 0;
   const fileSet = useMemo(() => new Set(files), [files]);
   const fileSetRef = useRef(fileSet);
   fileSetRef.current = fileSet;
@@ -119,8 +120,10 @@ export function FileExplorer({
     }
   };
   const refresh = () => {
-    void client.invalidateQueries({ queryKey: ["workspace", workspaceId] });
-    void client.invalidateQueries({ queryKey: ["file", workspaceId] });
+    void client.invalidateQueries({
+      queryKey: checkoutKey("workspace", checkout),
+    });
+    void client.invalidateQueries({ queryKey: checkoutKey("file", checkout) });
   };
 
   return (

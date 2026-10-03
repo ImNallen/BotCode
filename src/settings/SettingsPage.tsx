@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
+  ChevronDownIcon,
   KeyboardIcon,
   PaletteIcon,
   SearchIcon,
@@ -12,13 +13,14 @@ import {
 } from "lucide-react";
 import { z } from "zod";
 import { SidebarMenuButton } from "../SidebarFooter";
-import { Button, Toggle } from "../ui/controls";
+import { Button, Toggle, selectItem, selectTrigger } from "../ui/controls";
+import { Menu, MenuItem } from "../ui/menu";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
-import { usePreferences } from "./preferences";
+import { checkoutModeLabels, usePreferences } from "./preferences";
 
 export const settingsSection = z.enum(["general", "appearance", "keybindings"]);
 const categories = [
@@ -45,13 +47,26 @@ const categories = [
         ],
       },
       {
+        id: "new-threads",
+        title: "New threads",
+        rows: [
+          {
+            id: "workspace",
+            title: "Workspace",
+            description: "Where new threads start.",
+            keywords: "default mode draft current local checkout new worktree",
+          },
+        ],
+      },
+      {
         id: "preferences",
         title: "Device preferences",
         rows: [
           {
             id: "restore",
             title: "Restore defaults",
-            description: "Reset appearance and font sizes on this device.",
+            description:
+              "Reset appearance, font sizes and the new thread workspace on this device.",
           },
         ],
       },
@@ -130,7 +145,12 @@ const categories = [
   groups: {
     id: string;
     title: string;
-    rows: { id: string; title: string; description: string }[];
+    rows: {
+      id: string;
+      title: string;
+      description: string;
+      keywords?: string;
+    }[];
   }[];
 }[];
 
@@ -177,7 +197,7 @@ export function SettingsSidebar() {
           icon: item.icon,
           id: row.id,
           title: row.title,
-          text: `${item.title} ${group.title} ${row.title} ${row.description}`,
+          text: `${item.title} ${group.title} ${row.title} ${row.description} ${"keywords" in row ? row.keywords : ""}`,
         })),
       ]),
     ])
@@ -488,6 +508,43 @@ export function SettingsPage() {
         />
       );
     }
+    if (id === "workspace")
+      return (
+        <Menu
+          align="end"
+          trigger={(props) => (
+            <button
+              type="button"
+              {...props}
+              aria-label="Default workspace"
+              className={selectTrigger()}
+            >
+              <span className="min-w-0 flex-1 truncate text-left">
+                {checkoutModeLabels[preferences.newThreadCheckout]}
+              </span>
+              <ChevronDownIcon
+                aria-hidden
+                className="-me-1 size-3 shrink-0 opacity-50"
+              />
+            </button>
+          )}
+        >
+          {(["local", "worktree"] as const).map((mode) => (
+            <MenuItem
+              key={mode}
+              role="menuitemradio"
+              aria-checked={preferences.newThreadCheckout === mode}
+              data-selected={
+                preferences.newThreadCheckout === mode ? "" : undefined
+              }
+              className={selectItem}
+              onClick={() => update({ newThreadCheckout: mode })}
+            >
+              {checkoutModeLabels[mode]}
+            </MenuItem>
+          ))}
+        </Menu>
+      );
     if (id === "restore")
       return (
         <Button size="sm" variant="outline" onClick={reset}>
