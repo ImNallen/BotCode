@@ -1,5 +1,5 @@
 // Structure and classes follow pingdotgg/t3code v0.0.45 components/chat/ChatComposer.tsx,
-// ComposerControl.tsx, ComposerPrimaryActions.tsx and BranchToolbar.tsx (MIT).
+// ComposerControl.tsx, ComposerPrimaryActions.tsx, BranchToolbar.tsx, TraitsPicker.tsx and ui/badge.tsx (MIT).
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import {
   ChevronDownIcon,
@@ -14,6 +14,7 @@ import { Menu, MenuItem } from "../ui/menu";
 import type { ModelOption, SessionSettings } from "../ipc";
 import { cn } from "../lib/cn";
 import { OpenAI } from "../ui/icons";
+import { ModelPicker } from "./ModelPicker";
 import { ComposerSurface } from "./ComposerSurface";
 
 const composerControl =
@@ -184,8 +185,14 @@ export function Composer({
                         data-chat-composer-controls="left"
                         className="relative -m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                       >
-                        <Menu
-                          side="top"
+                        <ModelPicker
+                          models={models}
+                          settings={settings}
+                          loading={modelsLoading}
+                          error={modelsError}
+                          disabled={settingsDisabled}
+                          onRetry={onRetryModels}
+                          onChange={onSettingsChange}
                           trigger={(props) => (
                             <button
                               type="button"
@@ -209,75 +216,7 @@ export function Composer({
                               <ChevronDownIcon className="size-3.5 text-icon-muted" />
                             </button>
                           )}
-                        >
-                          {modelsLoading ? (
-                            <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                              Loading models…
-                            </div>
-                          ) : null}
-                          {settings.model &&
-                          !selectedModel &&
-                          !modelsLoading &&
-                          !modelsError ? (
-                            <div className="px-2 py-1.5 text-sm text-error-foreground">
-                              Selected model is unavailable. Choose another
-                              model.
-                            </div>
-                          ) : null}
-                          {modelsError ? (
-                            <div className="px-2 py-1.5 text-sm text-error-foreground">
-                              {modelsError}
-                            </div>
-                          ) : null}
-                          {modelsError ? (
-                            <MenuItem onClick={onRetryModels}>Retry</MenuItem>
-                          ) : null}
-                          {!modelsLoading && !models.length ? (
-                            <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                              Use Codex default
-                            </div>
-                          ) : null}
-                          {!modelsLoading && !modelsError ? (
-                            <MenuItem onClick={onRetryModels}>
-                              Reload models
-                            </MenuItem>
-                          ) : null}
-                          {models.map((model) => (
-                            <MenuItem
-                              key={model.model}
-                              disabled={settingsDisabled}
-                              title={model.description}
-                              role="menuitemradio"
-                              aria-checked={
-                                settings.model === model.model ||
-                                (settings.model === null && model.isDefault)
-                              }
-                              onClick={() =>
-                                onSettingsChange({
-                                  ...settings,
-                                  model: model.isDefault ? null : model.model,
-                                  effort:
-                                    settings.effort &&
-                                    model.supportedReasoningEfforts.some(
-                                      (option) =>
-                                        option.reasoningEffort ===
-                                        settings.effort,
-                                    )
-                                      ? settings.effort
-                                      : null,
-                                })
-                              }
-                            >
-                              <span className="flex-1 truncate">
-                                {model.displayName}
-                              </span>
-                              {settings.model === model.model ||
-                              (settings.model === null && model.isDefault) ? (
-                                <span aria-hidden="true">✓</span>
-                              ) : null}
-                            </MenuItem>
-                          ))}
-                        </Menu>
+                        />
                         <Menu
                           side="top"
                           trigger={(props) => (
@@ -298,12 +237,22 @@ export function Composer({
                             </button>
                           )}
                         >
+                          <div className="px-2 pt-1.5 pb-1 font-medium text-muted-foreground text-xs">
+                            Reasoning effort
+                          </div>
                           {selectedModel?.supportedReasoningEfforts.map(
                             (option) => (
                               <MenuItem
                                 key={option.reasoningEffort}
                                 disabled={settingsDisabled}
                                 title={option.description}
+                                aria-label={effortLabel(option.reasoningEffort)}
+                                data-checked={
+                                  effort === option.reasoningEffort
+                                    ? ""
+                                    : undefined
+                                }
+                                className="[&_svg]:-mx-0.5 flex min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center rounded-sm px-2 py-1 text-base text-foreground outline-none data-checked:bg-foreground/[0.08] data-disabled:pointer-events-none data-disabled:cursor-not-allowed data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0"
                                 role="menuitemradio"
                                 aria-checked={effort === option.reasoningEffort}
                                 onClick={() =>
@@ -317,12 +266,31 @@ export function Composer({
                                   })
                                 }
                               >
-                                <span className="flex-1 capitalize">
-                                  {effortLabel(option.reasoningEffort)}
+                                <span className="flex w-full min-w-0 flex-col">
+                                  <span className="flex w-full min-w-0 items-center justify-between gap-3">
+                                    <span className="min-w-0 truncate">
+                                      {effortLabel(option.reasoningEffort)}
+                                      {option.reasoningEffort ===
+                                      selectedModel.defaultReasoningEffort ? (
+                                        <>
+                                          {" "}
+                                          <span
+                                            className={cn(
+                                              "relative inline-flex shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-sm border border-transparent font-medium outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 [&_svg:not([class*='opacity-'])]:opacity-80 [&_svg:not([class*='size-'])]:size-3.5 sm:[&_svg:not([class*='size-'])]:size-3 [&_svg]:pointer-events-none [&_svg]:shrink-0 [button&,a&]:cursor-pointer [button&,a&]:pointer-coarse:after:absolute [button&,a&]:pointer-coarse:after:size-full [button&,a&]:pointer-coarse:after:min-h-11 [button&,a&]:pointer-coarse:after:min-w-11 h-5 min-w-5 rounded-[.25rem] px-[calc(--spacing(1)-1px)] text-xs leading-none sm:h-4 sm:min-w-4 sm:text-[.625rem] border-input bg-background text-foreground dark:bg-input/32 [button&,a&]:hover:bg-accent/50 dark:[button&,a&]:hover:bg-input/48 min-w-0",
+                                            )}
+                                          >
+                                            Default
+                                          </span>
+                                        </>
+                                      ) : null}
+                                    </span>
+                                  </span>
+                                  {option.description ? (
+                                    <span className="max-w-56 text-pretty text-muted-foreground/80 text-xs">
+                                      {option.description}
+                                    </span>
+                                  ) : null}
                                 </span>
-                                {effort === option.reasoningEffort ? (
-                                  <span aria-hidden="true">✓</span>
-                                ) : null}
                               </MenuItem>
                             ),
                           )}
@@ -363,6 +331,13 @@ export function Composer({
                               key={mode.value}
                               disabled={settingsDisabled}
                               title={mode.description}
+                              aria-label={mode.label}
+                              data-selected={
+                                settings.permissionMode === mode.value
+                                  ? ""
+                                  : undefined
+                              }
+                              className="flex min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center rounded-sm px-2 py-1 text-base outline-none data-selected:bg-foreground/[0.08] data-disabled:pointer-events-none data-disabled:cursor-not-allowed data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0 min-w-64"
                               role="menuitemradio"
                               aria-checked={
                                 settings.permissionMode === mode.value
@@ -374,11 +349,17 @@ export function Composer({
                                 })
                               }
                             >
-                              <mode.icon className="size-4" />
-                              <span className="flex-1">{mode.label}</span>
-                              {settings.permissionMode === mode.value ? (
-                                <span aria-hidden="true">✓</span>
-                              ) : null}
+                              <div className="flex min-w-0 items-center gap-3">
+                                <div className="grid min-w-0 flex-1 gap-0.5">
+                                  <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+                                    <mode.icon className="size-3.5 shrink-0 text-muted-foreground" />
+                                    {mode.label}
+                                  </span>
+                                  <span className="text-muted-foreground text-xs leading-4">
+                                    {mode.description}
+                                  </span>
+                                </div>
+                              </div>
                             </MenuItem>
                           ))}
                         </Menu>
