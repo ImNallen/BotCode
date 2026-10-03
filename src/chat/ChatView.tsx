@@ -479,6 +479,15 @@ export function ChatView({
                         ) : null
                       }
                       disabled={Boolean(approval)}
+                      checkout={
+                        isDraft
+                          ? {
+                              kind: "draft",
+                              mode: draftCheckout,
+                              onChange: setDraftCheckout,
+                            }
+                          : thread?.checkout
+                      }
                       branch={view?.branch || undefined}
                       settings={settings}
                       models={models.data ?? []}
