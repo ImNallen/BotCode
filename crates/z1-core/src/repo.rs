@@ -48,6 +48,90 @@ pub fn add_worktree(root: &Path, worktrees: &Path) -> Result<Checkout> {
         branch,
     })
 }
+pub fn branches(root: &Path) -> Result<Branches> {
+    let refs = git(
+        root,
+        &[
+            "for-each-ref",
+            "--sort=refname",
+            "--sort=-committerdate",
+            "--format=%(refname)%00%(HEAD)%00%(worktreepath)%00%(symref)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    let origin_head = git(
+        root,
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    )
+    .ok();
+    let (mut local, mut remote) = (Vec::new(), Vec::new());
+    for line in String::from_utf8_lossy(&refs).lines() {
+        let [refname, head, worktree, symref] = line.split('\0').collect::<Vec<_>>()[..] else {
+            continue;
+        };
+        if !symref.is_empty() {
+            continue;
+        }
+        let branch = |name: &str, remote| Branch {
+            name: name.into(),
+            remote,
+            current: head == "*",
+            default: false,
+            worktree: (!worktree.is_empty()).then(|| {
+                Path::new(worktree)
+                    .canonicalize()
+                    .unwrap_or(worktree.into())
+            }),
+        };
+        if let Some(name) = refname.strip_prefix("refs/heads/") {
+            local.push(branch(name, false));
+        } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
+            remote.push(branch(name, true));
+        }
+    }
+    let origin = remote.iter().any(|b| b.name.starts_with("origin/"));
+    let default = origin_head
+        .as_deref()
+        .map(|target| String::from_utf8_lossy(target).trim().to_owned())
+        .and_then(|target| {
+            target
+                .strip_prefix("refs/remotes/origin/")
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            ["main", "master"]
+                .into_iter()
+                .find(|name| local.iter().any(|b| b.name == *name))
+                .map(str::to_owned)
+        });
+    remote.retain(|b| {
+        b.name
+            .strip_prefix("origin/")
+            .is_none_or(|name| !local.iter().any(|l| l.name == name))
+    });
+    let mut branches: Vec<_> = local.into_iter().chain(remote).collect();
+    if let Some(default) = default {
+        for b in &mut branches {
+            let name = if b.remote {
+                b.name.strip_prefix("origin/")
+            } else {
+                Some(b.name.as_str())
+            };
+            b.default = name == Some(default.as_str());
+        }
+    }
+    branches.sort_by_key(|b| {
+        if b.current {
+            0
+        } else if b.default {
+            1
+        } else {
+            2
+        }
+    });
+    Ok(Branches { branches, origin })
+}
 fn relative(path: &str) -> Result<&Path> {
     let p = Path::new(path);
     if p.as_os_str().is_empty()

@@ -36,6 +36,14 @@ pub async fn read_diff(
     app.read_diff(workspace_id, thread_id, path, basis).await
 }
 #[tauri::command]
+pub async fn list_branches(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+) -> Result<Branches> {
+    app.list_branches(workspace_id, thread_id).await
+}
+#[tauri::command]
 pub async fn create_thread(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

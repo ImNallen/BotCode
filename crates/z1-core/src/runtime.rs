@@ -194,6 +194,16 @@ impl App {
             .await
             .map_err(|e| AppError::new("repository", e))?
     }
+    pub async fn list_branches(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+    ) -> Result<Branches> {
+        let (_, root) = self.checkout(id, thread).await?;
+        tokio::task::spawn_blocking(move || repo::branches(&root))
+            .await
+            .map_err(|e| AppError::new("repository", e))?
+    }
     pub async fn create_thread(
         &self,
         id: WorkspaceId,

@@ -105,6 +105,18 @@ const checkout = z.discriminatedUnion("kind", [
     branch: z.string(),
   }),
 ]);
+const branches = z.object({
+  branches: z.array(
+    z.object({
+      name: z.string(),
+      remote: z.boolean(),
+      current: z.boolean(),
+      default: z.boolean(),
+      worktree: z.string().nullable(),
+    }),
+  ),
+  origin: z.boolean(),
+});
 const thread = z.object({
   id,
   workspaceId: id,
@@ -178,8 +190,10 @@ export type ApprovalDecision = "accept" | "decline" | "cancel";
 export type Checkout = z.infer<typeof checkout>;
 export type CheckoutMode = Checkout["kind"];
 export type CheckoutRef = { workspaceId: string; threadId?: string };
+export type Branches = z.infer<typeof branches>;
+export type Branch = Branches["branches"][number];
 export const checkoutKey = (
-  scope: "workspace" | "file" | "diff",
+  scope: "workspace" | "file" | "diff" | "branches",
   { workspaceId, threadId }: CheckoutRef,
 ) => [scope, workspaceId, threadId ?? null];
 async function call<S extends z.ZodType>(
@@ -221,6 +235,12 @@ export const ipc = {
       "read_diff",
       { workspaceId, threadId: threadId ?? null, path, basis },
       diff,
+    ),
+  branches: ({ workspaceId, threadId }: CheckoutRef) =>
+    call(
+      "list_branches",
+      { workspaceId, threadId: threadId ?? null },
+      branches,
     ),
   create: (workspaceId: string, mode: CheckoutMode) =>
     call("create_thread", { workspaceId, mode }, thread),

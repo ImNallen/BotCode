@@ -15,7 +15,7 @@ impl Fixture {
             Command::new("git")
                 .arg("-C")
                 .arg(&repository)
-                .args(["init", "-q"])
+                .args(["init", "-q", "-b", "main"])
                 .status()
                 .unwrap()
                 .success()
@@ -1029,6 +1029,100 @@ async fn worktree_views_inspect_the_thread_checkout() {
             .unwrap_err()
             .code,
         "missing_thread"
+    );
+    app.shutdown().await.unwrap();
+}
+fn add_origin(f: &Fixture) -> std::path::PathBuf {
+    let origin = f.repository.with_file_name("origin.git");
+    git_output(
+        f.repository.parent().unwrap(),
+        &["clone", "-q", "--bare", "repository", "origin.git"],
+    );
+    git_output(
+        &f.repository,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git_output(&f.repository, &["fetch", "-q", "origin"]);
+    git_output(&f.repository, &["remote", "set-head", "origin", "main"]);
+    origin
+}
+fn branch(name: &str, worktree: Option<&std::path::Path>) -> Branch {
+    Branch {
+        name: name.into(),
+        remote: false,
+        current: false,
+        default: false,
+        worktree: worktree.map(|p| p.canonicalize().unwrap()),
+    }
+}
+#[tokio::test]
+async fn branches_list_local_and_origin_refs_for_each_checkout() {
+    let f = Fixture::new();
+    f.commit();
+    add_origin(&f);
+    git_output(&f.repository, &["push", "-q", "origin", "main:feature"]);
+    git_output(&f.repository, &["fetch", "-q", "origin"]);
+    git_output(&f.repository, &["branch", "idle"]);
+    let topic = f.repository.with_file_name("topic");
+    git_output(
+        &f.repository,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "topic",
+            topic.to_str().unwrap(),
+        ],
+    );
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let main = Branch {
+        current: true,
+        default: true,
+        ..branch("main", Some(&f.repository))
+    };
+    let feature = Branch {
+        remote: true,
+        ..branch("origin/feature", None)
+    };
+    assert_eq!(
+        app.list_branches(workspace.id.clone(), None).await.unwrap(),
+        Branches {
+            branches: vec![
+                main.clone(),
+                branch("idle", None),
+                branch("topic", Some(&topic)),
+                feature.clone(),
+            ],
+            origin: true,
+        }
+    );
+    let isolated = app
+        .create_thread(workspace.id.clone(), CheckoutMode::Worktree)
+        .await
+        .unwrap();
+    let (path, name) = worktree(&isolated.checkout);
+    let listed = app
+        .list_branches(workspace.id, Some(isolated.id))
+        .await
+        .unwrap()
+        .branches;
+    assert_eq!(
+        listed,
+        vec![
+            Branch {
+                current: true,
+                ..branch(&name, Some(&path))
+            },
+            Branch {
+                current: false,
+                ..main
+            },
+            branch("idle", None),
+            branch("topic", Some(&topic)),
+            feature,
+        ]
     );
     app.shutdown().await.unwrap();
 }

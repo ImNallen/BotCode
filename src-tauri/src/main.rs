@@ -31,6 +31,7 @@ fn main() {
             ipc::workspace_view,
             ipc::read_file,
             ipc::read_diff,
+            ipc::list_branches,
             ipc::create_thread,
             ipc::thread_snapshot,
             ipc::open_thread,
