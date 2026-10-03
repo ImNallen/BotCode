@@ -34,6 +34,7 @@ import { RightPanel, emptyPanel, type PanelState } from "../panel/RightPanel";
 import { closeFiles, openFile } from "../panel/panelState";
 import { FileLinkProvider, type FileLinks } from "./ChatMarkdown";
 import { ApprovalDrawer } from "./ApprovalDrawer";
+import { BranchPicker, startsFromOrigin } from "./BranchPicker";
 import { Composer } from "./Composer";
 import { Timeline } from "./Timeline";
 
@@ -134,10 +135,11 @@ export function ChatView({
       branches?.branches.find((branch) => branch.current)
     )?.name ??
     null;
-  const baseFromOrigin =
-    draftCheckout.fromOrigin &&
-    Boolean(branches?.origin) &&
-    branches?.branches.find((branch) => branch.name === base)?.remote === false;
+  const baseFromOrigin = startsFromOrigin(
+    branches,
+    base,
+    draftCheckout.fromOrigin,
+  );
   const settings = thread?.settings ?? draftSettings;
   const models = useQuery({
     queryKey: ["models"],
@@ -284,6 +286,14 @@ export function ChatView({
     send.mutate(draft);
   };
   const title = isDraft ? "New thread" : (thread?.title ?? "");
+  const worktreeDraft =
+    isDraft && !createdDraft && draftCheckout.mode === "worktree";
+  const controlsDisabled =
+    busy ||
+    send.isPending ||
+    saveSettings.isPending ||
+    Boolean(approval) ||
+    (Boolean(threadId) && !thread);
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
       <div
@@ -529,13 +539,37 @@ export function ChatView({
                           : (thread ?? createdDraft)?.checkout
                       }
                       branch={
-                        (isDraft &&
-                        !createdDraft &&
-                        draftCheckout.mode === "worktree"
-                          ? baseFromOrigin
-                            ? `origin/${base}`
-                            : base
-                          : view?.branch) || undefined
+                        <BranchPicker
+                          checkout={checkout}
+                          branches={branches}
+                          value={
+                            worktreeDraft
+                              ? base
+                              : (branches?.branches.find(
+                                  (branch) => branch.current,
+                                )?.name ??
+                                (view?.branch || null))
+                          }
+                          worktreeBase={
+                            worktreeDraft
+                              ? {
+                                  fromOrigin: draftCheckout.fromOrigin,
+                                  onSelect: (name) =>
+                                    setDraftCheckout((current) => ({
+                                      ...current,
+                                      base: name,
+                                    })),
+                                  onFromOriginChange: (fromOrigin) =>
+                                    setDraftCheckout((current) => ({
+                                      ...current,
+                                      fromOrigin,
+                                    })),
+                                }
+                              : undefined
+                          }
+                          disabled={controlsDisabled}
+                          onError={setError}
+                        />
                       }
                       settings={settings}
                       models={models.data ?? []}
@@ -543,13 +577,7 @@ export function ChatView({
                       modelsError={models.error?.message}
                       onRetryModels={() => void models.refetch()}
                       onSettingsChange={(next) => saveSettings.mutate(next)}
-                      settingsDisabled={
-                        busy ||
-                        send.isPending ||
-                        saveSettings.isPending ||
-                        Boolean(approval) ||
-                        (Boolean(threadId) && !thread)
-                      }
+                      settingsDisabled={controlsDisabled}
                       autoFocus
                     />
                     <div

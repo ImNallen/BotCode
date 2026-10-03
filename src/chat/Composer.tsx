@@ -7,7 +7,6 @@ import {
   FolderGit2Icon,
   FolderGitIcon,
   FolderIcon,
-  GitBranchIcon,
   LockIcon,
   LockOpenIcon,
   PenLineIcon,
@@ -70,7 +69,7 @@ export function Composer({
         onChange: (mode: Checkout["kind"]) => void;
       }
     | undefined;
-  branch: string | undefined;
+  branch: ReactNode;
   autoFocus?: boolean;
   settings: SessionSettings;
   models: ModelOption[];
@@ -504,19 +503,9 @@ export function Composer({
                   </span>
                 ) : null}
               </div>
-              {branch ? (
-                <div className="flex min-w-0 items-center gap-1 min-w-0 flex-initial justify-end ml-auto">
-                  <span className={cn(contextControl, "max-w-full")}>
-                    <GitBranchIcon className="size-3 shrink-0 opacity-70" />
-                    <span className="min-w-0 max-w-[240px] truncate">
-                      {checkout?.kind === "draft" &&
-                      checkout.mode === "worktree"
-                        ? `From ${branch}`
-                        : branch}
-                    </span>
-                  </span>
-                </div>
-              ) : null}
+              <div className="flex min-w-0 items-center gap-1 min-w-0 flex-initial justify-end ml-auto">
+                {branch}
+              </div>
             </ComposerSurface.ContextStrip>
           </div>
         </div>
