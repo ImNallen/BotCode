@@ -125,7 +125,9 @@ async fn lost_acceptance_stays_uncertain_after_restart_and_never_replays() {
     app.submit(thread.id.clone(), "lost".into(), "lose".into())
         .await
         .unwrap();
-    assert_eq!(app.thread(thread.id).await.unwrap().turns.len(), 1);
+    let restored = app.thread(thread.id).await.unwrap();
+    assert_eq!(restored.turns.len(), 1);
+    assert_eq!(restored.turns[0].completed_at_ms, None);
     assert_eq!(
         f.calls()
             .iter()
@@ -140,10 +142,24 @@ async fn routes_multiple_approvals_by_callback_and_expires_old_clicks() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
+    let mut hints = app.subscribe();
     app.submit(thread.id.clone(), "approvals".into(), "approval".into())
         .await
         .unwrap();
     let snapshot = wait(&app, &thread.id, |t| t.approvals.len() == 2).await;
+    let mut hinted_approval = false;
+    while let Ok(hint) = hints.try_recv() {
+        hinted_approval |= hint.thread_id == thread.id && hint.summary.awaiting_approval;
+    }
+    assert!(hinted_approval);
+    let summary = |view: WorkspaceView| {
+        view.threads
+            .into_iter()
+            .find(|summary| summary.id == thread.id)
+            .unwrap()
+    };
+    let view = app.workspace_view(snapshot.workspace_id.clone()).await.unwrap();
+    assert!(summary(view).awaiting_approval);
     for approval in &snapshot.approvals {
         app.answer_approval(approval.id.clone(), ApprovalDecision::Decline)
             .await
@@ -160,6 +176,8 @@ async fn routes_multiple_approvals_by_callback_and_expires_old_clicks() {
         matches!(t.turns[0].execution, Execution::Completed)
     })
     .await;
+    let view = app.workspace_view(snapshot.workspace_id.clone()).await.unwrap();
+    assert!(!summary(view).awaiting_approval);
     let responses: Vec<_> = f
         .calls()
         .into_iter()
@@ -214,6 +232,15 @@ async fn missing_command_cannot_be_approved_and_late_file_details_become_reviewa
         .await
         .unwrap();
     let snapshot=wait(&app,&thread.id,|t|t.approvals.iter().any(|a|matches!(&a.action,ApprovalAction::FileChange{text,..} if text.contains("fixture change")))).await;
+    let paths: Vec<&Vec<String>> = snapshot.turns[1]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::FileChange { paths, .. } => Some(paths),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(paths, vec![&vec!["test.txt".to_string()]]);
     let a = snapshot.approvals.last().unwrap();
     app.answer_approval(a.id.clone(), ApprovalDecision::Accept)
         .await
@@ -241,10 +268,12 @@ async fn canonical_checkout_lease_and_confirmed_interrupt() {
     app.submit(a.id.clone(), "hold".into(), "hold".into())
         .await
         .unwrap();
-    wait(&app, &a.id, |t| {
+    let running = wait(&app, &a.id, |t| {
         matches!(t.turns[0].execution, Execution::Running)
     })
     .await;
+    let started = running.turns[0].started_at_ms.expect("started_at recorded");
+    assert_eq!(running.turns[0].completed_at_ms, None);
     assert_eq!(
         app.submit(b.id.clone(), "blocked".into(), "hello".into())
             .await
@@ -253,10 +282,12 @@ async fn canonical_checkout_lease_and_confirmed_interrupt() {
         "checkout_busy"
     );
     app.interrupt(a.id.clone()).await.unwrap();
-    wait(&app, &a.id, |t| {
+    let interrupted = wait(&app, &a.id, |t| {
         matches!(t.turns[0].execution, Execution::Interrupted)
     })
     .await;
+    let completed = interrupted.turns[0].completed_at_ms.expect("completed_at recorded");
+    assert!(completed >= started);
     app.submit(b.id.clone(), "free".into(), "hello".into())
         .await
         .unwrap();

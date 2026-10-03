@@ -48,6 +48,7 @@ const item = z.discriminatedUnion("kind", [
     id: z.string(),
     text: z.string(),
     status: z.string(),
+    paths: z.array(z.string()),
   }),
   z.object({
     kind: z.literal("other"),
@@ -90,10 +91,19 @@ const thread = z.object({
       delivery,
       execution,
       items: z.array(item),
+      startedAtMs: z.number().nullable(),
+      completedAtMs: z.number().nullable(),
     }),
   ),
   approvals: z.array(approval),
   diagnostic: z.string().nullable(),
+});
+const threadSummary = z.object({
+  id,
+  title: z.string(),
+  session,
+  updatedAtMs: z.number().nullable(),
+  awaitingApproval: z.boolean(),
 });
 const workspaceView = z.object({
   workspace,
@@ -108,7 +118,7 @@ const workspaceView = z.object({
       status: z.string(),
     }),
   ),
-  threads: z.array(z.object({ id, title: z.string(), session })),
+  threads: z.array(threadSummary),
 });
 const file = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), name: z.string(), contents: z.string() }),
@@ -195,9 +205,23 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
         workspaceId: id,
         revision: z.number(),
         refreshWorkspace: z.boolean(),
+        summary: threadSummary,
       })
       .safeParse(event.payload);
     if (hint.success) {
+      const { summary } = hint.data;
+      client.setQueryData<WorkspaceView>(
+        ["workspace", hint.data.workspaceId],
+        (view) =>
+          view && {
+            ...view,
+            threads: view.threads.some((thread) => thread.id === summary.id)
+              ? view.threads.map((thread) =>
+                  thread.id === summary.id ? summary : thread,
+                )
+              : [...view.threads, summary],
+          },
+      );
       if (hint.data.refreshWorkspace) workspaces.add(hint.data.workspaceId);
       schedule(hint.data.threadId);
     }
