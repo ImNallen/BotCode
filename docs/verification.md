@@ -114,3 +114,20 @@ The final native bundle passed at 1000×620 with the disposable repository, isol
 After terminating the isolated process and relaunching it explicitly with the same data directory, Favorites still contained GPT-6-Luna. Its rail and star remained visible with the tools panel open. Selecting the favorite by keyboard changed the model and applied its Medium default effort. The isolated window remains open on Favorites for inspection.
 
 Collaborative-preview checks confirmed favorite-first Codex ordering, Favorites filtering, search outside the current Favorites view, and no thread-settings IPC calls from stars. Renderer reload restored favorites. A storage-write failure retained the in-memory star, left the saved list unchanged, and displayed the persistence warning; a later successful write cleared it. Malformed favorites preserved a valid dark appearance and 18px prompt size. Restore defaults retained favorites. Duplicate saved pairs were deduplicated, and a future provider's same-named model did not mark the Codex model as a favorite. Frontend typechecking, production build, formatting, whitespace checks, and the native bundle passed. No new pixel-difference measurement was made.
+
+## Worktree threads
+
+Verified on 2026-10-03 with Codex 0.160.0 against the pinned T3 Code v0.0.45 source. All 24 core tests passed in parallel. Frontend typechecking, production build, Prettier, rustfmt, and the debug Mac bundle passed.
+
+Core checks cover the `z1/<id>` branch and its directory under `worktrees/<repository>/`, the `thread/start` cwd for local and worktree threads, and a worktree turn that completes while a local turn holds the checkout lease. A second local thread still receives `checkout_busy`. A repository without commits rejects a worktree thread and creates no directory. Legacy snapshots load as local threads. Worktree views list worktree files and branches only, and a thread from another repository is rejected. Moving the lease key or the cwd back to the repository root fails the concurrency and cwd tests.
+
+The native debug bundle used a disposable one-commit repository, an isolated `Z1_DATA_DIR`, and the temporary identifier `dev.z1.code.worktreeverify`. At 1100×780:
+
+- A new thread showed **Current checkout** and `main`. The menu offered **Current checkout** and **New worktree** under **Workspace**. **New worktree** changed the branch label to "From main".
+- Return sent a harmless prompt. Real Codex replied `Z1_WORKTREE_OK`. `git worktree list` showed `z1/eff0f251` under the data directory, and the Codex session recorded the worktree as its cwd.
+- The strip locked to **Worktree** and `z1/eff0f251`. The sidebar row showed the worktree icon and branch.
+- Files listed a file created only in the worktree and opened it in a tab. A new local draft replaced that tab with Files, which listed only the repository's `README.md`.
+- Settings › General › New threads › Workspace changed the default to **New worktree**. The open draft followed it. Search for "worktree" found the row.
+- After Command+Q and an explicit relaunch with the same data directory, the default stayed **New worktree**. The thread reopened as **Worktree**, and a follow-up replied `Z1_RESUME_OK`. All six cwd records in its Codex session named the worktree.
+
+Worktrees are not removed, because Z1 does not delete threads yet. No new pixel-difference measurement was made.
