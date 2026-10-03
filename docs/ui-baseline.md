@@ -1,15 +1,32 @@
 # UI baseline
 
-T3 Code is Z1's explicit style and layout baseline. Future UI work should preserve its conversation-first structure and neutral surfaces, then improve individual workflows. This baseline aligns Z1's implemented capabilities; it does not claim full T3 feature or pixel parity.
+Z1 renders the T3 Code interface for every workflow it implements. The reference is T3 Code v0.0.45 (`pingdotgg/t3code` tag `v0.0.45`, commit `6c8fed35d`), the build in the installed desktop app. T3 Code is MIT licensed. Ported files name their source in a one-line header.
 
-The reference is T3 Code commit `31a9da179ed0763335f05681c577474aec5d2309`. Its [geometry tokens](https://github.com/pingdotgg/t3code/blob/31a9da179ed0763335f05681c577474aec5d2309/apps/web/src/index.css#L84) specify a 52px workspace header and a 46rem conversation lane. Z1 uses 736px for that lane with a 16px root. The reference [sidebar sizing](https://github.com/pingdotgg/t3code/blob/31a9da179ed0763335f05681c577474aec5d2309/apps/web/src/components/threadSidebarWidth.ts#L1) defaults to 256px with a 208px minimum. The [native controls inset](https://github.com/pingdotgg/t3code/blob/31a9da179ed0763335f05681c577474aec5d2309/apps/web/src/components/AppSidebarLayout.tsx#L59) falls back to 90px.
+## Styles come from T3, not from a lookalike
 
-The left sidebar contains repository selection and conversations. The main column contains the conversation, with transcript and bottom composer sharing a centered lane. An optional right inspector contains either files or Git changes above the selected content. Its width borrows the reference [diff shell](https://github.com/pingdotgg/t3code/blob/31a9da179ed0763335f05681c577474aec5d2309/apps/web/src/components/DiffPanelShell.tsx#L33), using 42vw bounded between 360px and 560px. Unified diffs keep lines readable in this inspector.
+`src/t3-theme.css` is T3's `apps/web/src/index.css`, copied verbatim. Regenerate it with `scripts/port-t3-theme.sh <t3code-checkout>`. Tailwind v4 compiles it through `@tailwindcss/vite`, so components use T3's own utility classes and tokens: `bg-sidebar`, `text-secondary-label`, `--chat-max-width`, `alert-glass`. `src/styles.css` imports the theme and holds the only Z1 overrides: root typography, which T3 sets from JavaScript, and the macOS traffic-light inset.
 
-Colors follow the system appearance. Light mode uses neutral zinc-style canvas, sidebar, borders, and text; dark mode uses neutral near-black surfaces. The reference [palette](https://github.com/pingdotgg/t3code/blob/31a9da179ed0763335f05681c577474aec5d2309/apps/web/src/index.css#L1053) informs these semantic tokens. Pierre file, diff, and tree surfaces follow the same appearance. The macOS window uses an Overlay titlebar with native traffic lights and inert drag areas.
+`src/ui/controls.tsx` copies T3's `buttonVariants` and `toggleVariants` tables. Components copy T3's class strings literally. A hand-written approximation drifts the first time T3 changes a token. A copied class string can only drift when the copy is stale.
 
-Workbench owns a local `closed | files | diff` inspector state. Router still owns repository, conversation, path, and file/diff basis. Closing preserves selection. Route changes reveal the matching inspector; opening an empty inspector remains open. Switching inspector tabs never converts a file selection into a diff or shows mismatched content. Selecting a row establishes the matching route. Conversation stays mounted while the inspector toggles, so draft and execution state remain intact.
+## Layout
 
-Only implemented actions belong in the shell. Repository opening, conversation creation, refresh, file/diff inspection, Codex sending, approvals, interruption, and reconnect are available. Terminal, preview, PR, settings, editor, and model controls need their own working features before appearing here.
+The shell matches T3's desktop app:
 
-The updated layout passed native light-mode checks for centered chat, Files/Changes inspection, retained drafts, keyboard Close focus, repository switching, renderer reload, native folder selection, and titlebar double-click zoom. See [verification](verification.md) for observations and limits. System-dark appearance and the minimum window width still need native checks.
+- A 256px left sidebar, resizable from 208px and collapsible with Command+B. It holds the brand row, thread search, the repository menu, **Add project**, **New thread**, and one card per thread across every repository.
+- A 52px header with the repository badge, the thread title, and a fixed right-panel toggle.
+- A centered 48rem conversation column. The composer floats over the bottom of the timeline. A new thread centers the composer under "What should we build in {repository}?", and that repository name is the repository picker.
+- An optional right panel, 540px by default, with Files, file, and Diff tabs.
+
+Colors follow the system appearance. `src/main.tsx` toggles the `dark` class the way T3's boot script does. The macOS window keeps an overlay titlebar with native traffic lights at `{16, 19}`. Elements that carry T3's `drag-region` class also carry `data-tauri-drag-region="deep"`, which gives Tauri the same rule: the subtree drags and clickable children opt out.
+
+## Only working controls appear
+
+T3 shows controls that Z1 cannot back yet: the model and effort pickers, the access-mode menu, attachments, the terminal drawer, Git actions, pull requests, settings, and usage. Z1 leaves them out. The composer shows a static **Codex** label and a static **Supervised** label, because Z1 always runs Codex with approval required. The context strip under the composer shows **Local checkout** and the current branch without menus.
+
+## Domain data the interface needs
+
+T3's timeline reads timestamps that Z1 did not record before this baseline. Each `Turn` now stores `started_at` and `completed_at` in Unix milliseconds. `ThreadSnapshot::stamp_completions` records completion on every save. Turns saved earlier have neither value and show "Worked" instead of "Worked for 8.6s". `ThreadSummary` carries `updated_at` for the sidebar's relative time and `awaiting_approval` for its **Approval** status. File-change items carry their `paths`, so a single change shows its file name.
+
+## How parity is checked
+
+A Playwright harness renders T3 v0.0.45 and Z1 in the same headless Chrome at 1440x900 and diffs the screenshots region by region. T3 runs from the server and web client bundled in the installed app, with an isolated `T3CODE_HOME` and a disposable repository. Z1 runs its Vite build against a mocked Tauri IPC that serves the same repository and the same conversation. The harness lives outside the repository. [Verification](verification.md) records the results and the remaining differences.

@@ -37,3 +37,32 @@ Native verification used the same isolated state and disposable repositories. Th
 Closing either inspector returned focus to its surviving toolbar trigger. Tab reached Close, Return closed it, and Space reopened Files from the restored focus. Repository selection cleared old thread and inspection state; the second repository displayed only its own README. The native folder picker reopened the first repository. A Command+Enter prompt completed with `Z1_LAYOUT_OK`. Renderer reload retained the selected diff and all seven saved turns. The native thread ID remained unchanged.
 
 Native traffic lights stayed visible and clear of controls. Double-clicking the breadcrumb zoomed the window and restored its normal size. The system-dark palette has source and build coverage but no native observation. Native minimum-width coverage remains incomplete because the driver could not resize the window edge; normal and zoomed windows were observed. No pixel-exact parity is claimed.
+
+## T3 Code v0.0.45 parity
+
+Verified on 2026-10-03 against the server and web client bundled in the installed T3 Code 0.0.45 app. Both apps rendered in headless Chrome at 1440x900 with the same disposable repository and the same two-turn conversation. The table counts pixels that differ by region.
+
+| Scene and region | Differing pixels | Cause of the difference |
+| --- | --- | --- |
+| Header, light and dark | 0 | None. |
+| Sidebar thread row | 0 | None. |
+| Sidebar, whole column | 678 of 230,400 | The Z1 brand, and T3's Settled shelf and footer icons, which Z1 lacks. |
+| Timeline above the second turn's work row | 0 | None. |
+| Timeline, whole column | 3,809 of 505,600 | T3 records an extra "Approval resolved" activity, which shifts the rows below it. |
+| Composer | 2,279 of 165,900 | The placeholder text, and T3's model, effort, access-mode menus and attach button. |
+| Right panel, Files and Diff | 0 | Measured without the titlebar cluster, where T3 adds a terminal toggle. |
+| Approval drawer | 172 of 132,880 | Label text inside the drawer. |
+
+The native debug bundle ran with an isolated `Z1_DATA_DIR` and copies of the disposable repositories. These checks passed in the actual Tauri window:
+
+- Traffic lights, the sidebar toggle, and the brand sit at T3's desktop positions.
+- A prompt sent with Return from the new-thread view created a conversation and ran a real Codex turn.
+- The turn showed "Working for", then a command approval in the composer drawer, with **Approval** in the sidebar.
+- Approve and Decline each finished the turn under a "Worked for" fold.
+- The approval overflow menu opened above its button.
+- Command+B collapsed and restored the sidebar.
+- The right panel opened Files, a file tab with syntax highlighting, and Diff with an expanded hunk.
+
+Pierre's `shiki-wasm` highlighter rendered nothing in the native window, because the app's content security policy blocks WebAssembly. The viewers use Pierre's default `shiki-js` engine instead.
+
+System-dark appearance was checked in the Chrome harness only. The minimum window width and window dragging were not driven natively. The core suite shows intermittent shutdown-timing failures in parallel runs. Those failures also occur on the unmodified base commit.

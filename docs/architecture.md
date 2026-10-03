@@ -1,6 +1,6 @@
 # First-slice architecture
 
-The selected design uses one Rust runtime owner and one lazily started Codex app-server. The Tauri adapter validates IPC values through serde and forwards the core's public operations. The React renderer uses TanStack Query snapshots and committed invalidation hints. TanStack Router owns the selected repository, conversation, file, and diff basis.
+The selected design uses one Rust runtime owner and one lazily started Codex app-server. The Tauri adapter validates IPC values through serde and forwards the core's public operations. The React renderer uses TanStack Query snapshots and committed invalidation hints. TanStack Router owns the selected repository and conversation. The right panel keeps its open tabs in component state for the current repository.
 
 ## Ownership
 
