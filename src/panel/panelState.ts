@@ -26,6 +26,17 @@ export function openFile(state: PanelState, path: string): PanelState {
   );
 }
 
+export function closeFiles(state: PanelState): PanelState {
+  if (!state.surfaces.some((entry) => entry.kind === "file")) return state;
+  const active = state.active === null ? null : state.surfaces[state.active];
+  const rest: PanelState = {
+    surfaces: state.surfaces.filter((entry) => entry.kind !== "file"),
+    active: null,
+  };
+  if (!active) return rest;
+  return openSurface(rest, active.kind === "file" ? { kind: "files" } : active);
+}
+
 export function closeSurface(state: PanelState, index: number): PanelState {
   const surfaces = state.surfaces.filter((_, position) => position !== index);
   if (state.active === null) return { surfaces, active: null };

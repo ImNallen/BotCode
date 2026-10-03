@@ -31,7 +31,7 @@ import {
 import { Toggle } from "../ui/controls";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import { RightPanel, emptyPanel, type PanelState } from "../panel/RightPanel";
-import { openFile } from "../panel/panelState";
+import { closeFiles, openFile } from "../panel/panelState";
 import { FileLinkProvider, type FileLinks } from "./ChatMarkdown";
 import { ApprovalDrawer } from "./ApprovalDrawer";
 import { Composer } from "./Composer";
@@ -58,7 +58,7 @@ export function ChatView({
   const [maximized, setMaximized] = useState(false);
   const [panel, setPanel] = useState<PanelState>(emptyPanel);
   const [draft, setDraft] = useState("");
-  const createdDraft = useRef<string | undefined>(undefined);
+  const [createdDraft, setCreatedDraft] = useState<Thread>();
   const [draftSettings, setDraftSettings] = useState<SessionSettings>({
     model: null,
     effort: null,
@@ -85,7 +85,7 @@ export function ChatView({
   }, []);
   useEffect(() => {
     setDraft("");
-    createdDraft.current = undefined;
+    setCreatedDraft(undefined);
   }, [threadId]);
   const query = useQuery({
     queryKey: ["thread", threadId],
@@ -103,6 +103,11 @@ export function ChatView({
     workspaceId,
     threadId: thread?.checkout.kind === "worktree" ? thread.id : undefined,
   };
+  const [panelCheckout, setPanelCheckout] = useState(checkout.threadId);
+  if (panelCheckout !== checkout.threadId) {
+    setPanelCheckout(checkout.threadId);
+    setPanel(closeFiles);
+  }
   const { data: view } = useQuery({
     queryKey: checkoutKey("workspace", checkout),
     queryFn: () => ipc.workspace(checkout),
@@ -140,12 +145,12 @@ export function ChatView({
   }, [sessionKind, client]);
   const send = useMutation({
     mutationFn: async (text: string) => {
-      let target = threadId ?? createdDraft.current;
+      let target = threadId ?? createdDraft?.id;
       if (!target) {
         const created = await ipc.create(workspaceId, draftCheckout);
         setThreadSnapshot(client, created);
         target = created.id;
-        createdDraft.current = target;
+        setCreatedDraft(created);
         void client.invalidateQueries({ queryKey: ["workspace"] });
       }
       if (!threadId) {
@@ -161,7 +166,7 @@ export function ChatView({
       return target;
     },
     onSuccess: (target) => {
-      createdDraft.current = undefined;
+      setCreatedDraft(undefined);
       setDraft("");
       setError(undefined);
       if (!threadId) {
@@ -480,13 +485,13 @@ export function ChatView({
                       }
                       disabled={Boolean(approval)}
                       checkout={
-                        isDraft
+                        isDraft && !createdDraft
                           ? {
                               kind: "draft",
                               mode: draftCheckout,
                               onChange: setDraftCheckout,
                             }
-                          : thread?.checkout
+                          : (thread ?? createdDraft)?.checkout
                       }
                       branch={view?.branch || undefined}
                       settings={settings}
