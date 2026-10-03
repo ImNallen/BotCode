@@ -201,6 +201,7 @@ function ProjectSettings({ workspace }: { workspace: Workspace }) {
             <Button
               size="xs"
               variant="outline"
+              className="min-w-[4.75rem]"
               onClick={() =>
                 void navigator.clipboard
                   .writeText(workspace.root)
@@ -215,26 +216,21 @@ function ProjectSettings({ workspace }: { workspace: Workspace }) {
       <SettingsRow
         id={`project-${workspace.id}-remove`}
         title="Remove project"
-        description="Deletes the project entry and its threads. Files on disk are not touched."
+        description={
+          working
+            ? "Stop this project's running conversations before removing it."
+            : "Deletes the project entry and its threads. Files on disk are not touched."
+        }
         control={
-          // Disabled buttons ignore the pointer, so the wrapper carries the reason.
-          <span
-            title={
-              working
-                ? "Stop this project's running conversations before removing it."
-                : undefined
-            }
+          <Button
+            size="sm"
+            variant="destructive-outline"
+            disabled={working || removing}
+            onClick={() => void remove()}
           >
-            <Button
-              size="sm"
-              variant="destructive-outline"
-              disabled={working || removing}
-              onClick={() => void remove()}
-            >
-              <Trash2Icon />
-              Remove project
-            </Button>
-          </span>
+            <Trash2Icon />
+            Remove project
+          </Button>
         }
       />
     </SettingsGroup>
