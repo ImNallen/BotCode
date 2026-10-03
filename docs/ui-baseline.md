@@ -17,6 +17,8 @@ The shell matches T3's desktop app:
 - A centered 48rem conversation column. The composer floats over the bottom of the timeline. A new thread centers the composer under "What should we build in {repository}?", and that repository name is the repository picker.
 - An optional right panel, 540px by default, with Files, file, and Diff tabs.
 
+A thread can also start without a project, as in T3 commit `6b286ae8a`. The empty window offers **Start without a project**, a repository draft offers **or start without a project** under its heading, and Command+Option+N opens the same draft. That draft asks "What should we work on?" and moves the picker, which reads **No project**, to the line below. Each of these threads runs Codex in its own plain folder under `scratch` in the data directory, named from the date, the first words of the prompt, and a short id. They show T3's gray dashed message icon and have no workspace selector, branch picker, or Diff tab. The option is absent when the data directory sits inside a Git work tree.
+
 Appearance follows the system by default. The local preferences owner in `src/settings/preferences.tsx` applies the system, light or dark choice, and the prompt and code font sizes. The macOS window keeps an overlay titlebar with native traffic lights at `{16, 19}`. Elements that carry T3's `drag-region` class also carry `data-tauri-drag-region="deep"`, which gives Tauri the same rule: the subtree drags and clickable children opt out.
 
 ## Only working controls appear
@@ -27,7 +29,7 @@ The model picker has T3's Favorites and provider rail, with Codex as the current
 
 ## Settings
 
-Settings uses T3's compact breadcrumb header, centered page and grouped rows. General describes Codex and the conversation access controls, sets where new threads start and whether new worktrees start from origin, and restores device preferences. Appearance changes system, light or dark mode and the composer font size from 12 to 20px. The code font size from 11 to 20px applies to code blocks, tool output, file previews and diffs. Keyboard shortcuts documents the working sidebar toggle, settings shortcut and Escape. Search matches category, section and row labels and focuses the selected setting.
+Settings uses T3's compact breadcrumb header, centered page and grouped rows. General describes Codex and the conversation access controls, sets where new threads start and whether new worktrees start from origin, and restores device preferences. Appearance changes system, light or dark mode and the composer font size from 12 to 20px. The code font size from 11 to 20px applies to code blocks, tool output, file previews and diffs. Keyboard shortcuts documents the working sidebar toggle, the shortcut for a thread without a project, the settings shortcut and Escape. Search matches category, section and row labels and focuses the selected setting.
 
 Command/Control+, opens settings. Back or Escape returns to the conversation with its draft, thread search, selected thread, panel tabs and scroll retained. An active settings search consumes Escape first. Collapsed sidebars have a Back button in the settings header. Device preferences persist in local storage after schema validation. Storage failures appear in settings while changes continue to apply in memory.
 
