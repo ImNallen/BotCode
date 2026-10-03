@@ -105,6 +105,7 @@ export function ChatView({
         target = created.id;
         void client.invalidateQueries({ queryKey: ["workspace"] });
         void navigate({
+          to: "/",
           search: (previous) => ({
             ...previous,
             workspace: workspaceId,
@@ -269,6 +270,7 @@ export function ChatView({
                   title={`New thread in ${label}`}
                   onClick={() =>
                     void navigate({
+                      to: "/",
                       search: (previous) => ({
                         ...previous,
                         workspace: workspaceId,

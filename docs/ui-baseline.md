@@ -12,16 +12,22 @@ Z1 renders the T3 Code interface for every workflow it implements. The reference
 
 The shell matches T3's desktop app:
 
-- A 256px left sidebar, resizable from 208px and collapsible with Command+B. It holds the brand row, thread search, the repository menu, **Add project**, **New thread**, and one card per thread across every repository.
+- A 256px left sidebar, resizable from 208px and collapsible with Command+B. It holds the brand row, thread search, the repository menu, **Add project**, **New thread**, and one card per thread across every repository. A fixed bottom bar contains the 32px Settings gear. Settings replaces the sidebar list with search and category navigation, and the bottom bar becomes Back.
 - A 52px header with the repository badge, the thread title, and a fixed right-panel toggle.
 - A centered 48rem conversation column. The composer floats over the bottom of the timeline. A new thread centers the composer under "What should we build in {repository}?", and that repository name is the repository picker.
 - An optional right panel, 540px by default, with Files, file, and Diff tabs.
 
-Colors follow the system appearance. `src/main.tsx` toggles the `dark` class the way T3's boot script does. The macOS window keeps an overlay titlebar with native traffic lights at `{16, 19}`. Elements that carry T3's `drag-region` class also carry `data-tauri-drag-region="deep"`, which gives Tauri the same rule: the subtree drags and clickable children opt out.
+Appearance follows the system by default. The local preferences owner in `src/settings/preferences.tsx` applies the system, light or dark choice, and the prompt and code font sizes. The macOS window keeps an overlay titlebar with native traffic lights at `{16, 19}`. Elements that carry T3's `drag-region` class also carry `data-tauri-drag-region="deep"`, which gives Tauri the same rule: the subtree drags and clickable children opt out.
 
 ## Only working controls appear
 
-T3 shows controls that Z1 cannot back yet: the model and effort pickers, the access-mode menu, attachments, the terminal drawer, Git actions, pull requests, settings, and usage. Z1 leaves them out. The composer shows a static **Codex** label and a static **Supervised** label, because Z1 always runs Codex with approval required. The context strip under the composer shows **Local checkout** and the current branch without menus.
+T3 shows controls that Z1 cannot back yet: the model and effort pickers, the access-mode menu, attachments, the terminal drawer, Git actions, pull requests, and usage. Z1 leaves them out. The composer shows a static **Codex** label and a static **Supervised** label, because Z1 always runs Codex with approval required. The context strip under the composer shows **Local checkout** and the current branch without menus.
+
+## Settings
+
+Settings uses T3's compact breadcrumb header, centered page and grouped rows. General describes Codex and supervised approval and restores device preferences. Appearance changes system, light or dark mode and the composer font size from 12 to 20px. The code font size from 11 to 20px applies to code blocks, tool output, file previews and diffs. Keyboard shortcuts documents the working sidebar toggle, settings shortcut and Escape. Search matches category, section and row labels and focuses the selected setting.
+
+Command/Control+, opens settings. Back or Escape returns to the conversation with its draft, thread search, selected thread, panel tabs and scroll retained. An active settings search consumes Escape first. Collapsed sidebars have a Back button in the settings header. Device preferences persist in local storage after schema validation. Storage failures appear in settings while changes continue to apply in memory.
 
 ## Domain data the interface needs
 

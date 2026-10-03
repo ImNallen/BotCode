@@ -66,3 +66,21 @@ The native debug bundle ran with an isolated `Z1_DATA_DIR` and copies of the dis
 Pierre's `shiki-wasm` highlighter rendered nothing in the native window, because the app's content security policy blocks WebAssembly. The viewers use Pierre's default `shiki-js` engine instead.
 
 System-dark appearance was checked in the Chrome harness only. The minimum window width and window dragging were not driven natively. The core suite shows intermittent shutdown-timing failures in parallel runs. Those failures also occur on the unmodified base commit.
+
+## Sidebar footer and settings
+
+Verified on 2026-10-03 against the pinned T3 Code v0.0.45 source. Footer, sidebar navigation, breadcrumb, grouped settings rows, and number fields use copied T3 classes. No new pixel-difference measurement was made for these settings pages.
+
+The native debug bundle used a disposable Git repository, 25 seeded draft conversations, an isolated `Z1_DATA_DIR`, and the temporary app identifier `dev.z1.code.sidebarverify` to isolate WebView preferences. Native checks passed at 1100×780 and 1000×620. The minimum-size bundle used a temporary Tauri window configuration, because the computer driver did not resize the window edge.
+
+- The Settings gear remained at the bottom while the conversation list scrolled. Back restored that scroll position.
+- Settings retained the unsent composer draft and the open README file panel. A selected thread and its URL search remained unchanged across category navigation and Back.
+- Search found Prompt font size, Return opened its row, and Escape returned to the conversation. Command+B and Command+, opened settings with the sidebar collapsed, with a visible Back control in the header.
+- Dark and System applied in the native window. Prompt size 20px and code size 18px visibly changed the composer and file preview. Those preferences survived a full restart. Restore defaults returned to System, 14px prompts, and 13px code.
+- The conversation controls stayed out of the accessibility tree while settings was open. Retained content uses opacity and visibility together to prevent a stale Send-button paint. Separate footer button keys prevent an icon-to-Back width transition from clipping the label.
+
+The collaborative browser used a mocked Tauri boundary for additional checks. Draft, thread search, selection, file tab, and return focus survived settings. Search focused the requested row. Open portal menus closed on settings entry. Browser Back and collapsed-sidebar navigation passed. The file viewer's rendered font measured 18px after the code-size change.
+
+System mode followed emulated dark and light changes. Out-of-range input reverted to the last valid value. Invalid stored fields fell back independently; malformed JSON showed defaults and a read error. A simulated storage write failure applied the change in memory, retained the old saved value, and showed a persistence error. Restore defaults cleared that error.
+
+Frontend typecheck, production build, formatting, whitespace checks, and the native debug bundle passed. Rust runtime behavior and IPC contracts did not change.

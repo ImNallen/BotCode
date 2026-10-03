@@ -11,6 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "../lib/cn";
+import { useLocation } from "@tanstack/react-router";
 
 export function Menu({
   trigger,
@@ -45,8 +46,14 @@ export function Menu({
     setUncontrolledOpen(next);
     onOpenChange?.(next);
   };
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const previousPathname = useRef(pathname);
   const setOpenRef = useRef(setOpen);
   setOpenRef.current = setOpen;
+  useEffect(() => {
+    if (previousPathname.current !== pathname) setOpenRef.current(false);
+    previousPathname.current = pathname;
+  }, [pathname]);
   const anchor = useRef<HTMLElement | null>(null);
   const popup = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<CSSProperties>();

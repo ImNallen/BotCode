@@ -81,19 +81,6 @@ export function Sidebar({
     : rows;
   return (
     <>
-      <div
-        data-tauri-drag-region="deep"
-        className="@container/sidebar-header relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 px-3 md:px-0 drag-region"
-      >
-        <span className="relative z-10 ml-[var(--workspace-titlebar-content-left)] hidden h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md md:flex text-foreground">
-          <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
-            <span className="shrink-0 font-bold">Z1</span>
-            <span className="truncate [text-box:trim-both_cap_alphabetic] text-muted-foreground">
-              Code
-            </span>
-          </span>
-        </span>
-      </div>
       <div className="w-full shrink-0">
         <div className="relative flex w-full min-w-0 flex-col p-[var(--sidebar-content-inset)] z-[1]">
           <div className="flex items-center gap-1">
@@ -325,5 +312,23 @@ function ThreadRow({
         </div>
       </div>
     </li>
+  );
+}
+
+export function SidebarBrand() {
+  return (
+    <div
+      data-tauri-drag-region="deep"
+      className="@container/sidebar-header relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 px-3 md:px-0 drag-region"
+    >
+      <span className="relative z-10 ml-[var(--workspace-titlebar-content-left)] hidden h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md md:flex text-foreground">
+        <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
+          <span className="shrink-0 font-bold">Z1</span>
+          <span className="truncate [text-box:trim-both_cap_alphabetic] text-muted-foreground">
+            Code
+          </span>
+        </span>
+      </span>
+    </div>
   );
 }
