@@ -57,6 +57,7 @@ export function ChatView({
   threadId,
   workspaces,
   scratch,
+  scratchAvailable,
   onSelectWorkspace,
   onStartScratch,
   onOpenRepository,
@@ -65,6 +66,7 @@ export function ChatView({
   threadId: string | undefined;
   workspaces: Workspace[];
   scratch: Workspace | undefined;
+  scratchAvailable: boolean;
   onSelectWorkspace: (workspaceId: string) => void;
   onStartScratch: () => void;
   onOpenRepository: () => void;
@@ -539,7 +541,8 @@ export function ChatView({
                           label={label}
                           workspaceId={workspaceId}
                           workspaces={workspaces}
-                          scratch={scratch}
+                          isScratch={isScratch}
+                          scratchAvailable={scratchAvailable}
                           onSelectWorkspace={onSelectWorkspace}
                           onStartScratch={onStartScratch}
                           onOpenRepository={onOpenRepository}
@@ -641,7 +644,8 @@ function DraftHeadline({
   label,
   workspaceId,
   workspaces,
-  scratch,
+  isScratch,
+  scratchAvailable,
   onSelectWorkspace,
   onStartScratch,
   onOpenRepository,
@@ -649,12 +653,12 @@ function DraftHeadline({
   label: string;
   workspaceId: string;
   workspaces: Workspace[];
-  scratch: Workspace | undefined;
+  isScratch: boolean;
+  scratchAvailable: boolean;
   onSelectWorkspace: (workspaceId: string) => void;
   onStartScratch: () => void;
   onOpenRepository: () => void;
 }) {
-  const isScratch = scratch?.id === workspaceId;
   const picker = (
     <Menu
       align="center"
@@ -668,7 +672,18 @@ function DraftHeadline({
         </button>
       )}
     >
-      {[...(scratch ? [scratch] : []), ...workspaces].map((workspace) => (
+      {scratchAvailable ? (
+        <MenuItem aria-current={isScratch} onClick={onStartScratch}>
+          <span className="flex min-w-0 items-center gap-2">
+            <WorkspaceBadge
+              workspace={{ kind: "scratch", label: "No project" }}
+              className="size-4 shrink-0"
+            />
+            <span className="block min-w-0 truncate">No project</span>
+          </span>
+        </MenuItem>
+      ) : null}
+      {workspaces.map((workspace) => (
         <MenuItem
           key={workspace.id}
           aria-current={workspace.id === workspaceId}
@@ -702,7 +717,7 @@ function DraftHeadline({
           <>What should we build in {picker}?</>
         )}
       </h1>
-      {scratch ? (
+      {isScratch || scratchAvailable ? (
         <p className="mt-2 flex h-6 items-center text-sm">
           {isScratch ? (
             picker

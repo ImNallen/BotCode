@@ -9,6 +9,14 @@ pub async fn open_workspace(app: State<'_, App>, path: String) -> Result<Workspa
     app.open_workspace(path.into()).await
 }
 #[tauri::command]
+pub fn scratch_available(app: State<'_, App>) -> bool {
+    app.scratch_available()
+}
+#[tauri::command]
+pub async fn ensure_scratch(app: State<'_, App>) -> Result<Workspace> {
+    app.ensure_scratch().await
+}
+#[tauri::command]
 pub async fn workspace_view(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

@@ -1303,12 +1303,13 @@ async fn switch_branch_changes_the_checkout_unless_its_lease_is_held() {
     assert_eq!(current(&f.repository), "main");
     app.shutdown().await.unwrap();
 }
-async fn scratch(app: &App) -> Vec<Workspace> {
+async fn scratch(app: &App) -> Vec<WorkspaceId> {
     app.list_workspaces()
         .await
         .unwrap()
         .into_iter()
         .filter(|w| w.kind == WorkspaceKind::Scratch)
+        .map(|w| w.id)
         .collect()
 }
 fn folder(checkout: &Checkout) -> std::path::PathBuf {
@@ -1318,21 +1319,26 @@ fn folder(checkout: &Checkout) -> std::path::PathBuf {
     }
 }
 #[tokio::test]
-async fn one_scratch_workspace_survives_reopening() {
+async fn no_project_is_created_once_on_first_use() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
-    let first = scratch(&app).await;
-    assert_eq!(first.len(), 1);
-    assert_eq!(first[0].label, "No project");
+    assert!(app.scratch_available());
+    assert!(scratch(&app).await.is_empty());
+    let (first, second) = tokio::join!(app.ensure_scratch(), app.ensure_scratch());
+    let first = first.unwrap();
+    assert_eq!(second.unwrap().id, first.id);
+    assert_eq!(first.label, "No project");
+    assert_eq!(first.kind, WorkspaceKind::Scratch);
     assert_eq!(
-        first[0].root,
+        first.root,
         f.config.data_dir.canonicalize().unwrap().join("scratch")
     );
+    assert_eq!(app.ensure_scratch().await.unwrap().id, first.id);
+    assert_eq!(scratch(&app).await, vec![first.id.clone()]);
     app.shutdown().await.unwrap();
     let app = reopen(&f.config).await;
-    let again = scratch(&app).await;
-    assert_eq!(again.len(), 1);
-    assert_eq!(again[0].id, first[0].id);
+    assert_eq!(scratch(&app).await, vec![first.id.clone()]);
+    assert_eq!(app.ensure_scratch().await.unwrap().id, first.id);
     app.shutdown().await.unwrap();
 }
 #[tokio::test]
@@ -1343,13 +1349,34 @@ async fn scratch_is_unavailable_inside_a_git_work_tree() {
         ..f.config.clone()
     };
     let app = App::open(inside).await.unwrap();
+    assert!(!app.scratch_available());
+    assert_eq!(
+        app.ensure_scratch().await.unwrap_err().code,
+        "scratch_unavailable"
+    );
     assert!(scratch(&app).await.is_empty());
     app.shutdown().await.unwrap();
     let app = App::open(f.config.clone()).await.unwrap();
-    let stored = scratch(&app).await.remove(0);
+    let stored = app.ensure_scratch().await.unwrap();
+    let thread = app
+        .create_thread(
+            stored.id.clone(),
+            NewCheckout::Folder {
+                prompt: "before".into(),
+            },
+        )
+        .await
+        .unwrap();
     app.shutdown().await.unwrap();
     git_output(f._dir.path(), &["init", "-q"]);
     let app = reopen(&f.config).await;
+    assert!(!app.scratch_available());
+    assert_eq!(scratch(&app).await, vec![stored.id.clone()]);
+    let view = app
+        .workspace_view(stored.id.clone(), Some(thread.id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(view.workspace.root, folder(&thread.checkout));
     assert_eq!(
         app.create_thread(
             stored.id,
@@ -1369,7 +1396,7 @@ async fn folder_threads_get_a_dated_folder_named_from_the_prompt() {
     let f = Fixture::new();
     f.commit();
     let app = App::open(f.config.clone()).await.unwrap();
-    let home = scratch(&app).await.remove(0);
+    let home = app.ensure_scratch().await.unwrap();
     let thread = app
         .create_thread(
             home.id.clone(),
@@ -1433,7 +1460,7 @@ async fn folder_threads_get_a_dated_folder_named_from_the_prompt() {
 async fn folder_threads_browse_files_without_git() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
-    let home = scratch(&app).await.remove(0);
+    let home = app.ensure_scratch().await.unwrap();
     let empty = app.workspace_view(home.id.clone(), None).await.unwrap();
     assert!(empty.threads.is_empty());
     let thread = app

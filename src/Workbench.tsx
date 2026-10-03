@@ -76,6 +76,12 @@ export function Workbench() {
     enabled: native,
   });
   const list = workspaces.data ?? [];
+  const availability = useQuery({
+    queryKey: ["scratch-available"],
+    queryFn: ipc.scratchAvailable,
+    enabled: native,
+  });
+  const scratchAvailable = availability.data ?? false;
   const views = useQueries({
     queries: list.map((workspace) => ({
       queryKey: checkoutKey("workspace", { workspaceId: workspace.id }),
@@ -84,10 +90,17 @@ export function Workbench() {
   });
   const repositories = list.filter((w) => w.kind === "repository");
   const scratch = list.find((w) => w.kind === "scratch");
-  const workspaceId = selection.workspace ?? repositories[0]?.id;
-  const startScratch = useCallback(() => {
-    if (scratch) void navigate({ to: "/", search: { workspace: scratch.id } });
-  }, [navigate, scratch]);
+  const workspaceId = selection.workspace ?? repositories[0]?.id ?? scratch?.id;
+  const startScratch = useCallback(async () => {
+    try {
+      const workspace = await ipc.ensureScratch();
+      await client.invalidateQueries({ queryKey: ["workspaces"] });
+      void navigate({ to: "/", search: { workspace: workspace.id } });
+      setError(undefined);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [client, navigate]);
   useLayoutEffect(() => {
     if (settingsOpen && !wasSettingsOpen.current && !previousFocus.current)
       previousFocus.current =
@@ -134,10 +147,10 @@ export function Workbench() {
         (event.metaKey || event.ctrlKey) &&
         event.altKey &&
         event.code === "KeyN" &&
-        scratch
+        scratchAvailable
       ) {
         event.preventDefault();
-        startScratch();
+        void startScratch();
       }
     };
     const escape = (event: KeyboardEvent) => {
@@ -164,7 +177,13 @@ export function Workbench() {
       window.removeEventListener("keydown", shortcut, true);
       window.removeEventListener("keydown", escape);
     };
-  }, [openSettings, closeSettings, settingsOpen, scratch, startScratch]);
+  }, [
+    openSettings,
+    closeSettings,
+    settingsOpen,
+    scratchAvailable,
+    startScratch,
+  ]);
   const openRepository = async () => {
     try {
       const path = await open({
@@ -268,7 +287,9 @@ export function Workbench() {
                 }}
               >
                 <Sidebar
-                  workspaces={repositories}
+                  workspaces={
+                    scratch ? [scratch, ...repositories] : repositories
+                  }
                   views={views.map((query) => query.data)}
                   workspaceId={workspaceId}
                   threadId={selection.thread}
@@ -313,7 +334,8 @@ export function Workbench() {
             opacity: settingsOpen ? 0 : 1,
           }}
         >
-          {workspaces.isPending ? null : workspaceId ? (
+          {workspaces.isPending ||
+          availability.isPending ? null : workspaceId ? (
             <ChatView
               key={workspaceId}
               workspaceId={workspaceId}
@@ -321,7 +343,8 @@ export function Workbench() {
               onSelectWorkspace={selectWorkspace}
               workspaces={repositories}
               scratch={scratch}
-              onStartScratch={startScratch}
+              scratchAvailable={scratchAvailable}
+              onStartScratch={() => void startScratch()}
               onOpenRepository={() => void openRepository()}
             />
           ) : (
@@ -346,7 +369,7 @@ export function Workbench() {
                       data-slot="empty-description"
                       className="text-muted-foreground text-sm [[data-slot=empty-title]+&]:mt-1"
                     >
-                      {scratch
+                      {scratchAvailable
                         ? "Add a project, or start without one."
                         : "Add a project to start your first thread."}
                     </div>
@@ -355,11 +378,11 @@ export function Workbench() {
                         <PlusIcon className="size-4" />
                         Add project
                       </Button>
-                      {scratch ? (
+                      {scratchAvailable ? (
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={startScratch}
+                          onClick={() => void startScratch()}
                         >
                           <MessageSquareDashedIcon className="size-4" />
                           Start without a project

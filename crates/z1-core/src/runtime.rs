@@ -39,6 +39,12 @@ enum Location {
     Folder(PathBuf),
     Unassigned,
 }
+fn scratch_unavailable() -> AppError {
+    AppError::new(
+        "scratch_unavailable",
+        "Threads without a project are unavailable while the data directory is inside a Git repository.",
+    )
+}
 fn not_repository() -> AppError {
     AppError::new(
         "not_repository",
@@ -48,6 +54,7 @@ fn not_repository() -> AppError {
 enum Command {
     List(Reply<Vec<Workspace>>),
     OpenWorkspace(PathBuf, Reply<Workspace>),
+    EnsureScratch(PathBuf, Reply<Workspace>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
     BeginSwitch(WorkspaceId, Option<ThreadId>, Reply<PathBuf>),
     EndSwitch(PathBuf, Option<(ThreadId, String)>, Reply<()>),
@@ -66,32 +73,22 @@ pub struct App {
     commands: mpsc::Sender<Command>,
     changes: broadcast::Sender<ChangeHint>,
     worktrees: PathBuf,
-    scratch: bool,
+    scratch: Option<PathBuf>,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
         let store = Store::open(&config.data_dir)?;
-        let mut workspaces: HashMap<WorkspaceId, Workspace> = store
+        let workspaces = store
             .workspaces()?
             .into_iter()
             .map(|w| (w.id.clone(), w))
             .collect();
         // A scratch folder inside a work tree would inherit that repository's status.
-        let scratch = !repo::inside_work_tree(&config.data_dir);
-        if scratch
-            && !workspaces
-                .values()
-                .any(|w| w.kind == WorkspaceKind::Scratch)
-        {
-            let w = Workspace {
-                id: WorkspaceId::default(),
-                root: config.data_dir.canonicalize()?.join("scratch"),
-                label: "No project".into(),
-                kind: WorkspaceKind::Scratch,
-            };
-            store.workspace(&w)?;
-            workspaces.insert(w.id.clone(), w);
-        }
+        let scratch = if repo::inside_work_tree(&config.data_dir) {
+            None
+        } else {
+            Some(config.data_dir.canonicalize()?.join("scratch"))
+        };
         let mut threads: HashMap<ThreadId, ThreadSnapshot> = store
             .threads()?
             .into_iter()
@@ -184,6 +181,13 @@ impl App {
             .await
             .map_err(|e| AppError::new("repository", e))??;
         self.call(|r| Command::OpenWorkspace(root, r)).await
+    }
+    pub fn scratch_available(&self) -> bool {
+        self.scratch.is_some()
+    }
+    pub async fn ensure_scratch(&self) -> Result<Workspace> {
+        let root = self.scratch.clone().ok_or_else(scratch_unavailable)?;
+        self.call(|r| Command::EnsureScratch(root, r)).await
     }
     async fn checkout(
         &self,
@@ -298,11 +302,8 @@ impl App {
                 .map_err(|e| AppError::new("repository", e))??
             }
             (WorkspaceKind::Scratch, NewCheckout::Folder { prompt }) => {
-                if !self.scratch {
-                    return Err(AppError::new(
-                        "scratch_unavailable",
-                        "Threads without a project are unavailable while the data directory is inside a Git repository.",
-                    ));
+                if self.scratch.is_none() {
+                    return Err(scratch_unavailable());
                 }
                 tokio::task::spawn_blocking(move || repo::add_folder(&w.root, &prompt))
                     .await
@@ -551,6 +552,27 @@ impl Owner {
                             .unwrap_or_else(|| "Repository".into()),
                         root,
                         kind: WorkspaceKind::Repository,
+                    };
+                    self.store.workspace(&w)?;
+                    self.workspaces.insert(w.id.clone(), w.clone());
+                    Ok(w)
+                })();
+                let _ = reply.send(result);
+            }
+            Command::EnsureScratch(root, reply) => {
+                let result = (|| -> Result<Workspace> {
+                    if let Some(w) = self
+                        .workspaces
+                        .values()
+                        .find(|w| w.kind == WorkspaceKind::Scratch)
+                    {
+                        return Ok(w.clone());
+                    }
+                    let w = Workspace {
+                        id: WorkspaceId::default(),
+                        root,
+                        label: "No project".into(),
+                        kind: WorkspaceKind::Scratch,
                     };
                     self.store.workspace(&w)?;
                     self.workspaces.insert(w.id.clone(), w.clone());

@@ -227,6 +227,8 @@ async function call<S extends z.ZodType>(
 export const ipc = {
   workspaces: () => call("list_workspaces", {}, z.array(workspace)),
   openWorkspace: (path: string) => call("open_workspace", { path }, workspace),
+  scratchAvailable: () => call("scratch_available", {}, z.boolean()),
+  ensureScratch: () => call("ensure_scratch", {}, workspace),
   workspace: ({ workspaceId, threadId }: CheckoutRef) =>
     call(
       "workspace_view",
