@@ -158,7 +158,10 @@ async fn routes_multiple_approvals_by_callback_and_expires_old_clicks() {
             .find(|summary| summary.id == thread.id)
             .unwrap()
     };
-    let view = app.workspace_view(snapshot.workspace_id.clone()).await.unwrap();
+    let view = app
+        .workspace_view(snapshot.workspace_id.clone())
+        .await
+        .unwrap();
     assert!(summary(view).awaiting_approval);
     for approval in &snapshot.approvals {
         app.answer_approval(approval.id.clone(), ApprovalDecision::Decline)
@@ -176,7 +179,10 @@ async fn routes_multiple_approvals_by_callback_and_expires_old_clicks() {
         matches!(t.turns[0].execution, Execution::Completed)
     })
     .await;
-    let view = app.workspace_view(snapshot.workspace_id.clone()).await.unwrap();
+    let view = app
+        .workspace_view(snapshot.workspace_id.clone())
+        .await
+        .unwrap();
     assert!(!summary(view).awaiting_approval);
     let responses: Vec<_> = f
         .calls()
@@ -286,7 +292,9 @@ async fn canonical_checkout_lease_and_confirmed_interrupt() {
         matches!(t.turns[0].execution, Execution::Interrupted)
     })
     .await;
-    let completed = interrupted.turns[0].completed_at_ms.expect("completed_at recorded");
+    let completed = interrupted.turns[0]
+        .completed_at_ms
+        .expect("completed_at recorded");
     assert!(completed >= started);
     app.submit(b.id.clone(), "free".into(), "hello".into())
         .await
@@ -456,4 +464,354 @@ async fn shutdown_terminates_same_group_tool_after_leader_exits() {
         0,
         "Same-group tool must not outlive runtime shutdown"
     );
+}
+
+#[tokio::test]
+async fn model_catalog_settings_and_protocol_modes() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let models = app.models().await.unwrap();
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.model.as_str())
+            .collect::<Vec<_>>(),
+        vec!["model-one", "model-two"]
+    );
+    assert_eq!(
+        f.calls()
+            .iter()
+            .filter(|call| call["method"] == "model/list")
+            .count(),
+        2
+    );
+    let modes = [
+        (
+            PermissionMode::ApprovalRequired,
+            "untrusted",
+            "user",
+            "read-only",
+            "readOnly",
+        ),
+        (
+            PermissionMode::AutoAcceptEdits,
+            "on-request",
+            "user",
+            "workspace-write",
+            "workspaceWrite",
+        ),
+        (
+            PermissionMode::Auto,
+            "on-request",
+            "auto_review",
+            "workspace-write",
+            "workspaceWrite",
+        ),
+        (
+            PermissionMode::FullAccess,
+            "never",
+            "user",
+            "danger-full-access",
+            "dangerFullAccess",
+        ),
+    ];
+    for (index, (mode, policy, reviewer, sandbox, turn_sandbox)) in modes.into_iter().enumerate() {
+        let thread = conversation(&app, &f).await;
+        let settings = SessionSettings {
+            model: Some("model-one".into()),
+            effort: Some("ultra".into()),
+            permission_mode: mode,
+        };
+        let saved = app
+            .update_settings(thread.id.clone(), settings.clone())
+            .await
+            .unwrap();
+        assert_eq!(saved.settings, settings);
+        assert!(saved.revision > thread.revision);
+        app.submit(thread.id.clone(), format!("mode-{index}"), "hello".into())
+            .await
+            .unwrap();
+        let done = wait(&app, &thread.id, |t| {
+            matches!(t.turns[0].execution, Execution::Completed)
+        })
+        .await;
+        assert_eq!(done.turns[0].settings, Some(settings));
+        let calls = f.calls();
+        let start = calls
+            .iter()
+            .rev()
+            .find(|call| call["method"] == "thread/start")
+            .unwrap();
+        let turn = calls
+            .iter()
+            .rev()
+            .find(|call| call["method"] == "turn/start")
+            .unwrap();
+        assert_eq!(start["params"]["model"], "model-one");
+        assert_eq!(start["params"]["approvalPolicy"], policy);
+        assert_eq!(start["params"]["approvalsReviewer"], reviewer);
+        assert_eq!(start["params"]["sandbox"], sandbox);
+        assert_eq!(turn["params"]["model"], "model-one");
+        assert_eq!(turn["params"]["effort"], "ultra");
+        assert_eq!(turn["params"]["approvalPolicy"], policy);
+        assert_eq!(turn["params"]["approvalsReviewer"], reviewer);
+        assert_eq!(turn["params"]["sandboxPolicy"]["type"], turn_sandbox);
+    }
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn settings_persist_reset_defaults_and_reject_busy_or_invalid_choices() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    app.models().await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let id = thread.id.clone();
+    let selected = SessionSettings {
+        model: Some("model-one".into()),
+        effort: Some("ultra".into()),
+        permission_mode: PermissionMode::Auto,
+    };
+    app.update_settings(id.clone(), selected).await.unwrap();
+    assert_eq!(
+        app.update_settings(
+            id.clone(),
+            SessionSettings {
+                model: Some("missing".into()),
+                ..Default::default()
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "invalid_model"
+    );
+    assert_eq!(
+        app.update_settings(
+            id.clone(),
+            SessionSettings {
+                model: Some("model-two".into()),
+                effort: Some("ultra".into()),
+                ..Default::default()
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "invalid_effort"
+    );
+    app.submit(id.clone(), "hold-one".into(), "hold".into())
+        .await
+        .unwrap();
+    wait(&app, &id, |t| matches!(t.session, SessionState::Running)).await;
+    assert_eq!(
+        app.update_settings(id.clone(), SessionSettings::default())
+            .await
+            .unwrap_err()
+            .code,
+        "busy"
+    );
+    app.interrupt(id.clone()).await.unwrap();
+    wait(&app, &id, |t| {
+        matches!(t.turns[0].execution, Execution::Interrupted)
+    })
+    .await;
+    app.update_settings(id.clone(), SessionSettings::default())
+        .await
+        .unwrap();
+    app.submit(id.clone(), "reset".into(), "hello".into())
+        .await
+        .unwrap();
+    wait(&app, &id, |t| {
+        t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
+    })
+    .await;
+    let turn = f
+        .calls()
+        .into_iter()
+        .rev()
+        .find(|call| call["method"] == "turn/start")
+        .unwrap();
+    assert_eq!(turn["params"]["model"], "model-one");
+    assert_eq!(turn["params"]["effort"], "low");
+    assert_eq!(turn["params"]["approvalsReviewer"], "user");
+    app.shutdown().await.unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let restored = app.thread(id.clone()).await.unwrap();
+    assert_eq!(restored.settings, SessionSettings::default());
+    assert_eq!(
+        restored.turns[0]
+            .settings
+            .as_ref()
+            .unwrap()
+            .effort
+            .as_deref(),
+        Some("ultra")
+    );
+    assert_eq!(restored.turns[1].settings, Some(SessionSettings::default()));
+    app.models().await.unwrap();
+    app.open_thread(id.clone()).await.unwrap();
+    wait(&app, &id, |t| matches!(t.session, SessionState::Ready)).await;
+    let resume = f
+        .calls()
+        .into_iter()
+        .rev()
+        .find(|call| call["method"] == "thread/resume")
+        .unwrap();
+    assert_eq!(resume["params"]["model"], "model-one");
+    assert_eq!(resume["params"]["sandbox"], "read-only");
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn model_catalog_failure_can_retry_and_default_drafts_still_send() {
+    let f = Fixture::new();
+    std::fs::write(f.peer.parent().unwrap().join("models_error"), "").unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    assert_eq!(app.models().await.unwrap_err().code, "provider");
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "default".into(), "hello".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    app.submit(thread.id.clone(), "default-followup".into(), "hello".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
+    })
+    .await;
+    std::fs::remove_file(f.peer.parent().unwrap().join("models_error")).unwrap();
+    assert_eq!(app.models().await.unwrap().len(), 2);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn catalog_refresh_failure_preserves_effort_reset() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    app.models().await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.update_settings(
+        thread.id.clone(),
+        SessionSettings {
+            model: Some("model-one".into()),
+            effort: Some("ultra".into()),
+            permission_mode: PermissionMode::ApprovalRequired,
+        },
+    )
+    .await
+    .unwrap();
+    app.submit(thread.id.clone(), "ultra".into(), "hello".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    app.update_settings(thread.id.clone(), SessionSettings::default())
+        .await
+        .unwrap();
+    std::fs::write(f.peer.parent().unwrap().join("models_error"), "").unwrap();
+    assert_eq!(app.models().await.unwrap_err().code, "provider");
+    app.submit(thread.id.clone(), "reset".into(), "hello".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
+    })
+    .await;
+    let calls = f.calls();
+    let turn = calls
+        .iter()
+        .rev()
+        .find(|call| call["method"] == "turn/start")
+        .unwrap();
+    assert_eq!(turn["params"]["model"], "model-one");
+    assert_eq!(turn["params"]["effort"], "low");
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn refreshed_catalog_rejects_removed_saved_model_before_acceptance() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    app.models().await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.update_settings(
+        thread.id.clone(),
+        SessionSettings {
+            model: Some("model-one".into()),
+            effort: Some("ultra".into()),
+            permission_mode: PermissionMode::ApprovalRequired,
+        },
+    )
+    .await
+    .unwrap();
+    std::fs::write(f.peer.parent().unwrap().join("models_removed"), "").unwrap();
+    assert!(app.models().await.unwrap().is_empty());
+    let error = app
+        .submit(thread.id.clone(), "removed".into(), "hello".into())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "invalid_model");
+    assert!(app.thread(thread.id).await.unwrap().turns.is_empty());
+    assert!(!f.calls().iter().any(|call| call["method"] == "turn/start"));
+    app.shutdown().await.unwrap();
+}
+#[test]
+fn legacy_snapshots_default_settings() {
+    let thread = ThreadSnapshot {
+        id: ThreadId::default(),
+        workspace_id: WorkspaceId::default(),
+        title: "Legacy".into(),
+        native_thread_id: None,
+        revision: 1,
+        session: SessionState::Draft,
+        settings: SessionSettings::default(),
+        turns: vec![Turn {
+            id: TurnId::default(),
+            prompt: "hello".into(),
+            native_turn_id: None,
+            delivery: Delivery::Accepted,
+            execution: Execution::Completed,
+            items: vec![],
+            settings: None,
+            started_at_ms: None,
+            completed_at_ms: None,
+        }],
+        approvals: vec![],
+        diagnostic: None,
+    };
+    let mut value = serde_json::to_value(thread).unwrap();
+    value.as_object_mut().unwrap().remove("settings");
+    value["turns"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("settings");
+    let restored: ThreadSnapshot = serde_json::from_value(value).unwrap();
+    assert_eq!(restored.settings, SessionSettings::default());
+    assert!(restored.turns[0].settings.is_none());
+}
+#[tokio::test]
+async fn provider_loss_invalidates_catalog_and_reloads_on_request() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    app.models().await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "loss".into(), "lose".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.session, SessionState::Unavailable { .. })
+    })
+    .await;
+    assert_eq!(app.models().await.unwrap().len(), 2);
+    assert_eq!(
+        f.calls()
+            .iter()
+            .filter(|call| call["method"] == "model/list")
+            .count(),
+        4
+    );
+    app.shutdown().await.unwrap();
 }

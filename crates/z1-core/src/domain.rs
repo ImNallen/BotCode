@@ -148,6 +148,55 @@ impl Item {
         }
     }
 }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionMode {
+    #[default]
+    ApprovalRequired,
+    AutoAcceptEdits,
+    Auto,
+    FullAccess,
+}
+impl PermissionMode {
+    pub fn protocol(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::ApprovalRequired => ("untrusted", "user", "read-only"),
+            Self::AutoAcceptEdits => ("on-request", "user", "workspace-write"),
+            Self::Auto => ("on-request", "auto_review", "workspace-write"),
+            Self::FullAccess => ("never", "user", "danger-full-access"),
+        }
+    }
+    pub fn sandbox_policy(self) -> serde_json::Value {
+        match self {
+            Self::ApprovalRequired => serde_json::json!({"type":"readOnly"}),
+            Self::AutoAcceptEdits | Self::Auto => serde_json::json!({"type":"workspaceWrite"}),
+            Self::FullAccess => serde_json::json!({"type":"dangerFullAccess"}),
+        }
+    }
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSettings {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: PermissionMode,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningEffortOption {
+    pub reasoning_effort: String,
+    pub description: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    pub model: String,
+    pub display_name: String,
+    pub description: String,
+    pub is_default: bool,
+    pub default_reasoning_effort: String,
+    pub supported_reasoning_efforts: Vec<ReasoningEffortOption>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Turn {
@@ -157,6 +206,8 @@ pub struct Turn {
     pub delivery: Delivery,
     pub execution: Execution,
     pub items: Vec<Item>,
+    #[serde(default)]
+    pub settings: Option<SessionSettings>,
     #[serde(default)]
     pub started_at_ms: Option<u64>,
     #[serde(default)]
@@ -213,6 +264,8 @@ pub struct ThreadSnapshot {
     pub native_thread_id: Option<String>,
     pub revision: u64,
     pub session: SessionState,
+    #[serde(default)]
+    pub settings: SessionSettings,
     pub turns: Vec<Turn>,
     pub approvals: Vec<Approval>,
     pub diagnostic: Option<String>,

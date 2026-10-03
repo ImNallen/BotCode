@@ -41,6 +41,8 @@ enum Command {
     Threads(WorkspaceId, Reply<Vec<ThreadSummary>>),
     Create(WorkspaceId, Reply<ThreadSnapshot>),
     Snapshot(ThreadId, bool, Reply<ThreadSnapshot>),
+    Models(Reply<Vec<ModelOption>>),
+    Settings(ThreadId, SessionSettings, Reply<ThreadSnapshot>),
     Submit(ThreadId, String, String, Reply<Receipt>),
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
@@ -112,6 +114,9 @@ impl App {
                 epoch: 0,
                 launching: false,
                 pending: vec![],
+                models: None,
+                model_waiters: vec![],
+                listing_models: false,
                 dirty: HashSet::new(),
                 changes: changes.clone(),
                 provider_events,
@@ -178,6 +183,16 @@ impl App {
     pub async fn open_thread(&self, id: ThreadId) -> Result<ThreadSnapshot> {
         self.call(|r| Command::Snapshot(id, true, r)).await
     }
+    pub async fn models(&self) -> Result<Vec<ModelOption>> {
+        self.call(Command::Models).await
+    }
+    pub async fn update_settings(
+        &self,
+        id: ThreadId,
+        settings: SessionSettings,
+    ) -> Result<ThreadSnapshot> {
+        self.call(|r| Command::Settings(id, settings, r)).await
+    }
     pub async fn submit(&self, id: ThreadId, request_id: String, text: String) -> Result<Receipt> {
         self.call(|r| Command::Submit(id, request_id, text, r))
             .await
@@ -205,6 +220,10 @@ impl Prepare {
     }
 }
 enum Completion {
+    Models {
+        epoch: u64,
+        result: Result<Vec<ModelOption>>,
+    },
     Launched {
         epoch: u64,
         result: Result<Codex>,
@@ -249,6 +268,9 @@ struct Owner {
     epoch: u64,
     launching: bool,
     pending: Vec<Prepare>,
+    models: Option<Vec<ModelOption>>,
+    model_waiters: Vec<Reply<Vec<ModelOption>>>,
+    listing_models: bool,
     dirty: HashSet<ThreadId>,
     changes: broadcast::Sender<ChangeHint>,
     provider_events: mpsc::Sender<Signal>,
@@ -390,6 +412,7 @@ impl Owner {
                         native_thread_id: None,
                         revision: 1,
                         session: SessionState::Draft,
+                        settings: SessionSettings::default(),
                         turns: vec![],
                         approvals: vec![],
                         diagnostic: None,
@@ -419,6 +442,46 @@ impl Owner {
                 } else {
                     self.thread(&id).cloned()
                 };
+                let _ = reply.send(result);
+            }
+            Command::Models(reply) => {
+                self.model_waiters.push(reply);
+                if self.provider.is_none() {
+                    self.launch();
+                } else {
+                    self.list_models();
+                }
+            }
+            Command::Settings(id, settings, reply) => {
+                let result = (|| -> Result<ThreadSnapshot> {
+                    let thread = self.thread(&id)?;
+                    if matches!(
+                        thread.session,
+                        SessionState::Connecting
+                            | SessionState::Running
+                            | SessionState::Interrupting
+                    ) || self.leases.contains_key(&thread.workspace_id)
+                    {
+                        return Err(AppError::new(
+                            "busy",
+                            "Wait for the current operation to finish.",
+                        ));
+                    }
+                    if self.models.is_none()
+                        && (thread.settings.model != settings.model
+                            || thread.settings.effort != settings.effort)
+                    {
+                        return Err(AppError::new(
+                            "models_unavailable",
+                            "Load the model list before changing model or effort.",
+                        ));
+                    }
+                    self.validate_settings(&settings)?;
+                    let mut next = thread.clone();
+                    next.settings = settings;
+                    self.install(next)?;
+                    self.thread(&id).cloned()
+                })();
                 let _ = reply.send(result);
             }
             Command::Submit(id, request_id, text, reply) => {
@@ -563,6 +626,24 @@ impl Owner {
                 "Wait for the current operation to finish.",
             ));
         }
+        let previous_overrides = thread.turns.iter().any(|turn| {
+            turn.settings
+                .as_ref()
+                .is_some_and(|settings| settings.model.is_some() || settings.effort.is_some())
+        });
+        if self.models.is_some() {
+            self.validate_settings(&thread.settings)?;
+        }
+        if thread.native_thread_id.is_some()
+            && previous_overrides
+            && (self.resolve_model(&thread.settings).is_none()
+                || self.resolve_effort(&thread.settings).is_none())
+        {
+            return Err(AppError::new(
+                "models_unavailable",
+                "Load the model list before continuing this conversation.",
+            ));
+        }
         if self.leases.contains_key(&thread.workspace_id) {
             return Err(AppError::new(
                 "checkout_busy",
@@ -577,6 +658,7 @@ impl Owner {
             delivery: Delivery::Preparing,
             execution: Execution::NotStarted,
             items: vec![],
+            settings: Some(t.settings.clone()),
             started_at_ms: Some(now_ms()),
             completed_at_ms: None,
         };
@@ -596,30 +678,137 @@ impl Owner {
         self.threads.insert(t.id.clone(), t);
         Ok((receipt, true))
     }
+    fn validate_settings(&self, settings: &SessionSettings) -> Result<()> {
+        for value in [&settings.model, &settings.effort].into_iter().flatten() {
+            if value.trim().is_empty() || value.len() > 128 {
+                return Err(AppError::new(
+                    "invalid_settings",
+                    "Model and effort must be nonempty and under 129 bytes.",
+                ));
+            }
+        }
+        if settings.model.is_some() || settings.effort.is_some() {
+            let models = self.models.as_ref().ok_or_else(|| {
+                AppError::new(
+                    "models_unavailable",
+                    "Load the model list before choosing a model or effort.",
+                )
+            })?;
+            let model = models
+                .iter()
+                .find(|item| Some(&item.model) == settings.model.as_ref())
+                .or_else(|| {
+                    if settings.model.is_none() {
+                        models.iter().find(|item| item.is_default)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| AppError::new("invalid_model", "Selected model is unavailable."))?;
+            if let Some(effort) = &settings.effort {
+                if !model
+                    .supported_reasoning_efforts
+                    .iter()
+                    .any(|item| &item.reasoning_effort == effort)
+                {
+                    return Err(AppError::new(
+                        "invalid_effort",
+                        "Selected effort is unavailable for this model.",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    fn resolve_model<'a>(&'a self, settings: &'a SessionSettings) -> Option<&'a str> {
+        settings.model.as_deref().or_else(|| {
+            self.models
+                .as_ref()?
+                .iter()
+                .find(|model| model.is_default)
+                .map(|model| model.model.as_str())
+        })
+    }
+    fn resolve_effort<'a>(&'a self, settings: &'a SessionSettings) -> Option<&'a str> {
+        settings.effort.as_deref().or_else(|| {
+            let model = self.resolve_model(settings)?;
+            self.models
+                .as_ref()?
+                .iter()
+                .find(|option| option.model == model)
+                .map(|option| option.default_reasoning_effort.as_str())
+        })
+    }
+    fn launch(&mut self) {
+        if self.launching || self.provider.is_some() {
+            return;
+        }
+        self.launching = true;
+        self.epoch += 1;
+        let epoch = self.epoch;
+        let binary = self.config.codex_binary.clone();
+        let signals = self.provider_events.clone();
+        let done = self.done.clone();
+        tokio::spawn(async move {
+            let result = match Codex::launch(binary, epoch, signals).await {
+                Ok(provider) => match provider.initialize().await {
+                    Ok(()) => Ok(provider),
+                    Err(e) => {
+                        let _ = provider.terminate().await;
+                        Err(e)
+                    }
+                },
+                Err(e) => Err(e),
+            };
+            let _ = done.send(Completion::Launched { epoch, result }).await;
+        });
+    }
+    fn list_models(&mut self) {
+        if self.listing_models || self.model_waiters.is_empty() {
+            return;
+        }
+        let Some(provider) = self.provider.clone() else {
+            return;
+        };
+        self.listing_models = true;
+        let epoch = self.epoch;
+        let done = self.done.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let mut models = Vec::new();
+                let mut cursor: Option<String> = None;
+                let mut seen = HashSet::new();
+                loop {
+                    let value = provider
+                        .request("model/list", json!({"cursor":cursor,"includeHidden":false}))
+                        .await?;
+                    let page: ModelPage = serde_json::from_value(value)?;
+                    models.extend(
+                        page.data
+                            .into_iter()
+                            .filter(|model| !model.hidden)
+                            .map(|model| model.option),
+                    );
+                    match page.next_cursor {
+                        Some(next) if seen.insert(next.clone()) => cursor = Some(next),
+                        Some(_) => {
+                            return Err(AppError::new(
+                                "protocol",
+                                "Codex repeated a model cursor.",
+                            ));
+                        }
+                        None => return Ok(models),
+                    }
+                }
+            }
+            .await;
+            let _ = done.send(Completion::Models { epoch, result }).await;
+        });
+    }
     fn prepare(&mut self, job: Prepare) {
         if self.provider.is_none() {
             self.pending.push(job);
-            if !self.launching {
-                self.launching = true;
-                self.epoch += 1;
-                let epoch = self.epoch;
-                let binary = self.config.codex_binary.clone();
-                let signals = self.provider_events.clone();
-                let done = self.done.clone();
-                tokio::spawn(async move {
-                    let result = match Codex::launch(binary, epoch, signals).await {
-                        Ok(provider) => match provider.initialize().await {
-                            Ok(()) => Ok(provider),
-                            Err(e) => {
-                                let _ = provider.terminate().await;
-                                Err(e)
-                            }
-                        },
-                        Err(e) => Err(e),
-                    };
-                    let _ = done.send(Completion::Launched { epoch, result }).await;
-                });
-            }
+            self.launch();
             return;
         }
         let t = match self.thread(job.thread()) {
@@ -629,24 +818,39 @@ impl Owner {
         let root = self.workspaces[&t.workspace_id].root.clone();
         let native = t.native_thread_id.clone();
         let provider = self.provider.clone().unwrap();
+        let settings = t.settings.clone();
+        let (approval_policy, approvals_reviewer, sandbox) = settings.permission_mode.protocol();
+        let model = self.resolve_model(&settings).map(str::to_owned);
         let done = self.done.clone();
         let epoch = self.epoch;
         tokio::spawn(async move {
             let result = if let Some(native) = native {
-                provider.request("thread/resume",json!({"threadId":native,"cwd":root,"approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":"workspace-write","excludeTurns":false})).await
+                provider.request("thread/resume",json!({"threadId":native,"cwd":root,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandbox":sandbox,"model":model,"excludeTurns":false})).await
             } else {
-                provider.request("thread/start",json!({"cwd":root,"approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":"workspace-write","ephemeral":false})).await
+                provider.request("thread/start",json!({"cwd":root,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandbox":sandbox,"model":model,"ephemeral":false})).await
             };
             let _ = done.send(Completion::Prepared { epoch, job, result }).await;
         });
     }
     async fn complete(&mut self, done: Completion) -> Result<()> {
         match done {
+            Completion::Models { epoch, result } if epoch == self.epoch => {
+                self.listing_models = false;
+                if let Ok(models) = &result {
+                    self.models = Some(models.clone());
+                }
+                for reply in std::mem::take(&mut self.model_waiters) {
+                    let _ = reply.send(result.clone());
+                }
+            }
             Completion::Launched { epoch, result } if epoch == self.epoch => {
                 self.launching = false;
                 match result {
                     Ok(provider) => {
                         self.provider = Some(provider);
+                        if !self.model_waiters.is_empty() {
+                            self.list_models();
+                        }
                         for job in std::mem::take(&mut self.pending) {
                             self.prepare(job)
                         }
@@ -683,13 +887,19 @@ impl Owner {
                                 .ok_or_else(|| AppError::new("missing_turn", "Turn not found."))?;
                             turn.delivery = Delivery::Sending;
                             let prompt = turn.prompt.clone();
+                            let settings = turn.settings.clone().unwrap_or_default();
+                            let (approval_policy, approvals_reviewer, _) =
+                                settings.permission_mode.protocol();
+                            let sandbox_policy = settings.permission_mode.sandbox_policy();
+                            let model = self.resolve_model(&settings).map(str::to_owned);
+                            let effort = self.resolve_effort(&settings).map(str::to_owned);
                             self.commit(&id)?;
                             let provider = self.provider.clone().ok_or_else(|| {
                                 AppError::new("provider_lost", "Codex is unavailable.")
                             })?;
                             let done = self.done.clone();
                             tokio::spawn(async move {
-                                let result=provider.request("turn/start",json!({"threadId":native,"clientUserMessageId":turn_id.to_string(),"input":[{"type":"text","text":prompt,"text_elements":[]}]})).await;
+                                let result=provider.request("turn/start",json!({"threadId":native,"clientUserMessageId":turn_id.to_string(),"input":[{"type":"text","text":prompt,"text_elements":[]}],"model":model,"effort":effort,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandboxPolicy":sandbox_policy})).await;
                                 let _ = done
                                     .send(Completion::Started {
                                         epoch,
@@ -809,6 +1019,11 @@ impl Owner {
         self.epoch += 1;
         self.launching = false;
         self.pending.clear();
+        self.models = None;
+        self.listing_models = false;
+        for reply in std::mem::take(&mut self.model_waiters) {
+            let _ = reply.send(Err(AppError::new("provider_lost", reason)));
+        }
         self.routes.clear();
         self.leases.clear();
         let ids: Vec<_> = self.threads.keys().cloned().collect();
@@ -1120,7 +1335,12 @@ fn normalize_item(v: &Value, complete: bool) -> Option<Item> {
             paths: v
                 .get("changes")
                 .and_then(Value::as_array)
-                .map(|changes| changes.iter().map(|change| string(change, "path")).collect())
+                .map(|changes| {
+                    changes
+                        .iter()
+                        .map(|change| string(change, "path"))
+                        .collect()
+                })
                 .unwrap_or_default(),
         },
         "reasoning" => Item::Other {
@@ -1190,4 +1410,17 @@ fn merge_history(thread: &mut ThreadSnapshot, value: Option<&Value>) {
     {
         thread.diagnostic=Some("Some previous execution could not be confirmed from the returned native history. No prompt was replayed.".into());
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelPage {
+    data: Vec<ModelRow>,
+    next_cursor: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct ModelRow {
+    #[serde(flatten)]
+    option: ModelOption,
+    hidden: bool,
 }

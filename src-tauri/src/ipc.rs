@@ -68,3 +68,16 @@ pub async fn answer_approval(
 pub async fn interrupt(app: State<'_, App>, thread_id: ThreadId) -> Result<()> {
     app.interrupt(thread_id).await
 }
+
+#[tauri::command]
+pub async fn list_models(app: State<'_, App>) -> Result<Vec<ModelOption>> {
+    app.models().await
+}
+#[tauri::command]
+pub async fn update_thread_settings(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    settings: SessionSettings,
+) -> Result<ThreadSnapshot> {
+    app.update_settings(thread_id, settings).await
+}

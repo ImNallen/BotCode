@@ -35,6 +35,8 @@ fn main() {
             ipc::thread_snapshot,
             ipc::open_thread,
             ipc::submit,
+            ipc::list_models,
+            ipc::update_thread_settings,
             ipc::answer_approval,
             ipc::interrupt
         ])
