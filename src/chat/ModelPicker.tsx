@@ -223,10 +223,10 @@ export function ModelPicker({
               ) : null}
             </div>
           </div>
-          {!loading ? (
+          {!loading && error ? (
             <div className="shrink-0 border-t border-border/70 p-2">
               <MenuItem role="button" disabled={disabled} onClick={onRetry}>
-                {error ? "Retry" : "Reload models"}
+                Retry
               </MenuItem>
             </div>
           ) : null}
