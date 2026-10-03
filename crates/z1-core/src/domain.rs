@@ -129,6 +129,8 @@ pub enum Item {
         id: String,
         text: String,
         status: String,
+        #[serde(default)]
+        paths: Vec<String>,
     },
     Other {
         id: String,
@@ -155,6 +157,15 @@ pub struct Turn {
     pub delivery: Delivery,
     pub execution: Execution,
     pub items: Vec<Item>,
+    #[serde(default)]
+    pub started_at_ms: Option<u64>,
+    #[serde(default)]
+    pub completed_at_ms: Option<u64>,
+}
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -206,12 +217,40 @@ pub struct ThreadSnapshot {
     pub approvals: Vec<Approval>,
     pub diagnostic: Option<String>,
 }
+impl ThreadSnapshot {
+    pub fn stamp_completions(&mut self) {
+        let now = now_ms();
+        for turn in &mut self.turns {
+            let finished = match turn.execution {
+                Execution::Completed | Execution::Interrupted | Execution::Failed { .. } => true,
+                Execution::NotStarted | Execution::Running | Execution::Lost { .. } => false,
+            };
+            if finished && turn.completed_at_ms.is_none() {
+                turn.completed_at_ms = Some(now);
+            }
+        }
+    }
+    pub fn summary(&self) -> ThreadSummary {
+        ThreadSummary {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            session: self.session.clone(),
+            updated_at_ms: self.turns.iter().rev().find_map(|turn| turn.started_at_ms),
+            awaiting_approval: self
+                .approvals
+                .iter()
+                .any(|approval| approval.state == ApprovalState::Pending),
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSummary {
     pub id: ThreadId,
     pub title: String,
     pub session: SessionState,
+    pub updated_at_ms: Option<u64>,
+    pub awaiting_approval: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -225,6 +264,7 @@ pub struct ChangeHint {
     pub workspace_id: WorkspaceId,
     pub revision: u64,
     pub refresh_workspace: bool,
+    pub summary: ThreadSummary,
 }
 impl From<&ThreadSnapshot> for ChangeHint {
     fn from(thread: &ThreadSnapshot) -> Self {
@@ -232,6 +272,7 @@ impl From<&ThreadSnapshot> for ChangeHint {
             thread_id: thread.id.clone(),
             workspace_id: thread.workspace_id.clone(),
             revision: thread.revision,
+            summary: thread.summary(),
             refresh_workspace: matches!(
                 thread.session,
                 SessionState::Ready | SessionState::Unavailable { .. }

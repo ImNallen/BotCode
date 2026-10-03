@@ -265,6 +265,7 @@ impl Owner {
             .threads
             .get_mut(id)
             .ok_or_else(|| AppError::new("missing_thread", "Conversation not found."))?;
+        t.stamp_completions();
         t.revision += 1;
         self.store.save(t)?;
         self.dirty.remove(id);
@@ -272,6 +273,7 @@ impl Owner {
         Ok(())
     }
     fn install(&mut self, mut next: ThreadSnapshot) -> Result<()> {
+        next.stamp_completions();
         next.revision += 1;
         self.store.save(&next)?;
         let hint = ChangeHint::from(&next);
@@ -372,11 +374,7 @@ impl Owner {
                     .threads
                     .values()
                     .filter(|t| t.workspace_id == id)
-                    .map(|t| ThreadSummary {
-                        id: t.id.clone(),
-                        title: t.title.clone(),
-                        session: t.session.clone(),
-                    })
+                    .map(ThreadSnapshot::summary)
                     .collect();
                 let _ = reply.send(Ok(rows));
             }
@@ -579,6 +577,8 @@ impl Owner {
             delivery: Delivery::Preparing,
             execution: Execution::NotStarted,
             items: vec![],
+            started_at_ms: Some(now_ms()),
+            completed_at_ms: None,
         };
         let receipt = Receipt {
             turn_id: turn.id.clone(),
@@ -1117,6 +1117,11 @@ fn normalize_item(v: &Value, complete: bool) -> Option<Item> {
                 })
                 .unwrap_or_default(),
             status: string(v, "status"),
+            paths: v
+                .get("changes")
+                .and_then(Value::as_array)
+                .map(|changes| changes.iter().map(|change| string(change, "path")).collect())
+                .unwrap_or_default(),
         },
         "reasoning" => Item::Other {
             id,

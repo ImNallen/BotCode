@@ -11,7 +11,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-Open a Git repository and start a conversation. Use Files or Changes in the header to inspect the working copy in the right panel. Approvals offer Allow once, Decline, or Cancel turn. Send with Command+Enter. Stop is available after Codex acknowledges the running turn.
+Open a Git repository and start a conversation. Send with Enter. Shift+Enter adds a line. The right-panel toggle in the header opens Files and Diff tabs for the working copy. Approvals offer Approve, Decline, or Cancel turn. Stop is available after Codex acknowledges the running turn.
 
 The browser build explains that the native runtime is required. It does not simulate repositories or conversations.
 
