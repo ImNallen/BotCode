@@ -1,13 +1,23 @@
 // Structure and classes follow pingdotgg/t3code v0.0.45 components/chat/ChatComposer.tsx,
 // ComposerControl.tsx, ComposerPrimaryActions.tsx and BranchToolbar.tsx (MIT).
 import { useLayoutEffect, useRef, type ReactNode } from "react";
-import { FolderIcon, GitBranchIcon, LockIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  FolderIcon,
+  GitBranchIcon,
+  LockIcon,
+  LockOpenIcon,
+  PenLineIcon,
+  SparklesIcon,
+} from "lucide-react";
+import { Menu, MenuItem } from "../ui/menu";
+import type { ModelOption, SessionSettings } from "../ipc";
 import { cn } from "../lib/cn";
 import { OpenAI } from "../ui/icons";
 import { ComposerSurface } from "./ComposerSurface";
 
 const composerControl =
-  "relative inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-(--control-radius) border border-transparent text-base outline-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:-mx-0.5 [&_svg[data-composer-control-icon]]:mx-0 h-7 gap-1.5 px-2.5 font-medium text-secondary-label [&_svg:not([class*='text-'])]:text-muted-foreground sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4";
+  "relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap rounded-(--control-radius) border border-transparent text-base outline-none hover:bg-accent data-pressed:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 data-disabled:pointer-events-none data-disabled:opacity-64 pointer-coarse:after:absolute pointer-coarse:after:size-full pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 [&:active:not([aria-haspopup])]:scale-[0.97] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:-mx-0.5 [&_svg[data-composer-control-icon]]:mx-0 h-7 gap-1.5 px-2.5 font-medium text-secondary-label [&_svg:not([class*='text-'])]:text-muted-foreground hover:text-foreground sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 aria-pressed:bg-accent aria-pressed:text-accent-foreground aria-pressed:hover:bg-accent/80";
 
 const contextControl =
   "inline-flex h-7 min-w-0 items-center gap-1 border border-transparent px-1.75 font-normal text-muted-foreground/70 text-xs sm:h-6";
@@ -26,6 +36,13 @@ export function Composer({
   disabled,
   branch,
   autoFocus,
+  settings,
+  models,
+  modelsLoading,
+  modelsError,
+  onRetryModels,
+  onSettingsChange,
+  settingsDisabled,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -40,6 +57,13 @@ export function Composer({
   disabled: boolean;
   branch: string | undefined;
   autoFocus?: boolean;
+  settings: SessionSettings;
+  models: ModelOption[];
+  modelsLoading: boolean;
+  modelsError?: string;
+  onRetryModels: () => void;
+  onSettingsChange: (settings: SessionSettings) => void;
+  settingsDisabled: boolean;
 }) {
   const editor = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
@@ -49,6 +73,49 @@ export function Composer({
     element.style.height = `${element.scrollHeight}px`;
   }, [value, approval]);
   const approvalState = approval !== null;
+  const selectedModel = settings.model
+    ? models.find((model) => model.model === settings.model)
+    : models.find((model) => model.isDefault);
+  const effort = settings.effort ?? selectedModel?.defaultReasoningEffort;
+  const effortLabel = (value: string) =>
+    ({
+      low: "Low",
+      medium: "Medium",
+      high: "High",
+      xhigh: "Extra high",
+      max: "Max",
+      ultra: "Ultra",
+    })[value] ?? value;
+  const modes = [
+    {
+      value: "approval-required",
+      label: "Supervised",
+      description: "Ask before commands and file changes.",
+      icon: LockIcon,
+    },
+    {
+      value: "auto-accept-edits",
+      label: "Auto-accept edits",
+      description: "Auto-approve edits, ask before other actions.",
+      icon: PenLineIcon,
+    },
+    {
+      value: "auto",
+      label: "Auto",
+      description:
+        "Supported providers approve routine actions; others still ask.",
+      icon: SparklesIcon,
+    },
+    {
+      value: "full-access",
+      label: "Full access",
+      description: "Allow commands and edits without prompts.",
+      icon: LockOpenIcon,
+    },
+  ] as const;
+  const selectedMode =
+    modes.find((mode) => mode.value === settings.permissionMode) ?? modes[0];
+  const RuntimeIcon = selectedMode.icon;
   return (
     <ComposerSurface.Shell contextStrip>
       <ComposerSurface.Host>
@@ -117,35 +184,204 @@ export function Composer({
                         data-chat-composer-controls="left"
                         className="relative -m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                       >
-                        <span
-                          className={cn(
-                            composerControl,
-                            "-ms-2.5 min-w-13 min-w-0 shrink justify-between",
+                        <Menu
+                          side="top"
+                          trigger={(props) => (
+                            <button
+                              type="button"
+                              ref={props.ref}
+                              onClick={props.onClick}
+                              aria-haspopup={props["aria-haspopup"]}
+                              aria-expanded={props["aria-expanded"]}
+                              disabled={settingsDisabled}
+                              aria-label={`Model: ${selectedModel?.displayName ?? settings.model ?? "Codex default"}`}
+                              className={cn(
+                                composerControl,
+                                "-ms-2.5 min-w-0 shrink",
+                              )}
+                            >
+                              <OpenAI className="size-4" />
+                              <span className="max-w-36 truncate">
+                                {selectedModel?.displayName ??
+                                  settings.model ??
+                                  "Codex default"}
+                              </span>
+                              <ChevronDownIcon className="size-3.5 text-icon-muted" />
+                            </button>
                           )}
                         >
-                          <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                            <OpenAI className="size-4" />
-                            <span className="min-w-0 flex-1 overflow-hidden truncate">
-                              Codex
-                            </span>
-                          </span>
-                        </span>
+                          {modelsLoading ? (
+                            <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                              Loading models…
+                            </div>
+                          ) : null}
+                          {settings.model &&
+                          !selectedModel &&
+                          !modelsLoading &&
+                          !modelsError ? (
+                            <div className="px-2 py-1.5 text-sm text-error-foreground">
+                              Selected model is unavailable. Choose another
+                              model.
+                            </div>
+                          ) : null}
+                          {modelsError ? (
+                            <div className="px-2 py-1.5 text-sm text-error-foreground">
+                              {modelsError}
+                            </div>
+                          ) : null}
+                          {modelsError ? (
+                            <MenuItem onClick={onRetryModels}>Retry</MenuItem>
+                          ) : null}
+                          {!modelsLoading && !models.length ? (
+                            <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                              Use Codex default
+                            </div>
+                          ) : null}
+                          {!modelsLoading && !modelsError ? (
+                            <MenuItem onClick={onRetryModels}>
+                              Reload models
+                            </MenuItem>
+                          ) : null}
+                          {models.map((model) => (
+                            <MenuItem
+                              key={model.model}
+                              disabled={settingsDisabled}
+                              title={model.description}
+                              role="menuitemradio"
+                              aria-checked={
+                                settings.model === model.model ||
+                                (settings.model === null && model.isDefault)
+                              }
+                              onClick={() =>
+                                onSettingsChange({
+                                  ...settings,
+                                  model: model.isDefault ? null : model.model,
+                                  effort:
+                                    settings.effort &&
+                                    model.supportedReasoningEfforts.some(
+                                      (option) =>
+                                        option.reasoningEffort ===
+                                        settings.effort,
+                                    )
+                                      ? settings.effort
+                                      : null,
+                                })
+                              }
+                            >
+                              <span className="flex-1 truncate">
+                                {model.displayName}
+                              </span>
+                              {settings.model === model.model ||
+                              (settings.model === null && model.isDefault) ? (
+                                <span aria-hidden="true">✓</span>
+                              ) : null}
+                            </MenuItem>
+                          ))}
+                        </Menu>
+                        <Menu
+                          side="top"
+                          trigger={(props) => (
+                            <button
+                              type="button"
+                              ref={props.ref}
+                              onClick={props.onClick}
+                              aria-haspopup={props["aria-haspopup"]}
+                              aria-expanded={props["aria-expanded"]}
+                              disabled={settingsDisabled || !selectedModel}
+                              aria-label={`Reasoning effort: ${effort ? effortLabel(effort) : "Unavailable"}`}
+                              className={composerControl}
+                            >
+                              <span className="capitalize">
+                                {effort ? effortLabel(effort) : "Effort"}
+                              </span>
+                              <ChevronDownIcon className="size-3.5 text-icon-muted" />
+                            </button>
+                          )}
+                        >
+                          {selectedModel?.supportedReasoningEfforts.map(
+                            (option) => (
+                              <MenuItem
+                                key={option.reasoningEffort}
+                                disabled={settingsDisabled}
+                                title={option.description}
+                                role="menuitemradio"
+                                aria-checked={effort === option.reasoningEffort}
+                                onClick={() =>
+                                  onSettingsChange({
+                                    ...settings,
+                                    effort:
+                                      option.reasoningEffort ===
+                                      selectedModel.defaultReasoningEffort
+                                        ? null
+                                        : option.reasoningEffort,
+                                  })
+                                }
+                              >
+                                <span className="flex-1 capitalize">
+                                  {effortLabel(option.reasoningEffort)}
+                                </span>
+                                {effort === option.reasoningEffort ? (
+                                  <span aria-hidden="true">✓</span>
+                                ) : null}
+                              </MenuItem>
+                            ),
+                          )}
+                        </Menu>
                         <div
                           role="separator"
                           aria-orientation="vertical"
                           className="shrink-0 bg-border w-px mx-0.5 hidden sm:block h-4"
                         />
-                        <span
-                          className={composerControl}
-                          title="Ask before commands and file changes."
+                        <Menu
+                          side="top"
+                          trigger={(props) => (
+                            <button
+                              type="button"
+                              ref={props.ref}
+                              onClick={props.onClick}
+                              aria-haspopup={props["aria-haspopup"]}
+                              aria-expanded={props["aria-expanded"]}
+                              disabled={settingsDisabled}
+                              title={selectedMode.description}
+                              aria-label={`Access mode: ${selectedMode.label}`}
+                              className={composerControl}
+                            >
+                              <RuntimeIcon
+                                aria-hidden="true"
+                                className="shrink-0 size-4"
+                                data-composer-control-icon
+                              />
+                              <span data-composer-control-label>
+                                {selectedMode.label}
+                              </span>
+                              <ChevronDownIcon className="size-3.5 text-icon-muted" />
+                            </button>
+                          )}
                         >
-                          <LockIcon
-                            aria-hidden="true"
-                            className="shrink-0 size-4"
-                            data-composer-control-icon
-                          />
-                          <span data-composer-control-label>Supervised</span>
-                        </span>
+                          {modes.map((mode) => (
+                            <MenuItem
+                              key={mode.value}
+                              disabled={settingsDisabled}
+                              title={mode.description}
+                              role="menuitemradio"
+                              aria-checked={
+                                settings.permissionMode === mode.value
+                              }
+                              onClick={() =>
+                                onSettingsChange({
+                                  ...settings,
+                                  permissionMode: mode.value,
+                                })
+                              }
+                            >
+                              <mode.icon className="size-4" />
+                              <span className="flex-1">{mode.label}</span>
+                              {settings.permissionMode === mode.value ? (
+                                <span aria-hidden="true">✓</span>
+                              ) : null}
+                            </MenuItem>
+                          ))}
+                        </Menu>
                       </div>
                       <div
                         data-chat-composer-actions="right"

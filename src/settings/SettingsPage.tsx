@@ -40,7 +40,7 @@ const categories = [
             id: "approval",
             title: "Approval mode",
             description:
-              "Supervised. Codex asks before running untrusted commands.",
+              "Choose Supervised, Auto-accept edits, Auto, or Full access in each conversation composer.",
           },
         ],
       },

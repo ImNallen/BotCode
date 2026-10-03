@@ -60,14 +60,19 @@ export function Menu({
   useLayoutEffect(() => {
     if (!open || !anchor.current) return;
     const rect = anchor.current.getBoundingClientRect();
+    const horizontal = Math.min(
+      Math.max(8, rect.left),
+      Math.max(8, window.innerWidth - 280),
+    );
     setPosition({
+      maxWidth: "calc(100vw - 16px)",
       ...(side === "bottom"
         ? { top: rect.bottom + sideOffset }
         : { bottom: window.innerHeight - rect.top + sideOffset }),
       ...(align === "start"
-        ? { left: rect.left }
+        ? { left: horizontal }
         : align === "end"
-          ? { right: window.innerWidth - rect.right }
+          ? { right: Math.max(8, window.innerWidth - rect.right) }
           : {
               left: rect.left + rect.width / 2,
               transform: "translateX(-50%)",
@@ -75,7 +80,12 @@ export function Menu({
     });
   }, [open, side, align, sideOffset]);
   useEffect(() => {
-    if (open && position) popup.current?.focus();
+    if (open && position) {
+      const first = popup.current?.querySelector<HTMLElement>(
+        '[role="menuitem"]:not([disabled]),[role="menuitemradio"]:not([disabled])',
+      );
+      (first ?? popup.current)?.focus();
+    }
   }, [open, position]);
   useEffect(() => {
     if (!open) return;
@@ -85,7 +95,12 @@ export function Menu({
         setOpenRef.current(false);
     };
     const escape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setOpenRef.current(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setOpenRef.current(false);
+        anchor.current?.focus();
+      }
     };
     document.addEventListener("pointerdown", dismiss);
     document.addEventListener("keydown", escape);
@@ -113,13 +128,46 @@ export function Menu({
               tabIndex={-1}
               data-slot="menu-popup"
               style={position}
-              onKeyDownCapture={onKeyDownCapture}
+              onKeyDownCapture={(event) => {
+                onKeyDownCapture?.(event);
+                if (event.defaultPrevented) return;
+                const items = Array.from(
+                  popup.current?.querySelectorAll<HTMLElement>(
+                    '[role="menuitem"]:not([disabled]),[role="menuitemradio"]:not([disabled])',
+                  ) ?? [],
+                );
+                if (!items.length) return;
+                const index = items.findIndex(
+                  (item) => item === document.activeElement,
+                );
+                let next: number;
+                switch (event.key) {
+                  case "ArrowDown":
+                    next = (index + 1) % items.length;
+                    break;
+                  case "ArrowUp":
+                    next = (index - 1 + items.length) % items.length;
+                    break;
+                  case "Home":
+                    next = 0;
+                    break;
+                  case "End":
+                    next = items.length - 1;
+                    break;
+                  default:
+                    return;
+                }
+                event.preventDefault();
+                items[next]?.focus();
+              }}
               onClick={(event) => {
                 const item = (event.target as Element).closest(
                   "[role=menuitem],[role=menuitemradio]",
                 );
-                if (item && !item.hasAttribute("data-keep-open"))
+                if (item && !item.hasAttribute("data-keep-open")) {
                   setOpen(false);
+                  anchor.current?.focus();
+                }
               }}
               className={cn(
                 "dropdown-glass fixed z-[130] flex rounded-lg shadow-[0_16px_40px_-18px_rgb(0_0_0/55%)] outline-none focus:outline-none dark:shadow-[0_18px_44px_-18px_rgb(0_0_0/80%)]",

@@ -84,3 +84,13 @@ The collaborative browser used a mocked Tauri boundary for additional checks. Dr
 System mode followed emulated dark and light changes. Out-of-range input reverted to the last valid value. Invalid stored fields fell back independently; malformed JSON showed defaults and a read error. A simulated storage write failure applied the change in memory, retained the old saved value, and showed a persistence error. Restore defaults cleared that error.
 
 Frontend typecheck, production build, formatting, whitespace checks, and the native debug bundle passed. Rust runtime behavior and IPC contracts did not change.
+
+## Model, effort, and access controls
+
+Verified on 2026-10-03 with Codex 0.160.0. All 20 core tests passed sequentially. Frontend typechecking, production build, formatting, whitespace checks, and the native debug bundle passed. The provider fixture now publishes its descendant PID atomically, after a verification run exposed an empty-file race in the existing shutdown test.
+
+Core checks cover live-catalog pagination and hidden models, saved settings across restart, legacy defaults, unsupported selections, busy-state rejection, provider loss and catalog recovery, and model and effort reset. Captured start, resume, and turn requests carry T3's access policies and explicit approval reviewer. A failed catalog refresh retains the last successful capabilities. A successful refresh that removes a saved model rejects its next prompt before acceptance.
+
+Browser checks used the collaborative preview until its host disconnected, then headless Chrome with a mocked Tauri boundary. At 1000×620, light and dark layouts retained the conversation sidebar, centered composer, and optional tools panel. Menus stayed inside the viewport with the tools panel open. Keyboard navigation and Escape restored trigger focus. Switching Ultra to Luna reset effort to Medium. Failed settings saves retained the prompt and selections, and repeated attempts reused one created draft. Send stayed disabled during a pending settings save. Settings survived renderer reload, and model discovery could retry without losing the prompt. Default conversations remained usable when discovery failed.
+
+The actual Tauri app used a disposable repository, isolated `Z1_DATA_DIR`, and the temporary identifier `dev.z1.code.modelverify`. Its accessibility tree showed the new controls, and selecting a legacy conversation showed GPT-6.1-Sol, Low, and Supervised defaults. The native driver then returned `cgWindowNotFound`, including after a rebuild and relaunch. Native menu interaction, visual layout, and restart checks remain incomplete. Browser checks do not establish those native results.

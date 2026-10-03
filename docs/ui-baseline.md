@@ -21,11 +21,11 @@ Appearance follows the system by default. The local preferences owner in `src/se
 
 ## Only working controls appear
 
-T3 shows controls that Z1 cannot back yet: the model and effort pickers, the access-mode menu, attachments, the terminal drawer, Git actions, pull requests, and usage. Z1 leaves them out. The composer shows a static **Codex** label and a static **Supervised** label, because Z1 always runs Codex with approval required. The context strip under the composer shows **Local checkout** and the current branch without menus.
+T3 shows controls that Z1 cannot back yet: attachments, the terminal drawer, Git actions, pull requests, and usage. Z1 leaves them out. The composer has model, reasoning effort, and access-mode menus backed by per-thread Codex settings and the live model catalog. The context strip under the composer shows **Local checkout** and the current branch without menus.
 
 ## Settings
 
-Settings uses T3's compact breadcrumb header, centered page and grouped rows. General describes Codex and supervised approval and restores device preferences. Appearance changes system, light or dark mode and the composer font size from 12 to 20px. The code font size from 11 to 20px applies to code blocks, tool output, file previews and diffs. Keyboard shortcuts documents the working sidebar toggle, settings shortcut and Escape. Search matches category, section and row labels and focuses the selected setting.
+Settings uses T3's compact breadcrumb header, centered page and grouped rows. General describes Codex and the conversation access controls and restores device preferences. Appearance changes system, light or dark mode and the composer font size from 12 to 20px. The code font size from 11 to 20px applies to code blocks, tool output, file previews and diffs. Keyboard shortcuts documents the working sidebar toggle, settings shortcut and Escape. Search matches category, section and row labels and focuses the selected setting.
 
 Command/Control+, opens settings. Back or Escape returns to the conversation with its draft, thread search, selected thread, panel tabs and scroll retained. An active settings search consumes Escape first. Collapsed sidebars have a Back button in the settings header. Device preferences persist in local storage after schema validation. Storage failures appear in settings while changes continue to apply in memory.
 
