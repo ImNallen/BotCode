@@ -38,17 +38,15 @@ pub fn add_worktree(
     let start = if origin {
         let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
         match git(root, &["fetch", "--quiet", "--no-tags", "origin", &refspec]) {
-            Err(e) if e.message.contains("couldn't find remote ref") => {
-                git(root, &["fetch", "--quiet", "--no-tags", "origin"])?;
-            }
+            Err(e) if e.message.contains("couldn't find remote ref") => None,
             fetched => {
                 fetched?;
+                let tracking = format!("refs/remotes/origin/{base}^{{commit}}");
+                git(root, &["rev-parse", "--verify", "--quiet", &tracking])
+                    .ok()
+                    .map(|sha| String::from_utf8_lossy(&sha).trim().to_owned())
             }
         }
-        let tracking = format!("refs/remotes/origin/{base}^{{commit}}");
-        git(root, &["rev-parse", "--verify", "--quiet", &tracking])
-            .ok()
-            .map(|sha| String::from_utf8_lossy(&sha).trim().to_owned())
     } else {
         None
     };
