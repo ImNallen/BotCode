@@ -13,12 +13,14 @@ import {
 import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
 import type {
   ApprovalDecision,
+  CheckoutMode,
   CheckoutRef,
   Thread,
   Workspace,
   SessionSettings,
 } from "../ipc";
 import { cn } from "../lib/cn";
+import { usePreferences } from "../settings/preferences";
 import { ProjectBadge } from "../ProjectBadge";
 import {
   WorkspaceBreadcrumb,
@@ -62,6 +64,13 @@ export function ChatView({
     effort: null,
     permissionMode: "approval-required",
   });
+  const { newThreadCheckout } = usePreferences().preferences;
+  const [draftCheckout, setDraftCheckout] =
+    useState<CheckoutMode>(newThreadCheckout);
+  useEffect(
+    () => setDraftCheckout(newThreadCheckout),
+    [threadId, newThreadCheckout],
+  );
   const [error, setError] = useState<string>();
   const overlay = useRef<HTMLDivElement>(null);
   const [clearance, setClearance] = useState(0);
@@ -133,7 +142,7 @@ export function ChatView({
     mutationFn: async (text: string) => {
       let target = threadId ?? createdDraft.current;
       if (!target) {
-        const created = await ipc.create(workspaceId, "local");
+        const created = await ipc.create(workspaceId, draftCheckout);
         setThreadSnapshot(client, created);
         target = created.id;
         createdDraft.current = target;
