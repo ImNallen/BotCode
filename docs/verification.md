@@ -146,3 +146,22 @@ The native debug bundle used a disposable repository whose bare `origin` was one
 - Return sent a harmless prompt, and real Codex replied `Z1_ORIGIN_OK`. The worktree started at origin's `af05a89` while local `main` stayed at `f08f4c7`.
 - The thread strip read **Worktree** and `z1/57b1a89c`. Typing `my-feature` offered `Create new ref "my-feature"`. Return switched the worktree to it, and the stored checkout, the sidebar row and the strip all read `my-feature`.
 - A local draft read **Current checkout** and `main`. Its picker showed `my-feature` disabled with a worktree badge. Choosing `feature` switched the repository checkout, and the strip read `feature`.
+
+## Threads without a project
+
+Verified on 2026-10-04 against T3 Code commit `6b286ae8a`. All 31 core tests passed. Frontend typechecking, production build, Prettier, rustfmt and Clippy passed.
+
+Core checks cover the single **No project** workspace at `scratch` in the data directory, which keeps its id after a reopen and is absent when the data directory sits inside a Git work tree. A thread started from "Convert these PNGs to WebP please now ok" gets a folder named `YYYY-MM-DD-convert-these-pngs-to-webp-` plus eight hex characters, and Codex receives that folder as its `thread/start` cwd. A folder thread lists its own files with no changes or branch, rejects branch listing and reports diffs as unavailable. A scratch workspace rejects local and worktree checkouts, and a repository rejects folder checkouts, both with `invalid_checkout`.
+
+The native debug bundle used a disposable one-commit repository and an isolated `Z1_DATA_DIR`. At 1100×780:
+
+- An empty data directory showed "Add a project, or start without one." with **Add project** and **Start without a project**.
+- **Start without a project** opened "What should we work on?" with **No project** below it. The breadcrumb read **No project** and the composer had no workspace or branch strip.
+- Return sent a prompt that writes `notes.txt`. Real Codex replied `SCRATCH_OK` and wrote the file to `scratch/2026-10-03-convert-notes-create-a-file-3adeeece`, which is not a Git work tree. The date is UTC.
+- A follow-up command waited for approval, and the sidebar row read **Approval**. **Approve** wrote `b.txt` in the same folder. The reply's `b.txt` chip resolved against the folder, and the right panel offered Files only.
+- Command+Option+N opened a new scratch draft. Its menu listed **No project** and **Add project**, and **Add project** opened the native folder picker that added the repository.
+- The repository draft read "What should we build in demo?" with **or start without a project** below it and kept **Current checkout** and `main`. The link opened a scratch draft whose menu listed **No project**, `demo` and **Add project**. The sidebar repository menu listed only `demo`.
+- After a restart, the store still held one scratch workspace, and the thread reopened with both turns.
+- With only scratch threads and no repository, the sidebar header kept **Add project** and hid the repository menu.
+
+In the first native run, the first command approval was recorded as answered and a file tab opened without a click from the driver. The second run reproduced neither, and the cause is unknown.

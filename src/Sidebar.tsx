@@ -113,43 +113,43 @@ export function Sidebar({
             </label>
             <div className="flex shrink-0 items-center">
               {workspaces.length > 0 ? (
-                <>
-                  <Menu
-                    align="end"
-                    trigger={(props) => (
-                      <HeaderIconButton
-                        aria-label="Select repository"
-                        title="Select repository"
-                        {...props}
-                      >
-                        <FolderIcon className="size-4" />
-                      </HeaderIconButton>
-                    )}
-                  >
-                    {workspaces.map((workspace) => (
-                      <MenuItem
-                        key={workspace.id}
-                        aria-current={workspace.id === workspaceId}
-                        onClick={() => onSelectWorkspace(workspace.id)}
-                      >
-                        <WorkspaceBadge
-                          workspace={workspace}
-                          className="size-4"
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          {workspace.label}
-                        </span>
-                      </MenuItem>
-                    ))}
-                  </Menu>
-                  <HeaderIconButton
-                    aria-label="Add project"
-                    title="Add project"
-                    onClick={onOpenRepository}
-                  >
-                    <FolderPlusIcon />
-                  </HeaderIconButton>
-                </>
+                <Menu
+                  align="end"
+                  trigger={(props) => (
+                    <HeaderIconButton
+                      aria-label="Select repository"
+                      title="Select repository"
+                      {...props}
+                    >
+                      <FolderIcon className="size-4" />
+                    </HeaderIconButton>
+                  )}
+                >
+                  {workspaces.map((workspace) => (
+                    <MenuItem
+                      key={workspace.id}
+                      aria-current={workspace.id === workspaceId}
+                      onClick={() => onSelectWorkspace(workspace.id)}
+                    >
+                      <WorkspaceBadge
+                        workspace={workspace}
+                        className="size-4"
+                      />
+                      <span className="min-w-0 flex-1 truncate">
+                        {workspace.label}
+                      </span>
+                    </MenuItem>
+                  ))}
+                </Menu>
+              ) : null}
+              {workspaces.length > 0 || rows.length > 0 ? (
+                <HeaderIconButton
+                  aria-label="Add project"
+                  title="Add project"
+                  onClick={onOpenRepository}
+                >
+                  <FolderPlusIcon />
+                </HeaderIconButton>
               ) : null}
               <HeaderIconButton
                 aria-label="New thread"
