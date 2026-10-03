@@ -64,10 +64,17 @@ const SURFACE_ACTIONS: readonly SurfaceAction[] = [
 const LAUNCHER_SHORTCUT_BLOCKING_LAYERS =
   '[data-slot="menu-popup"],[role="dialog"]';
 
-function actionForKey(event: KeyboardEvent): SurfaceAction | undefined {
+const FOLDER_ACTIONS = SURFACE_ACTIONS.filter(
+  (action) => action.surface.kind !== "diff",
+);
+
+function actionForKey(
+  event: KeyboardEvent,
+  actions: readonly SurfaceAction[],
+): SurfaceAction | undefined {
   if (event.defaultPrevented || event.isComposing) return;
   if (event.metaKey || event.ctrlKey || event.altKey) return;
-  return SURFACE_ACTIONS.find(
+  return actions.find(
     (action) => action.shortcut.toLowerCase() === event.key.toLowerCase(),
   );
 }
@@ -80,12 +87,14 @@ const targetsTypingContext = (target: EventTarget | null) =>
 
 export function RightPanel({
   checkout,
+  git,
   view,
   state,
   onChange,
   maximized,
 }: {
   checkout: CheckoutRef;
+  git: boolean;
   view: WorkspaceView | undefined;
   state: PanelState;
   onChange: (state: PanelState) => void;
@@ -98,6 +107,7 @@ export function RightPanel({
   const active =
     state.active === null ? undefined : state.surfaces[state.active];
   const available = view !== undefined;
+  const actions = git ? SURFACE_ACTIONS : FOLDER_ACTIONS;
   const open = (surface: Surface) => onChange(openSurface(state, surface));
   const handleOpenFile = (path: string) => onChange(openFile(state, path));
 
@@ -121,7 +131,7 @@ export function RightPanel({
   }, []);
 
   const handleAddMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const action = actionForKey(event.nativeEvent);
+    const action = actionForKey(event.nativeEvent, actions);
     if (!action || !available) return;
     event.preventDefault();
     event.stopPropagation();
@@ -231,7 +241,7 @@ export function RightPanel({
                       </Button>
                     )}
                   >
-                    {SURFACE_ACTIONS.map((action) => (
+                    {actions.map((action) => (
                       <MenuItem
                         key={action.label}
                         disabled={!available}
@@ -257,7 +267,7 @@ export function RightPanel({
             data-right-panel-surface-content
           >
             {!active ? (
-              <Launcher available={available} onOpen={open} />
+              <Launcher actions={actions} available={available} onOpen={open} />
             ) : active.kind === "diff" ? (
               <DiffSurface
                 checkout={checkout}
@@ -292,9 +302,11 @@ function SurfaceIcon({ surface }: { surface: Surface }) {
 }
 
 function Launcher({
+  actions,
   available,
   onOpen,
 }: {
+  actions: readonly SurfaceAction[];
   available: boolean;
   onOpen: (surface: Surface) => void;
 }) {
@@ -304,7 +316,7 @@ function Launcher({
   useEffect(() => {
     if (!available) return;
     const handler = (event: KeyboardEvent) => {
-      const action = actionForKey(event);
+      const action = actionForKey(event, actions);
       if (!action) return;
       if (document.querySelector(LAUNCHER_SHORTCUT_BLOCKING_LAYERS)) return;
       if (targetsTypingContext(event.target)) return;
@@ -314,12 +326,12 @@ function Launcher({
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
-  }, [available]);
+  }, [actions, available]);
   const focusOnMount = useCallback(
     (node: HTMLDivElement | null) => node?.focus(),
     [],
   );
-  const count = available ? SURFACE_ACTIONS.length : 0;
+  const count = available ? actions.length : 0;
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (
       event.defaultPrevented ||
@@ -338,7 +350,7 @@ function Launcher({
         highlight === -1 ? count - 1 : (highlight - 1 + count) % count,
       );
     } else if (event.key === "Enter" && event.target === event.currentTarget) {
-      const action = SURFACE_ACTIONS[highlight];
+      const action = actions[highlight];
       if (!action) return;
       event.preventDefault();
       onOpen(action.surface);
@@ -351,7 +363,7 @@ function Launcher({
       onKeyDown={handleKeyDown}
       aria-label="Open a surface"
       data-surface-launcher-keys={
-        available ? SURFACE_ACTIONS.map((a) => a.shortcut).join("") : ""
+        available ? actions.map((a) => a.shortcut).join("") : ""
       }
       className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 outline-none pb-(--workspace-topbar-height)"
     >
@@ -360,7 +372,7 @@ function Launcher({
           Open a surface
         </h3>
         <div className="flex flex-col gap-0.5">
-          {SURFACE_ACTIONS.map((action, index) =>
+          {actions.map((action, index) =>
             available ? (
               <div
                 key={action.label}

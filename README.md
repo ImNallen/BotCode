@@ -11,7 +11,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-Open a Git repository and start a conversation. Send with Enter. Shift+Enter adds a line. The right-panel toggle in the header opens Files and Diff tabs for the working copy. Approvals offer Approve, Decline, or Cancel turn. Stop is available after Codex acknowledges the running turn.
+Open a Git repository and start a conversation. To work outside a repository, choose **Start without a project** or press Command+Option+N, and Z1 runs that conversation in its own folder under `scratch` in the data directory. Send with Enter. Shift+Enter adds a line. The right-panel toggle in the header opens Files and Diff tabs for the working copy. Approvals offer Approve, Decline, or Cancel turn. Stop is available after Codex acknowledges the running turn.
 
 The sidebar's bottom Settings button opens General, Appearance, and Keyboard shortcuts. Command+, also opens settings. Appearance and prompt/code font sizes save on this device. Back or Escape returns to the same conversation and draft.
 

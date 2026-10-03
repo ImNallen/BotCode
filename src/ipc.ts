@@ -75,7 +75,12 @@ const approval = z.object({
     }),
   ]),
 });
-const workspace = z.object({ id, root: z.string(), label: z.string() });
+const workspace = z.object({
+  id,
+  root: z.string(),
+  label: z.string(),
+  kind: z.enum(["repository", "scratch"]),
+});
 const permissionMode = z.enum([
   "approval-required",
   "auto-accept-edits",
@@ -104,6 +109,7 @@ const checkout = z.discriminatedUnion("kind", [
     path: z.string(),
     branch: z.string(),
   }),
+  z.object({ kind: z.literal("folder"), path: z.string() }),
 ]);
 const branches = z.object({
   branches: z.array(
@@ -190,7 +196,8 @@ export type ApprovalDecision = "accept" | "decline" | "cancel";
 export type Checkout = z.infer<typeof checkout>;
 export type NewCheckout =
   | { kind: "local" }
-  | { kind: "worktree"; base: string; fromOrigin: boolean };
+  | { kind: "worktree"; base: string; fromOrigin: boolean }
+  | { kind: "folder"; prompt: string };
 export type CheckoutRef = { workspaceId: string; threadId?: string };
 export type Branches = z.infer<typeof branches>;
 export type Branch = Branches["branches"][number];
@@ -220,6 +227,8 @@ async function call<S extends z.ZodType>(
 export const ipc = {
   workspaces: () => call("list_workspaces", {}, z.array(workspace)),
   openWorkspace: (path: string) => call("open_workspace", { path }, workspace),
+  scratchAvailable: () => call("scratch_available", {}, z.boolean()),
+  ensureScratch: () => call("ensure_scratch", {}, workspace),
   workspace: ({ workspaceId, threadId }: CheckoutRef) =>
     call(
       "workspace_view",

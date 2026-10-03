@@ -34,10 +34,28 @@ impl RuntimeConfig {
     }
 }
 type Reply<T> = oneshot::Sender<Result<T>>;
+enum Location {
+    Repository(PathBuf),
+    Folder(PathBuf),
+    Unassigned,
+}
+fn scratch_unavailable() -> AppError {
+    AppError::new(
+        "scratch_unavailable",
+        "Threads without a project are unavailable while the data directory is inside a Git repository.",
+    )
+}
+fn not_repository() -> AppError {
+    AppError::new(
+        "not_repository",
+        "Threads without a project have no Git branches.",
+    )
+}
 enum Command {
     List(Reply<Vec<Workspace>>),
     OpenWorkspace(PathBuf, Reply<Workspace>),
-    Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, PathBuf)>),
+    EnsureScratch(PathBuf, Reply<Workspace>),
+    Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
     BeginSwitch(WorkspaceId, Option<ThreadId>, Reply<PathBuf>),
     EndSwitch(PathBuf, Option<(ThreadId, String)>, Reply<()>),
     Threads(WorkspaceId, Reply<Vec<ThreadSummary>>),
@@ -55,6 +73,7 @@ pub struct App {
     commands: mpsc::Sender<Command>,
     changes: broadcast::Sender<ChangeHint>,
     worktrees: PathBuf,
+    scratch: Option<PathBuf>,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
@@ -64,6 +83,12 @@ impl App {
             .into_iter()
             .map(|w| (w.id.clone(), w))
             .collect();
+        // A scratch folder inside a work tree would inherit that repository's status.
+        let scratch = if repo::inside_work_tree(&config.data_dir) {
+            None
+        } else {
+            Some(config.data_dir.canonicalize()?.join("scratch"))
+        };
         let mut threads: HashMap<ThreadId, ThreadSnapshot> = store
             .threads()?
             .into_iter()
@@ -133,6 +158,7 @@ impl App {
             commands,
             changes,
             worktrees,
+            scratch,
         })
     }
     async fn call<T>(&self, build: impl FnOnce(Reply<T>) -> Command) -> Result<T> {
@@ -156,11 +182,18 @@ impl App {
             .map_err(|e| AppError::new("repository", e))??;
         self.call(|r| Command::OpenWorkspace(root, r)).await
     }
+    pub fn scratch_available(&self) -> bool {
+        self.scratch.is_some()
+    }
+    pub async fn ensure_scratch(&self) -> Result<Workspace> {
+        let root = self.scratch.clone().ok_or_else(scratch_unavailable)?;
+        self.call(|r| Command::EnsureScratch(root, r)).await
+    }
     async fn checkout(
         &self,
         id: WorkspaceId,
         thread: Option<ThreadId>,
-    ) -> Result<(Workspace, PathBuf)> {
+    ) -> Result<(Workspace, Location)> {
         self.call(|r| Command::Checkout(id, thread, r)).await
     }
     pub async fn workspace_view(
@@ -168,11 +201,21 @@ impl App {
         id: WorkspaceId,
         thread: Option<ThreadId>,
     ) -> Result<WorkspaceView> {
-        let (w, root) = self.checkout(id.clone(), thread).await?;
+        let (w, location) = self.checkout(id.clone(), thread).await?;
         let threads = self.call(|r| Command::Threads(id, r)).await?;
-        tokio::task::spawn_blocking(move || repo::inspect(Workspace { root, ..w }, threads))
-            .await
-            .map_err(|e| AppError::new("repository", e))?
+        tokio::task::spawn_blocking(move || match location {
+            Location::Repository(root) => repo::inspect(Workspace { root, ..w }, threads),
+            Location::Folder(root) => repo::inspect_folder(Workspace { root, ..w }, threads),
+            Location::Unassigned => Ok(WorkspaceView {
+                workspace: w,
+                branch: String::new(),
+                files: vec![],
+                changes: vec![],
+                threads,
+            }),
+        })
+        .await
+        .map_err(|e| AppError::new("repository", e))?
     }
     pub async fn read_file(
         &self,
@@ -180,7 +223,15 @@ impl App {
         thread: Option<ThreadId>,
         path: String,
     ) -> Result<FileView> {
-        let (_, root) = self.checkout(id, thread).await?;
+        let root = match self.checkout(id, thread).await?.1 {
+            Location::Repository(root) | Location::Folder(root) => root,
+            Location::Unassigned => {
+                return Err(AppError::new(
+                    "missing_folder",
+                    "Start a thread to see its files.",
+                ));
+            }
+        };
         tokio::task::spawn_blocking(move || repo::read_file(&root, &path))
             .await
             .map_err(|e| AppError::new("repository", e))?
@@ -192,7 +243,11 @@ impl App {
         path: String,
         basis: DiffBasis,
     ) -> Result<DiffView> {
-        let (_, root) = self.checkout(id, thread).await?;
+        let Location::Repository(root) = self.checkout(id, thread).await?.1 else {
+            return Ok(DiffView::Unavailable {
+                reason: "Threads without a project have no Git diff.".into(),
+            });
+        };
         tokio::task::spawn_blocking(move || repo::diff(&root, &path, basis))
             .await
             .map_err(|e| AppError::new("repository", e))?
@@ -202,7 +257,9 @@ impl App {
         id: WorkspaceId,
         thread: Option<ThreadId>,
     ) -> Result<Branches> {
-        let (_, root) = self.checkout(id, thread).await?;
+        let Location::Repository(root) = self.checkout(id, thread).await?.1 else {
+            return Err(not_repository());
+        };
         tokio::task::spawn_blocking(move || repo::branches(&root))
             .await
             .map_err(|e| AppError::new("repository", e))?
@@ -233,16 +290,31 @@ impl App {
         id: WorkspaceId,
         checkout: NewCheckout,
     ) -> Result<ThreadSnapshot> {
-        let checkout = match checkout {
-            NewCheckout::Local => Checkout::Local,
-            NewCheckout::Worktree { base, from_origin } => {
-                let (w, _) = self.checkout(id.clone(), None).await?;
+        let (w, _) = self.checkout(id.clone(), None).await?;
+        let checkout = match (w.kind, checkout) {
+            (WorkspaceKind::Repository, NewCheckout::Local) => Checkout::Local,
+            (WorkspaceKind::Repository, NewCheckout::Worktree { base, from_origin }) => {
                 let worktrees = self.worktrees.join(&w.label);
                 tokio::task::spawn_blocking(move || {
                     repo::add_worktree(&w.root, &worktrees, &base, from_origin)
                 })
                 .await
                 .map_err(|e| AppError::new("repository", e))??
+            }
+            (WorkspaceKind::Scratch, NewCheckout::Folder { prompt }) => {
+                if self.scratch.is_none() {
+                    return Err(scratch_unavailable());
+                }
+                tokio::task::spawn_blocking(move || repo::add_folder(&w.root, &prompt))
+                    .await
+                    .map_err(|e| AppError::new("repository", e))??
+            }
+            (WorkspaceKind::Repository, NewCheckout::Folder { .. })
+            | (WorkspaceKind::Scratch, NewCheckout::Local | NewCheckout::Worktree { .. }) => {
+                return Err(AppError::new(
+                    "invalid_checkout",
+                    "This checkout does not belong to this workspace.",
+                ));
             }
         };
         self.call(|r| Command::Create(id, checkout, r)).await
@@ -353,13 +425,18 @@ impl Owner {
             .get(id)
             .ok_or_else(|| AppError::new("missing_thread", "Conversation not found."))
     }
-    fn checkout(&self, id: &WorkspaceId, thread: Option<ThreadId>) -> Result<(Workspace, PathBuf)> {
+    fn checkout(
+        &self,
+        id: &WorkspaceId,
+        thread: Option<ThreadId>,
+    ) -> Result<(Workspace, Location)> {
         let w = self
             .workspaces
             .get(id)
             .ok_or_else(|| AppError::new("missing_workspace", "Repository not found."))?;
-        let root = match thread {
-            None => w.root.clone(),
+        let location = match thread {
+            None if w.kind == WorkspaceKind::Scratch => Location::Unassigned,
+            None => Location::Repository(w.root.clone()),
             Some(thread) => {
                 let t = self.thread(&thread)?;
                 if &t.workspace_id != id {
@@ -368,10 +445,15 @@ impl Owner {
                         "Conversation not found in this repository.",
                     ));
                 }
-                t.root(w).to_path_buf()
+                match &t.checkout {
+                    Checkout::Folder { path } => Location::Folder(path.clone()),
+                    Checkout::Local | Checkout::Worktree { .. } => {
+                        Location::Repository(t.root(w).to_path_buf())
+                    }
+                }
             }
         };
-        Ok((w.clone(), root))
+        Ok((w.clone(), location))
     }
     fn commit(&mut self, id: &ThreadId) -> Result<()> {
         let t = self
@@ -469,6 +551,28 @@ impl Owner {
                             .map(|v| v.to_string_lossy().into_owned())
                             .unwrap_or_else(|| "Repository".into()),
                         root,
+                        kind: WorkspaceKind::Repository,
+                    };
+                    self.store.workspace(&w)?;
+                    self.workspaces.insert(w.id.clone(), w.clone());
+                    Ok(w)
+                })();
+                let _ = reply.send(result);
+            }
+            Command::EnsureScratch(root, reply) => {
+                let result = (|| -> Result<Workspace> {
+                    if let Some(w) = self
+                        .workspaces
+                        .values()
+                        .find(|w| w.kind == WorkspaceKind::Scratch)
+                    {
+                        return Ok(w.clone());
+                    }
+                    let w = Workspace {
+                        id: WorkspaceId::default(),
+                        root,
+                        label: "No project".into(),
+                        kind: WorkspaceKind::Scratch,
                     };
                     self.store.workspace(&w)?;
                     self.workspaces.insert(w.id.clone(), w.clone());
@@ -480,7 +584,10 @@ impl Owner {
                 let _ = reply.send(self.checkout(&id, thread));
             }
             Command::BeginSwitch(id, thread, reply) => {
-                let result = self.checkout(&id, thread).and_then(|(_, root)| {
+                let result = self.checkout(&id, thread).and_then(|(_, location)| {
+                    let Location::Repository(root) = location else {
+                        return Err(not_repository());
+                    };
                     if self.leases.contains_key(&root) || !self.switching.insert(root.clone()) {
                         return Err(AppError::new(
                             "checkout_busy",

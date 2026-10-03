@@ -26,6 +26,7 @@ import {
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
+import { newWithoutProjectShortcut } from "../lib/shortcuts";
 import { checkoutModeLabels, usePreferences } from "./preferences";
 
 export const settingsSection = z.enum(["general", "appearance", "keybindings"]);
@@ -134,6 +135,13 @@ const categories = [
             id: "toggle-sidebar",
             title: "Toggle sidebar",
             description: "Show or hide the main sidebar.",
+          },
+          {
+            id: "new-without-project",
+            title: "New thread without a project",
+            description:
+              "Start a thread in its own folder instead of a project.",
+            keywords: "scratch no project",
           },
           {
             id: "open-settings",
@@ -576,6 +584,7 @@ export function SettingsPage() {
       );
     if (
       id === "toggle-sidebar" ||
+      id === "new-without-project" ||
       id === "open-settings" ||
       id === "close-settings"
     )
@@ -583,9 +592,11 @@ export function SettingsPage() {
         <kbd className="rounded-md border border-border bg-muted px-2 py-1 font-mono text-xs">
           {id === "toggle-sidebar"
             ? `${modifier}B`
-            : id === "open-settings"
-              ? `${modifier},`
-              : "Escape"}
+            : id === "new-without-project"
+              ? newWithoutProjectShortcut
+              : id === "open-settings"
+                ? `${modifier},`
+                : "Escape"}
         </kbd>
       );
     return null;

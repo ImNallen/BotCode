@@ -28,6 +28,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ipc::list_workspaces,
             ipc::open_workspace,
+            ipc::scratch_available,
+            ipc::ensure_scratch,
             ipc::workspace_view,
             ipc::read_file,
             ipc::read_diff,

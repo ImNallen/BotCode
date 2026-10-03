@@ -861,7 +861,7 @@ async fn provider_loss_invalidates_catalog_and_reloads_on_request() {
 fn worktree(checkout: &Checkout) -> (std::path::PathBuf, String) {
     match checkout {
         Checkout::Worktree { path, branch } => (path.clone(), branch.clone()),
-        Checkout::Local => panic!("expected a worktree checkout"),
+        other => panic!("expected a worktree checkout, got {other:?}"),
     }
 }
 fn main_worktree() -> NewCheckout {
@@ -1301,5 +1301,256 @@ async fn switch_branch_changes_the_checkout_unless_its_lease_is_held() {
     .await;
     switch(None, "main", false).await.unwrap();
     assert_eq!(current(&f.repository), "main");
+    app.shutdown().await.unwrap();
+}
+async fn scratch(app: &App) -> Vec<WorkspaceId> {
+    app.list_workspaces()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|w| w.kind == WorkspaceKind::Scratch)
+        .map(|w| w.id)
+        .collect()
+}
+fn folder(checkout: &Checkout) -> std::path::PathBuf {
+    match checkout {
+        Checkout::Folder { path } => path.clone(),
+        other => panic!("expected a folder checkout, got {other:?}"),
+    }
+}
+#[tokio::test]
+async fn no_project_is_created_once_on_first_use() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    assert!(app.scratch_available());
+    assert!(scratch(&app).await.is_empty());
+    let (first, second) = tokio::join!(app.ensure_scratch(), app.ensure_scratch());
+    let first = first.unwrap();
+    assert_eq!(second.unwrap().id, first.id);
+    assert_eq!(first.label, "No project");
+    assert_eq!(first.kind, WorkspaceKind::Scratch);
+    assert_eq!(
+        first.root,
+        f.config.data_dir.canonicalize().unwrap().join("scratch")
+    );
+    assert_eq!(app.ensure_scratch().await.unwrap().id, first.id);
+    assert_eq!(scratch(&app).await, vec![first.id.clone()]);
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(scratch(&app).await, vec![first.id.clone()]);
+    assert_eq!(app.ensure_scratch().await.unwrap().id, first.id);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn scratch_is_unavailable_inside_a_git_work_tree() {
+    let f = Fixture::new();
+    let inside = RuntimeConfig {
+        data_dir: f.repository.join("state"),
+        ..f.config.clone()
+    };
+    let app = App::open(inside).await.unwrap();
+    assert!(!app.scratch_available());
+    assert_eq!(
+        app.ensure_scratch().await.unwrap_err().code,
+        "scratch_unavailable"
+    );
+    assert!(scratch(&app).await.is_empty());
+    app.shutdown().await.unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let stored = app.ensure_scratch().await.unwrap();
+    let thread = app
+        .create_thread(
+            stored.id.clone(),
+            NewCheckout::Folder {
+                prompt: "before".into(),
+            },
+        )
+        .await
+        .unwrap();
+    app.shutdown().await.unwrap();
+    git_output(f._dir.path(), &["init", "-q"]);
+    let app = reopen(&f.config).await;
+    assert!(!app.scratch_available());
+    assert_eq!(scratch(&app).await, vec![stored.id.clone()]);
+    let view = app
+        .workspace_view(stored.id.clone(), Some(thread.id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(view.workspace.root, folder(&thread.checkout));
+    assert_eq!(
+        app.create_thread(
+            stored.id,
+            NewCheckout::Folder {
+                prompt: "hello".into()
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "scratch_unavailable"
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn folder_threads_get_a_dated_folder_named_from_the_prompt() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let home = app.ensure_scratch().await.unwrap();
+    let thread = app
+        .create_thread(
+            home.id.clone(),
+            NewCheckout::Folder {
+                prompt: "Convert these PNGs to WebP please now ok".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let path = folder(&thread.checkout);
+    assert!(path.is_dir());
+    assert_eq!(path.parent().unwrap(), home.root);
+    let today = Command::new("date")
+        .args(["-u", "+%Y-%m-%d"])
+        .output()
+        .unwrap()
+        .stdout;
+    let prefix = format!(
+        "{}-convert-these-pngs-to-webp-",
+        String::from_utf8(today).unwrap().trim()
+    );
+    let name = path.file_name().unwrap().to_str().unwrap();
+    let id = name.strip_prefix(&prefix).unwrap();
+    assert_eq!(id.len(), 8);
+    assert!(id.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
+    let unnamed = app
+        .create_thread(
+            home.id.clone(),
+            NewCheckout::Folder {
+                prompt: "!!!".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let unnamed = folder(&unnamed.checkout);
+    let unnamed = unnamed.file_name().unwrap().to_str().unwrap();
+    assert_eq!(unnamed.len(), "YYYY-MM-DD-".len() + 8);
+    assert!(unnamed.starts_with(&prefix[..11]));
+    let repository = app.open_workspace(f.repository.clone()).await.unwrap();
+    for (workspace, checkout) in [
+        (home.id.clone(), NewCheckout::Local),
+        (home.id.clone(), main_worktree()),
+        (
+            repository.id,
+            NewCheckout::Folder {
+                prompt: "hello".into(),
+            },
+        ),
+    ] {
+        assert_eq!(
+            app.create_thread(workspace, checkout)
+                .await
+                .unwrap_err()
+                .code,
+            "invalid_checkout"
+        );
+    }
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn folder_threads_browse_files_without_git() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let home = app.ensure_scratch().await.unwrap();
+    let empty = app.workspace_view(home.id.clone(), None).await.unwrap();
+    assert!(empty.threads.is_empty());
+    let thread = app
+        .create_thread(
+            home.id.clone(),
+            NewCheckout::Folder {
+                prompt: "make notes".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let path = folder(&thread.checkout);
+    std::fs::create_dir_all(path.join("nested")).unwrap();
+    std::fs::create_dir_all(path.join(".git")).unwrap();
+    std::fs::write(path.join("notes.txt"), "scratch\n").unwrap();
+    std::fs::write(path.join("nested/b.txt"), "b\n").unwrap();
+    std::fs::write(path.join(".git/HEAD"), "ignored\n").unwrap();
+    let view = app
+        .workspace_view(home.id.clone(), Some(thread.id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(view.workspace.root, path);
+    assert_eq!(view.files, vec!["nested/b.txt", "notes.txt"]);
+    assert!(view.changes.is_empty());
+    assert_eq!(view.branch, "");
+    assert!(matches!(
+        app.read_file(home.id.clone(), Some(thread.id.clone()), "notes.txt".into())
+            .await
+            .unwrap(),
+        FileView::Text { contents, .. } if contents == "scratch\n"
+    ));
+    assert!(matches!(
+        app.read_diff(
+            home.id.clone(),
+            Some(thread.id.clone()),
+            "notes.txt".into(),
+            DiffBasis::Unstaged
+        )
+        .await
+        .unwrap(),
+        DiffView::Unavailable { .. }
+    ));
+    assert_eq!(
+        app.list_branches(home.id.clone(), Some(thread.id.clone()))
+            .await
+            .unwrap_err()
+            .code,
+        "not_repository"
+    );
+    assert_eq!(
+        app.switch_branch(
+            home.id.clone(),
+            Some(thread.id.clone()),
+            "main".into(),
+            true
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "not_repository"
+    );
+    let unassigned = app.workspace_view(home.id.clone(), None).await.unwrap();
+    assert_eq!(
+        unassigned
+            .threads
+            .iter()
+            .map(|t| (&t.id, &t.checkout))
+            .collect::<Vec<_>>(),
+        vec![(&thread.id, &thread.checkout)]
+    );
+    assert!(unassigned.files.is_empty());
+    assert_eq!(unassigned.workspace.root, home.root);
+    assert!(
+        app.read_file(home.id.clone(), None, "notes.txt".into())
+            .await
+            .is_err()
+    );
+    app.submit(thread.id.clone(), "scratch".into(), "hello".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    let cwds: Vec<_> = f
+        .calls()
+        .into_iter()
+        .filter(|v| v["method"] == "thread/start")
+        .map(|v| v["params"]["cwd"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(cwds, vec![path.to_string_lossy().into_owned()]);
     app.shutdown().await.unwrap();
 }

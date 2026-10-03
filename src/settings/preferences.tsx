@@ -27,6 +27,7 @@ export const checkoutModeLabels = {
   local: "Current checkout",
   worktree: "New worktree",
 } as const satisfies Record<Preferences["newThreadCheckout"], string>;
+export type CheckoutMode = keyof typeof checkoutModeLabels;
 const defaults: Preferences = {
   appearance: "system",
   promptFontSize: 14,
