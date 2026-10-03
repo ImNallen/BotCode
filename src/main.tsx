@@ -8,6 +8,13 @@ import "./styles.css";
 const client = new QueryClient({
   defaultOptions: { queries: { retry: false, staleTime: 1500 } },
 });
+const scheme = window.matchMedia("(prefers-color-scheme: dark)");
+const applyScheme = () =>
+  document.documentElement.classList.toggle("dark", scheme.matches);
+applyScheme();
+scheme.addEventListener("change", applyScheme);
+if (native && /Mac/.test(navigator.userAgent))
+  document.documentElement.classList.add("macos-desktop");
 const root = document.getElementById("root");
 if (!root) throw new Error("Z1 Code root element is missing.");
 const mount = () =>
