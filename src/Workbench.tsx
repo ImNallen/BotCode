@@ -24,7 +24,7 @@ import {
 import { checkoutKey, ipc, native, setThreadSnapshot } from "./ipc";
 import { Sidebar, SidebarBrand } from "./Sidebar";
 import { SidebarFooter } from "./SidebarFooter";
-import { SettingsSidebar } from "./settings/SettingsPage";
+import { SettingsSidebar, type SettingsSection } from "./settings/SettingsPage";
 import { ChatView } from "./chat/ChatView";
 import { Button } from "./ui/controls";
 
@@ -47,20 +47,27 @@ export function Workbench() {
   const previousFocus = useRef<HTMLElement | null>(null);
   const wasSettingsOpen = useRef(false);
   const sidebarToggle = useRef<HTMLButtonElement>(null);
-  const openSettings = useCallback(() => {
-    if (settingsOpen) return;
-    previousFocus.current =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    void navigate({
-      to: "/settings/$section",
-      params: { section: "general" },
-      search: selection,
-      hash: "",
-      resetScroll: false,
-    });
-  }, [navigate, selection, settingsOpen]);
+  const openSettingsAt = useCallback(
+    (section: SettingsSection, hash: string) => {
+      if (settingsOpen) return;
+      previousFocus.current =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      void navigate({
+        to: "/settings/$section",
+        params: { section },
+        search: selection,
+        hash,
+        resetScroll: false,
+      });
+    },
+    [navigate, selection, settingsOpen],
+  );
+  const openSettings = useCallback(
+    () => openSettingsAt("general", ""),
+    [openSettingsAt],
+  );
   const closeSettings = useCallback(() => {
     void navigate({ to: "/", search: selection, hash: "", resetScroll: false });
   }, [navigate, selection]);
@@ -219,12 +226,12 @@ export function Workbench() {
   );
   const selectWorkspace = (workspace: string) =>
     void navigate({ to: "/", search: { workspace } });
-  const newThread = () =>
+  const newThread = (workspace = workspaceId) =>
     void navigate({
       to: "/",
       search: (previous) => ({
         ...previous,
-        workspace: workspaceId,
+        workspace,
         thread: undefined,
       }),
     });
@@ -294,9 +301,11 @@ export function Workbench() {
                   workspaceId={workspaceId}
                   threadId={selection.thread}
                   onSelectThread={selectThread}
-                  onSelectWorkspace={selectWorkspace}
                   onNewThread={newThread}
                   onOpenRepository={() => void openRepository()}
+                  onOpenProjectSettings={(id) =>
+                    openSettingsAt("projects", `project-${id}`)
+                  }
                 />
               </div>
               {settingsOpen ? (

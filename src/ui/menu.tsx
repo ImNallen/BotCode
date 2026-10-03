@@ -4,6 +4,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -25,6 +26,7 @@ export function Menu({
   onKeyDownCapture,
   open: controlledOpen,
   onOpenChange,
+  anchor: positionAnchor,
 }: {
   trigger: (props: {
     ref: (node: HTMLElement | null) => void;
@@ -43,6 +45,7 @@ export function Menu({
   onKeyDownCapture?: (event: KeyboardEvent<HTMLDivElement>) => void;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  anchor?: RefObject<HTMLElement | null>;
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -64,8 +67,9 @@ export function Menu({
   useLayoutEffect(() => {
     if (!open) return;
     const positionPopup = () => {
-      if (!anchor.current || !popup.current) return;
-      const rect = anchor.current.getBoundingClientRect();
+      const target = positionAnchor?.current ?? anchor.current;
+      if (!target || !popup.current) return;
+      const rect = target.getBoundingClientRect();
       const width = popup.current.getBoundingClientRect().width;
       const desiredLeft =
         align === "start"
@@ -84,6 +88,7 @@ export function Menu({
               Math.max(8, rect.top - sideOffset),
             );
       setPosition({
+        ...(positionAnchor ? { minWidth: rect.width } : {}),
         maxWidth: "calc(100vw - 16px)",
         left: Math.max(8, Math.min(desiredLeft, window.innerWidth - width - 8)),
         maxHeight: Math.max(
@@ -103,7 +108,7 @@ export function Menu({
       observer.disconnect();
       window.removeEventListener("resize", positionPopup);
     };
-  }, [open, side, align, sideOffset]);
+  }, [open, side, align, sideOffset, positionAnchor]);
   useEffect(() => {
     if (!open) return;
     const first = popup.current?.querySelector<HTMLElement>(
