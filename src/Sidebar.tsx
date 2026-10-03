@@ -15,6 +15,7 @@ import {
 import type { Workspace, WorkspaceView } from "./ipc";
 import { cn } from "./lib/cn";
 import { formatSidebarTime } from "./lib/time";
+import { basename } from "./panel/panelState";
 import { ProjectBadge } from "./ProjectBadge";
 import { OpenAI } from "./ui/icons";
 import { Button } from "./ui/controls";
@@ -325,7 +326,7 @@ function ThreadRow({
 }
 
 function WorktreeIndicator({ path, branch }: { path: string; branch: string }) {
-  const label = `Worktree: ${path.slice(path.lastIndexOf("/") + 1)} (${branch})`;
+  const label = `Worktree: ${basename(path)} (${branch})`;
   return (
     <span
       role="img"
