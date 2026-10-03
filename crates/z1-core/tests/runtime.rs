@@ -58,6 +58,18 @@ impl Fixture {
             .collect()
     }
 }
+// Under parallel tests, a reopen right after shutdown can still see the lock for a few milliseconds.
+async fn reopen(config: &RuntimeConfig) -> App {
+    for _ in 0..100 {
+        match App::open(config.clone()).await {
+            Err(e) if e.code == "already_running" => {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+            other => return other.unwrap(),
+        }
+    }
+    panic!("The previous runtime never released its data directory")
+}
 async fn wait(
     app: &App,
     id: &ThreadId,
@@ -140,7 +152,7 @@ async fn lost_acceptance_stays_uncertain_after_restart_and_never_replays() {
         Execution::Lost { .. }
     ));
     app.shutdown().await.unwrap();
-    let app = App::open(f.config.clone()).await.unwrap();
+    let app = reopen(&f.config).await;
     app.submit(thread.id.clone(), "lost".into(), "lose".into())
         .await
         .unwrap();
@@ -216,7 +228,7 @@ async fn routes_multiple_approvals_by_callback_and_expires_old_clicks() {
             .all(|v| v["result"]["decision"] == "decline")
     );
     app.shutdown().await.unwrap();
-    let app = App::open(f.config.clone()).await.unwrap();
+    let app = reopen(&f.config).await;
     assert!(
         app.answer_approval(snapshot.approvals[0].id.clone(), ApprovalDecision::Accept)
             .await
@@ -359,7 +371,7 @@ async fn exclusive_data_owner_and_dropping_app_terminates_child() {
         0,
         "Dropping all App handles must reap Codex"
     );
-    let reopened = App::open(f.config).await.unwrap();
+    let reopened = reopen(&f.config).await;
     reopened.shutdown().await.unwrap();
 }
 
@@ -660,7 +672,7 @@ async fn settings_persist_reset_defaults_and_reject_busy_or_invalid_choices() {
     assert_eq!(turn["params"]["effort"], "low");
     assert_eq!(turn["params"]["approvalsReviewer"], "user");
     app.shutdown().await.unwrap();
-    let app = App::open(f.config.clone()).await.unwrap();
+    let app = reopen(&f.config).await;
     let restored = app.thread(id.clone()).await.unwrap();
     assert_eq!(restored.settings, SessionSettings::default());
     assert_eq!(
