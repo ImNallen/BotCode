@@ -8,16 +8,24 @@ import {
 } from "react";
 import { z } from "zod";
 
+const favoriteModelSchema = z.object({
+  provider: z.string().min(1),
+  model: z.string().min(1),
+});
+export type FavoriteModel = Readonly<z.infer<typeof favoriteModelSchema>>;
+
 const schema = z.object({
   appearance: z.enum(["system", "light", "dark"]),
   promptFontSize: z.number().int().min(12).max(20),
   codeFontSize: z.number().int().min(11).max(20),
+  favoriteModels: z.array(favoriteModelSchema),
 });
 type Preferences = Readonly<z.infer<typeof schema>>;
 const defaults: Preferences = {
   appearance: "system",
   promptFontSize: 14,
   codeFontSize: 13,
+  favoriteModels: [],
 };
 const storageKey = "z1:preferences:v1";
 type PreferenceState = {
@@ -28,6 +36,7 @@ const Context = createContext<
   | (PreferenceState & {
       update: (patch: Partial<Preferences>) => void;
       reset: () => void;
+      setFavorite: (pair: FavoriteModel, wanted: boolean) => void;
     })
   | null
 >(null);
@@ -42,6 +51,7 @@ function readPreferences(): PreferenceState {
         appearance: z.unknown().optional(),
         promptFontSize: z.unknown().optional(),
         codeFontSize: z.unknown().optional(),
+        favoriteModels: z.unknown().optional(),
       })
       .parse(JSON.parse(stored));
     const appearance = schema.shape.appearance.safeParse(object.appearance);
@@ -51,8 +61,21 @@ function readPreferences(): PreferenceState {
     const codeFontSize = schema.shape.codeFontSize.safeParse(
       object.codeFontSize,
     );
+    const favorites = schema.shape.favoriteModels.safeParse(
+      object.favoriteModels,
+    );
+    const favoriteModels = favorites.success
+      ? favorites.data.filter(
+          (pair, index, pairs) =>
+            pairs.findIndex(
+              (other) =>
+                other.provider === pair.provider && other.model === pair.model,
+            ) === index,
+        )
+      : [];
     return {
       preferences: {
+        favoriteModels,
         appearance: appearance.success ? appearance.data : defaults.appearance,
         promptFontSize: promptFontSize.success
           ? promptFontSize.data
@@ -61,7 +84,10 @@ function readPreferences(): PreferenceState {
           ? codeFontSize.data
           : defaults.codeFontSize,
       },
-      persistenceError: undefined,
+      persistenceError:
+        object.favoriteModels !== undefined && !favorites.success
+          ? "Saved model favorites could not be read. Using no favorites."
+          : undefined,
     };
   } catch {
     return {
@@ -114,7 +140,22 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   }, [state.preferences]);
   return (
     <Context.Provider
-      value={{ ...state, update, reset: () => update(defaults) }}
+      value={{
+        ...state,
+        update,
+        reset: () =>
+          update({
+            ...defaults,
+            favoriteModels: current.current.favoriteModels,
+          }),
+        setFavorite: (pair, wanted) => {
+          const remaining = current.current.favoriteModels.filter(
+            (other) =>
+              other.provider !== pair.provider || other.model !== pair.model,
+          );
+          update({ favoriteModels: wanted ? [...remaining, pair] : remaining });
+        },
+      }}
     >
       {children}
     </Context.Provider>

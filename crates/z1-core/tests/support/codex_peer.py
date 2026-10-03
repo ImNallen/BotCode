@@ -22,6 +22,23 @@ for line in sys.stdin:
     params = request.get('params', {})
     if method == 'initialize':
         result(request, {'userAgent': 'Z1 fixture'})
+    elif method == 'model/list':
+        if (root / 'models_error').exists():
+            emit({'id': request['id'], 'error': {'message': 'Catalog unavailable'}})
+        elif (root / 'models_removed').exists():
+            result(request, {'data': [], 'nextCursor': None})
+        elif params.get('cursor') is None:
+            result(request, {'data': [
+                {'model': 'model-one', 'displayName': 'Model One', 'description': 'Default model', 'isDefault': True, 'hidden': False,
+                 'defaultReasoningEffort': 'low', 'supportedReasoningEfforts': [
+                     {'reasoningEffort': 'low', 'description': 'Low'}, {'reasoningEffort': 'ultra', 'description': 'Ultra'}]},
+                {'model': 'hidden-model', 'displayName': 'Hidden', 'description': 'Hidden', 'isDefault': False, 'hidden': True,
+                 'defaultReasoningEffort': 'low', 'supportedReasoningEfforts': []}
+            ], 'nextCursor': 'second'})
+        else:
+            result(request, {'data': [{'model': 'model-two', 'displayName': 'Model Two', 'description': 'Another model',
+                'isDefault': False, 'hidden': False, 'defaultReasoningEffort': 'medium',
+                'supportedReasoningEfforts': [{'reasoningEffort': 'medium', 'description': 'Medium'}]}], 'nextCursor': None})
     elif method in ('thread/start', 'thread/resume'):
         current_thread = params['threadId'] if method == 'thread/resume' else 'native-thread-' + str(request['id'])
         result(request, {'thread': {'id': current_thread, 'turns': []}})
@@ -49,7 +66,9 @@ for line in sys.stdin:
             pass
         elif prompt == 'descendant':
             child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'])
-            (root / 'descendant.pid').write_text(str(child.pid))
+            pid_file = root / 'descendant.pid.tmp'
+            pid_file.write_text(str(child.pid))
+            pid_file.replace(root / 'descendant.pid')
             time.sleep(0.15)
         else:
             event('item/agentMessage/delta', {'threadId': current_thread, 'turnId': active, 'itemId': 'reply', 'delta': 'fixture reply'})

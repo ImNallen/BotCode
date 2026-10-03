@@ -15,6 +15,8 @@ Open a Git repository and start a conversation. Send with Enter. Shift+Enter add
 
 The sidebar's bottom Settings button opens General, Appearance, and Keyboard shortcuts. Command+, also opens settings. Appearance and prompt/code font sizes save on this device. Back or Escape returns to the same conversation and draft.
 
+The composer has model, reasoning effort, and access menus. Model and effort choices come from the installed Codex. Settings save per conversation and apply to the next turn. Supervised is the default access mode. The other modes are Auto-accept edits, Auto, and Full access.
+
 The browser build explains that the native runtime is required. It does not simulate repositories or conversations.
 
 ## State and recovery

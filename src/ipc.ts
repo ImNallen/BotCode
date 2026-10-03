@@ -76,6 +76,27 @@ const approval = z.object({
   ]),
 });
 const workspace = z.object({ id, root: z.string(), label: z.string() });
+const permissionMode = z.enum([
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+]);
+const settings = z.object({
+  model: z.string().nullable(),
+  effort: z.string().nullable(),
+  permissionMode,
+});
+const modelOption = z.object({
+  model: z.string(),
+  displayName: z.string(),
+  description: z.string(),
+  isDefault: z.boolean(),
+  defaultReasoningEffort: z.string(),
+  supportedReasoningEfforts: z.array(
+    z.object({ reasoningEffort: z.string(), description: z.string() }),
+  ),
+});
 const thread = z.object({
   id,
   workspaceId: id,
@@ -83,6 +104,7 @@ const thread = z.object({
   nativeThreadId: z.string().nullable(),
   revision: z.number(),
   session,
+  settings,
   turns: z.array(
     z.object({
       id,
@@ -91,6 +113,7 @@ const thread = z.object({
       delivery,
       execution,
       items: z.array(item),
+      settings: settings.nullable(),
       startedAtMs: z.number().nullable(),
       completedAtMs: z.number().nullable(),
     }),
@@ -137,6 +160,8 @@ const diff = z.discriminatedUnion("kind", [
 export type Workspace = z.infer<typeof workspace>;
 export type WorkspaceView = z.infer<typeof workspaceView>;
 export type Thread = z.infer<typeof thread>;
+export type SessionSettings = z.infer<typeof settings>;
+export type ModelOption = z.infer<typeof modelOption>;
 export type Approval = z.infer<typeof approval>;
 export type Item = z.infer<typeof item>;
 export type ApprovalDecision = "accept" | "decline" | "cancel";
@@ -172,6 +197,9 @@ export const ipc = {
     call("create_thread", { workspaceId }, thread),
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),
   resume: (threadId: string) => call("open_thread", { threadId }, thread),
+  models: () => call("list_models", {}, z.array(modelOption)),
+  settings: (threadId: string, value: SessionSettings) =>
+    call("update_thread_settings", { threadId, settings: value }, thread),
   submit: (threadId: string, text: string, requestId: string) =>
     call("submit", { threadId, text, requestId }, z.object({ turnId: id })),
   approval: (approvalId: string, decision: ApprovalDecision) =>
@@ -210,6 +238,8 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       .safeParse(event.payload);
     if (hint.success) {
       const { summary } = hint.data;
+      if (summary.session.kind === "unavailable")
+        void client.resetQueries({ queryKey: ["models"] });
       client.setQueryData<WorkspaceView>(
         ["workspace", hint.data.workspaceId],
         (view) =>

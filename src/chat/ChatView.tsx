@@ -16,6 +16,7 @@ import type {
   Thread,
   Workspace,
   WorkspaceView,
+  SessionSettings,
 } from "../ipc";
 import { cn } from "../lib/cn";
 import { ProjectBadge } from "../ProjectBadge";
@@ -57,6 +58,12 @@ export function ChatView({
   const [maximized, setMaximized] = useState(false);
   const [panel, setPanel] = useState<PanelState>(emptyPanel);
   const [draft, setDraft] = useState("");
+  const createdDraft = useRef<string | undefined>(undefined);
+  const [draftSettings, setDraftSettings] = useState<SessionSettings>({
+    model: null,
+    effort: null,
+    permissionMode: "approval-required",
+  });
   const [error, setError] = useState<string>();
   const overlay = useRef<HTMLDivElement>(null);
   const [clearance, setClearance] = useState(0);
@@ -69,7 +76,10 @@ export function ChatView({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  useEffect(() => setDraft(""), [threadId]);
+  useEffect(() => {
+    setDraft("");
+    createdDraft.current = undefined;
+  }, [threadId]);
   const query = useQuery({
     queryKey: ["thread", threadId],
     queryFn: async () => {
@@ -82,6 +92,23 @@ export function ChatView({
     enabled: Boolean(threadId),
   });
   const thread = threadId ? query.data : undefined;
+  const settings = thread?.settings ?? draftSettings;
+  const models = useQuery({
+    queryKey: ["models"],
+    queryFn: ipc.models,
+    retry: false,
+  });
+  const saveSettings = useMutation({
+    mutationFn: async (next: SessionSettings) => {
+      if (!threadId) {
+        setDraftSettings(next);
+        return;
+      }
+      const snapshot = await ipc.settings(threadId, next);
+      setThreadSnapshot(client, snapshot);
+    },
+    onError: (e) => setError(e.message),
+  });
   const refresh = () => {
     void client.invalidateQueries({ queryKey: ["thread", threadId] });
     void client.invalidateQueries({ queryKey: ["workspace"] });
@@ -98,12 +125,31 @@ export function ChatView({
   }, [sessionKind, client]);
   const send = useMutation({
     mutationFn: async (text: string) => {
-      let target = threadId;
+      let target = threadId ?? createdDraft.current;
       if (!target) {
         const created = await ipc.create(workspaceId);
         setThreadSnapshot(client, created);
         target = created.id;
+        createdDraft.current = target;
         void client.invalidateQueries({ queryKey: ["workspace"] });
+      }
+      if (!threadId) {
+        try {
+          const updated = await ipc.settings(target, draftSettings);
+          setThreadSnapshot(client, updated);
+        } catch (error) {
+          setError(error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+      }
+      await ipc.submit(target, text, crypto.randomUUID());
+      return target;
+    },
+    onSuccess: (target) => {
+      createdDraft.current = undefined;
+      setDraft("");
+      setError(undefined);
+      if (!threadId) {
         void navigate({
           to: "/",
           search: (previous) => ({
@@ -113,12 +159,6 @@ export function ChatView({
           }),
         });
       }
-      await ipc.submit(target, text, crypto.randomUUID());
-      return target;
-    },
-    onSuccess: (target) => {
-      setDraft("");
-      setError(undefined);
       void client.invalidateQueries({ queryKey: ["thread", target] });
       void client.invalidateQueries({ queryKey: ["workspace"] });
     },
@@ -181,7 +221,15 @@ export function ChatView({
   const dormant =
     thread && ["dormant", "unavailable"].includes(thread.session.kind);
   const submit = () => {
-    if (!draft.trim() || busy || send.isPending || approval) return;
+    if (
+      !draft.trim() ||
+      busy ||
+      send.isPending ||
+      saveSettings.isPending ||
+      approval ||
+      (Boolean(threadId) && !thread)
+    )
+      return;
     send.mutate(draft);
   };
   const title = isDraft ? "New thread" : (thread?.title ?? "");
@@ -386,7 +434,11 @@ export function ChatView({
                       onSubmit={submit}
                       onStop={() => stop.mutate()}
                       canSend={
-                        Boolean(draft.trim()) && !busy && !send.isPending
+                        Boolean(draft.trim()) &&
+                        !busy &&
+                        !send.isPending &&
+                        !saveSettings.isPending &&
+                        (!threadId || Boolean(thread))
                       }
                       running={busy}
                       canStop={canStop}
@@ -413,6 +465,19 @@ export function ChatView({
                       }
                       disabled={Boolean(approval)}
                       branch={view?.branch || undefined}
+                      settings={settings}
+                      models={models.data ?? []}
+                      modelsLoading={models.isPending}
+                      modelsError={models.error?.message}
+                      onRetryModels={() => void models.refetch()}
+                      onSettingsChange={(next) => saveSettings.mutate(next)}
+                      settingsDisabled={
+                        busy ||
+                        send.isPending ||
+                        saveSettings.isPending ||
+                        Boolean(approval) ||
+                        (Boolean(threadId) && !thread)
+                      }
                       autoFocus
                     />
                     <div
