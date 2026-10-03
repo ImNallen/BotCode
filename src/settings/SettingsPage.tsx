@@ -13,7 +13,13 @@ import {
 } from "lucide-react";
 import { z } from "zod";
 import { SidebarMenuButton } from "../SidebarFooter";
-import { Button, Toggle, selectItem, selectTrigger } from "../ui/controls";
+import {
+  Button,
+  Switch,
+  Toggle,
+  selectItem,
+  selectTrigger,
+} from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import {
   WorkspaceBreadcrumb,
@@ -56,6 +62,13 @@ const categories = [
             description: "Where new threads start.",
             keywords: "default mode draft current local checkout new worktree",
           },
+          {
+            id: "start-from-origin",
+            title: "Start from origin",
+            description:
+              "Creates the worktree from the latest matching branch on origin instead of your local branch.",
+            keywords: "new worktrees latest matching remote branch local",
+          },
         ],
       },
       {
@@ -66,7 +79,7 @@ const categories = [
             id: "restore",
             title: "Restore defaults",
             description:
-              "Reset appearance, font sizes and the new thread workspace on this device.",
+              "Reset appearance, font sizes and new thread defaults on this device.",
           },
         ],
       },
@@ -544,6 +557,16 @@ export function SettingsPage() {
             </MenuItem>
           ))}
         </Menu>
+      );
+    if (id === "start-from-origin")
+      return (
+        <Switch
+          checked={preferences.newWorktreesStartFromOrigin}
+          onCheckedChange={(checked) =>
+            update({ newWorktreesStartFromOrigin: checked })
+          }
+          aria-label="Start new worktrees from origin by default"
+        />
       );
     if (id === "restore")
       return (

@@ -20,6 +20,7 @@ const schema = z.object({
   codeFontSize: z.number().int().min(11).max(20),
   favoriteModels: z.array(favoriteModelSchema),
   newThreadCheckout: z.enum(["local", "worktree"]),
+  newWorktreesStartFromOrigin: z.boolean(),
 });
 type Preferences = Readonly<z.infer<typeof schema>>;
 export const checkoutModeLabels = {
@@ -32,6 +33,7 @@ const defaults: Preferences = {
   codeFontSize: 13,
   favoriteModels: [],
   newThreadCheckout: "local",
+  newWorktreesStartFromOrigin: true,
 };
 const storageKey = "z1:preferences:v1";
 type PreferenceState = {
@@ -59,6 +61,7 @@ function readPreferences(): PreferenceState {
         codeFontSize: z.unknown().optional(),
         favoriteModels: z.unknown().optional(),
         newThreadCheckout: z.unknown().optional(),
+        newWorktreesStartFromOrigin: z.unknown().optional(),
       })
       .parse(JSON.parse(stored));
     const appearance = schema.shape.appearance.safeParse(object.appearance);
@@ -71,6 +74,10 @@ function readPreferences(): PreferenceState {
     const newThreadCheckout = schema.shape.newThreadCheckout.safeParse(
       object.newThreadCheckout,
     );
+    const newWorktreesStartFromOrigin =
+      schema.shape.newWorktreesStartFromOrigin.safeParse(
+        object.newWorktreesStartFromOrigin,
+      );
     const favorites = schema.shape.favoriteModels.safeParse(
       object.favoriteModels,
     );
@@ -96,6 +103,9 @@ function readPreferences(): PreferenceState {
         newThreadCheckout: newThreadCheckout.success
           ? newThreadCheckout.data
           : defaults.newThreadCheckout,
+        newWorktreesStartFromOrigin: newWorktreesStartFromOrigin.success
+          ? newWorktreesStartFromOrigin.data
+          : defaults.newWorktreesStartFromOrigin,
       },
       persistenceError:
         object.favoriteModels !== undefined && !favorites.success

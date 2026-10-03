@@ -70,16 +70,17 @@ export function ChatView({
     effort: null,
     permissionMode: "approval-required",
   });
-  const { newThreadCheckout } = usePreferences().preferences;
+  const { newThreadCheckout, newWorktreesStartFromOrigin } =
+    usePreferences().preferences;
   const draftDefaults = (): DraftCheckout => ({
     mode: newThreadCheckout,
     base: null,
-    fromOrigin: false,
+    fromOrigin: newWorktreesStartFromOrigin,
   });
   const [draftCheckout, setDraftCheckout] = useState(draftDefaults);
   useEffect(
     () => setDraftCheckout(draftDefaults()),
-    [threadId, newThreadCheckout],
+    [threadId, newThreadCheckout, newWorktreesStartFromOrigin],
   );
   const [error, setError] = useState<string>();
   const overlay = useRef<HTMLDivElement>(null);
@@ -531,7 +532,9 @@ export function ChatView({
                         (isDraft &&
                         !createdDraft &&
                         draftCheckout.mode === "worktree"
-                          ? base
+                          ? baseFromOrigin
+                            ? `origin/${base}`
+                            : base
                           : view?.branch) || undefined
                       }
                       settings={settings}
