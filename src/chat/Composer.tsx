@@ -15,7 +15,7 @@ import {
 import { Menu, MenuItem } from "../ui/menu";
 import type { Checkout, ModelOption, SessionSettings } from "../ipc";
 import { cn } from "../lib/cn";
-import { checkoutModeLabels } from "../settings/preferences";
+import { checkoutModeLabels, type CheckoutMode } from "../settings/preferences";
 import { selectItem, selectTrigger } from "../ui/controls";
 import { OpenAI } from "../ui/icons";
 import { ModelPicker } from "./ModelPicker";
@@ -39,8 +39,7 @@ export function Composer({
   placeholder,
   approval,
   disabled,
-  checkout,
-  branch,
+  context,
   autoFocus,
   settings,
   models,
@@ -61,15 +60,17 @@ export function Composer({
   placeholder: string;
   approval: ReactNode;
   disabled: boolean;
-  checkout:
-    | Checkout
-    | {
-        kind: "draft";
-        mode: Checkout["kind"];
-        onChange: (mode: Checkout["kind"]) => void;
-      }
-    | undefined;
-  branch: ReactNode;
+  context?: {
+    checkout:
+      | Checkout
+      | {
+          kind: "draft";
+          mode: CheckoutMode;
+          onChange: (mode: CheckoutMode) => void;
+        }
+      | undefined;
+    branch: ReactNode;
+  };
   autoFocus?: boolean;
   settings: SessionSettings;
   models: ModelOption[];
@@ -130,8 +131,9 @@ export function Composer({
   const selectedMode =
     modes.find((mode) => mode.value === settings.permissionMode) ?? modes[0];
   const RuntimeIcon = selectedMode.icon;
+  const checkout = context?.checkout;
   return (
-    <ComposerSurface.Shell contextStrip>
+    <ComposerSurface.Shell contextStrip={context !== undefined}>
       <ComposerSurface.Host>
         <div className="relative z-10">
           <form
@@ -433,88 +435,92 @@ export function Composer({
           </form>
         </div>
       </ComposerSurface.Host>
-      <div className="min-h-0">
-        <div className="relative z-0">
-          <div className="pointer-events-auto">
-            <ComposerSurface.ContextStrip className="gap-1 text-xs font-normal text-muted-foreground/70">
-              <div className="min-h-7 min-w-10 items-center gap-1 sm:min-h-6 flex flex-1">
-                {checkout?.kind === "draft" ? (
-                  <Menu
-                    side="top"
-                    trigger={(props) => (
-                      <button
-                        type="button"
-                        {...props}
-                        disabled={settingsDisabled}
-                        aria-label="Workspace"
-                        className={selectTrigger({
-                          variant: "ghost",
-                          size: "xs",
-                          className: "min-w-0 shrink",
-                        })}
-                      >
-                        <CheckoutModeIcon mode={checkout.mode} />
-                        <span className="min-w-0 max-w-[240px] truncate">
-                          {checkoutModeLabels[checkout.mode]}
-                        </span>
-                        <ChevronDownIcon
-                          aria-hidden
-                          className="-me-1 size-3 opacity-50"
-                        />
-                      </button>
-                    )}
-                  >
-                    <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
-                      Workspace
-                    </div>
-                    {(["local", "worktree"] as const).map((mode) => (
-                      <MenuItem
-                        key={mode}
-                        role="menuitemradio"
-                        aria-checked={checkout.mode === mode}
-                        data-selected={checkout.mode === mode ? "" : undefined}
-                        className={selectItem}
-                        onClick={() => checkout.onChange(mode)}
-                      >
-                        <span className="inline-flex items-center gap-1.5 [&_svg:not([class*='text-'])]:text-muted-foreground">
-                          <CheckoutModeIcon mode={mode} />
-                          {checkoutModeLabels[mode]}
-                        </span>
-                      </MenuItem>
-                    ))}
-                  </Menu>
-                ) : checkout ? (
-                  <span
-                    className={contextControl}
-                    title={
-                      checkout.kind === "worktree" ? checkout.path : undefined
-                    }
-                  >
-                    {checkout.kind === "worktree" ? (
-                      <FolderGitIcon className="size-3 shrink-0" />
-                    ) : (
-                      <FolderIcon className="size-3 shrink-0" />
-                    )}
-                    <span className="min-w-0 max-w-[240px] truncate">
-                      {checkout.kind === "worktree"
-                        ? "Worktree"
-                        : "Local checkout"}
+      {context ? (
+        <div className="min-h-0">
+          <div className="relative z-0">
+            <div className="pointer-events-auto">
+              <ComposerSurface.ContextStrip className="gap-1 text-xs font-normal text-muted-foreground/70">
+                <div className="min-h-7 min-w-10 items-center gap-1 sm:min-h-6 flex flex-1">
+                  {checkout?.kind === "draft" ? (
+                    <Menu
+                      side="top"
+                      trigger={(props) => (
+                        <button
+                          type="button"
+                          {...props}
+                          disabled={settingsDisabled}
+                          aria-label="Workspace"
+                          className={selectTrigger({
+                            variant: "ghost",
+                            size: "xs",
+                            className: "min-w-0 shrink",
+                          })}
+                        >
+                          <CheckoutModeIcon mode={checkout.mode} />
+                          <span className="min-w-0 max-w-[240px] truncate">
+                            {checkoutModeLabels[checkout.mode]}
+                          </span>
+                          <ChevronDownIcon
+                            aria-hidden
+                            className="-me-1 size-3 opacity-50"
+                          />
+                        </button>
+                      )}
+                    >
+                      <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+                        Workspace
+                      </div>
+                      {(["local", "worktree"] as const).map((mode) => (
+                        <MenuItem
+                          key={mode}
+                          role="menuitemradio"
+                          aria-checked={checkout.mode === mode}
+                          data-selected={
+                            checkout.mode === mode ? "" : undefined
+                          }
+                          className={selectItem}
+                          onClick={() => checkout.onChange(mode)}
+                        >
+                          <span className="inline-flex items-center gap-1.5 [&_svg:not([class*='text-'])]:text-muted-foreground">
+                            <CheckoutModeIcon mode={mode} />
+                            {checkoutModeLabels[mode]}
+                          </span>
+                        </MenuItem>
+                      ))}
+                    </Menu>
+                  ) : checkout ? (
+                    <span
+                      className={contextControl}
+                      title={
+                        checkout.kind === "worktree" ? checkout.path : undefined
+                      }
+                    >
+                      {checkout.kind === "worktree" ? (
+                        <FolderGitIcon className="size-3 shrink-0" />
+                      ) : (
+                        <FolderIcon className="size-3 shrink-0" />
+                      )}
+                      <span className="min-w-0 max-w-[240px] truncate">
+                        {checkout.kind === "worktree"
+                          ? "Worktree"
+                          : "Local checkout"}
+                      </span>
                     </span>
-                  </span>
-                ) : null}
-              </div>
-              <div className="flex min-w-0 items-center gap-1 min-w-0 flex-initial justify-end ml-auto">
-                {branch}
-              </div>
-            </ComposerSurface.ContextStrip>
+                  ) : null}
+                </div>
+                <div className="flex min-w-0 items-center gap-1 min-w-0 flex-initial justify-end ml-auto">
+                  {context.branch}
+                </div>
+              </ComposerSurface.ContextStrip>
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
     </ComposerSurface.Shell>
   );
 }
 
-function CheckoutModeIcon({ mode }: { mode: Checkout["kind"] }) {
+function CheckoutModeIcon({ mode }: { mode: CheckoutMode }) {
   return mode === "worktree" ? (
     <FolderGit2Icon className="size-3" />
   ) : (

@@ -1,5 +1,8 @@
 // Monogram and color derivation copied from pingdotgg/t3code v0.0.45
 // projectIdentity.ts, projectIconColors.ts and ProjectMonogram.tsx (MIT).
+// The scratch icon follows chat/DraftHeroHeadline.tsx at 6b286ae8a (MIT).
+import { MessageSquareDashedIcon } from "lucide-react";
+import type { Workspace } from "./ipc";
 import { cn } from "./lib/cn";
 
 const COLORS = [
@@ -92,5 +95,24 @@ export function ProjectBadge({
         </text>
       </svg>
     </span>
+  );
+}
+
+export function WorkspaceBadge({
+  workspace,
+  className,
+}: {
+  workspace: Pick<Workspace, "kind" | "label">;
+  className?: string;
+}) {
+  return workspace.kind === "scratch" ? (
+    <span
+      aria-hidden="true"
+      className={cn("inline-flex size-4 shrink-0", COLORS[0], className)}
+    >
+      <MessageSquareDashedIcon className="size-full" />
+    </span>
+  ) : (
+    <ProjectBadge name={workspace.label} className={className} />
   );
 }

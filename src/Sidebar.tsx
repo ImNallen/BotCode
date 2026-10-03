@@ -16,7 +16,7 @@ import type { Workspace, WorkspaceView } from "./ipc";
 import { cn } from "./lib/cn";
 import { formatSidebarTime } from "./lib/time";
 import { basename } from "./panel/panelState";
-import { ProjectBadge } from "./ProjectBadge";
+import { WorkspaceBadge } from "./ProjectBadge";
 import { OpenAI } from "./ui/icons";
 import { Button } from "./ui/controls";
 import { Menu, MenuItem } from "./ui/menu";
@@ -132,8 +132,8 @@ export function Sidebar({
                         aria-current={workspace.id === workspaceId}
                         onClick={() => onSelectWorkspace(workspace.id)}
                       >
-                        <ProjectBadge
-                          name={workspace.label}
+                        <WorkspaceBadge
+                          workspace={workspace}
                           className="size-4"
                         />
                         <span className="min-w-0 flex-1 truncate">
@@ -181,7 +181,9 @@ export function Sidebar({
               </ul>
             ) : (
               <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
-                {workspaces.length === 0 ? (
+                {needle ? (
+                  "No matching threads"
+                ) : workspaces.length === 0 ? (
                   <>
                     No projects yet
                     <button
@@ -193,8 +195,6 @@ export function Sidebar({
                       Add project
                     </button>
                   </>
-                ) : needle ? (
-                  "No matching threads"
                 ) : (
                   "No threads yet"
                 )}
@@ -249,8 +249,8 @@ function ThreadRow({
         <span className="sr-only">{row.thread.title}</span>
         <div className="relative z-10 h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)">
           <div className="flex h-5 min-w-0 items-center gap-1.5">
-            <ProjectBadge
-              name={row.workspace.label}
+            <WorkspaceBadge
+              workspace={row.workspace}
               className="size-4 shrink-0"
             />
             <span

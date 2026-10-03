@@ -1,5 +1,5 @@
-// Shell geometry follows pingdotgg/t3code v0.0.45 components/AppSidebarLayout.tsx,
-// components/ui/sidebar.tsx and components/NoProjectsHero.tsx (MIT).
+// Shell geometry follows pingdotgg/t3code v0.0.45 components/AppSidebarLayout.tsx and
+// components/ui/sidebar.tsx, and components/NoProjectsHero.tsx at 6b286ae8a (MIT).
 import {
   useCallback,
   useEffect,
@@ -15,7 +15,12 @@ import {
 } from "@tanstack/react-router";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
-import { PanelLeftCloseIcon, PanelLeftIcon, PlusIcon } from "lucide-react";
+import {
+  MessageSquareDashedIcon,
+  PanelLeftCloseIcon,
+  PanelLeftIcon,
+  PlusIcon,
+} from "lucide-react";
 import { checkoutKey, ipc, native, setThreadSnapshot } from "./ipc";
 import { Sidebar, SidebarBrand } from "./Sidebar";
 import { SidebarFooter } from "./SidebarFooter";
@@ -77,7 +82,12 @@ export function Workbench() {
       queryFn: () => ipc.workspace({ workspaceId: workspace.id }),
     })),
   });
-  const workspaceId = selection.workspace ?? list[0]?.id;
+  const repositories = list.filter((w) => w.kind === "repository");
+  const scratch = list.find((w) => w.kind === "scratch");
+  const workspaceId = selection.workspace ?? repositories[0]?.id;
+  const startScratch = useCallback(() => {
+    if (scratch) void navigate({ to: "/", search: { workspace: scratch.id } });
+  }, [navigate, scratch]);
   useLayoutEffect(() => {
     if (settingsOpen && !wasSettingsOpen.current && !previousFocus.current)
       previousFocus.current =
@@ -119,6 +129,16 @@ export function Workbench() {
         event.preventDefault();
         openSettings();
       }
+      // Option+N types a dead key on macOS, so match the physical key.
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.altKey &&
+        event.code === "KeyN" &&
+        scratch
+      ) {
+        event.preventDefault();
+        startScratch();
+      }
     };
     const escape = (event: KeyboardEvent) => {
       if (
@@ -144,7 +164,7 @@ export function Workbench() {
       window.removeEventListener("keydown", shortcut, true);
       window.removeEventListener("keydown", escape);
     };
-  }, [openSettings, closeSettings, settingsOpen]);
+  }, [openSettings, closeSettings, settingsOpen, scratch, startScratch]);
   const openRepository = async () => {
     try {
       const path = await open({
@@ -248,7 +268,7 @@ export function Workbench() {
                 }}
               >
                 <Sidebar
-                  workspaces={list}
+                  workspaces={repositories}
                   views={views.map((query) => query.data)}
                   workspaceId={workspaceId}
                   threadId={selection.thread}
@@ -299,7 +319,9 @@ export function Workbench() {
               workspaceId={workspaceId}
               threadId={selection.thread}
               onSelectWorkspace={selectWorkspace}
-              workspaces={list}
+              workspaces={repositories}
+              scratch={scratch}
+              onStartScratch={startScratch}
               onOpenRepository={() => void openRepository()}
             />
           ) : (
@@ -324,13 +346,25 @@ export function Workbench() {
                       data-slot="empty-description"
                       className="text-muted-foreground text-sm [[data-slot=empty-title]+&]:mt-1"
                     >
-                      Add a project to start your first thread.
+                      {scratch
+                        ? "Add a project, or start without one."
+                        : "Add a project to start your first thread."}
                     </div>
                     <div className="mt-6 flex justify-center gap-2">
                       <Button size="sm" onClick={() => void openRepository()}>
                         <PlusIcon className="size-4" />
                         Add project
                       </Button>
+                      {scratch ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={startScratch}
+                        >
+                          <MessageSquareDashedIcon className="size-4" />
+                          Start without a project
+                        </Button>
+                      ) : null}
                     </div>
                     {(error || workspaces.error) && (
                       <p

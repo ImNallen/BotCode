@@ -1,7 +1,13 @@
 // Column, header and composer overlay follow pingdotgg/t3code v0.0.45
-// components/ChatView.tsx, chat/ChatHeader.tsx, chat/PanelLayoutControls.tsx
-// and chat/DraftHeroHeadline.tsx (MIT).
-import { useEffect, useMemo, useRef, useState } from "react";
+// components/ChatView.tsx, chat/ChatHeader.tsx and chat/PanelLayoutControls.tsx,
+// and chat/DraftHeroHeadline.tsx at 6b286ae8a (MIT).
+import {
+  type ComponentProps,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -13,15 +19,15 @@ import {
 import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
 import type {
   ApprovalDecision,
-  Checkout,
   CheckoutRef,
   Thread,
   Workspace,
   SessionSettings,
 } from "../ipc";
 import { cn } from "../lib/cn";
-import { usePreferences } from "../settings/preferences";
-import { ProjectBadge } from "../ProjectBadge";
+import { newWithoutProjectShortcut } from "../lib/shortcuts";
+import { type CheckoutMode, usePreferences } from "../settings/preferences";
+import { WorkspaceBadge } from "../ProjectBadge";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -39,7 +45,7 @@ import { Composer } from "./Composer";
 import { Timeline } from "./Timeline";
 
 type DraftCheckout = {
-  mode: Checkout["kind"];
+  mode: CheckoutMode;
   base: string | null;
   fromOrigin: boolean;
 };
@@ -50,15 +56,20 @@ export function ChatView({
   workspaceId,
   threadId,
   workspaces,
+  scratch,
   onSelectWorkspace,
+  onStartScratch,
   onOpenRepository,
 }: {
   workspaceId: string;
   threadId: string | undefined;
   workspaces: Workspace[];
+  scratch: Workspace | undefined;
   onSelectWorkspace: (workspaceId: string) => void;
+  onStartScratch: () => void;
   onOpenRepository: () => void;
 }) {
+  const isScratch = scratch?.id === workspaceId;
   const client = useQueryClient();
   const navigate = useNavigate({ from: "/" });
   const [panelOpen, setPanelOpen] = useState(false);
@@ -113,7 +124,8 @@ export function ChatView({
   const thread = threadId ? query.data : undefined;
   const checkout: CheckoutRef = {
     workspaceId,
-    threadId: thread?.checkout.kind === "worktree" ? thread.id : undefined,
+    threadId:
+      thread && thread.checkout.kind !== "local" ? thread.id : undefined,
   };
   const [panelCheckout, setPanelCheckout] = useState(checkout.threadId);
   if (panelCheckout !== checkout.threadId) {
@@ -127,6 +139,7 @@ export function ChatView({
   const { data: branches } = useQuery({
     queryKey: checkoutKey("branches", checkout),
     queryFn: () => ipc.branches(checkout),
+    enabled: !isScratch,
   });
   const base =
     draftCheckout.base ??
@@ -177,9 +190,15 @@ export function ChatView({
       if (!target) {
         const created = await ipc.create(
           workspaceId,
-          draftCheckout.mode === "worktree"
-            ? { kind: "worktree", base: base ?? "", fromOrigin: baseFromOrigin }
-            : { kind: "local" },
+          isScratch
+            ? { kind: "folder", prompt: text }
+            : draftCheckout.mode === "worktree"
+              ? {
+                  kind: "worktree",
+                  base: base ?? "",
+                  fromOrigin: baseFromOrigin,
+                }
+              : { kind: "local" },
         );
         setThreadSnapshot(client, created);
         target = created.id;
@@ -261,7 +280,10 @@ export function ChatView({
       },
     };
   }, [view]);
-  const label = workspace?.label ?? "Repository";
+  const label = (isScratch ? scratch : workspace)?.label ?? "Repository";
+  const newThreadLabel = isScratch
+    ? "New thread without a project"
+    : `New thread in ${label}`;
   const busy = thread ? busyKinds.has(thread.session.kind) : false;
   const pending = thread?.approvals.filter((a) => a.state === "pending") ?? [];
   const approval = pending[0];
@@ -294,6 +316,53 @@ export function ChatView({
     saveSettings.isPending ||
     Boolean(approval) ||
     (Boolean(threadId) && !thread);
+  const context: ComponentProps<typeof Composer>["context"] = isScratch
+    ? undefined
+    : {
+        checkout:
+          isDraft && !createdDraft
+            ? {
+                kind: "draft",
+                mode: draftCheckout.mode,
+                onChange: (mode) =>
+                  setDraftCheckout((current) => ({
+                    ...current,
+                    mode,
+                  })),
+              }
+            : (thread ?? createdDraft)?.checkout,
+        branch: (
+          <BranchPicker
+            checkout={checkout}
+            branches={branches}
+            value={
+              worktreeDraft
+                ? base
+                : (branches?.branches.find((branch) => branch.current)?.name ??
+                  (view?.branch || null))
+            }
+            worktreeBase={
+              worktreeDraft
+                ? {
+                    fromOrigin: draftCheckout.fromOrigin,
+                    onSelect: (name) =>
+                      setDraftCheckout((current) => ({
+                        ...current,
+                        base: name,
+                      })),
+                    onFromOriginChange: (fromOrigin) =>
+                      setDraftCheckout((current) => ({
+                        ...current,
+                        fromOrigin,
+                      })),
+                  }
+                : undefined
+            }
+            disabled={controlsDisabled}
+            onError={setError}
+          />
+        ),
+      };
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
       <div
@@ -375,8 +444,8 @@ export function ChatView({
               <WorkspaceBreadcrumbItem className="shrink">
                 <button
                   type="button"
-                  aria-label={`New thread in ${label}`}
-                  title={`New thread in ${label}`}
+                  aria-label={newThreadLabel}
+                  title={newThreadLabel}
                   onClick={() =>
                     void navigate({
                       to: "/",
@@ -389,7 +458,13 @@ export function ChatView({
                   }
                   className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <ProjectBadge name={label} className="size-3.5" />
+                  <WorkspaceBadge
+                    workspace={{
+                      kind: isScratch ? "scratch" : "repository",
+                      label,
+                    }}
+                    className="size-3.5"
+                  />
                   <WorkspaceBreadcrumbText className="max-w-40">
                     {label}
                   </WorkspaceBreadcrumbText>
@@ -464,7 +539,9 @@ export function ChatView({
                           label={label}
                           workspaceId={workspaceId}
                           workspaces={workspaces}
+                          scratch={scratch}
                           onSelectWorkspace={onSelectWorkspace}
+                          onStartScratch={onStartScratch}
                           onOpenRepository={onOpenRepository}
                         />
                       </div>
@@ -525,52 +602,7 @@ export function ChatView({
                         ) : null
                       }
                       disabled={Boolean(approval)}
-                      checkout={
-                        isDraft && !createdDraft
-                          ? {
-                              kind: "draft",
-                              mode: draftCheckout.mode,
-                              onChange: (mode) =>
-                                setDraftCheckout((current) => ({
-                                  ...current,
-                                  mode,
-                                })),
-                            }
-                          : (thread ?? createdDraft)?.checkout
-                      }
-                      branch={
-                        <BranchPicker
-                          checkout={checkout}
-                          branches={branches}
-                          value={
-                            worktreeDraft
-                              ? base
-                              : (branches?.branches.find(
-                                  (branch) => branch.current,
-                                )?.name ??
-                                (view?.branch || null))
-                          }
-                          worktreeBase={
-                            worktreeDraft
-                              ? {
-                                  fromOrigin: draftCheckout.fromOrigin,
-                                  onSelect: (name) =>
-                                    setDraftCheckout((current) => ({
-                                      ...current,
-                                      base: name,
-                                    })),
-                                  onFromOriginChange: (fromOrigin) =>
-                                    setDraftCheckout((current) => ({
-                                      ...current,
-                                      fromOrigin,
-                                    })),
-                                }
-                              : undefined
-                          }
-                          disabled={controlsDisabled}
-                          onError={setError}
-                        />
-                      }
+                      context={context}
                       settings={settings}
                       models={models.data ?? []}
                       modelsLoading={models.isPending}
@@ -594,6 +626,7 @@ export function ChatView({
       {panelOpen ? (
         <RightPanel
           checkout={checkout}
+          git={!isScratch}
           view={view}
           state={panel}
           onChange={setPanel}
@@ -608,59 +641,83 @@ function DraftHeadline({
   label,
   workspaceId,
   workspaces,
+  scratch,
   onSelectWorkspace,
+  onStartScratch,
   onOpenRepository,
 }: {
   label: string;
   workspaceId: string;
   workspaces: Workspace[];
+  scratch: Workspace | undefined;
   onSelectWorkspace: (workspaceId: string) => void;
+  onStartScratch: () => void;
   onOpenRepository: () => void;
 }) {
+  const isScratch = scratch?.id === workspaceId;
+  const picker = (
+    <Menu
+      align="center"
+      trigger={(props) => (
+        <button
+          type="button"
+          className="inline-flex shrink-0 cursor-pointer items-center whitespace-nowrap font-medium underline-offset-2 focus-visible:outline-2 focus-visible:outline-ring gap-1.5 text-foreground underline decoration-foreground/30 decoration-dotted decoration-from-font hover:decoration-foreground hover:decoration-solid data-popup-open:decoration-foreground data-popup-open:decoration-solid pointer-events-auto max-w-64 align-baseline"
+          {...props}
+        >
+          <span className="min-w-0 truncate">{label}</span>
+        </button>
+      )}
+    >
+      {[...(scratch ? [scratch] : []), ...workspaces].map((workspace) => (
+        <MenuItem
+          key={workspace.id}
+          aria-current={workspace.id === workspaceId}
+          onClick={() => onSelectWorkspace(workspace.id)}
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <WorkspaceBadge workspace={workspace} className="size-4 shrink-0" />
+            <span className="block min-w-0 truncate">{workspace.label}</span>
+          </span>
+        </MenuItem>
+      ))}
+      <MenuSeparator />
+      <MenuItem onClick={onOpenRepository}>
+        <FolderPlusIcon />
+        Add project
+      </MenuItem>
+    </Menu>
+  );
+  const heading = isScratch
+    ? "What should we work on?"
+    : `What should we build in ${label}?`;
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col items-center">
       <h1
-        aria-label={`What should we build in ${label}?`}
+        aria-label={heading}
         className="w-full text-center font-normal text-2xl text-foreground tracking-tight sm:text-3xl"
       >
-        What should we build in{" "}
-        <Menu
-          align="center"
-          trigger={(props) => (
+        {isScratch ? (
+          <>What should we work on?</>
+        ) : (
+          <>What should we build in {picker}?</>
+        )}
+      </h1>
+      {scratch ? (
+        <p className="mt-2 flex h-6 items-center text-sm">
+          {isScratch ? (
+            picker
+          ) : (
             <button
               type="button"
-              className="inline-flex shrink-0 cursor-pointer items-center whitespace-nowrap font-medium underline-offset-2 focus-visible:outline-2 focus-visible:outline-ring gap-1.5 text-foreground underline decoration-foreground/30 decoration-dotted decoration-from-font hover:decoration-foreground hover:decoration-solid data-popup-open:decoration-foreground data-popup-open:decoration-solid pointer-events-auto max-w-64 align-baseline"
-              {...props}
+              title={newWithoutProjectShortcut}
+              onClick={onStartScratch}
+              className="inline-flex shrink-0 cursor-pointer items-center gap-0.5 whitespace-nowrap font-medium underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-64 text-muted-foreground hover:text-foreground pointer-events-auto"
             >
-              <span className="min-w-0 truncate">{label}</span>
+              or start without a project
             </button>
           )}
-        >
-          {workspaces.map((workspace) => (
-            <MenuItem
-              key={workspace.id}
-              aria-current={workspace.id === workspaceId}
-              onClick={() => onSelectWorkspace(workspace.id)}
-            >
-              <span className="flex min-w-0 items-center gap-2">
-                <ProjectBadge
-                  name={workspace.label}
-                  className="size-4 shrink-0"
-                />
-                <span className="block min-w-0 truncate">
-                  {workspace.label}
-                </span>
-              </span>
-            </MenuItem>
-          ))}
-          <MenuSeparator />
-          <MenuItem onClick={onOpenRepository}>
-            <FolderPlusIcon />
-            Add project
-          </MenuItem>
-        </Menu>
-        ?
-      </h1>
+        </p>
+      ) : null}
     </div>
   );
 }
