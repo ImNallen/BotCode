@@ -12,7 +12,7 @@ import {
   SquarePenIcon,
   XIcon,
 } from "lucide-react";
-import type { Workspace, WorkspaceView } from "./ipc";
+import { workingSessions, type Workspace, type WorkspaceView } from "./ipc";
 import { cn } from "./lib/cn";
 import { formatSidebarTime } from "./lib/time";
 import { basename } from "./panel/panelState";
@@ -26,8 +26,6 @@ type Row = {
   branch: string;
   thread: WorkspaceView["threads"][number];
 };
-
-const working = new Set(["connecting", "running", "interrupting"]);
 
 const menuButton =
   "peer/menu-button flex w-full cursor-pointer items-center gap-[var(--sidebar-control-gap)] overflow-hidden text-left outline-hidden ring-ring transition-[width,height,padding] hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 active:bg-sidebar-row-active active:text-sidebar-foreground disabled:pointer-events-none disabled:opacity-64 aria-disabled:pointer-events-none aria-disabled:opacity-64 data-[active=true]:bg-sidebar-row-selected data-[active=true]:font-medium data-[active=true]:text-sidebar-foreground [&>span:last-child]:truncate [&>svg:not([class*='size-'])]:size-4 [&>svg]:shrink-0 [&>svg]:text-[var(--sidebar-icon-color)] hover:[&>svg]:text-sidebar-foreground active:[&>svg]:text-sidebar-foreground data-[active=true]:[&>svg]:text-sidebar-foreground";
@@ -216,7 +214,7 @@ function ThreadRow({
   active: boolean;
   onSelect: () => void;
 }) {
-  const isWorking = working.has(row.thread.session.kind);
+  const isWorking = workingSessions.has(row.thread.session.kind);
   const recede = !active;
   return (
     <li

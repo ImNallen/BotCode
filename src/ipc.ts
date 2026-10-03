@@ -14,6 +14,11 @@ const session = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("dormant") }),
   reason,
 ]);
+export const workingSessions = new Set([
+  "connecting",
+  "running",
+  "interrupting",
+]);
 const delivery = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("preparing") }),
   z.object({ kind: z.literal("sending") }),
@@ -227,6 +232,10 @@ async function call<S extends z.ZodType>(
 export const ipc = {
   workspaces: () => call("list_workspaces", {}, z.array(workspace)),
   openWorkspace: (path: string) => call("open_workspace", { path }, workspace),
+  renameWorkspace: (workspaceId: string, label: string) =>
+    call("rename_workspace", { workspaceId, label }, workspace),
+  removeWorkspace: (workspaceId: string) =>
+    call("remove_workspace", { workspaceId }, z.null()),
   scratchAvailable: () => call("scratch_available", {}, z.boolean()),
   ensureScratch: () => call("ensure_scratch", {}, workspace),
   workspace: ({ workspaceId, threadId }: CheckoutRef) =>

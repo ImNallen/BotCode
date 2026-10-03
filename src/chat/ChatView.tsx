@@ -16,7 +16,7 @@ import {
   Minimize2Icon,
   PanelRightIcon,
 } from "lucide-react";
-import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
+import { checkoutKey, ipc, setThreadSnapshot, workingSessions } from "../ipc";
 import type {
   ApprovalDecision,
   CheckoutRef,
@@ -49,8 +49,6 @@ type DraftCheckout = {
   base: string | null;
   fromOrigin: boolean;
 };
-
-const busyKinds = new Set(["connecting", "running", "interrupting"]);
 
 export function ChatView({
   workspaceId,
@@ -286,7 +284,7 @@ export function ChatView({
   const newThreadLabel = isScratch
     ? "New thread without a project"
     : `New thread in ${label}`;
-  const busy = thread ? busyKinds.has(thread.session.kind) : false;
+  const busy = thread ? workingSessions.has(thread.session.kind) : false;
   const pending = thread?.approvals.filter((a) => a.state === "pending") ?? [];
   const approval = pending[0];
   const canStop = Boolean(
