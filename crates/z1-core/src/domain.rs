@@ -69,12 +69,21 @@ id!(ThreadId);
 id!(TurnId);
 id!(ApprovalId);
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceKind {
+    #[default]
+    Repository,
+    Scratch,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub id: WorkspaceId,
     pub root: PathBuf,
     pub label: String,
+    #[serde(default)]
+    pub kind: WorkspaceKind,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -264,6 +273,9 @@ pub enum Checkout {
         path: PathBuf,
         branch: String,
     },
+    Folder {
+        path: PathBuf,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -274,6 +286,7 @@ pub enum Checkout {
 pub enum NewCheckout {
     Local,
     Worktree { base: String, from_origin: bool },
+    Folder { prompt: String },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -311,7 +324,7 @@ impl ThreadSnapshot {
     pub fn root<'a>(&'a self, workspace: &'a Workspace) -> &'a Path {
         match &self.checkout {
             Checkout::Local => &workspace.root,
-            Checkout::Worktree { path, .. } => path,
+            Checkout::Worktree { path, .. } | Checkout::Folder { path } => path,
         }
     }
     pub fn stamp_completions(&mut self) {

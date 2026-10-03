@@ -4,6 +4,7 @@ use std::{
     process::Command,
 };
 const TEXT_LIMIT: usize = 1_000_000;
+const FILE_LIMIT: usize = 40_000;
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
         .arg("-C")
@@ -20,6 +21,55 @@ pub fn open(path: &Path) -> Result<PathBuf> {
     let bytes = git(&path, &["rev-parse", "--show-toplevel"])?;
     let root = PathBuf::from(String::from_utf8_lossy(&bytes).trim()).canonicalize()?;
     Ok(root)
+}
+pub fn inside_work_tree(path: &Path) -> bool {
+    git(path, &["rev-parse", "--is-inside-work-tree"]).is_ok_and(|out| out.trim_ascii() == b"true")
+}
+pub fn add_folder(scratch: &Path, prompt: &str) -> Result<Checkout> {
+    std::fs::create_dir_all(scratch)?;
+    let mut words = prompt
+        .to_lowercase()
+        .split(|c: char| !c.is_ascii_lowercase() && !c.is_ascii_digit())
+        .filter(|word| !word.is_empty())
+        .take(5)
+        .collect::<Vec<_>>()
+        .join("-");
+    words.truncate(48);
+    let words = words.trim_end_matches('-');
+    let date = utc_date(now_ms() / 1000);
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let folder = |id: &str| {
+        let name = [date.as_str(), words, id]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        scratch.join(name)
+    };
+    // A non-recursive create claims the name, so a taken short id falls back to the full one.
+    let short = folder(&id[..8]);
+    let path = match std::fs::create_dir(&short) {
+        Ok(()) => short,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let full = folder(&id);
+            std::fs::create_dir(&full)?;
+            full
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok(Checkout::Folder { path })
+}
+fn utc_date(seconds: u64) -> String {
+    let z = (seconds / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 pub fn add_worktree(
     root: &Path,
@@ -265,11 +315,8 @@ pub fn inspect(workspace: Workspace, threads: Vec<ThreadSummary>) -> Result<Work
         .collect();
     paths.sort();
     paths.dedup();
-    if paths.len() > 40_000 {
-        return Err(AppError::new(
-            "repository_too_large",
-            "This first version supports up to 40,000 files.",
-        ));
+    if paths.len() > FILE_LIMIT {
+        return Err(too_large());
     }
     let bytes = git(
         root,
@@ -310,6 +357,41 @@ pub fn inspect(workspace: Workspace, threads: Vec<ThreadSummary>) -> Result<Work
         threads,
     })
 }
+fn too_large() -> AppError {
+    AppError::new(
+        "repository_too_large",
+        "This first version supports up to 40,000 files.",
+    )
+}
+pub fn inspect_folder(workspace: Workspace, threads: Vec<ThreadSummary>) -> Result<WorkspaceView> {
+    let mut files = Vec::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(workspace.root.join(&dir))? {
+            let entry = entry?;
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            let path = dir.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                pending.push(path);
+            } else {
+                files.push(path.to_string_lossy().into_owned());
+                if files.len() > FILE_LIMIT {
+                    return Err(too_large());
+                }
+            }
+        }
+    }
+    files.sort();
+    Ok(WorkspaceView {
+        workspace,
+        branch: String::new(),
+        files,
+        changes: vec![],
+        threads,
+    })
+}
 fn version(root: &Path, spec: &str) -> Result<String> {
     let size = Command::new("git")
         .arg("-C")
@@ -346,6 +428,7 @@ pub fn diff(root: &Path, path: &str, basis: DiffBasis) -> Result<DiffView> {
             id: WorkspaceId::default(),
             root: root.into(),
             label: String::new(),
+            kind: WorkspaceKind::Repository,
         },
         vec![],
     )?;
