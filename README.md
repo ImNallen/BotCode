@@ -13,7 +13,9 @@ pnpm tauri dev
 
 Open a Git repository and start a conversation. To work outside a repository, choose **Start without a project** or press Command+Option+N, and Z1 runs that conversation in its own folder under `scratch` in the data directory. Send with Enter. Shift+Enter adds a line. The right-panel toggle in the header opens Files and Diff tabs for the working copy. Approvals offer Approve, Decline, or Cancel turn. Stop is available after Codex acknowledges the running turn.
 
-The sidebar's bottom Settings button opens General, Appearance, and Keyboard shortcuts. Command+, also opens settings. Appearance and prompt/code font sizes save on this device. Back or Escape returns to the same conversation and draft.
+The folder button beside the sidebar search filters threads by project. Its gear buttons open that project in Projects settings, where you can rename a repository, copy its path, or remove it. Removing a project deletes it and its threads from Z1. The repository, Z1 worktrees, and scratch folders stay on disk. Stop a project's running conversations before you remove it.
+
+The sidebar's bottom Settings button opens General, Appearance, Projects, and Keyboard shortcuts. Command+, also opens settings. Appearance and prompt/code font sizes save on this device. Back or Escape returns to the same conversation and draft.
 
 The composer has model, reasoning effort, and access menus. Model and effort choices come from the installed Codex. Settings save per conversation and apply to the next turn. Supervised is the default access mode. The other modes are Auto-accept edits, Auto, and Full access.
 
