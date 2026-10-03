@@ -1,98 +1,58 @@
+// Shell geometry follows pingdotgg/t3code v0.0.45 components/AppSidebarLayout.tsx,
+// components/ui/sidebar.tsx and components/NoProjectsHero.tsx (MIT).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  FolderOpen,
-  Plus,
-  RefreshCw,
-  GitBranch,
-  FileCode2,
-  Files,
-  GitCompareArrows,
-  X,
-  MessageSquare,
-  ChevronDown,
-} from "lucide-react";
+import { PanelLeftCloseIcon, PanelLeftIcon, PlusIcon } from "lucide-react";
 import { ipc, native, setThreadSnapshot } from "./ipc";
-import { RepositoryTree } from "./RepositoryTree";
-import { CodePane } from "./CodePane";
-import { Conversation } from "./Conversation";
-type RightPanel = "closed" | "files" | "diff";
+import { Sidebar } from "./Sidebar";
+import { ChatView } from "./chat/ChatView";
+import { Button } from "./ui/controls";
+
+const SIDEBAR_DEFAULT = 256;
+const SIDEBAR_MIN = 208;
+const MAIN_MIN = 640;
+const SIDEBAR_KEY = "z1:sidebar-width";
+
+function clampSidebar(width: number) {
+  const max = Math.max(SIDEBAR_MIN, Math.floor(window.innerWidth) - MAIN_MIN);
+  return Math.min(Math.max(width, SIDEBAR_MIN), max);
+}
 
 export function Workbench() {
   const selection = useSearch({ from: "__root__" });
   const navigate = useNavigate({ from: "/" });
   const client = useQueryClient();
-  const filesToggle = useRef<HTMLButtonElement>(null);
-  const changesToggle = useRef<HTMLButtonElement>(null);
-  const [rightPanel, setRightPanel] = useState<RightPanel>(() =>
-    selection.path ? (selection.view === "file" ? "files" : "diff") : "closed",
-  );
   const [error, setError] = useState<string>();
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    clampSidebar(Number(localStorage.getItem(SIDEBAR_KEY)) || SIDEBAR_DEFAULT),
+  );
   const workspaces = useQuery({
     queryKey: ["workspaces"],
     queryFn: ipc.workspaces,
     enabled: native,
   });
-  const workspaceId = selection.workspace ?? workspaces.data?.[0]?.id;
-  const view = useQuery({
-    queryKey: ["workspace", workspaceId],
-    queryFn: () => ipc.workspace(workspaceId ?? ""),
-    enabled: native && Boolean(workspaceId),
+  const list = workspaces.data ?? [];
+  const views = useQueries({
+    queries: list.map((workspace) => ({
+      queryKey: ["workspace", workspace.id],
+      queryFn: () => ipc.workspace(workspace.id),
+    })),
   });
+  const workspaceId = selection.workspace ?? list[0]?.id;
+  const view = views[list.findIndex((w) => w.id === workspaceId)];
   useEffect(() => {
-    setRightPanel(
-      selection.path
-        ? selection.view === "file"
-          ? "files"
-          : "diff"
-        : "closed",
-    );
-  }, [workspaceId, selection.path, selection.view]);
-  const chooseFile = useCallback(
-    (path: string) => {
-      setRightPanel("files");
-      void navigate({
-        search: (previous) => ({
-          ...previous,
-          workspace: workspaceId,
-          path,
-          view: "file",
-        }),
-      });
-    },
-    [navigate, workspaceId],
-  );
-  const chooseDiff = (path: string, basis: "staged" | "unstaged") => {
-    setRightPanel("diff");
-    void navigate({
-      search: (previous) => ({
-        ...previous,
-        workspace: workspaceId,
-        path,
-        view: basis,
-      }),
-    });
-  };
-  const togglePanel = (panel: Exclude<RightPanel, "closed">) => {
-    setRightPanel((current) => (current === panel ? "closed" : panel));
-  };
-  const create = useMutation({
-    mutationFn: () => ipc.create(workspaceId ?? ""),
-    onSuccess: (thread) => {
-      setThreadSnapshot(client, thread);
-      void client.invalidateQueries({ queryKey: ["workspace"] });
-      void navigate({
-        search: (previous) => ({
-          ...previous,
-          workspace: workspaceId,
-          thread: thread.id,
-        }),
-      });
-    },
-    onError: (e) => setError(e.message),
-  });
+    const toggle = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setSidebarOpen((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", toggle, true);
+    return () => window.removeEventListener("keydown", toggle, true);
+  }, []);
   const openRepository = async () => {
     try {
       const path = await open({
@@ -103,348 +63,248 @@ export function Workbench() {
       if (typeof path !== "string") return;
       const workspace = await ipc.openWorkspace(path);
       await client.invalidateQueries({ queryKey: ["workspaces"] });
-      void navigate({ search: { workspace: workspace.id, view: "file" } });
+      void navigate({ search: { workspace: workspace.id } });
       setError(undefined);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     }
   };
-  const refresh = () => {
-    void client.invalidateQueries();
-  };
+  const selectThread = useCallback(
+    (workspace: string, thread: string) => {
+      void navigate({
+        search: (previous) => ({
+          ...previous,
+          workspace,
+          thread,
+        }),
+      });
+      void ipc
+        .resume(thread)
+        .then((snapshot) => setThreadSnapshot(client, snapshot))
+        .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    },
+    [client, navigate],
+  );
+  const selectWorkspace = (workspace: string) =>
+    void navigate({ search: { workspace } });
+  const newThread = () =>
+    void navigate({
+      search: (previous) => ({
+        ...previous,
+        workspace: workspaceId,
+        thread: undefined,
+      }),
+    });
   if (!native)
     return (
-      <div className="native-required">
-        <div className="brand-mark">Z1</div>
-        <h1>Z1 Code</h1>
+      <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm text-muted-foreground">
+        <div className="font-semibold text-2xl text-foreground">Z1 Code</div>
         <p>This workbench runs in its native macOS window.</p>
-        <code>pnpm tauri dev</code>
-        <p className="muted">
-          The native runtime owns your repositories and Codex processes.
-        </p>
+        <code className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-foreground">
+          pnpm tauri dev
+        </code>
       </div>
     );
-  if (workspaces.isPending)
-    return (
-      <div className="welcome">
-        <header className="welcome-top" data-tauri-drag-region>
-          Z1 Code
-        </header>
-        <main>
-          <p className="muted">Opening Z1 Code…</p>
-        </main>
-      </div>
-    );
-  if (!workspaceId)
-    return (
-      <div className="welcome">
-        <header className="welcome-top" data-tauri-drag-region>
-          Z1 Code
-        </header>
-        <main>
-          <h1>Z1 Code</h1>
-          <p>Open a repository to start a Codex conversation.</p>
-          <button className="primary" onClick={() => void openRepository()}>
-            <FolderOpen size={16} />
-            Open repository
-          </button>
-          {(error || workspaces.error) && (
-            <p className="error" role="alert">
-              {error ?? workspaces.error?.message}
-            </p>
-          )}
-          <small>Runs locally · Uses your installed Codex account</small>
-        </main>
-        <footer>
-          Local workspace <span>Codex</span>
-        </footer>
-      </div>
-    );
-  const workspace = view.data?.workspace;
-  const threads = view.data?.threads ?? [];
-  const selectedThread = threads.find(
-    (thread) => thread.id === selection.thread,
-  );
-  const inspectedPath =
-    rightPanel === "files"
-      ? selection.view === "file"
-        ? selection.path
-        : undefined
-      : selection.view !== "file"
-        ? selection.path
-        : undefined;
   return (
-    <div className="workbench">
-      <div className="panes">
-        <aside className="sidebar" aria-label="Repository conversations">
-          <header className="sidebar-title" data-tauri-drag-region>
-            Z1 Code
-          </header>
-          <div className="workspace-picker">
-            <select
-              aria-label="Selected repository"
-              value={workspaceId}
-              onChange={(event) => {
-                setRightPanel("closed");
-                void navigate({
-                  search: { workspace: event.target.value, view: "file" },
-                });
-              }}
+    <div
+      data-slot="sidebar-wrapper"
+      data-sidebar-state={sidebarOpen ? "expanded" : "collapsed"}
+      className="group/sidebar-wrapper flex w-full h-dvh min-h-0"
+      style={
+        {
+          "--sidebar-width": `${sidebarWidth}px`,
+          "--workspace-titlebar-content-left":
+            "calc(var(--workspace-controls-left) + var(--workspace-titlebar-control-size) + var(--workspace-titlebar-control-gap))",
+        } as React.CSSProperties
+      }
+    >
+      <div
+        className="group peer hidden text-sidebar-foreground md:block"
+        data-collapsible={sidebarOpen ? "" : "offcanvas"}
+        data-side="left"
+        data-slot="sidebar"
+        data-state={sidebarOpen ? "expanded" : "collapsed"}
+        data-variant="sidebar"
+      >
+        <div
+          data-slot="sidebar-gap"
+          className="relative w-(--sidebar-width) bg-transparent group-data-[collapsible=offcanvas]:w-0"
+        />
+        <div
+          data-slot="sidebar-container"
+          data-app-sidebar=""
+          role="navigation"
+          aria-label="Threads"
+          className="fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] border-r"
+        >
+          <div
+            data-sidebar="sidebar"
+            data-slot="sidebar-inner"
+            className="flex h-full w-full flex-col bg-sidebar"
+          >
+            <Sidebar
+              workspaces={list}
+              views={views.map((query) => query.data)}
+              workspaceId={workspaceId}
+              threadId={selection.thread}
+              onSelectThread={selectThread}
+              onSelectWorkspace={selectWorkspace}
+              onNewThread={newThread}
+              onOpenRepository={() => void openRepository()}
+            />
+          </div>
+          <SidebarRail
+            width={sidebarWidth}
+            onResize={setSidebarWidth}
+            onReset={() => {
+              localStorage.removeItem(SIDEBAR_KEY);
+              setSidebarWidth(clampSidebar(SIDEBAR_DEFAULT));
+            }}
+          />
+        </div>
+      </div>
+      <main
+        data-slot="sidebar-inset"
+        className="relative flex min-w-0 w-full flex-1 flex-col bg-background h-dvh min-h-0 overflow-hidden overscroll-y-none"
+      >
+        {workspaces.isPending ? null : workspaceId ? (
+          <ChatView
+            key={workspaceId}
+            workspaceId={workspaceId}
+            view={view?.data}
+            threadId={selection.thread}
+            onSelectWorkspace={selectWorkspace}
+            workspaces={list}
+            onOpenRepository={() => void openRepository()}
+          />
+        ) : (
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+            <header
+              data-tauri-drag-region="deep"
+              className="flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center gap-3 pl-(--workspace-gutter-start) pr-(--workspace-gutter-end) drag-region [[data-sidebar-state=collapsed]_&]:pl-[var(--workspace-titlebar-content-left)]"
+            />
+            <div
+              data-slot="empty"
+              className="flex min-w-0 flex-1 flex-col items-center justify-center text-balance text-center gap-6 p-6 md:p-12 [&_[data-slot=empty-title]]:text-2xl sm:[&_[data-slot=empty-title]]:text-3xl"
             >
-              {workspaces.data?.map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>
-                  {workspace.label}
-                </option>
-              ))}
-            </select>
-            <ChevronDown size={12} />
-          </div>
-          <div className="sidebar-actions">
-            <button className="quiet" onClick={() => void openRepository()}>
-              <FolderOpen size={14} /> Open repository
-            </button>
-            <button
-              className="quiet"
-              disabled={create.isPending}
-              onClick={() => create.mutate()}
-            >
-              <Plus size={14} /> New conversation
-            </button>
-          </div>
-          <div className="sidebar-heading">Conversations</div>
-          <div className="thread-list">
-            {threads.length === 0 && (
-              <p className="sidebar-empty">No conversations yet.</p>
-            )}
-            {threads.map((thread) => (
-              <button
-                key={thread.id}
-                className={`thread-row ${selection.thread === thread.id ? "selected" : ""}`}
-                onClick={() => {
-                  void navigate({
-                    search: (previous) => ({
-                      ...previous,
-                      workspace: workspaceId,
-                      thread: thread.id,
-                    }),
-                  });
-                  void ipc
-                    .resume(thread.id)
-                    .then((snapshot) => setThreadSnapshot(client, snapshot))
-                    .catch((e) =>
-                      setError(e instanceof Error ? e.message : String(e)),
-                    );
-                }}
-              >
-                <MessageSquare size={13} />
-                <span>{thread.title}</span>
-                {thread.session.kind === "running" && (
-                  <span className="status-dot active" />
-                )}
-              </button>
-            ))}
-          </div>
-          <footer className="sidebar-footer" title={workspace?.root}>
-            <FolderOpen size={12} />
-            <span>{workspace?.root ?? "Local workspace"}</span>
-          </footer>
-        </aside>
-        <main className="main-column">
-          <header className="titlebar">
-            <div className="breadcrumb" data-tauri-drag-region="deep">
-              <span>{workspace?.label ?? "Repository"}</span>
-              <span className="breadcrumb-divider">/</span>
-              <strong>{selectedThread?.title ?? "New conversation"}</strong>
-            </div>
-            <div className="titlebar-right">
-              <span
-                className="branch"
-                title={view.data?.branch || "Detached HEAD"}
-              >
-                <GitBranch size={13} />
-                {view.data?.branch || "Detached HEAD"}
-              </span>
-              <button
-                className="icon-button"
-                aria-label="Refresh workspace"
-                title="Refresh workspace"
-                onClick={refresh}
-              >
-                <RefreshCw size={15} />
-              </button>
-              <button
-                ref={filesToggle}
-                className="quiet panel-toggle"
-                aria-label="Toggle files panel"
-                aria-pressed={rightPanel === "files"}
-                onClick={() => togglePanel("files")}
-              >
-                <Files size={14} />
-                Files
-              </button>
-              <button
-                ref={changesToggle}
-                className="quiet panel-toggle"
-                aria-label="Toggle changes panel"
-                aria-pressed={rightPanel === "diff"}
-                onClick={() => togglePanel("diff")}
-              >
-                <GitCompareArrows size={14} />
-                Changes
-              </button>
-            </div>
-          </header>
-          <div className="main-content">
-            {selection.thread ? (
-              <Conversation
-                key={selection.thread}
-                threadId={selection.thread}
-              />
-            ) : (
-              <section className="conversation no-thread">
-                <div className="chat-empty">
-                  <h2>New conversation</h2>
-                  <p>
-                    Work with Codex in {workspace?.label ?? "this repository"}.
-                  </p>
-                  <button
-                    className="primary"
-                    disabled={create.isPending}
-                    onClick={() => create.mutate()}
-                  >
-                    <Plus size={15} />
-                    New conversation
-                  </button>
-                </div>
-              </section>
-            )}
-            {rightPanel !== "closed" && (
-              <aside className="inspector" aria-label="Repository inspector">
-                <header className="inspector-header">
+              <div className="w-full max-w-lg px-8 py-12">
+                <div className="flex flex-col items-center text-center max-w-none">
                   <div
-                    className="inspector-tabs"
-                    role="group"
-                    aria-label="Inspector view"
+                    data-slot="empty-title"
+                    className="font-semibold text-xl"
                   >
-                    <button
-                      className="quiet"
-                      aria-pressed={rightPanel === "files"}
-                      onClick={() => setRightPanel("files")}
-                    >
-                      Files
-                    </button>
-                    <button
-                      className="quiet"
-                      aria-pressed={rightPanel === "diff"}
-                      onClick={() => setRightPanel("diff")}
-                    >
-                      Changes
-                    </button>
+                    What should we work on?
                   </div>
-                  <button
-                    className="icon-button"
-                    aria-label="Close inspector"
-                    onClick={() => {
-                      const trigger =
-                        rightPanel === "files" ? filesToggle : changesToggle;
-                      setRightPanel("closed");
-                      trigger.current?.focus();
-                    }}
+                  <div
+                    data-slot="empty-description"
+                    className="text-muted-foreground text-sm [[data-slot=empty-title]+&]:mt-1"
                   >
-                    <X size={15} />
-                  </button>
-                </header>
-                <div className="inspector-selector">
-                  {view.isPending ? (
-                    <p className="pane-message">Loading repository…</p>
-                  ) : rightPanel === "files" ? (
-                    view.data && (
-                      <RepositoryTree
-                        key={workspaceId}
-                        paths={view.data.files}
-                        onSelect={chooseFile}
-                      />
-                    )
-                  ) : (
-                    <div className="changes-list">
-                      {view.data?.changes.length === 0 && (
-                        <p className="muted clean">Working tree clean</p>
-                      )}
-                      {view.data?.changes.map((change) => (
-                        <div className="change-row" key={change.path}>
-                          <span className="change-status">
-                            {change.status.trim()}
-                          </span>
-                          <span title={change.path}>{change.path}</span>
-                          {change.unstaged && (
-                            <button
-                              aria-label={`Unstaged diff for ${change.path}`}
-                              onClick={() =>
-                                chooseDiff(change.path, "unstaged")
-                              }
-                            >
-                              Work
-                            </button>
-                          )}
-                          {change.staged && (
-                            <button
-                              aria-label={`Staged diff for ${change.path}`}
-                              onClick={() => chooseDiff(change.path, "staged")}
-                            >
-                              Index
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
+                    Add a project to start your first thread.
+                  </div>
+                  <div className="mt-6 flex justify-center gap-2">
+                    <Button size="sm" onClick={() => void openRepository()}>
+                      <PlusIcon className="size-4" />
+                      Add project
+                    </Button>
+                  </div>
+                  {(error || workspaces.error) && (
+                    <p
+                      role="alert"
+                      className="mt-4 text-sm text-destructive-foreground"
+                    >
+                      {error ?? workspaces.error?.message}
+                    </p>
                   )}
                 </div>
-                <header className="code-header">
-                  <FileCode2 size={14} />
-                  <span title={inspectedPath}>
-                    {inspectedPath ??
-                      (rightPanel === "files"
-                        ? "Select a file"
-                        : "Select a change")}
-                  </span>
-                  {inspectedPath && (
-                    <small>
-                      {selection.view === "file"
-                        ? "File"
-                        : selection.view === "staged"
-                          ? "Staged"
-                          : "Working tree"}
-                    </small>
-                  )}
-                </header>
-                <div className="code-content">
-                  {inspectedPath ? (
-                    <CodePane
-                      workspaceId={workspaceId}
-                      path={inspectedPath}
-                      view={selection.view}
-                    />
-                  ) : (
-                    <div className="code-empty">
-                      <p>
-                        {rightPanel === "files"
-                          ? "Select a file to inspect its contents."
-                          : "Select Work or Index to inspect a diff."}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </aside>
-            )}
-          </div>
-          {(error || view.error) && (
-            <div className="global-error" role="alert">
-              <span>{error ?? view.error?.message}</span>
-              <button onClick={() => setError(undefined)}>Dismiss</button>
+              </div>
             </div>
+          </div>
+        )}
+        {error && workspaceId ? (
+          <div
+            role="alert"
+            className="pointer-events-auto absolute top-14 left-1/2 z-40 flex w-fit max-w-[min(48rem,calc(100%-2rem))] -translate-x-1/2 items-start gap-2 rounded-xl border border-error/32 alert-glass px-3.5 py-3 text-sm text-error-foreground"
+            data-variant="error"
+          >
+            <div className="line-clamp-3">{error}</div>
+            <button
+              type="button"
+              className="shrink-0 text-xs underline"
+              onClick={() => setError(undefined)}
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : null}
+      </main>
+      <div
+        data-sidebar-control=""
+        className="pointer-events-none fixed left-[var(--workspace-controls-left)] top-[var(--workspace-controls-top)] z-50 ml-px flex h-[var(--workspace-topbar-height)] items-center"
+      >
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Toggle main sidebar"
+          title="Toggle main sidebar (⌘B)"
+          aria-pressed={sidebarOpen}
+          className="size-[var(--workspace-titlebar-control-size)]! [-webkit-app-region:no-drag] pointer-events-auto"
+          onClick={() => setSidebarOpen((value) => !value)}
+        >
+          {sidebarOpen ? (
+            <PanelLeftCloseIcon className="size-4" />
+          ) : (
+            <PanelLeftIcon className="size-4" />
           )}
-        </main>
+          <span className="sr-only">Toggle Sidebar</span>
+        </Button>
       </div>
     </div>
+  );
+}
+
+function SidebarRail({
+  width,
+  onResize,
+  onReset,
+}: {
+  width: number;
+  onResize: (width: number) => void;
+  onReset: () => void;
+}) {
+  const drag = useRef<{ x: number; width: number } | null>(null);
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      aria-label="Resize Sidebar"
+      title="Drag to resize sidebar"
+      data-sidebar="rail"
+      className="-translate-x-1/2 -right-4 absolute inset-y-0 z-20 hidden w-4 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] hover:after:bg-sidebar-border sm:flex cursor-w-resize"
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        drag.current = { x: event.clientX, width };
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+      }}
+      onPointerMove={(event) => {
+        if (!drag.current) return;
+        onResize(
+          clampSidebar(drag.current.width + event.clientX - drag.current.x),
+        );
+      }}
+      onPointerUp={(event) => {
+        if (!drag.current) return;
+        const next = clampSidebar(
+          drag.current.width + event.clientX - drag.current.x,
+        );
+        drag.current = null;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        localStorage.setItem(SIDEBAR_KEY, String(next));
+        onResize(next);
+      }}
+      onDoubleClick={onReset}
+    />
   );
 }

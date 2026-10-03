@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "Z1 Code",
-        "width": 1440,
-        "height": 960,
+        "width": 1100,
+        "height": 780,
         "minWidth": 1000,
-        "minHeight": 650,
+        "minHeight": 620,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": {

@@ -9,8 +9,6 @@ import { Workbench } from "./Workbench";
 const search = z.object({
   workspace: z.uuid().optional(),
   thread: z.uuid().optional(),
-  path: z.string().optional(),
-  view: z.enum(["file", "unstaged", "staged"]).catch("file"),
 });
 export type Selection = z.infer<typeof search>;
 const route = createRootRoute({
