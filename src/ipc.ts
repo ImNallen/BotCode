@@ -105,6 +105,18 @@ const checkout = z.discriminatedUnion("kind", [
     branch: z.string(),
   }),
 ]);
+const branches = z.object({
+  branches: z.array(
+    z.object({
+      name: z.string(),
+      remote: z.boolean(),
+      current: z.boolean(),
+      default: z.boolean(),
+      worktree: z.string().nullable(),
+    }),
+  ),
+  origin: z.boolean(),
+});
 const thread = z.object({
   id,
   workspaceId: id,
@@ -176,10 +188,14 @@ export type Approval = z.infer<typeof approval>;
 export type Item = z.infer<typeof item>;
 export type ApprovalDecision = "accept" | "decline" | "cancel";
 export type Checkout = z.infer<typeof checkout>;
-export type CheckoutMode = Checkout["kind"];
+export type NewCheckout =
+  | { kind: "local" }
+  | { kind: "worktree"; base: string; fromOrigin: boolean };
 export type CheckoutRef = { workspaceId: string; threadId?: string };
+export type Branches = z.infer<typeof branches>;
+export type Branch = Branches["branches"][number];
 export const checkoutKey = (
-  scope: "workspace" | "file" | "diff",
+  scope: "workspace" | "file" | "diff" | "branches",
   { workspaceId, threadId }: CheckoutRef,
 ) => [scope, workspaceId, threadId ?? null];
 async function call<S extends z.ZodType>(
@@ -222,8 +238,24 @@ export const ipc = {
       { workspaceId, threadId: threadId ?? null, path, basis },
       diff,
     ),
-  create: (workspaceId: string, mode: CheckoutMode) =>
-    call("create_thread", { workspaceId, mode }, thread),
+  branches: ({ workspaceId, threadId }: CheckoutRef) =>
+    call(
+      "list_branches",
+      { workspaceId, threadId: threadId ?? null },
+      branches,
+    ),
+  switchBranch: (
+    { workspaceId, threadId }: CheckoutRef,
+    branch: string,
+    create: boolean,
+  ) =>
+    call(
+      "switch_branch",
+      { workspaceId, threadId: threadId ?? null, branch, create },
+      z.null(),
+    ),
+  create: (workspaceId: string, checkout: NewCheckout) =>
+    call("create_thread", { workspaceId, checkout }, thread),
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),
   resume: (threadId: string) => call("open_thread", { threadId }, thread),
   models: () => call("list_models", {}, z.array(modelOption)),

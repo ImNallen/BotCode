@@ -13,7 +13,7 @@ import {
 import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
 import type {
   ApprovalDecision,
-  CheckoutMode,
+  Checkout,
   CheckoutRef,
   Thread,
   Workspace,
@@ -34,8 +34,15 @@ import { RightPanel, emptyPanel, type PanelState } from "../panel/RightPanel";
 import { closeFiles, openFile } from "../panel/panelState";
 import { FileLinkProvider, type FileLinks } from "./ChatMarkdown";
 import { ApprovalDrawer } from "./ApprovalDrawer";
+import { BranchPicker, startsFromOrigin } from "./BranchPicker";
 import { Composer } from "./Composer";
 import { Timeline } from "./Timeline";
+
+type DraftCheckout = {
+  mode: Checkout["kind"];
+  base: string | null;
+  fromOrigin: boolean;
+};
 
 const busyKinds = new Set(["connecting", "running", "interrupting"]);
 
@@ -64,12 +71,17 @@ export function ChatView({
     effort: null,
     permissionMode: "approval-required",
   });
-  const { newThreadCheckout } = usePreferences().preferences;
-  const [draftCheckout, setDraftCheckout] =
-    useState<CheckoutMode>(newThreadCheckout);
+  const { newThreadCheckout, newWorktreesStartFromOrigin } =
+    usePreferences().preferences;
+  const draftDefaults = (): DraftCheckout => ({
+    mode: newThreadCheckout,
+    base: null,
+    fromOrigin: newWorktreesStartFromOrigin,
+  });
+  const [draftCheckout, setDraftCheckout] = useState(draftDefaults);
   useEffect(
-    () => setDraftCheckout(newThreadCheckout),
-    [threadId, newThreadCheckout],
+    () => setDraftCheckout(draftDefaults()),
+    [threadId, newThreadCheckout, newWorktreesStartFromOrigin],
   );
   const [error, setError] = useState<string>();
   const overlay = useRef<HTMLDivElement>(null);
@@ -112,6 +124,22 @@ export function ChatView({
     queryKey: checkoutKey("workspace", checkout),
     queryFn: () => ipc.workspace(checkout),
   });
+  const { data: branches } = useQuery({
+    queryKey: checkoutKey("branches", checkout),
+    queryFn: () => ipc.branches(checkout),
+  });
+  const base =
+    draftCheckout.base ??
+    (
+      branches?.branches.find((branch) => branch.default) ??
+      branches?.branches.find((branch) => branch.current)
+    )?.name ??
+    null;
+  const baseFromOrigin = startsFromOrigin(
+    branches,
+    base,
+    draftCheckout.fromOrigin,
+  );
   const settings = thread?.settings ?? draftSettings;
   const models = useQuery({
     queryKey: ["models"],
@@ -147,7 +175,12 @@ export function ChatView({
     mutationFn: async (text: string) => {
       let target = threadId ?? createdDraft?.id;
       if (!target) {
-        const created = await ipc.create(workspaceId, draftCheckout);
+        const created = await ipc.create(
+          workspaceId,
+          draftCheckout.mode === "worktree"
+            ? { kind: "worktree", base: base ?? "", fromOrigin: baseFromOrigin }
+            : { kind: "local" },
+        );
         setThreadSnapshot(client, created);
         target = created.id;
         setCreatedDraft(created);
@@ -253,6 +286,14 @@ export function ChatView({
     send.mutate(draft);
   };
   const title = isDraft ? "New thread" : (thread?.title ?? "");
+  const worktreeDraft =
+    isDraft && !createdDraft && draftCheckout.mode === "worktree";
+  const controlsDisabled =
+    busy ||
+    send.isPending ||
+    saveSettings.isPending ||
+    Boolean(approval) ||
+    (Boolean(threadId) && !thread);
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
       <div
@@ -488,25 +529,55 @@ export function ChatView({
                         isDraft && !createdDraft
                           ? {
                               kind: "draft",
-                              mode: draftCheckout,
-                              onChange: setDraftCheckout,
+                              mode: draftCheckout.mode,
+                              onChange: (mode) =>
+                                setDraftCheckout((current) => ({
+                                  ...current,
+                                  mode,
+                                })),
                             }
                           : (thread ?? createdDraft)?.checkout
                       }
-                      branch={view?.branch || undefined}
+                      branch={
+                        <BranchPicker
+                          checkout={checkout}
+                          branches={branches}
+                          value={
+                            worktreeDraft
+                              ? base
+                              : (branches?.branches.find(
+                                  (branch) => branch.current,
+                                )?.name ??
+                                (view?.branch || null))
+                          }
+                          worktreeBase={
+                            worktreeDraft
+                              ? {
+                                  fromOrigin: draftCheckout.fromOrigin,
+                                  onSelect: (name) =>
+                                    setDraftCheckout((current) => ({
+                                      ...current,
+                                      base: name,
+                                    })),
+                                  onFromOriginChange: (fromOrigin) =>
+                                    setDraftCheckout((current) => ({
+                                      ...current,
+                                      fromOrigin,
+                                    })),
+                                }
+                              : undefined
+                          }
+                          disabled={controlsDisabled}
+                          onError={setError}
+                        />
+                      }
                       settings={settings}
                       models={models.data ?? []}
                       modelsLoading={models.isPending}
                       modelsError={models.error?.message}
                       onRetryModels={() => void models.refetch()}
                       onSettingsChange={(next) => saveSettings.mutate(next)}
-                      settingsDisabled={
-                        busy ||
-                        send.isPending ||
-                        saveSettings.isPending ||
-                        Boolean(approval) ||
-                        (Boolean(threadId) && !thread)
-                      }
+                      settingsDisabled={controlsDisabled}
                       autoFocus
                     />
                     <div

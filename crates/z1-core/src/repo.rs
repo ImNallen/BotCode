@@ -21,13 +21,35 @@ pub fn open(path: &Path) -> Result<PathBuf> {
     let root = PathBuf::from(String::from_utf8_lossy(&bytes).trim()).canonicalize()?;
     Ok(root)
 }
-pub fn add_worktree(root: &Path, worktrees: &Path) -> Result<Checkout> {
+pub fn add_worktree(
+    root: &Path,
+    worktrees: &Path,
+    base: &str,
+    from_origin: bool,
+) -> Result<Checkout> {
     git(root, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).map_err(|_| {
         AppError::new(
             "worktree_unavailable",
             "Commit to this repository before starting a worktree.",
         )
     })?;
+    branch_name(root, base)?;
+    let origin = from_origin && git(root, &["remote", "get-url", "origin"]).is_ok();
+    let start = if origin {
+        let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
+        match git(root, &["fetch", "--quiet", "--no-tags", "origin", &refspec]) {
+            Err(e) if e.message.contains("couldn't find remote ref") => None,
+            fetched => {
+                fetched?;
+                let tracking = format!("refs/remotes/origin/{base}^{{commit}}");
+                git(root, &["rev-parse", "--verify", "--quiet", &tracking])
+                    .ok()
+                    .map(|sha| String::from_utf8_lossy(&sha).trim().to_owned())
+            }
+        }
+    } else {
+        None
+    };
     let id = &uuid::Uuid::new_v4().simple().to_string()[..8];
     let branch = format!("z1/{id}");
     let path = worktrees.join(format!("z1-{id}"));
@@ -40,13 +62,136 @@ pub fn add_worktree(root: &Path, worktrees: &Path) -> Result<Checkout> {
             "-b",
             &branch,
             &path.to_string_lossy(),
-            "HEAD",
+            start.as_deref().unwrap_or(base),
         ],
     )?;
     Ok(Checkout::Worktree {
         path: path.canonicalize()?,
         branch,
     })
+}
+pub fn switch_branch(root: &Path, name: &str, create: bool) -> Result<String> {
+    branch_name(root, name)?;
+    let exists = |prefix: &str| {
+        git(
+            root,
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("{prefix}{name}"),
+            ],
+        )
+        .is_ok()
+    };
+    if create {
+        git(root, &["switch", "-c", name])?;
+    } else if exists("refs/heads/") {
+        git(root, &["switch", name])?;
+    } else if exists("refs/remotes/") {
+        git(root, &["switch", "--track", name])?;
+    } else {
+        return Err(AppError::new(
+            "missing_branch",
+            format!("\"{name}\" was not found."),
+        ));
+    }
+    let current = git(root, &["branch", "--show-current"])?;
+    Ok(String::from_utf8_lossy(&current).trim().to_owned())
+}
+fn branch_name(root: &Path, name: &str) -> Result<()> {
+    git(root, &["check-ref-format", "--branch", name])
+        .map(drop)
+        .map_err(|_| {
+            AppError::new(
+                "invalid_branch",
+                format!("\"{name}\" is not a valid branch name."),
+            )
+        })
+}
+pub fn branches(root: &Path) -> Result<Branches> {
+    let refs = git(
+        root,
+        &[
+            "for-each-ref",
+            "--sort=refname",
+            "--sort=-committerdate",
+            "--format=%(refname)%00%(HEAD)%00%(worktreepath)%00%(symref)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    let origin_head = git(
+        root,
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    )
+    .ok();
+    let (mut local, mut remote) = (Vec::new(), Vec::new());
+    for line in String::from_utf8_lossy(&refs).lines() {
+        let [refname, head, worktree, symref] = line.split('\0').collect::<Vec<_>>()[..] else {
+            continue;
+        };
+        if !symref.is_empty() {
+            continue;
+        }
+        let branch = |name: &str, remote| Branch {
+            name: name.into(),
+            remote,
+            current: head == "*",
+            default: false,
+            worktree: (!worktree.is_empty()).then(|| {
+                Path::new(worktree)
+                    .canonicalize()
+                    .unwrap_or(worktree.into())
+            }),
+        };
+        if let Some(name) = refname.strip_prefix("refs/heads/") {
+            local.push(branch(name, false));
+        } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
+            remote.push(branch(name, true));
+        }
+    }
+    let origin = remote.iter().any(|b| b.name.starts_with("origin/"));
+    let default = origin_head
+        .as_deref()
+        .map(|target| String::from_utf8_lossy(target).trim().to_owned())
+        .and_then(|target| {
+            target
+                .strip_prefix("refs/remotes/origin/")
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            ["main", "master"]
+                .into_iter()
+                .find(|name| local.iter().any(|b| b.name == *name))
+                .map(str::to_owned)
+        });
+    remote.retain(|b| {
+        b.name
+            .strip_prefix("origin/")
+            .is_none_or(|name| !local.iter().any(|l| l.name == name))
+    });
+    let mut branches: Vec<_> = local.into_iter().chain(remote).collect();
+    if let Some(default) = default {
+        for b in &mut branches {
+            let name = if b.remote {
+                b.name.strip_prefix("origin/")
+            } else {
+                Some(b.name.as_str())
+            };
+            b.default = name == Some(default.as_str());
+        }
+    }
+    branches.sort_by_key(|b| {
+        if b.current {
+            0
+        } else if b.default {
+            1
+        } else {
+            2
+        }
+    });
+    Ok(Branches { branches, origin })
 }
 fn relative(path: &str) -> Result<&Path> {
     let p = Path::new(path);
