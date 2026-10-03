@@ -1,0 +1,38 @@
+{
+  "name": "z1-code",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "test:core": "cargo test -p z1-core",
+    "smoke": "cargo run -p z1-core --bin smoke",
+    "format": "prettier --write 'src/**/*.{ts,tsx,css}' '*.{json,ts,yaml}' 'src-tauri/*.json' 'src-tauri/capabilities/*.json'",
+    "format:check": "prettier --check 'src/**/*.{ts,tsx,css}' '*.{json,ts,yaml}' 'src-tauri/*.json' 'src-tauri/capabilities/*.json'"
+  },
+  "dependencies": {
+    "@pierre/diffs": "1.5.1",
+    "@pierre/trees": "1.0.0-beta.6",
+    "@tanstack/react-query": "5.104.1",
+    "@tanstack/react-router": "1.170.41",
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
+    "lucide-react": "^0.577.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.0",
+    "prettier": "3.8.3",
+    "typescript": "^5.9.3",
+    "vite": "8.3.2"
+  }
+}
