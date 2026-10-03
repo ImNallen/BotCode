@@ -2,5 +2,9 @@
   "identifier": "main",
   "description": "Z1 workbench window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "core:window:allow-start-dragging"
+  ]
 }

@@ -11,7 +11,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-Open a Git repository, choose a file or a Git change, and start a conversation. Approvals offer Allow once, Decline, or Cancel turn. Send with Command+Enter. Stop is available after Codex acknowledges the running turn.
+Open a Git repository and start a conversation. Use Files or Changes in the header to inspect the working copy in the right panel. Approvals offer Allow once, Decline, or Cancel turn. Send with Command+Enter. Stop is available after Codex acknowledges the running turn.
 
 The browser build explains that the native runtime is required. It does not simulate repositories or conversations.
 
@@ -48,3 +48,5 @@ AI review triage for pull requests is the intended differentiator. Review findin
 The implementation and recovery decisions are in [docs/architecture.md](docs/architecture.md).
 
 Native verification results are in [docs/verification.md](docs/verification.md).
+
+The visual baseline and layout ownership are in [docs/ui-baseline.md](docs/ui-baseline.md).

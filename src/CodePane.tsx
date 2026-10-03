@@ -45,7 +45,10 @@ export function CodePane({
     ) : (
       <File
         file={{ name: file.data.name, contents: file.data.contents }}
-        options={{ theme: "pierre-dark" }}
+        options={{
+          theme: { light: "pierre-light", dark: "pierre-dark" },
+          themeType: "system",
+        }}
       />
     );
   }
@@ -56,7 +59,11 @@ export function CodePane({
       <MultiFileDiff
         oldFile={{ name: diff.data.old_name, contents: diff.data.old_contents }}
         newFile={{ name: diff.data.new_name, contents: diff.data.new_contents }}
-        options={{ theme: "pierre-dark", diffStyle: "split" }}
+        options={{
+          theme: { light: "pierre-light", dark: "pierre-dark" },
+          themeType: "system",
+          diffStyle: "unified",
+        }}
       />
     );
   }

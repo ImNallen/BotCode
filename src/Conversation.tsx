@@ -199,115 +199,116 @@ export function Conversation({ threadId }: { threadId: string }) {
         )}
       </header>
       <div className="transcript">
-        {thread.turns.length === 0 && (
-          <div className="chat-empty">
-            <span className="z1-small">Z1</span>
-            <h2>Start with an idea.</h2>
-            <p>
-              Ask Codex to explore your repository,
-              <br />
-              fix a bug, or build something new.
-            </p>
+        <div className="chat-lane">
+          {thread.turns.length === 0 && (
+            <div className="chat-empty">
+              <h2>New conversation</h2>
+              <p>Ask Codex about this repository.</p>
+            </div>
+          )}
+          {thread.turns.map((turn) => (
+            <article className="turn" key={turn.id}>
+              <div className="user-message">
+                <small>You</small>
+                <p>{turn.prompt}</p>
+              </div>
+              <div className="turn-response">
+                <span className="agent-label">Codex</span>
+                {turn.items.map((item) => (
+                  <ItemView item={item} key={item.id} />
+                ))}
+                {turn.items.length === 0 &&
+                  turn.execution.kind === "running" && (
+                    <p className="working">Working…</p>
+                  )}
+                {turn.delivery.kind === "not_sent" ||
+                turn.delivery.kind === "uncertain" ? (
+                  <div className="turn-warning">{turn.delivery.reason}</div>
+                ) : null}
+                {turn.execution.kind === "failed" ||
+                turn.execution.kind === "lost" ? (
+                  <div className="turn-warning">{turn.execution.reason}</div>
+                ) : null}
+                <small className="turn-status">
+                  {turn.execution.kind.replaceAll("_", " ")}
+                </small>
+              </div>
+            </article>
+          ))}
+          {pending.map((approval) => (
+            <ApprovalCard
+              key={approval.id}
+              approval={approval}
+              busy={approve.isPending}
+              onAnswer={(id, decision) => approve.mutate({ id, decision })}
+            />
+          ))}
+          <div ref={end} />
+        </div>
+      </div>
+      <div className="composer-lane">
+        {thread.diagnostic && (
+          <div className="diagnostic">{thread.diagnostic}</div>
+        )}
+        {["dormant", "unavailable"].includes(thread.session.kind) && (
+          <div className="resume-row">
+            <span>
+              {thread.session.kind === "dormant"
+                ? "Saved conversation. Reconnect to continue."
+                : "Codex is unavailable."}
+            </span>
+            <button disabled={resume.isPending} onClick={() => resume.mutate()}>
+              <RotateCcw size={13} />
+              Reconnect
+            </button>
           </div>
         )}
-        {thread.turns.map((turn) => (
-          <article className="turn" key={turn.id}>
-            <div className="user-message">
-              <small>You</small>
-              <p>{turn.prompt}</p>
-            </div>
-            <div className="turn-response">
-              <span className="agent-label">Codex</span>
-              {turn.items.map((item) => (
-                <ItemView item={item} key={item.id} />
-              ))}
-              {turn.items.length === 0 && turn.execution.kind === "running" && (
-                <p className="working">Working…</p>
-              )}
-              {turn.delivery.kind === "not_sent" ||
-              turn.delivery.kind === "uncertain" ? (
-                <div className="turn-warning">{turn.delivery.reason}</div>
-              ) : null}
-              {turn.execution.kind === "failed" ||
-              turn.execution.kind === "lost" ? (
-                <div className="turn-warning">{turn.execution.reason}</div>
-              ) : null}
-              <small className="turn-status">
-                {turn.execution.kind.replaceAll("_", " ")}
-              </small>
-            </div>
-          </article>
-        ))}
-        {pending.map((approval) => (
-          <ApprovalCard
-            key={approval.id}
-            approval={approval}
-            busy={approve.isPending}
-            onAnswer={(id, decision) => approve.mutate({ id, decision })}
-          />
-        ))}
-        <div ref={end} />
-      </div>
-      {thread.diagnostic && (
-        <div className="diagnostic">{thread.diagnostic}</div>
-      )}
-      {["dormant", "unavailable"].includes(thread.session.kind) && (
-        <div className="resume-row">
-          <span>
-            {thread.session.kind === "dormant"
-              ? "Saved conversation. Reconnect to continue."
-              : "Codex is unavailable."}
-          </span>
-          <button disabled={resume.isPending} onClick={() => resume.mutate()}>
-            <RotateCcw size={13} />
-            Reconnect
-          </button>
-        </div>
-      )}
-      {error && (
-        <div className="composer-error" role="alert">
-          {error}
-        </div>
-      )}
-      <form
-        className="composer"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSubmit();
-        }}
-      >
-        <textarea
-          aria-label="Message Codex"
-          placeholder="What would you like to build?"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              onSubmit();
-            }
+        {error && (
+          <div className="composer-error" role="alert">
+            {error}
+          </div>
+        )}
+        <form
+          className="composer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmit();
           }}
-        />
-        <div className="composer-bottom">
-          <span>
-            Workspace write <span className="separator">·</span> Review required
-          </span>
-          <button
-            className="send"
-            type="submit"
-            aria-label="Send message"
-            disabled={busy || send.isPending || !text.trim()}
-          >
-            <ArrowUp size={17} />
-          </button>
-        </div>
-      </form>
-      <footer className="chat-footer">
-        ⌘ Enter to send <span>Uses your installed Codex account</span>
-      </footer>
+        >
+          <textarea
+            aria-label="Message Codex"
+            placeholder="Message Codex…"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                onSubmit();
+              }
+            }}
+          />
+          <div className="composer-bottom">
+            <span>
+              Workspace write <span className="separator">·</span> Review
+              required
+            </span>
+            <button
+              className="send"
+              type="submit"
+              aria-label="Send message"
+              disabled={busy || send.isPending || !text.trim()}
+            >
+              <ArrowUp size={17} />
+            </button>
+          </div>
+        </form>
+        <footer className="chat-footer">
+          ⌘ Enter to send <span>Uses your installed Codex account</span>
+        </footer>
+      </div>
     </section>
   );
 }
