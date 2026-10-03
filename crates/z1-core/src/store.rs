@@ -47,6 +47,23 @@ impl Store {
         )?;
         Ok(())
     }
+    pub fn update_workspace(&self, w: &Workspace) -> Result<()> {
+        self.db.execute(
+            "UPDATE workspaces SET data=?2 WHERE id=?1",
+            params![w.id.to_string(), serde_json::to_string(w)?],
+        )?;
+        Ok(())
+    }
+    pub fn remove_workspace(&mut self, id: &WorkspaceId) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "DELETE FROM threads WHERE workspace_id=?1",
+            [id.to_string()],
+        )?;
+        tx.execute("DELETE FROM workspaces WHERE id=?1", [id.to_string()])?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn save(&mut self, t: &ThreadSnapshot) -> Result<()> {
         self.db.execute("INSERT INTO threads(id,workspace_id,data) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data",params![t.id.to_string(),t.workspace_id.to_string(),serde_json::to_string(t)?])?;
         Ok(())

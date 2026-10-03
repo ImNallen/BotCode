@@ -9,6 +9,18 @@ pub async fn open_workspace(app: State<'_, App>, path: String) -> Result<Workspa
     app.open_workspace(path.into()).await
 }
 #[tauri::command]
+pub async fn rename_workspace(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    label: String,
+) -> Result<Workspace> {
+    app.rename_workspace(workspace_id, label).await
+}
+#[tauri::command]
+pub async fn remove_workspace(app: State<'_, App>, workspace_id: WorkspaceId) -> Result<()> {
+    app.remove_workspace(workspace_id).await
+}
+#[tauri::command]
 pub fn scratch_available(app: State<'_, App>) -> bool {
     app.scratch_available()
 }

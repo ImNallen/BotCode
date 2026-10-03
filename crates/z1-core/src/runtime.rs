@@ -55,6 +55,8 @@ enum Command {
     List(Reply<Vec<Workspace>>),
     OpenWorkspace(PathBuf, Reply<Workspace>),
     EnsureScratch(PathBuf, Reply<Workspace>),
+    RenameWorkspace(WorkspaceId, String, Reply<Workspace>),
+    RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
     BeginSwitch(WorkspaceId, Option<ThreadId>, Reply<PathBuf>),
     EndSwitch(PathBuf, Option<(ThreadId, String)>, Reply<()>),
@@ -188,6 +190,13 @@ impl App {
     pub async fn ensure_scratch(&self) -> Result<Workspace> {
         let root = self.scratch.clone().ok_or_else(scratch_unavailable)?;
         self.call(|r| Command::EnsureScratch(root, r)).await
+    }
+    pub async fn rename_workspace(&self, id: WorkspaceId, label: String) -> Result<Workspace> {
+        self.call(|r| Command::RenameWorkspace(id, label, r)).await
+    }
+    /// Deletes the project entry and its threads. Files on disk are left alone.
+    pub async fn remove_workspace(&self, id: WorkspaceId) -> Result<()> {
+        self.call(|r| Command::RemoveWorkspace(id, r)).await
     }
     async fn checkout(
         &self,
@@ -420,6 +429,62 @@ struct Owner {
     done: mpsc::Sender<Completion>,
 }
 impl Owner {
+    fn workspace(&self, id: &WorkspaceId) -> Result<&Workspace> {
+        self.workspaces
+            .get(id)
+            .ok_or_else(|| AppError::new("missing_workspace", "Repository not found."))
+    }
+    fn rename_workspace(&mut self, id: &WorkspaceId, label: &str) -> Result<Workspace> {
+        let mut w = self.workspace(id)?.clone();
+        if w.kind == WorkspaceKind::Scratch {
+            return Err(AppError::new(
+                "invalid_workspace",
+                "Threads without a project cannot be renamed.",
+            ));
+        }
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(AppError::new(
+                "invalid_label",
+                "Project name cannot be empty.",
+            ));
+        }
+        w.label = label.into();
+        self.store.update_workspace(&w)?;
+        self.workspaces.insert(w.id.clone(), w.clone());
+        Ok(w)
+    }
+    fn remove_workspace(&mut self, id: &WorkspaceId) -> Result<()> {
+        let w = self.workspace(id)?;
+        let threads: Vec<&ThreadSnapshot> = self
+            .threads
+            .values()
+            .filter(|t| &t.workspace_id == id)
+            .collect();
+        let owns = |thread: &ThreadId| threads.iter().any(|t| &t.id == thread);
+        let busy = threads.iter().any(|t| {
+            matches!(
+                t.session,
+                SessionState::Connecting | SessionState::Running | SessionState::Interrupting
+            ) || self.switching.contains(t.root(w))
+        }) || self.switching.contains(&w.root)
+            || self.leases.values().any(owns)
+            || self.pending.iter().any(|job| owns(job.thread()));
+        if busy {
+            return Err(AppError::new(
+                "busy",
+                "Stop this project's running conversations before removing it.",
+            ));
+        }
+        let removed: HashSet<ThreadId> = threads.iter().map(|t| t.id.clone()).collect();
+        self.store.remove_workspace(id)?;
+        self.threads.retain(|id, _| !removed.contains(id));
+        self.dirty.retain(|id| !removed.contains(id));
+        self.routes
+            .retain(|_, route| !removed.contains(&route.thread));
+        self.workspaces.remove(id);
+        Ok(())
+    }
     fn thread(&self, id: &ThreadId) -> Result<&ThreadSnapshot> {
         self.threads
             .get(id)
@@ -430,10 +495,7 @@ impl Owner {
         id: &WorkspaceId,
         thread: Option<ThreadId>,
     ) -> Result<(Workspace, Location)> {
-        let w = self
-            .workspaces
-            .get(id)
-            .ok_or_else(|| AppError::new("missing_workspace", "Repository not found."))?;
+        let w = self.workspace(id)?;
         let location = match thread {
             None if w.kind == WorkspaceKind::Scratch => Location::Unassigned,
             None => Location::Repository(w.root.clone()),
@@ -580,6 +642,12 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
+            Command::RenameWorkspace(id, label, reply) => {
+                let _ = reply.send(self.rename_workspace(&id, &label));
+            }
+            Command::RemoveWorkspace(id, reply) => {
+                let _ = reply.send(self.remove_workspace(&id));
+            }
             Command::Checkout(id, thread, reply) => {
                 let _ = reply.send(self.checkout(&id, thread));
             }
@@ -626,9 +694,7 @@ impl Owner {
             }
             Command::Create(workspace_id, checkout, reply) => {
                 let result = (|| {
-                    if !self.workspaces.contains_key(&workspace_id) {
-                        return Err(AppError::new("missing_workspace", "Repository not found."));
-                    }
+                    self.workspace(&workspace_id)?;
                     let t = ThreadSnapshot {
                         id: ThreadId::default(),
                         workspace_id,
@@ -1228,7 +1294,10 @@ impl Owner {
                 thread,
                 result: Err(e),
             } if epoch == self.epoch => {
-                let t = self.threads.get_mut(&thread).unwrap();
+                // The turn can finish before this reply arrives, and the project can be removed in between.
+                let Some(t) = self.threads.get_mut(&thread) else {
+                    return Ok(());
+                };
                 t.diagnostic = Some(format!("Stop was not confirmed: {}", e.message));
                 self.commit(&thread)?;
                 self.lose(

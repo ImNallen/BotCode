@@ -1554,3 +1554,156 @@ async fn folder_threads_browse_files_without_git() {
     assert_eq!(cwds, vec![path.to_string_lossy().into_owned()]);
     app.shutdown().await.unwrap();
 }
+fn second_repository(f: &Fixture) -> std::path::PathBuf {
+    let root = f.repository.parent().unwrap().join("other");
+    std::fs::create_dir(&root).unwrap();
+    git_output(&root, &["init", "-q", "-b", "main"]);
+    root
+}
+#[tokio::test]
+async fn renamed_projects_keep_their_name_after_restart() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    assert_eq!(workspace.label, "repository");
+    let renamed = app
+        .rename_workspace(workspace.id.clone(), "  Website  ".into())
+        .await
+        .unwrap();
+    assert_eq!(renamed.label, "Website");
+    assert_eq!(renamed.root, workspace.root);
+    let error = |result: Result<Workspace>| result.unwrap_err().code;
+    assert_eq!(
+        error(
+            app.rename_workspace(workspace.id.clone(), "   ".into())
+                .await
+        ),
+        "invalid_label"
+    );
+    let scratch = app.ensure_scratch().await.unwrap();
+    assert_eq!(
+        error(
+            app.rename_workspace(scratch.id.clone(), "Notes".into())
+                .await
+        ),
+        "invalid_workspace"
+    );
+    assert_eq!(
+        error(
+            app.rename_workspace(WorkspaceId::default(), "Ghost".into())
+                .await
+        ),
+        "missing_workspace"
+    );
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    let labels: Vec<_> = app
+        .list_workspaces()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|w| (w.id, w.label))
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            (scratch.id, "No project".to_string()),
+            (workspace.id, "Website".to_string())
+        ]
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn removing_a_project_deletes_its_threads_and_leaves_files() {
+    let f = Fixture::new();
+    let other_root = second_repository(&f);
+    let app = App::open(f.config.clone()).await.unwrap();
+    let removed = app.open_workspace(f.repository.clone()).await.unwrap();
+    let kept = app.open_workspace(other_root.clone()).await.unwrap();
+    let doomed = app
+        .create_thread(removed.id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    let survivor = app
+        .create_thread(kept.id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    app.remove_workspace(removed.id.clone()).await.unwrap();
+    let ids = |rows: Vec<Workspace>| rows.into_iter().map(|w| w.id).collect::<Vec<_>>();
+    assert_eq!(
+        ids(app.list_workspaces().await.unwrap()),
+        vec![kept.id.clone()]
+    );
+    assert_eq!(
+        app.thread(doomed.id.clone()).await.unwrap_err().code,
+        "missing_thread"
+    );
+    assert_eq!(
+        app.workspace_view(removed.id.clone(), None)
+            .await
+            .unwrap_err()
+            .code,
+        "missing_workspace"
+    );
+    assert_eq!(
+        app.remove_workspace(removed.id.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "missing_workspace"
+    );
+    assert!(f.repository.join(".git").is_dir());
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        ids(app.list_workspaces().await.unwrap()),
+        vec![kept.id.clone()]
+    );
+    assert_eq!(
+        app.thread(doomed.id.clone()).await.unwrap_err().code,
+        "missing_thread"
+    );
+    let view = app.workspace_view(kept.id.clone(), None).await.unwrap();
+    let threads: Vec<_> = view.threads.into_iter().map(|t| t.id).collect();
+    assert_eq!(threads, vec![survivor.id]);
+    let readded = app.open_workspace(f.repository.clone()).await.unwrap();
+    assert_ne!(readded.id, removed.id);
+    assert_eq!(readded.label, "repository");
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn running_projects_cannot_be_removed_until_their_turn_ends() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "hold".into(), "hold".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Running)
+    })
+    .await;
+    let error = app
+        .remove_workspace(thread.workspace_id.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "busy");
+    assert_eq!(
+        error.message,
+        "Stop this project's running conversations before removing it."
+    );
+    app.interrupt(thread.id.clone()).await.unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.session, SessionState::Ready)
+    })
+    .await;
+    app.remove_workspace(thread.workspace_id.clone())
+        .await
+        .unwrap();
+    assert!(app.list_workspaces().await.unwrap().is_empty());
+    assert_eq!(
+        app.thread(thread.id.clone()).await.unwrap_err().code,
+        "missing_thread"
+    );
+    app.shutdown().await.unwrap();
+}
