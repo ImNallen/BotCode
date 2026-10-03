@@ -25,7 +25,7 @@ import {
   TextWrapIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ipc, type WorkspaceView } from "../ipc";
+import { checkoutKey, ipc, type CheckoutRef, type WorkspaceView } from "../ipc";
 import { cn } from "../lib/cn";
 import { Menu } from "../ui/menu";
 import { Button, Toggle } from "../ui/controls";
@@ -148,7 +148,7 @@ function treeStatus(fileDiff: FileDiffMetadata): DiffFileTreeEntry["status"] {
 }
 
 function useDiffFiles(
-  workspaceId: string,
+  checkout: CheckoutRef,
   view: WorkspaceView | undefined,
   scope: Scope,
   ignoreWhitespace: boolean,
@@ -164,8 +164,8 @@ function useDiffFiles(
   );
   const reads = useQueries({
     queries: requests.map(({ change, basis }) => ({
-      queryKey: ["diff", workspaceId, change.path, basis],
-      queryFn: () => ipc.diff(workspaceId, change.path, basis),
+      queryKey: [...checkoutKey("diff", checkout), change.path, basis],
+      queryFn: () => ipc.diff(checkout, change.path, basis),
     })),
     combine: (results) => ({
       pending: results.some((result) => result.isPending),
@@ -213,11 +213,11 @@ function useDiffFiles(
 const NONE_EXPANDED: ReadonlySet<string> = new Set();
 
 export function DiffSurface({
-  workspaceId,
+  checkout,
   view,
   onOpenFile,
 }: {
-  workspaceId: string;
+  checkout: CheckoutRef;
   view: WorkspaceView | undefined;
   onOpenFile: (path: string) => void;
 }) {
@@ -248,9 +248,10 @@ export function DiffSurface({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [reveal, setReveal] = useState<{ path: string } | null>(null);
   const viewer = useRef<CodeViewHandle<undefined, undefined>>(null);
-  const refreshing = useIsFetching({ queryKey: ["diff", workspaceId] }) > 0;
+  const refreshing =
+    useIsFetching({ queryKey: checkoutKey("diff", checkout) }) > 0;
   const { pending, files, problems } = useDiffFiles(
-    workspaceId,
+    checkout,
     view,
     scope,
     ignoreWhitespace,
@@ -307,9 +308,11 @@ export function DiffSurface({
   }, [reveal, items]);
 
   const refresh = () => {
-    void client.invalidateQueries({ queryKey: ["workspace", workspaceId] });
-    void client.invalidateQueries({ queryKey: ["diff", workspaceId] });
-    void client.invalidateQueries({ queryKey: ["file", workspaceId] });
+    void client.invalidateQueries({
+      queryKey: checkoutKey("workspace", checkout),
+    });
+    void client.invalidateQueries({ queryKey: checkoutKey("diff", checkout) });
+    void client.invalidateQueries({ queryKey: checkoutKey("file", checkout) });
   };
 
   const header = (

@@ -10,12 +10,12 @@ import {
   Minimize2Icon,
   PanelRightIcon,
 } from "lucide-react";
-import { ipc, setThreadSnapshot } from "../ipc";
+import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
 import type {
   ApprovalDecision,
+  CheckoutRef,
   Thread,
   Workspace,
-  WorkspaceView,
   SessionSettings,
 } from "../ipc";
 import { cn } from "../lib/cn";
@@ -39,14 +39,12 @@ const busyKinds = new Set(["connecting", "running", "interrupting"]);
 
 export function ChatView({
   workspaceId,
-  view,
   threadId,
   workspaces,
   onSelectWorkspace,
   onOpenRepository,
 }: {
   workspaceId: string;
-  view: WorkspaceView | undefined;
   threadId: string | undefined;
   workspaces: Workspace[];
   onSelectWorkspace: (workspaceId: string) => void;
@@ -92,6 +90,14 @@ export function ChatView({
     enabled: Boolean(threadId),
   });
   const thread = threadId ? query.data : undefined;
+  const checkout: CheckoutRef = {
+    workspaceId,
+    threadId: thread?.checkout.kind === "worktree" ? thread.id : undefined,
+  };
+  const { data: view } = useQuery({
+    queryKey: checkoutKey("workspace", checkout),
+    queryFn: () => ipc.workspace(checkout),
+  });
   const settings = thread?.settings ?? draftSettings;
   const models = useQuery({
     queryKey: ["models"],
@@ -127,7 +133,7 @@ export function ChatView({
     mutationFn: async (text: string) => {
       let target = threadId ?? createdDraft.current;
       if (!target) {
-        const created = await ipc.create(workspaceId);
+        const created = await ipc.create(workspaceId, "local");
         setThreadSnapshot(client, created);
         target = created.id;
         createdDraft.current = target;
@@ -493,7 +499,7 @@ export function ChatView({
       </div>
       {panelOpen ? (
         <RightPanel
-          workspaceId={workspaceId}
+          checkout={checkout}
           view={view}
           state={panel}
           onChange={setPanel}

@@ -12,32 +12,36 @@ pub async fn open_workspace(app: State<'_, App>, path: String) -> Result<Workspa
 pub async fn workspace_view(
     app: State<'_, App>,
     workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
 ) -> Result<WorkspaceView> {
-    app.workspace_view(workspace_id).await
+    app.workspace_view(workspace_id, thread_id).await
 }
 #[tauri::command]
 pub async fn read_file(
     app: State<'_, App>,
     workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
     path: String,
 ) -> Result<FileView> {
-    app.read_file(workspace_id, path).await
+    app.read_file(workspace_id, thread_id, path).await
 }
 #[tauri::command]
 pub async fn read_diff(
     app: State<'_, App>,
     workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
     path: String,
     basis: DiffBasis,
 ) -> Result<DiffView> {
-    app.read_diff(workspace_id, path, basis).await
+    app.read_diff(workspace_id, thread_id, path, basis).await
 }
 #[tauri::command]
 pub async fn create_thread(
     app: State<'_, App>,
     workspace_id: WorkspaceId,
+    mode: CheckoutMode,
 ) -> Result<ThreadSnapshot> {
-    app.create_thread(workspace_id).await
+    app.create_thread(workspace_id, mode).await
 }
 #[tauri::command]
 pub async fn thread_snapshot(app: State<'_, App>, thread_id: ThreadId) -> Result<ThreadSnapshot> {

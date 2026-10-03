@@ -74,9 +74,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     config.data_dir = root.join("state");
     let app = App::open(config.clone()).await?;
     let workspace = app.open_workspace(repository.clone()).await?;
-    let view = app.workspace_view(workspace.id.clone()).await?;
+    let view = app.workspace_view(workspace.id.clone(), None).await?;
     assert_eq!(view.files, vec!["README.md"]);
-    let thread = app.create_thread(workspace.id).await?;
+    let thread = app.create_thread(workspace.id, CheckoutMode::Local).await?;
     let receipt=app.submit(thread.id.clone(),"smoke-first".into(),"Do not use any tools or change files. Reply with Z1_CORE_OK followed by roughly 100 words about local applications.".into()).await?;
     let (first, streamed) = wait(&app, thread.id.clone(), &receipt).await?;
     let native = first
