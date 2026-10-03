@@ -72,6 +72,35 @@ pub fn add_worktree(
         branch,
     })
 }
+pub fn switch_branch(root: &Path, name: &str, create: bool) -> Result<String> {
+    branch_name(root, name)?;
+    let exists = |prefix: &str| {
+        git(
+            root,
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("{prefix}{name}"),
+            ],
+        )
+        .is_ok()
+    };
+    if create {
+        git(root, &["switch", "-c", name])?;
+    } else if exists("refs/heads/") {
+        git(root, &["switch", name])?;
+    } else if exists("refs/remotes/") {
+        git(root, &["switch", "--track", name])?;
+    } else {
+        return Err(AppError::new(
+            "missing_branch",
+            format!("\"{name}\" was not found."),
+        ));
+    }
+    let current = git(root, &["branch", "--show-current"])?;
+    Ok(String::from_utf8_lossy(&current).trim().to_owned())
+}
 fn branch_name(root: &Path, name: &str) -> Result<()> {
     git(root, &["check-ref-format", "--branch", name])
         .map(drop)

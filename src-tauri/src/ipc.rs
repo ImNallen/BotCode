@@ -44,6 +44,17 @@ pub async fn list_branches(
     app.list_branches(workspace_id, thread_id).await
 }
 #[tauri::command]
+pub async fn switch_branch(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    branch: String,
+    create: bool,
+) -> Result<()> {
+    app.switch_branch(workspace_id, thread_id, branch, create)
+        .await
+}
+#[tauri::command]
 pub async fn create_thread(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

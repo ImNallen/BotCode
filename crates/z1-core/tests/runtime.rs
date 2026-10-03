@@ -1199,3 +1199,95 @@ async fn worktrees_start_from_origin_when_asked() {
     );
     app.shutdown().await.unwrap();
 }
+#[tokio::test]
+async fn switch_branch_changes_the_checkout_unless_its_lease_is_held() {
+    let f = Fixture::new();
+    f.commit();
+    add_origin(&f);
+    git_output(&f.repository, &["push", "-q", "origin", "main:feature"]);
+    git_output(&f.repository, &["fetch", "-q", "origin"]);
+    git_output(&f.repository, &["branch", "idle"]);
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let current = |root: &std::path::Path| git_output(root, &["branch", "--show-current"]);
+    let switch = |thread: Option<&ThreadId>, branch: &str, create: bool| {
+        app.switch_branch(workspace.id.clone(), thread.cloned(), branch.into(), create)
+    };
+    switch(None, "idle", false).await.unwrap();
+    assert_eq!(current(&f.repository), "idle");
+    switch(None, "fresh", true).await.unwrap();
+    assert_eq!(current(&f.repository), "fresh");
+    switch(None, "origin/feature", false).await.unwrap();
+    assert_eq!(current(&f.repository), "feature");
+    for name in ["bad name", "-x", "HEAD"] {
+        assert_eq!(
+            switch(None, name, true).await.unwrap_err().code,
+            "invalid_branch"
+        );
+    }
+    assert_eq!(current(&f.repository), "feature");
+    let isolated = app
+        .create_thread(workspace.id.clone(), main_worktree())
+        .await
+        .unwrap();
+    let (path, _) = worktree(&isolated.checkout);
+    assert_eq!(
+        switch(Some(&isolated.id), "feature", false)
+            .await
+            .unwrap_err()
+            .code,
+        "git"
+    );
+    switch(Some(&isolated.id), "renamed", true).await.unwrap();
+    assert_eq!(current(&path), "renamed");
+    let expected = Checkout::Worktree {
+        path: path.clone(),
+        branch: "renamed".into(),
+    };
+    assert_eq!(
+        app.thread(isolated.id.clone()).await.unwrap().checkout,
+        expected
+    );
+    let summary = app
+        .workspace_view(workspace.id.clone(), None)
+        .await
+        .unwrap()
+        .threads
+        .into_iter()
+        .find(|t| t.id == isolated.id)
+        .unwrap();
+    assert_eq!(summary.checkout, expected);
+    let held = app
+        .create_thread(workspace.id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    app.submit(held.id.clone(), "hold".into(), "hold".into())
+        .await
+        .unwrap();
+    wait(&app, &held.id, |t| {
+        matches!(t.turns[0].execution, Execution::Running)
+    })
+    .await;
+    assert_eq!(
+        switch(None, "idle", false).await.unwrap_err().code,
+        "checkout_busy"
+    );
+    assert_eq!(
+        switch(Some(&held.id), "idle", false)
+            .await
+            .unwrap_err()
+            .code,
+        "checkout_busy"
+    );
+    assert_eq!(current(&f.repository), "feature");
+    switch(Some(&isolated.id), "idle", false).await.unwrap();
+    assert_eq!(current(&path), "idle");
+    app.interrupt(held.id.clone()).await.unwrap();
+    wait(&app, &held.id, |t| {
+        matches!(t.turns[0].execution, Execution::Interrupted)
+    })
+    .await;
+    switch(None, "main", false).await.unwrap();
+    assert_eq!(current(&f.repository), "main");
+    app.shutdown().await.unwrap();
+}

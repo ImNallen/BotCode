@@ -244,6 +244,16 @@ export const ipc = {
       { workspaceId, threadId: threadId ?? null },
       branches,
     ),
+  switchBranch: (
+    { workspaceId, threadId }: CheckoutRef,
+    branch: string,
+    create: boolean,
+  ) =>
+    call(
+      "switch_branch",
+      { workspaceId, threadId: threadId ?? null, branch, create },
+      z.null(),
+    ),
   create: (workspaceId: string, checkout: NewCheckout) =>
     call("create_thread", { workspaceId, checkout }, thread),
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),

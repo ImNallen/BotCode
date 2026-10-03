@@ -38,6 +38,8 @@ enum Command {
     List(Reply<Vec<Workspace>>),
     OpenWorkspace(PathBuf, Reply<Workspace>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, PathBuf)>),
+    BeginSwitch(WorkspaceId, Option<ThreadId>, Reply<PathBuf>),
+    EndSwitch(PathBuf, Option<(ThreadId, String)>, Reply<()>),
     Threads(WorkspaceId, Reply<Vec<ThreadSummary>>),
     Create(WorkspaceId, Checkout, Reply<ThreadSnapshot>),
     Snapshot(ThreadId, bool, Reply<ThreadSnapshot>),
@@ -111,6 +113,7 @@ impl App {
                 workspaces,
                 threads,
                 leases: HashMap::new(),
+                switching: HashSet::new(),
                 routes: HashMap::new(),
                 provider: None,
                 epoch: 0,
@@ -203,6 +206,27 @@ impl App {
         tokio::task::spawn_blocking(move || repo::branches(&root))
             .await
             .map_err(|e| AppError::new("repository", e))?
+    }
+    pub async fn switch_branch(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+        branch: String,
+        create: bool,
+    ) -> Result<()> {
+        let root = self
+            .call(|r| Command::BeginSwitch(id, thread.clone(), r))
+            .await?;
+        let path = root.clone();
+        let switched =
+            tokio::task::spawn_blocking(move || repo::switch_branch(&path, &branch, create))
+                .await
+                .map_err(|e| AppError::new("repository", e))
+                .and_then(|r| r);
+        let current = switched.as_ref().ok().cloned();
+        self.call(|r| Command::EndSwitch(root, thread.zip(current), r))
+            .await?;
+        switched.map(drop)
     }
     pub async fn create_thread(
         &self,
@@ -309,6 +333,7 @@ struct Owner {
     workspaces: HashMap<WorkspaceId, Workspace>,
     threads: HashMap<ThreadId, ThreadSnapshot>,
     leases: HashMap<PathBuf, ThreadId>,
+    switching: HashSet<PathBuf>,
     routes: HashMap<ApprovalId, Route>,
     provider: Option<Codex>,
     epoch: u64,
@@ -327,6 +352,26 @@ impl Owner {
         self.threads
             .get(id)
             .ok_or_else(|| AppError::new("missing_thread", "Conversation not found."))
+    }
+    fn checkout(&self, id: &WorkspaceId, thread: Option<ThreadId>) -> Result<(Workspace, PathBuf)> {
+        let w = self
+            .workspaces
+            .get(id)
+            .ok_or_else(|| AppError::new("missing_workspace", "Repository not found."))?;
+        let root = match thread {
+            None => w.root.clone(),
+            Some(thread) => {
+                let t = self.thread(&thread)?;
+                if &t.workspace_id != id {
+                    return Err(AppError::new(
+                        "missing_thread",
+                        "Conversation not found in this repository.",
+                    ));
+                }
+                t.root(w).to_path_buf()
+            }
+        };
+        Ok((w.clone(), root))
     }
     fn commit(&mut self, id: &ThreadId) -> Result<()> {
         let t = self
@@ -432,25 +477,35 @@ impl Owner {
                 let _ = reply.send(result);
             }
             Command::Checkout(id, thread, reply) => {
-                let result = (|| {
-                    let w = self.workspaces.get(&id).ok_or_else(|| {
-                        AppError::new("missing_workspace", "Repository not found.")
-                    })?;
-                    let root = match thread {
-                        None => w.root.clone(),
-                        Some(thread) => {
-                            let t = self.thread(&thread)?;
-                            if t.workspace_id != id {
-                                return Err(AppError::new(
-                                    "missing_thread",
-                                    "Conversation not found in this repository.",
-                                ));
-                            }
-                            t.root(w).to_path_buf()
+                let _ = reply.send(self.checkout(&id, thread));
+            }
+            Command::BeginSwitch(id, thread, reply) => {
+                let result = self.checkout(&id, thread).and_then(|(_, root)| {
+                    if self.leases.contains_key(&root) || !self.switching.insert(root.clone()) {
+                        return Err(AppError::new(
+                            "checkout_busy",
+                            "Another conversation is running in this checkout.",
+                        ));
+                    }
+                    Ok(root)
+                });
+                let _ = reply.send(result);
+            }
+            Command::EndSwitch(root, switched, reply) => {
+                self.switching.remove(&root);
+                let result = match switched {
+                    Some((id, current)) => match self.threads.get_mut(&id) {
+                        Some(ThreadSnapshot {
+                            checkout: Checkout::Worktree { branch, .. },
+                            ..
+                        }) => {
+                            *branch = current;
+                            self.commit(&id)
                         }
-                    };
-                    Ok((w.clone(), root))
-                })();
+                        _ => Ok(()),
+                    },
+                    None => Ok(()),
+                };
                 let _ = reply.send(result);
             }
             Command::Threads(id, reply) => {
@@ -712,7 +767,7 @@ impl Owner {
         let root = thread
             .root(&self.workspaces[&thread.workspace_id])
             .to_path_buf();
-        if self.leases.contains_key(&root) {
+        if self.leases.contains_key(&root) || self.switching.contains(&root) {
             return Err(AppError::new(
                 "checkout_busy",
                 "Another conversation is running in this checkout.",
