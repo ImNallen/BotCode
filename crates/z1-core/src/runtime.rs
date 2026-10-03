@@ -828,17 +828,16 @@ impl Owner {
                     }
                 })
                 .ok_or_else(|| AppError::new("invalid_model", "Selected model is unavailable."))?;
-            if let Some(effort) = &settings.effort {
-                if !model
+            if let Some(effort) = &settings.effort
+                && !model
                     .supported_reasoning_efforts
                     .iter()
                     .any(|item| &item.reasoning_effort == effort)
-                {
-                    return Err(AppError::new(
-                        "invalid_effort",
-                        "Selected effort is unavailable for this model.",
-                    ));
-                }
+            {
+                return Err(AppError::new(
+                    "invalid_effort",
+                    "Selected effort is unavailable for this model.",
+                ));
             }
         }
         Ok(())
@@ -1120,17 +1119,15 @@ impl Owner {
             Completion::Interrupted {
                 epoch,
                 thread,
-                result,
+                result: Err(e),
             } if epoch == self.epoch => {
-                if let Err(e) = result {
-                    let t = self.threads.get_mut(&thread).unwrap();
-                    t.diagnostic = Some(format!("Stop was not confirmed: {}", e.message));
-                    self.commit(&thread)?;
-                    self.lose(
-                        "Interruption could not be confirmed. Managed Codex execution was stopped.",
-                    )
-                    .await;
-                }
+                let t = self.threads.get_mut(&thread).unwrap();
+                t.diagnostic = Some(format!("Stop was not confirmed: {}", e.message));
+                self.commit(&thread)?;
+                self.lose(
+                    "Interruption could not be confirmed. Managed Codex execution was stopped.",
+                )
+                .await;
             }
             _ => {}
         }
@@ -1336,14 +1333,11 @@ impl Owner {
                                         .get(&approval.id)
                                         .is_some_and(|route| route.item_id == item.id())
                                     && approval.state == ApprovalState::Pending
-                                {
-                                    if let ApprovalAction::FileChange { text: details, .. } =
+                                    && let ApprovalAction::FileChange { text: details, .. } =
                                         &mut approval.action
-                                    {
-                                        if details.is_empty() {
-                                            *details = text.clone()
-                                        }
-                                    }
+                                    && details.is_empty()
+                                {
+                                    *details = text.clone()
                                 }
                             }
                         }
