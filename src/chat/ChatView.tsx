@@ -13,7 +13,7 @@ import {
 import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
 import type {
   ApprovalDecision,
-  CheckoutMode,
+  Checkout,
   CheckoutRef,
   Thread,
   Workspace,
@@ -36,6 +36,12 @@ import { FileLinkProvider, type FileLinks } from "./ChatMarkdown";
 import { ApprovalDrawer } from "./ApprovalDrawer";
 import { Composer } from "./Composer";
 import { Timeline } from "./Timeline";
+
+type DraftCheckout = {
+  mode: Checkout["kind"];
+  base: string | null;
+  fromOrigin: boolean;
+};
 
 const busyKinds = new Set(["connecting", "running", "interrupting"]);
 
@@ -65,10 +71,14 @@ export function ChatView({
     permissionMode: "approval-required",
   });
   const { newThreadCheckout } = usePreferences().preferences;
-  const [draftCheckout, setDraftCheckout] =
-    useState<CheckoutMode>(newThreadCheckout);
+  const draftDefaults = (): DraftCheckout => ({
+    mode: newThreadCheckout,
+    base: null,
+    fromOrigin: false,
+  });
+  const [draftCheckout, setDraftCheckout] = useState(draftDefaults);
   useEffect(
-    () => setDraftCheckout(newThreadCheckout),
+    () => setDraftCheckout(draftDefaults()),
     [threadId, newThreadCheckout],
   );
   const [error, setError] = useState<string>();
@@ -112,6 +122,21 @@ export function ChatView({
     queryKey: checkoutKey("workspace", checkout),
     queryFn: () => ipc.workspace(checkout),
   });
+  const { data: branches } = useQuery({
+    queryKey: checkoutKey("branches", checkout),
+    queryFn: () => ipc.branches(checkout),
+  });
+  const base =
+    draftCheckout.base ??
+    (
+      branches?.branches.find((branch) => branch.default) ??
+      branches?.branches.find((branch) => branch.current)
+    )?.name ??
+    null;
+  const baseFromOrigin =
+    draftCheckout.fromOrigin &&
+    Boolean(branches?.origin) &&
+    branches?.branches.find((branch) => branch.name === base)?.remote === false;
   const settings = thread?.settings ?? draftSettings;
   const models = useQuery({
     queryKey: ["models"],
@@ -147,7 +172,12 @@ export function ChatView({
     mutationFn: async (text: string) => {
       let target = threadId ?? createdDraft?.id;
       if (!target) {
-        const created = await ipc.create(workspaceId, draftCheckout);
+        const created = await ipc.create(
+          workspaceId,
+          draftCheckout.mode === "worktree"
+            ? { kind: "worktree", base: base ?? "", fromOrigin: baseFromOrigin }
+            : { kind: "local" },
+        );
         setThreadSnapshot(client, created);
         target = created.id;
         setCreatedDraft(created);
@@ -488,12 +518,22 @@ export function ChatView({
                         isDraft && !createdDraft
                           ? {
                               kind: "draft",
-                              mode: draftCheckout,
-                              onChange: setDraftCheckout,
+                              mode: draftCheckout.mode,
+                              onChange: (mode) =>
+                                setDraftCheckout((current) => ({
+                                  ...current,
+                                  mode,
+                                })),
                             }
                           : (thread ?? createdDraft)?.checkout
                       }
-                      branch={view?.branch || undefined}
+                      branch={
+                        (isDraft &&
+                        !createdDraft &&
+                        draftCheckout.mode === "worktree"
+                          ? base
+                          : view?.branch) || undefined
+                      }
                       settings={settings}
                       models={models.data ?? []}
                       modelsLoading={models.isPending}

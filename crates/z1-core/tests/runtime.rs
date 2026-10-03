@@ -74,7 +74,7 @@ async fn wait(
 }
 async fn conversation(app: &App, f: &Fixture) -> ThreadSnapshot {
     let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
-    app.create_thread(workspace.id, CheckoutMode::Local)
+    app.create_thread(workspace.id, NewCheckout::Local)
         .await
         .unwrap()
 }
@@ -289,11 +289,11 @@ async fn canonical_checkout_lease_and_confirmed_interrupt() {
     let second = app.open_workspace(f.repository.join(".")).await.unwrap();
     assert_eq!(first.id, second.id);
     let a = app
-        .create_thread(first.id.clone(), CheckoutMode::Local)
+        .create_thread(first.id.clone(), NewCheckout::Local)
         .await
         .unwrap();
     let b = app
-        .create_thread(first.id, CheckoutMode::Local)
+        .create_thread(first.id, NewCheckout::Local)
         .await
         .unwrap();
     app.submit(a.id.clone(), "hold".into(), "hold".into())
@@ -852,6 +852,12 @@ fn worktree(checkout: &Checkout) -> (std::path::PathBuf, String) {
         Checkout::Local => panic!("expected a worktree checkout"),
     }
 }
+fn main_worktree() -> NewCheckout {
+    NewCheckout::Worktree {
+        base: "main".into(),
+        from_origin: false,
+    }
+}
 fn git_output(root: &std::path::Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -869,12 +875,12 @@ async fn worktree_threads_start_codex_in_their_own_checkout() {
     let app = App::open(f.config.clone()).await.unwrap();
     let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
     let local = app
-        .create_thread(workspace.id.clone(), CheckoutMode::Local)
+        .create_thread(workspace.id.clone(), NewCheckout::Local)
         .await
         .unwrap();
     assert_eq!(local.checkout, Checkout::Local);
     let isolated = app
-        .create_thread(workspace.id.clone(), CheckoutMode::Worktree)
+        .create_thread(workspace.id.clone(), main_worktree())
         .await
         .unwrap();
     let (path, branch) = worktree(&isolated.checkout);
@@ -931,15 +937,15 @@ async fn worktree_threads_run_beside_a_busy_local_checkout() {
     let app = App::open(f.config.clone()).await.unwrap();
     let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
     let held = app
-        .create_thread(workspace.id.clone(), CheckoutMode::Local)
+        .create_thread(workspace.id.clone(), NewCheckout::Local)
         .await
         .unwrap();
     let blocked = app
-        .create_thread(workspace.id.clone(), CheckoutMode::Local)
+        .create_thread(workspace.id.clone(), NewCheckout::Local)
         .await
         .unwrap();
     let isolated = app
-        .create_thread(workspace.id, CheckoutMode::Worktree)
+        .create_thread(workspace.id, main_worktree())
         .await
         .unwrap();
     app.submit(held.id.clone(), "hold".into(), "hold".into())
@@ -971,7 +977,7 @@ async fn worktree_requires_a_commit() {
     let app = App::open(f.config.clone()).await.unwrap();
     let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
     assert_eq!(
-        app.create_thread(workspace.id.clone(), CheckoutMode::Worktree)
+        app.create_thread(workspace.id.clone(), main_worktree())
             .await
             .unwrap_err()
             .code,
@@ -989,7 +995,7 @@ async fn worktree_views_inspect_the_thread_checkout() {
     let app = App::open(f.config.clone()).await.unwrap();
     let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
     let isolated = app
-        .create_thread(workspace.id.clone(), CheckoutMode::Worktree)
+        .create_thread(workspace.id.clone(), main_worktree())
         .await
         .unwrap();
     let (path, branch) = worktree(&isolated.checkout);
@@ -1099,7 +1105,7 @@ async fn branches_list_local_and_origin_refs_for_each_checkout() {
         }
     );
     let isolated = app
-        .create_thread(workspace.id.clone(), CheckoutMode::Worktree)
+        .create_thread(workspace.id.clone(), main_worktree())
         .await
         .unwrap();
     let (path, name) = worktree(&isolated.checkout);
@@ -1123,6 +1129,73 @@ async fn branches_list_local_and_origin_refs_for_each_checkout() {
             branch("topic", Some(&topic)),
             feature,
         ]
+    );
+    app.shutdown().await.unwrap();
+}
+fn commit_in(root: &std::path::Path, file: &str) {
+    std::fs::write(root.join(file), file).unwrap();
+    git_output(root, &["add", file]);
+    git_output(
+        root,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            file,
+        ],
+    );
+}
+#[tokio::test]
+async fn worktrees_start_from_origin_when_asked() {
+    let f = Fixture::new();
+    f.commit();
+    let origin = add_origin(&f);
+    let upstream = f.repository.with_file_name("upstream");
+    git_output(
+        f.repository.parent().unwrap(),
+        &["clone", "-q", "origin.git", "upstream"],
+    );
+    commit_in(&upstream, "ahead.txt");
+    git_output(&upstream, &["push", "-q", "origin", "main"]);
+    git_output(&f.repository, &["branch", "idle"]);
+    let local_main = git_output(&f.repository, &["rev-parse", "main"]);
+    let origin_main = git_output(&origin, &["rev-parse", "main"]);
+    assert_ne!(local_main, origin_main);
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let head = |base: &str, from_origin: bool| {
+        let (app, id) = (&app, workspace.id.clone());
+        let base = base.to_owned();
+        async move {
+            let thread = app
+                .create_thread(id, NewCheckout::Worktree { base, from_origin })
+                .await
+                .unwrap();
+            git_output(&worktree(&thread.checkout).0, &["rev-parse", "HEAD"])
+        }
+    };
+    assert_eq!(head("main", true).await, origin_main);
+    assert_eq!(head("main", false).await, local_main);
+    assert_eq!(head("idle", true).await, local_main);
+    git_output(
+        &f.repository,
+        &["remote", "set-url", "origin", "/missing.git"],
+    );
+    assert_eq!(
+        app.create_thread(
+            workspace.id,
+            NewCheckout::Worktree {
+                base: "main".into(),
+                from_origin: true
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "git"
     );
     app.shutdown().await.unwrap();
 }

@@ -14,12 +14,7 @@ import {
   SparklesIcon,
 } from "lucide-react";
 import { Menu, MenuItem } from "../ui/menu";
-import type {
-  Checkout,
-  CheckoutMode,
-  ModelOption,
-  SessionSettings,
-} from "../ipc";
+import type { Checkout, ModelOption, SessionSettings } from "../ipc";
 import { cn } from "../lib/cn";
 import { checkoutModeLabels } from "../settings/preferences";
 import { selectItem, selectTrigger } from "../ui/controls";
@@ -71,8 +66,8 @@ export function Composer({
     | Checkout
     | {
         kind: "draft";
-        mode: CheckoutMode;
-        onChange: (mode: CheckoutMode) => void;
+        mode: Checkout["kind"];
+        onChange: (mode: Checkout["kind"]) => void;
       }
     | undefined;
   branch: string | undefined;
@@ -530,7 +525,7 @@ export function Composer({
   );
 }
 
-function CheckoutModeIcon({ mode }: { mode: CheckoutMode }) {
+function CheckoutModeIcon({ mode }: { mode: Checkout["kind"] }) {
   return mode === "worktree" ? (
     <FolderGit2Icon className="size-3" />
   ) : (

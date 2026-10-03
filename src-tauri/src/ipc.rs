@@ -47,9 +47,9 @@ pub async fn list_branches(
 pub async fn create_thread(
     app: State<'_, App>,
     workspace_id: WorkspaceId,
-    mode: CheckoutMode,
+    checkout: NewCheckout,
 ) -> Result<ThreadSnapshot> {
-    app.create_thread(workspace_id, mode).await
+    app.create_thread(workspace_id, checkout).await
 }
 #[tauri::command]
 pub async fn thread_snapshot(app: State<'_, App>, thread_id: ThreadId) -> Result<ThreadSnapshot> {

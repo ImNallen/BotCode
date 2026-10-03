@@ -188,7 +188,9 @@ export type Approval = z.infer<typeof approval>;
 export type Item = z.infer<typeof item>;
 export type ApprovalDecision = "accept" | "decline" | "cancel";
 export type Checkout = z.infer<typeof checkout>;
-export type CheckoutMode = Checkout["kind"];
+export type NewCheckout =
+  | { kind: "local" }
+  | { kind: "worktree"; base: string; fromOrigin: boolean };
 export type CheckoutRef = { workspaceId: string; threadId?: string };
 export type Branches = z.infer<typeof branches>;
 export type Branch = Branches["branches"][number];
@@ -242,8 +244,8 @@ export const ipc = {
       { workspaceId, threadId: threadId ?? null },
       branches,
     ),
-  create: (workspaceId: string, mode: CheckoutMode) =>
-    call("create_thread", { workspaceId, mode }, thread),
+  create: (workspaceId: string, checkout: NewCheckout) =>
+    call("create_thread", { workspaceId, checkout }, thread),
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),
   resume: (threadId: string) => call("open_thread", { threadId }, thread),
   models: () => call("list_models", {}, z.array(modelOption)),

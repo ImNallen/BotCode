@@ -207,16 +207,18 @@ impl App {
     pub async fn create_thread(
         &self,
         id: WorkspaceId,
-        mode: CheckoutMode,
+        checkout: NewCheckout,
     ) -> Result<ThreadSnapshot> {
-        let checkout = match mode {
-            CheckoutMode::Local => Checkout::Local,
-            CheckoutMode::Worktree => {
+        let checkout = match checkout {
+            NewCheckout::Local => Checkout::Local,
+            NewCheckout::Worktree { base, from_origin } => {
                 let (w, _) = self.checkout(id.clone(), None).await?;
                 let worktrees = self.worktrees.join(&w.label);
-                tokio::task::spawn_blocking(move || repo::add_worktree(&w.root, &worktrees))
-                    .await
-                    .map_err(|e| AppError::new("repository", e))??
+                tokio::task::spawn_blocking(move || {
+                    repo::add_worktree(&w.root, &worktrees, &base, from_origin)
+                })
+                .await
+                .map_err(|e| AppError::new("repository", e))??
             }
         };
         self.call(|r| Command::Create(id, checkout, r)).await

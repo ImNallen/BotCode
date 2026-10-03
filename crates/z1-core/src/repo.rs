@@ -21,13 +21,37 @@ pub fn open(path: &Path) -> Result<PathBuf> {
     let root = PathBuf::from(String::from_utf8_lossy(&bytes).trim()).canonicalize()?;
     Ok(root)
 }
-pub fn add_worktree(root: &Path, worktrees: &Path) -> Result<Checkout> {
+pub fn add_worktree(
+    root: &Path,
+    worktrees: &Path,
+    base: &str,
+    from_origin: bool,
+) -> Result<Checkout> {
     git(root, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).map_err(|_| {
         AppError::new(
             "worktree_unavailable",
             "Commit to this repository before starting a worktree.",
         )
     })?;
+    branch_name(root, base)?;
+    let origin = from_origin && git(root, &["remote", "get-url", "origin"]).is_ok();
+    let start = if origin {
+        let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
+        match git(root, &["fetch", "--quiet", "--no-tags", "origin", &refspec]) {
+            Err(e) if e.message.contains("couldn't find remote ref") => {
+                git(root, &["fetch", "--quiet", "--no-tags", "origin"])?;
+            }
+            fetched => {
+                fetched?;
+            }
+        }
+        let tracking = format!("refs/remotes/origin/{base}^{{commit}}");
+        git(root, &["rev-parse", "--verify", "--quiet", &tracking])
+            .ok()
+            .map(|sha| String::from_utf8_lossy(&sha).trim().to_owned())
+    } else {
+        None
+    };
     let id = &uuid::Uuid::new_v4().simple().to_string()[..8];
     let branch = format!("z1/{id}");
     let path = worktrees.join(format!("z1-{id}"));
@@ -40,13 +64,23 @@ pub fn add_worktree(root: &Path, worktrees: &Path) -> Result<Checkout> {
             "-b",
             &branch,
             &path.to_string_lossy(),
-            "HEAD",
+            start.as_deref().unwrap_or(base),
         ],
     )?;
     Ok(Checkout::Worktree {
         path: path.canonicalize()?,
         branch,
     })
+}
+fn branch_name(root: &Path, name: &str) -> Result<()> {
+    git(root, &["check-ref-format", "--branch", name])
+        .map(drop)
+        .map_err(|_| {
+            AppError::new(
+                "invalid_branch",
+                format!("\"{name}\" is not a valid branch name."),
+            )
+        })
 }
 pub fn branches(root: &Path) -> Result<Branches> {
     let refs = git(
