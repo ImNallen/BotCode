@@ -8,7 +8,7 @@ import {
   RefreshCwIcon,
   SearchIcon,
 } from "lucide-react";
-import { ipc, type Branches, type CheckoutRef } from "../ipc";
+import { checkoutKey, ipc, type Branches, type CheckoutRef } from "../ipc";
 import { cn } from "../lib/cn";
 import { Switch } from "../ui/controls";
 import { Menu } from "../ui/menu";
@@ -155,6 +155,10 @@ export function BranchPicker({
       align="end"
       open={open}
       onOpenChange={(next) => {
+        if (next)
+          void client.invalidateQueries({
+            queryKey: checkoutKey("branches", checkout),
+          });
         setOpen(next);
         setQuery("");
         setHighlighted(null);
