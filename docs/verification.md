@@ -249,3 +249,22 @@ The native debug bundle used the temporary identifier `dev.z1.code.autosettlever
 - After quitting and relaunching, it was still at the top of Pinned and SQLite still held `kept: true`.
 
 The run did not send a prompt to that thread, so activity dropping `kept` was observed only in the runtime tests.
+
+## Auto-settle limit per project
+
+Verified on 2026-10-04 against T3 Code v0.0.45. The core suite passed 72 tests, 69 of them runtime tests. New tests cover a project override beating the default, a `null` override turning auto-settling off for that project only, a `null` default with **No project** using its own override, a missing, unparseable or out-of-range limit falling back to 3 days, and a settings save sending one change hint and reclassifying a thread without a restart. Clippy, rustfmt, `pnpm typecheck`, `pnpm build` and Prettier passed.
+
+The native debug bundle used the temporary identifier `dev.z1.code.autosettleverify`, an isolated `Z1_DATA_DIR`, two disposable repositories and a **No project** workspace. Each repository had a thread idle for 2 days. `settings.json` was seeded with alpha-app at 1 day and beta-service at `null`. At 1100×780:
+
+- The alpha-app thread was in the Settled shelf at "1d", and the beta-service thread stayed in the active list.
+- General for all projects showed the Organization group with **Auto-settle inactive threads** on and **Days of inactivity before auto-settle** at 3.
+- With alpha-app picked, the row showed the highlighted layers button and the reset button. The popover listed "This project: 1 day" as effective over "All projects: 3 days". The days field read 1.
+- Typing 5 in the field saved the alpha-app override as 5. After **Back**, with no restart, the alpha-app thread was in the active list again.
+- The reset button removed the alpha-app override, and the field read 3.
+- With beta-service picked, the switch was off, the days row was hidden, and the popover listed "This project: Never".
+- With **No project** picked, Workspace and Start from origin were disabled and the auto-settle rows stayed enabled. Turning the switch off saved `null` under the **No project** id.
+- Setting all projects to 1 day showed the reset button. After **Back**, the alpha-app thread settled and the beta-service thread stayed active.
+- **Restore defaults** wrote `"sidebarAutoSettleAfterDays": 3` and empty `projectOverrides`. After **Back**, both 2-day-old threads were active.
+- The alpha-app Project page had no auto-settle row, as in T3. Searching settings for "days of inactivity" found **Auto-settle inactive threads** under General.
+
+The sidebar is hidden while settings are open, so the run saw each reclassification after **Back**. The runtime test covers the change hint that updates the list.
