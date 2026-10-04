@@ -4,12 +4,14 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { CheckIcon } from "lucide-react";
 import { cn } from "../lib/cn";
 import { useLocation } from "@tanstack/react-router";
 
@@ -25,6 +27,7 @@ export function Menu({
   onKeyDownCapture,
   open: controlledOpen,
   onOpenChange,
+  anchor: positionAnchor,
 }: {
   trigger: (props: {
     ref: (node: HTMLElement | null) => void;
@@ -43,6 +46,7 @@ export function Menu({
   onKeyDownCapture?: (event: KeyboardEvent<HTMLDivElement>) => void;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  anchor?: RefObject<HTMLElement | null>;
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -64,8 +68,9 @@ export function Menu({
   useLayoutEffect(() => {
     if (!open) return;
     const positionPopup = () => {
-      if (!anchor.current || !popup.current) return;
-      const rect = anchor.current.getBoundingClientRect();
+      const target = positionAnchor?.current ?? anchor.current;
+      if (!target || !popup.current) return;
+      const rect = target.getBoundingClientRect();
       const width = popup.current.getBoundingClientRect().width;
       const desiredLeft =
         align === "start"
@@ -84,6 +89,7 @@ export function Menu({
               Math.max(8, rect.top - sideOffset),
             );
       setPosition({
+        ...(positionAnchor ? { minWidth: rect.width } : {}),
         maxWidth: "calc(100vw - 16px)",
         left: Math.max(8, Math.min(desiredLeft, window.innerWidth - width - 8)),
         maxHeight: Math.max(
@@ -103,7 +109,7 @@ export function Menu({
       observer.disconnect();
       window.removeEventListener("resize", positionPopup);
     };
-  }, [open, side, align, sideOffset]);
+  }, [open, side, align, sideOffset, positionAnchor]);
   useEffect(() => {
     if (!open) return;
     const first = popup.current?.querySelector<HTMLElement>(
@@ -256,4 +262,36 @@ export function MenuItem({ className, ...props }: ComponentProps<"button">) {
 
 export function MenuSeparator() {
   return <div role="separator" className="mx-2 my-1 h-px bg-border" />;
+}
+
+export function MenuRadioItem({
+  checked,
+  className,
+  children,
+  ...props
+}: ComponentProps<"button"> & { checked: boolean }) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={checked}
+      data-checked={checked ? "" : undefined}
+      data-slot="menu-radio-item"
+      className={cn(
+        "[&_svg]:-mx-0.5 flex min-h-8 w-full in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center rounded-sm px-2 py-1 text-left text-base text-foreground outline-none data-checked:bg-foreground/[0.08] disabled:pointer-events-none disabled:cursor-not-allowed hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        className,
+      )}
+      {...props}
+    >
+      <span className="min-w-0 flex-1">{children}</span>
+    </button>
+  );
+}
+
+export function MenuRadioItemIndicator({ checked }: { checked: boolean }) {
+  return checked ? (
+    <span aria-hidden className="flex shrink-0">
+      <CheckIcon className="size-3.5" />
+    </span>
+  ) : null;
 }

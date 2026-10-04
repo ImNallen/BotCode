@@ -1,6 +1,6 @@
 // Layout and classes follow pingdotgg/t3code v0.0.45 components/Sidebar.tsx,
 // sidebar/SidebarChrome.tsx, sidebar/SidebarThreadHeader.tsx and ThreadStatusIndicators.tsx (MIT).
-import { useState, type ComponentProps } from "react";
+import { useRef, useState, type ComponentProps } from "react";
 import {
   CircleDashedIcon,
   ShieldQuestionIcon,
@@ -12,14 +12,14 @@ import {
   SquarePenIcon,
   XIcon,
 } from "lucide-react";
-import type { Workspace, WorkspaceView } from "./ipc";
+import { workingSessions, type Workspace, type WorkspaceView } from "./ipc";
 import { cn } from "./lib/cn";
 import { formatSidebarTime } from "./lib/time";
 import { basename } from "./panel/panelState";
 import { WorkspaceBadge } from "./ProjectBadge";
 import { OpenAI } from "./ui/icons";
 import { Button } from "./ui/controls";
-import { Menu, MenuItem } from "./ui/menu";
+import { ProjectScopeMenu } from "./ProjectScopeMenu";
 
 type Row = {
   workspace: Workspace;
@@ -27,7 +27,7 @@ type Row = {
   thread: WorkspaceView["threads"][number];
 };
 
-const working = new Set(["connecting", "running", "interrupting"]);
+const SCOPE_KEY = "z1:sidebar-project-scope";
 
 const menuButton =
   "peer/menu-button flex w-full cursor-pointer items-center gap-[var(--sidebar-control-gap)] overflow-hidden text-left outline-hidden ring-ring transition-[width,height,padding] hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 active:bg-sidebar-row-active active:text-sidebar-foreground disabled:pointer-events-none disabled:opacity-64 aria-disabled:pointer-events-none aria-disabled:opacity-64 data-[active=true]:bg-sidebar-row-selected data-[active=true]:font-medium data-[active=true]:text-sidebar-foreground [&>span:last-child]:truncate [&>svg:not([class*='size-'])]:size-4 [&>svg]:shrink-0 [&>svg]:text-[var(--sidebar-icon-color)] hover:[&>svg]:text-sidebar-foreground active:[&>svg]:text-sidebar-foreground data-[active=true]:[&>svg]:text-sidebar-foreground";
@@ -52,23 +52,27 @@ export function Sidebar({
   workspaceId,
   threadId,
   onSelectThread,
-  onSelectWorkspace,
   onNewThread,
   onOpenRepository,
+  onOpenProjectSettings,
 }: {
   workspaces: Workspace[];
   views: (WorkspaceView | undefined)[];
   workspaceId: string | undefined;
   threadId: string | undefined;
   onSelectThread: (workspaceId: string, threadId: string) => void;
-  onSelectWorkspace: (workspaceId: string) => void;
-  onNewThread: () => void;
+  onNewThread: (workspaceId?: string) => void;
   onOpenRepository: () => void;
+  onOpenProjectSettings: (workspaceId: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [scopeId, setScopeId] = useState(() => localStorage.getItem(SCOPE_KEY));
+  const scope = workspaces.find((workspace) => workspace.id === scopeId);
+  const searchField = useRef<HTMLLabelElement>(null);
+  const scopeTrigger = useRef<HTMLElement | null>(null);
   const rows: Row[] = views
     .flatMap((view) =>
-      view
+      view && (!scope || view.workspace.id === scope.id)
         ? view.threads.map((thread) => ({
             workspace: view.workspace,
             branch:
@@ -89,7 +93,10 @@ export function Sidebar({
       <div className="w-full shrink-0">
         <div className="relative flex w-full min-w-0 flex-col p-[var(--sidebar-content-inset)] z-[1]">
           <div className="flex items-center gap-1">
-            <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground">
+            <label
+              ref={searchField}
+              className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+            >
               <SearchIcon className="size-4 shrink-0 text-(--sidebar-icon-color)" />
               <input
                 type="search"
@@ -114,34 +121,48 @@ export function Sidebar({
             <div className="flex shrink-0 items-center">
               {workspaces.length > 0 ? (
                 <>
-                  <Menu
-                    align="end"
-                    trigger={(props) => (
-                      <HeaderIconButton
-                        aria-label="Select repository"
-                        title="Select repository"
-                        {...props}
-                      >
-                        <FolderIcon className="size-4" />
-                      </HeaderIconButton>
-                    )}
-                  >
-                    {workspaces.map((workspace) => (
-                      <MenuItem
-                        key={workspace.id}
-                        aria-current={workspace.id === workspaceId}
-                        onClick={() => onSelectWorkspace(workspace.id)}
-                      >
-                        <WorkspaceBadge
-                          workspace={workspace}
-                          className="size-4"
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          {workspace.label}
-                        </span>
-                      </MenuItem>
-                    ))}
-                  </Menu>
+                  <ProjectScopeMenu
+                    workspaces={workspaces}
+                    scope={scope}
+                    anchor={searchField}
+                    onScope={(id) => {
+                      setScopeId(id);
+                      if (id) localStorage.setItem(SCOPE_KEY, id);
+                      else localStorage.removeItem(SCOPE_KEY);
+                    }}
+                    onOpenSettings={(id) => {
+                      // Settings records the focused element so Back can restore it.
+                      scopeTrigger.current?.focus();
+                      onOpenProjectSettings(id);
+                    }}
+                    trigger={({ ref, ...props }) => {
+                      const label = scope
+                        ? `Filter threads by project: ${scope.label}`
+                        : "Filter threads by project";
+                      return (
+                        <HeaderIconButton
+                          aria-label={label}
+                          title={label}
+                          ref={(node) => {
+                            ref(node);
+                            scopeTrigger.current = node;
+                          }}
+                          {...props}
+                        >
+                          {scope ? (
+                            <span className="flex shrink-0">
+                              <WorkspaceBadge
+                                workspace={scope}
+                                className="size-4"
+                              />
+                            </span>
+                          ) : (
+                            <FolderIcon className="size-4" />
+                          )}
+                        </HeaderIconButton>
+                      );
+                    }}
+                  />
                   <HeaderIconButton
                     aria-label="Add project"
                     title="Add project"
@@ -154,8 +175,8 @@ export function Sidebar({
               <HeaderIconButton
                 aria-label="New thread"
                 title="New thread"
-                disabled={!workspaceId}
-                onClick={onNewThread}
+                disabled={!scope && !workspaceId}
+                onClick={() => onNewThread(scope?.id)}
               >
                 <SquarePenIcon />
               </HeaderIconButton>
@@ -195,6 +216,8 @@ export function Sidebar({
                       Add project
                     </button>
                   </>
+                ) : scope ? (
+                  `No threads in ${scope.label} yet`
                 ) : (
                   "No threads yet"
                 )}
@@ -216,7 +239,7 @@ function ThreadRow({
   active: boolean;
   onSelect: () => void;
 }) {
-  const isWorking = working.has(row.thread.session.kind);
+  const isWorking = workingSessions.has(row.thread.session.kind);
   const recede = !active;
   return (
     <li

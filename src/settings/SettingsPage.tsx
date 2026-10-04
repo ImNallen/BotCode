@@ -1,199 +1,54 @@
 // Classes copied from pingdotgg/t3code v0.0.45 settings/SettingsSidebarNav.tsx, SettingsGroup.tsx,
 // settingsLayout.tsx, WorkspacePageContainer.tsx, WorkspacePageHeader.tsx and ui/number-field.tsx (MIT).
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
-import {
-  ArrowLeftIcon,
-  ChevronDownIcon,
-  KeyboardIcon,
-  PaletteIcon,
-  SearchIcon,
-  Settings2Icon,
-  XIcon,
-} from "lucide-react";
-import { z } from "zod";
+import { ArrowLeftIcon, SearchIcon, XIcon } from "lucide-react";
 import { SidebarMenuButton } from "../SidebarFooter";
-import {
-  Button,
-  Switch,
-  Toggle,
-  selectItem,
-  selectTrigger,
-} from "../ui/controls";
-import { Menu, MenuItem } from "../ui/menu";
+import { Button, Toggle } from "../ui/controls";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
 import { newWithoutProjectShortcut } from "../lib/shortcuts";
-import { checkoutModeLabels, usePreferences } from "./preferences";
-
-export const settingsSection = z.enum(["general", "appearance", "keybindings"]);
-const categories = [
-  {
-    section: "general",
-    title: "General",
-    icon: Settings2Icon,
-    groups: [
-      {
-        id: "application",
-        title: "Application",
-        rows: [
-          {
-            id: "provider",
-            title: "Provider",
-            description: "Z1 Code runs your conversations with Codex.",
-          },
-          {
-            id: "approval",
-            title: "Approval mode",
-            description:
-              "Choose Supervised, Auto-accept edits, Auto, or Full access in each conversation composer.",
-          },
-        ],
-      },
-      {
-        id: "new-threads",
-        title: "New threads",
-        rows: [
-          {
-            id: "workspace",
-            title: "Workspace",
-            description: "Where new threads start.",
-            keywords: "default mode draft current local checkout new worktree",
-          },
-          {
-            id: "start-from-origin",
-            title: "Start from origin",
-            description:
-              "Creates the worktree from the latest matching branch on origin instead of your local branch.",
-            keywords: "new worktrees latest matching remote branch local",
-          },
-        ],
-      },
-      {
-        id: "preferences",
-        title: "Device preferences",
-        rows: [
-          {
-            id: "restore",
-            title: "Restore defaults",
-            description:
-              "Reset appearance, font sizes and new thread defaults on this device.",
-          },
-        ],
-      },
-    ],
-  },
-  {
-    section: "appearance",
-    title: "Appearance",
-    icon: PaletteIcon,
-    groups: [
-      {
-        id: "colors",
-        title: "Colors",
-        rows: [
-          {
-            id: "theme",
-            title: "Appearance",
-            description:
-              "Use a light or dark interface, or follow your system.",
-          },
-        ],
-      },
-      {
-        id: "typography",
-        title: "Typography",
-        rows: [
-          {
-            id: "prompt-font",
-            title: "Prompt font size",
-            description: "Set the font size of the message composer.",
-          },
-          {
-            id: "code-font",
-            title: "Code font size",
-            description:
-              "Set the font size of code blocks, tool output, file previews and diffs.",
-          },
-        ],
-      },
-    ],
-  },
-  {
-    section: "keybindings",
-    title: "Keyboard shortcuts",
-    icon: KeyboardIcon,
-    groups: [
-      {
-        id: "navigation",
-        title: "Navigation",
-        rows: [
-          {
-            id: "toggle-sidebar",
-            title: "Toggle sidebar",
-            description: "Show or hide the main sidebar.",
-          },
-          {
-            id: "new-without-project",
-            title: "New thread without a project",
-            description:
-              "Start a thread in its own folder instead of a project.",
-            keywords: "scratch no project",
-          },
-          {
-            id: "open-settings",
-            title: "Open settings",
-            description:
-              "Open General settings from anywhere in the workbench.",
-          },
-          {
-            id: "close-settings",
-            title: "Back to conversation",
-            description:
-              "Leave settings. Search and open menus handle Escape first.",
-          },
-        ],
-      },
-    ],
-  },
-] as const satisfies {
-  section: z.infer<typeof settingsSection>;
-  title: string;
-  icon: typeof Settings2Icon;
-  groups: {
-    id: string;
-    title: string;
-    rows: {
-      id: string;
-      title: string;
-      description: string;
-      keywords?: string;
-    }[];
-  }[];
-}[];
+import { cn } from "../lib/cn";
+import { NewThreadRow } from "./NewThreadSettings";
+import { usePreferences } from "./preferences";
+import { ProjectsSettings } from "./ProjectsSettings";
+import {
+  categories,
+  settingsSection,
+  visibleRows,
+  visibleSections,
+  type SettingsRowInfo,
+  type SettingsSection,
+} from "./settingsCatalog";
+import { SettingsScopeSentence, useSettingsScope } from "./settingsScope";
+import { SettingsGroup, SettingsRow } from "./settingsLayout";
 
 function useCategory() {
   const pathname = useLocation({ select: (location) => location.pathname });
-  return (
-    categories.find(
-      (category) => pathname === `/settings/${category.section}`,
-    ) ?? categories[0]
-  );
+  const section = settingsSection
+    .catch("general")
+    .parse(pathname.split("/")[2]);
+  return { section, ...categories[section] };
 }
 
 export function SettingsSidebar() {
   const category = useCategory();
   const navigate = useNavigate();
   const selection = useSearch({ from: "__root__" });
+  const { scope } = useSettingsScope();
+  const visible = visibleSections(scope).map((section) => ({
+    section,
+    ...categories[section],
+  }));
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
   const needle = query.trim().toLowerCase();
   const searching = needle.length > 0;
-  const results = categories
+  const results = visible
     .flatMap((item) => [
       {
         section: item.section,
@@ -203,28 +58,36 @@ export function SettingsSidebar() {
         title: item.title,
         text: item.title,
       },
-      ...item.groups.flatMap((group) => [
-        {
-          section: item.section,
-          category: item.title,
-          icon: item.icon,
-          id: group.id,
-          title: group.title,
-          text: `${item.title} ${group.title}`,
-        },
-        ...group.rows.map((row) => ({
-          section: item.section,
-          category: item.title,
-          icon: item.icon,
-          id: row.id,
-          title: row.title,
-          text: `${item.title} ${group.title} ${row.title} ${row.description} ${"keywords" in row ? row.keywords : ""}`,
-        })),
-      ]),
+      ...item.groups.flatMap((group) => {
+        const rows = visibleRows(group, scope);
+        if (rows === undefined) return [];
+        return [
+          ...(group.hideTitle
+            ? []
+            : [
+                {
+                  section: item.section,
+                  category: item.title,
+                  icon: item.icon,
+                  id: group.id,
+                  title: group.title,
+                  text: `${item.title} ${group.title}`,
+                },
+              ]),
+          ...rows.map((row) => ({
+            section: item.section,
+            category: item.title,
+            icon: item.icon,
+            id: row.id,
+            title: row.title,
+            text: `${item.title} ${group.title} ${row.title} ${row.description} ${row.keywords ?? ""}`,
+          })),
+        ];
+      }),
     ])
     .filter((result) => result.text.toLowerCase().includes(needle));
   const active = results[activeIndex];
-  const go = (section: z.infer<typeof settingsSection>, hash = "") => {
+  const go = (section: SettingsSection, hash = "") => {
     setQuery("");
     setActiveIndex(0);
     void navigate({
@@ -376,7 +239,7 @@ export function SettingsSidebar() {
                       </SidebarMenuButton>
                     </li>
                   ))
-                : categories.map((item) => (
+                : visible.map((item) => (
                     <li key={item.section} className="group/menu-item relative">
                       <SidebarMenuButton
                         data-active={item.section === category.section}
@@ -440,49 +303,13 @@ function FontSizeControl({
   );
 }
 
-function SettingsRow({
-  id,
-  title,
-  description,
-  control,
-}: {
-  id: string;
-  title: string;
-  description: string;
-  control: ReactNode;
-}) {
-  return (
-    <div
-      id={id}
-      tabIndex={-1}
-      data-slot="settings-row"
-      className="@container/settings-row rounded-xl px-3 sm:px-4 aria-disabled:opacity-64 aria-disabled:[&_*]:text-muted-foreground py-3 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <div className="flex flex-col gap-3 @min-[32rem]/settings-row:grid @min-[32rem]/settings-row:grid-cols-[minmax(0,1fr)_minmax(10rem,auto)] @min-[32rem]/settings-row:items-center @min-[32rem]/settings-row:gap-8">
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex min-h-5 items-center gap-1.5">
-            <h3 className="text-sm font-medium text-foreground">{title}</h3>
-          </div>
-          <p className="max-w-xl text-xs leading-normal text-muted-foreground/80">
-            {description}
-          </p>
-        </div>
-        {control ? (
-          <div className="flex w-full min-w-0 shrink-0 items-center gap-2 @min-[32rem]/settings-row:w-auto @min-[32rem]/settings-row:justify-end">
-            {control}
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 export function SettingsPage() {
   const category = useCategory();
   const hash = useLocation({ select: (location) => location.hash });
   const navigate = useNavigate();
   const selection = useSearch({ from: "__root__" });
   const { preferences, update, reset, persistenceError } = usePreferences();
+  const { scope, workspaces } = useSettingsScope();
   const modifier = /Mac/.test(navigator.userAgent) ? "⌘" : "Ctrl+";
   useEffect(() => {
     const target = document.getElementById(
@@ -529,53 +356,6 @@ export function SettingsPage() {
         />
       );
     }
-    if (id === "workspace")
-      return (
-        <Menu
-          align="end"
-          trigger={(props) => (
-            <button
-              type="button"
-              {...props}
-              aria-label="Default workspace"
-              className={selectTrigger()}
-            >
-              <span className="min-w-0 flex-1 truncate text-left">
-                {checkoutModeLabels[preferences.newThreadCheckout]}
-              </span>
-              <ChevronDownIcon
-                aria-hidden
-                className="-me-1 size-3 shrink-0 opacity-50"
-              />
-            </button>
-          )}
-        >
-          {(["local", "worktree"] as const).map((mode) => (
-            <MenuItem
-              key={mode}
-              role="menuitemradio"
-              aria-checked={preferences.newThreadCheckout === mode}
-              data-selected={
-                preferences.newThreadCheckout === mode ? "" : undefined
-              }
-              className={selectItem}
-              onClick={() => update({ newThreadCheckout: mode })}
-            >
-              {checkoutModeLabels[mode]}
-            </MenuItem>
-          ))}
-        </Menu>
-      );
-    if (id === "start-from-origin")
-      return (
-        <Switch
-          checked={preferences.newWorktreesStartFromOrigin}
-          onCheckedChange={(checked) =>
-            update({ newWorktreesStartFromOrigin: checked })
-          }
-          aria-label="Start new worktrees from origin by default"
-        />
-      );
     if (id === "restore")
       return (
         <Button size="sm" variant="outline" onClick={reset}>
@@ -601,6 +381,24 @@ export function SettingsPage() {
       );
     return null;
   };
+  const row = (info: SettingsRowInfo) =>
+    info.id === "workspace" ? (
+      <NewThreadRow
+        key={info.id}
+        id={info.id}
+        setting="newThreadCheckout"
+        scope={scope}
+      />
+    ) : info.id === "start-from-origin" ? (
+      <NewThreadRow
+        key={info.id}
+        id={info.id}
+        setting="newWorktreesStartFromOrigin"
+        scope={scope}
+      />
+    ) : (
+      <SettingsRow key={info.id} {...info} control={control(info.id)} />
+    );
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
       <header
@@ -621,7 +419,7 @@ export function SettingsPage() {
           onClick={() =>
             void navigate({
               to: "/",
-              search: selection,
+              search: { ...selection, project: undefined },
               hash: "",
               resetScroll: false,
             })
@@ -635,7 +433,12 @@ export function SettingsPage() {
         data-settings-page-scroll
         className="topbar-scroll-fade scrollbar-gutter-both flex-1 overflow-y-auto"
       >
-        <div className="mx-auto flex w-full flex-col gap-6 px-5 pt-6 pb-12 sm:px-6 max-w-4xl gap-8">
+        <div
+          className={cn(
+            "mx-auto flex w-full flex-col px-5 pt-6 pb-12 sm:px-6 max-w-4xl",
+            category.section === "projects" ? "gap-6" : "gap-8",
+          )}
+        >
           <h1
             id={`section-${category.section}`}
             tabIndex={-1}
@@ -643,6 +446,7 @@ export function SettingsPage() {
           >
             {category.title} settings
           </h1>
+          {category.scoped ? <SettingsScopeSentence /> : null}
           {persistenceError ? (
             <p
               role="alert"
@@ -651,34 +455,29 @@ export function SettingsPage() {
               {persistenceError}
             </p>
           ) : null}
-          {category.groups.map((group) => (
-            <section
-              key={group.id}
-              id={group.id}
-              tabIndex={-1}
-              className="space-y-2.5 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <div
-                data-settings-scroll-target
-                className="flex min-h-7 items-start justify-between gap-4 px-3 sm:px-4"
-              >
-                <div className="min-w-0">
-                  <h2 className="flex min-h-7 items-center gap-2 text-sm font-normal text-foreground/70">
-                    {group.title}
-                  </h2>
-                </div>
-              </div>
-              <div className="relative overflow-visible text-foreground rounded-xl border border-border/60 bg-card/40 shadow-xs/5 [&>*+*]:border-t [&>*+*]:border-border/50 [&>[data-slot=settings-row]]:rounded-none">
-                {group.rows.map((row) => (
-                  <SettingsRow
-                    key={row.id}
-                    {...row}
-                    control={control(row.id)}
-                  />
-                ))}
-              </div>
-            </section>
-          ))}
+          {category.section === "projects"
+            ? scope && (
+                <ProjectsSettings scope={scope} workspaces={workspaces} />
+              )
+            : category.groups.map((group) => {
+                const rows = visibleRows(group, scope);
+                if (rows === undefined) return null;
+                return (
+                  <SettingsGroup
+                    key={group.id}
+                    id={group.id}
+                    title={group.title}
+                  >
+                    {rows.length > 0 ? (
+                      rows.map(row)
+                    ) : (
+                      <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
+                        This project is no longer available.
+                      </p>
+                    )}
+                  </SettingsGroup>
+                );
+              })}
         </div>
       </div>
     </div>

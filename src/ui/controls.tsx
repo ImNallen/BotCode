@@ -121,6 +121,23 @@ const selectTriggerVariants = cva(
   },
 );
 
+const inlineButtonVariants = cva(
+  "inline-flex shrink-0 cursor-pointer items-center gap-0.5 whitespace-nowrap font-medium underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-64",
+  {
+    variants: {
+      tone: {
+        picker:
+          "gap-1.5 text-foreground underline decoration-foreground/30 decoration-dotted decoration-from-font underline-offset-4 hover:decoration-foreground hover:decoration-solid data-popup-open:decoration-foreground data-popup-open:decoration-solid",
+      },
+    },
+  },
+);
+
+export const inlineButton = (
+  options: Parameters<typeof inlineButtonVariants>[0],
+  className?: string,
+) => cn(inlineButtonVariants(options), className);
+
 export const selectTrigger = (
   options?: Parameters<typeof selectTriggerVariants>[0],
 ) => cn(selectTriggerVariants(options));

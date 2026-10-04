@@ -5,6 +5,7 @@
   "permissions": [
     "core:default",
     "dialog:allow-open",
+    "dialog:allow-message",
     "core:window:allow-start-dragging"
   ]
 }

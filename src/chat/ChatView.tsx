@@ -16,7 +16,7 @@ import {
   Minimize2Icon,
   PanelRightIcon,
 } from "lucide-react";
-import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
+import { checkoutKey, ipc, setThreadSnapshot, workingSessions } from "../ipc";
 import type {
   ApprovalDecision,
   CheckoutRef,
@@ -26,7 +26,11 @@ import type {
 } from "../ipc";
 import { cn } from "../lib/cn";
 import { newWithoutProjectShortcut } from "../lib/shortcuts";
-import { type CheckoutMode, usePreferences } from "../settings/preferences";
+import {
+  type CheckoutMode,
+  newThreadDefaults,
+  usePreferences,
+} from "../settings/preferences";
 import { WorkspaceBadge } from "../ProjectBadge";
 import {
   WorkspaceBreadcrumb,
@@ -49,8 +53,6 @@ type DraftCheckout = {
   base: string | null;
   fromOrigin: boolean;
 };
-
-const busyKinds = new Set(["connecting", "running", "interrupting"]);
 
 export function ChatView({
   workspaceId,
@@ -84,8 +86,10 @@ export function ChatView({
     effort: null,
     permissionMode: "approval-required",
   });
-  const { newThreadCheckout, newWorktreesStartFromOrigin } =
-    usePreferences().preferences;
+  const { newThreadCheckout, newWorktreesStartFromOrigin } = newThreadDefaults(
+    usePreferences().preferences,
+    workspaceId,
+  ).values;
   const draftDefaults = (): DraftCheckout => ({
     mode: newThreadCheckout,
     base: null,
@@ -286,7 +290,7 @@ export function ChatView({
   const newThreadLabel = isScratch
     ? "New thread without a project"
     : `New thread in ${label}`;
-  const busy = thread ? busyKinds.has(thread.session.kind) : false;
+  const busy = thread ? workingSessions.has(thread.session.kind) : false;
   const pending = thread?.approvals.filter((a) => a.state === "pending") ?? [];
   const approval = pending[0];
   const canStop = Boolean(

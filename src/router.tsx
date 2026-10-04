@@ -6,10 +6,13 @@ import {
 } from "@tanstack/react-router";
 import { z } from "zod";
 import { Workbench } from "./Workbench";
-import { SettingsPage, settingsSection } from "./settings/SettingsPage";
+import { SettingsPage } from "./settings/SettingsPage";
+import { settingsSection } from "./settings/settingsCatalog";
 const search = z.object({
   workspace: z.uuid().optional(),
   thread: z.uuid().optional(),
+  // The project settings apply to. Only settings routes carry it.
+  project: z.uuid().optional(),
 });
 export type Selection = z.infer<typeof search>;
 const route = createRootRoute({

@@ -165,3 +165,29 @@ The native debug bundle used a disposable one-commit repository and an isolated 
 - After a restart, the store still held one scratch workspace, and the thread reopened with both turns.
 
 In the first native run, the first command approval was recorded as answered and a file tab opened without a click from the driver. The second run reproduced neither, and the cause is unknown.
+
+## Project management
+
+Verified on 2026-10-04 in the native debug bundle with the temporary app identifier `dev.z1.code.projectsverify`, an isolated `Z1_DATA_DIR` seeded with two disposable repositories and three conversations, and real Codex. The core suite passed 31 runtime tests, including rename persistence, removal across restart, and refusal while a turn runs. Clippy, rustfmt, `pnpm typecheck`, `pnpm build` and Prettier passed.
+
+- The folder button opened T3's project filter under the search field with **All projects** and both repositories. Choosing one showed only its threads and put its badge on the button. **New thread** then opened that project's draft.
+- The filter's gear and a right-click on a project row each opened Settings, Projects, focused on that project. The project settings rework below replaced that page.
+- Renaming saved on Return and on blur. SQLite held the new label, and the sidebar, header, draft heading and badge updated. An empty name reverted and showed "Project name cannot be empty."
+- **Copy path** put the exact repository root on the macOS clipboard. The rework below removed this row, because T3 has none.
+- **Remove project** showed a native warning sheet that named the project, its two threads and its path. Cancel changed nothing. Remove deleted the project row and both thread rows, and the repository's files stayed on disk.
+- While a Codex turn waited on a command approval, **Remove project** was disabled and its row read "Stop this project's running conversations before removing it." Declining the approval ended the turn.
+- After a full restart, the removed project stayed gone, the new name stayed, and the sidebar filter was restored.
+
+Keys sent through `cliclick` did not reach the WebView's text fields, so Return and Delete were sent as System Events key codes.
+
+### Project-scoped settings
+
+A second native pass on 2026-10-04 used a fresh data directory with two repositories and one conversation each.
+
+- Settings opened from the footer read "Applying settings for All projects" with General, Appearance and Keyboard shortcuts in the nav and **Restore defaults** visible.
+- Picking alpha-app in the sentence kept General open, added **Project** at the top of the nav, hid **Restore defaults**, and changed the Workspace and Start from origin descriptions to this project.
+- Setting alpha-app's Workspace to **New worktree** showed the reset button. The layers popover listed "This project: New worktree" as effective over "All projects: Current checkout".
+- The Project page showed the info alert, **Name**, **New threads** with the same Workspace override, and **Danger** with **Remove project**.
+- A new alpha-app draft opened in **New worktree**, and a new beta-service draft opened in **Current checkout**.
+- The sidebar filter's gear for beta-service opened the Project page with beta-service picked. Removing it named "1 thread", deleted the project and its thread from SQLite, returned to the conversation, and reset the sidebar filter to all projects.
+- After a full restart, the alpha-app draft still opened in **New worktree**, and Settings from the footer opened unscoped.
