@@ -132,3 +132,11 @@ pub async fn ui_state(app: State<'_, App>) -> Result<std::collections::BTreeMap<
 pub async fn set_ui_state(app: State<'_, App>, key: String, value: Option<String>) -> Result<()> {
     app.set_ui_state(key, value).await
 }
+#[tauri::command]
+pub async fn settings(app: State<'_, App>) -> Result<Option<String>> {
+    app.settings()
+}
+#[tauri::command]
+pub async fn save_settings(app: State<'_, App>, text: String) -> Result<()> {
+    app.save_settings(&text)
+}

@@ -1729,3 +1729,52 @@ async fn ui_state_survives_restart_with_overwrites_and_removals() {
     );
     app.shutdown().await.unwrap();
 }
+#[tokio::test]
+async fn settings_round_trip_through_the_settings_file() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    assert_eq!(app.settings().unwrap(), None);
+    app.save_settings("{\n  \"appearance\": \"dark\"\n}\n")
+        .unwrap();
+    assert_eq!(
+        app.settings().unwrap().as_deref(),
+        Some("{\n  \"appearance\": \"dark\"\n}\n")
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.config.data_dir.join("settings.json")).unwrap(),
+        "{\n  \"appearance\": \"dark\"\n}\n"
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn saving_settings_keeps_a_symlinked_file_linked() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let link = f.config.data_dir.join("settings.json");
+    let synced = f.config.data_dir.with_file_name("synced-settings.json");
+    std::fs::write(&synced, "{}").unwrap();
+    std::os::unix::fs::symlink(&synced, &link).unwrap();
+    app.save_settings("{\"appearance\":\"light\"}").unwrap();
+    assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+    assert_eq!(
+        std::fs::read_to_string(&synced).unwrap(),
+        "{\"appearance\":\"light\"}"
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn saving_over_unparseable_settings_keeps_a_backup() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    std::fs::write(f.config.data_dir.join("settings.json"), "{not json").unwrap();
+    app.save_settings("{}").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(f.config.data_dir.join("settings.json.bak")).unwrap(),
+        "{not json"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.config.data_dir.join("settings.json")).unwrap(),
+        "{}"
+    );
+    app.shutdown().await.unwrap();
+}
