@@ -911,11 +911,11 @@ impl Owner {
                     self.thread(&id)?;
                     let thread = self.threads.get_mut(&id).unwrap();
                     let before = (thread.placement, thread.snooze);
-                    thread.arrange(action, now_ms())?;
-                    if (thread.placement, thread.snooze) == before {
-                        return Ok(());
+                    let arranged = thread.arrange(action, now_ms());
+                    if (thread.placement, thread.snooze) != before {
+                        self.commit(&id)?;
                     }
-                    self.commit(&id)
+                    arranged
                 })();
                 let _ = reply.send(result);
             }
@@ -989,6 +989,7 @@ impl Owner {
             ));
         }
         let mut t = thread.clone();
+        t.record_activity(now_ms());
         let turn = Turn {
             id: TurnId::default(),
             prompt: text.into(),
@@ -1006,9 +1007,6 @@ impl Owner {
         t.turns.push(turn);
         t.session = SessionState::Connecting;
         t.diagnostic = None;
-        if matches!(t.placement, Placement::Settled { .. } | Placement::Kept) {
-            t.placement = Placement::Auto;
-        }
         t.snooze = None;
         if t.turns.len() == 1 {
             t.title = text.chars().take(54).collect()
@@ -1481,10 +1479,8 @@ impl Owner {
                         epoch: self.epoch,
                     },
                 );
+                t.record_activity(now_ms());
                 t.approvals.push(approval);
-                if matches!(t.placement, Placement::Settled { .. } | Placement::Kept) {
-                    t.placement = Placement::Auto;
-                }
                 self.commit(&id)?;
             } else {
                 t.diagnostic = Some(format!(

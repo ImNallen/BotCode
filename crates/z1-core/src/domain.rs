@@ -307,6 +307,7 @@ pub struct Branches {
 pub const AUTO_SETTLE_AFTER_MS: u64 = 3 * 24 * 60 * 60 * 1000;
 // Ports T3 v0.0.45 pinnedAt and settledOverride (orchestration/projector.ts,
 // ThreadSettlementPolicy.ts). Pin and settle exclude each other, so one value holds both.
+// `kept` on a pin is T3's settledOverride "active" alongside pinnedAt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -319,6 +320,8 @@ pub enum Placement {
     Kept,
     Pinned {
         at_ms: u64,
+        #[serde(default)]
+        kept: bool,
     },
     Settled {
         at_ms: u64,
@@ -415,8 +418,8 @@ impl ThreadSnapshot {
     pub fn settled_at(&self, now: u64) -> Option<u64> {
         match self.placement {
             Placement::Settled { at_ms } => Some(at_ms),
-            Placement::Kept | Placement::Pinned { .. } => None,
-            Placement::Auto => {
+            Placement::Kept | Placement::Pinned { kept: true, .. } => None,
+            Placement::Auto | Placement::Pinned { kept: false, .. } => {
                 let busy = matches!(
                     self.session,
                     SessionState::Connecting | SessionState::Running | SessionState::Interrupting
@@ -436,22 +439,54 @@ impl ThreadSnapshot {
             }
         }
     }
+    // Stores a due auto-settle as T3's thread.auto-settle command would: settled at the last
+    // activity, with the pin and the snooze cleared.
+    pub fn auto_settle(&mut self, now: u64) {
+        if let (Placement::Auto | Placement::Pinned { .. }, Some(at_ms)) =
+            (self.placement, self.settled_at(now))
+        {
+            self.placement = Placement::Settled { at_ms };
+            self.snooze = None;
+        }
+    }
+    // Ports the activity reset of decider.ts: it wakes a settled thread and clears a keep.
+    pub fn record_activity(&mut self, now: u64) {
+        self.auto_settle(now);
+        self.placement = match self.placement {
+            Placement::Settled { .. } | Placement::Kept => Placement::Auto,
+            Placement::Pinned { at_ms, .. } => Placement::Pinned { at_ms, kept: false },
+            Placement::Auto => Placement::Auto,
+        };
+    }
     // Ports the pin, settle and snooze rules of orchestration/decider.ts.
     pub fn arrange(&mut self, action: Arrange, now: u64) -> Result<()> {
+        self.auto_settle(now);
         match action {
             Arrange::Pin => {
-                if !matches!(self.placement, Placement::Pinned { .. }) {
-                    self.placement = Placement::Pinned { at_ms: now };
-                }
+                self.placement = match self.placement {
+                    Placement::Pinned { .. } => self.placement,
+                    Placement::Settled { .. } | Placement::Kept => Placement::Pinned {
+                        at_ms: now,
+                        kept: true,
+                    },
+                    Placement::Auto => Placement::Pinned {
+                        at_ms: now,
+                        kept: false,
+                    },
+                };
                 self.snooze = None;
             }
             Arrange::Unpin => {
-                if matches!(self.placement, Placement::Pinned { .. }) {
-                    self.placement = Placement::Auto;
+                if let Placement::Pinned { kept, .. } = self.placement {
+                    self.placement = if kept {
+                        Placement::Kept
+                    } else {
+                        Placement::Auto
+                    };
                 }
             }
             Arrange::Settle => {
-                if self.settled_at(now).is_none() {
+                if !matches!(self.placement, Placement::Settled { .. }) {
                     if self.approval_open() {
                         return Err(AppError::new(
                             "settle_blocked",
@@ -463,7 +498,7 @@ impl ThreadSnapshot {
                 self.snooze = None;
             }
             Arrange::Unsettle => {
-                if self.settled_at(now).is_some() {
+                if matches!(self.placement, Placement::Settled { .. }) {
                     self.placement = Placement::Kept;
                 }
             }
@@ -495,6 +530,7 @@ impl ThreadSnapshot {
         Ok(())
     }
     pub fn summary(&self) -> ThreadSummary {
+        let settled_at_ms = self.settled_at(now_ms());
         ThreadSummary {
             id: self.id.clone(),
             title: self.title.clone(),
@@ -506,11 +542,11 @@ impl ThreadSnapshot {
                 .iter()
                 .any(|approval| approval.state == ApprovalState::Pending),
             pinned_at_ms: match self.placement {
-                Placement::Pinned { at_ms } => Some(at_ms),
+                Placement::Pinned { at_ms, .. } if settled_at_ms.is_none() => Some(at_ms),
                 _ => None,
             },
             snoozed_until_ms: self.snoozed_until(),
-            settled_at_ms: self.settled_at(now_ms()),
+            settled_at_ms,
         }
     }
 }

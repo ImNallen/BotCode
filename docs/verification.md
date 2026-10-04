@@ -214,7 +214,7 @@ A thread that reaches 3 idle days while Z1 is open moves to the shelf at the nex
 
 ## Pinned and snoozed threads
 
-Verified on 2026-10-04 against T3 Code v0.0.45. The core suite passed 61 tests, 58 of them runtime tests. New tests cover each pin, unpin, settle, un-settle, snooze and wake transition with fixed times. They cover the refusals of a snooze with an open approval or a wake time that is not in the future, and a repeated snooze to the same time keeping the first snooze time unless the thread raised its hand. They cover a raised hand from a newer completed or failed turn or an approval, pinned threads never auto-settling, snoozed threads auto-settling only after they wake, a prompt clearing the snooze but keeping the pin, a new approval returning `kept` to `auto` while keeping a pin, and snapshots saved with `settlement` loading it as `placement`. Clippy, rustfmt, `pnpm typecheck`, `pnpm build` and Prettier passed.
+Verified on 2026-10-04 against T3 Code v0.0.45. The core suite passed 61 tests, 58 of them runtime tests. New tests cover each pin, unpin, settle, un-settle, snooze and wake transition with fixed times. They cover the refusals of a snooze with an open approval or a wake time that is not in the future, and a repeated snooze to the same time keeping the first snooze time unless the thread raised its hand. They cover a raised hand from a newer completed or failed turn or an approval, snoozed threads auto-settling only after they wake, a prompt clearing the snooze but keeping the pin, a new approval returning `kept` to `auto` while keeping a pin, and snapshots saved with `settlement` loading it as `placement`. Clippy, rustfmt, `pnpm typecheck`, `pnpm build` and Prettier passed.
 
 The native debug bundle used the temporary identifier `dev.z1.code.pinverify` through `tauri build --config`, so `tauri.conf.json` never changed. It ran with an isolated `Z1_DATA_DIR` and a disposable one-commit repository. Thirteen threads were written into the SQLite `threads` table before launch. They included one pinned thread, one snooze ending 90 seconds after seeding, a pinned thread with a snooze ending after 150 seconds, a snooze ending after 20 hours, a 4-day-old idle thread, and a 10-day-old thread saved with the old `settlement` field as `kept`. At 1100×780:
 
@@ -235,3 +235,17 @@ The native debug bundle used the temporary identifier `dev.z1.code.pinverify` th
 A second run after review fixes used a fresh seed. Escape on the thread menu returned focus to the right-clicked row, which showed its focus ring. A right-click inside the open snooze presets did not open the thread menu. The debug build's own Reload and Inspect Element menu appeared instead. The 90-second snooze again moved into the active list without a reload, and the shelf count dropped to "Snoozed (2)".
 
 The run did not observe the hidden Snooze button while an approval waits, or a raised hand from a turn that finished after the snooze. The runtime tests cover the snooze refusal and the raised hand, but not the hidden button.
+
+### Auto-settling pinned threads
+
+This changed after the run above. Pinned threads used to never settle by themselves. They now auto-settle as in T3, and settling drops the pin. Pinning a settled thread stores the pin with `kept`, T3's active override, so it stays pinned until its next activity.
+
+Verified on 2026-10-04. The core suite passed 67 tests, 64 of them runtime tests. New tests cover an idle pinned thread reading as settled without a pin, un-settling it storing `kept` without a pin, pinning a settled thread storing `kept: true` and never auto-settling, activity dropping `kept`, a prompt returning an auto-settled pinned thread to the active list without its pin, and pins saved without `kept` loading. Clippy, rustfmt, `pnpm typecheck`, `pnpm build` and Prettier passed.
+
+The native debug bundle used the temporary identifier `dev.z1.code.autosettleverify`, an isolated `Z1_DATA_DIR` and two disposable repositories. One thread was seeded 4 days idle and pinned in the earlier `{"kind":"pinned","atMs":...}` shape. At 1100×780:
+
+- The 4-day-old pinned thread was not in Pinned. The shelf read "Settled (1)", and expanding it showed that thread. The seeded pin loaded and was saved back with `"kept":false`.
+- Right-clicking its slim row offered **Pin thread** and **Un-settle thread**. **Pin thread** moved it to the top of Pinned with its pin icon and stored `{"kind":"pinned","atMs":...,"kept":true}`.
+- After quitting and relaunching, it was still at the top of Pinned and SQLite still held `kept: true`.
+
+The run did not send a prompt to that thread, so activity dropping `kept` was observed only in the runtime tests.

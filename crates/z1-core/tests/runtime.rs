@@ -2150,29 +2150,32 @@ const SNOOZE: Snooze = Snooze {
 };
 #[test]
 fn pinning_clears_settle_and_snooze_and_keeps_the_first_pin_time() {
-    for placement in [
-        Placement::Auto,
-        Placement::Kept,
-        Placement::Settled { at_ms: 1_500 },
+    for (placement, kept) in [
+        (Placement::Auto, false),
+        (Placement::Kept, true),
+        (Placement::Settled { at_ms: 1_500 }, true),
     ] {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
         thread.placement = placement;
         thread.snooze = Some(SNOOZE);
         thread.arrange(Arrange::Pin, 5_000).unwrap();
-        assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000 });
+        assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000, kept });
         assert_eq!(thread.snooze, None);
         thread.arrange(Arrange::Pin, 6_000).unwrap();
-        assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000 });
+        assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000, kept });
     }
 }
 #[test]
-fn unpinning_returns_a_pinned_thread_to_auto_and_leaves_others_alone() {
+fn unpinning_returns_a_pinned_thread_to_its_keep_and_leaves_others_alone() {
+    for (kept, unpinned) in [(false, Placement::Auto), (true, Placement::Kept)] {
+        let mut thread = idle_thread(Some(1_000), Some(2_000));
+        thread.placement = Placement::Pinned { at_ms: 5_000, kept };
+        thread.snooze = Some(SNOOZE);
+        thread.arrange(Arrange::Unpin, 6_000).unwrap();
+        assert_eq!(thread.placement, unpinned);
+        assert_eq!(thread.snooze, Some(SNOOZE));
+    }
     let mut thread = idle_thread(Some(1_000), Some(2_000));
-    thread.placement = Placement::Pinned { at_ms: 5_000 };
-    thread.snooze = Some(SNOOZE);
-    thread.arrange(Arrange::Unpin, 6_000).unwrap();
-    assert_eq!(thread.placement, Placement::Auto);
-    assert_eq!(thread.snooze, Some(SNOOZE));
     thread.placement = Placement::Kept;
     thread.arrange(Arrange::Unpin, 6_000).unwrap();
     assert_eq!(thread.placement, Placement::Kept);
@@ -2180,7 +2183,10 @@ fn unpinning_returns_a_pinned_thread_to_auto_and_leaves_others_alone() {
 #[test]
 fn settling_clears_pin_and_snooze_and_is_refused_while_an_approval_waits() {
     let mut thread = idle_thread(Some(1_000), Some(2_000));
-    thread.placement = Placement::Pinned { at_ms: 5_000 };
+    thread.placement = Placement::Pinned {
+        at_ms: 5_000,
+        kept: false,
+    };
     thread.snooze = Some(SNOOZE);
     thread.arrange(Arrange::Settle, 7_000).unwrap();
     assert_eq!(thread.placement, Placement::Settled { at_ms: 7_000 });
@@ -2190,11 +2196,20 @@ fn settling_clears_pin_and_snooze_and_is_refused_while_an_approval_waits() {
     assert_eq!(thread.placement, Placement::Settled { at_ms: 7_000 });
     assert_eq!(thread.snooze, None);
     let mut waiting = idle_thread(Some(1_000), Some(2_000));
-    waiting.placement = Placement::Pinned { at_ms: 5_000 };
+    waiting.placement = Placement::Pinned {
+        at_ms: 5_000,
+        kept: false,
+    };
     waiting.approvals.push(pending_approval(&waiting));
     let refused = waiting.arrange(Arrange::Settle, 7_000).unwrap_err();
     assert_eq!(refused.code, "settle_blocked");
-    assert_eq!(waiting.placement, Placement::Pinned { at_ms: 5_000 });
+    assert_eq!(
+        waiting.placement,
+        Placement::Pinned {
+            at_ms: 5_000,
+            kept: false,
+        }
+    );
 }
 #[test]
 fn unsettling_keeps_settled_threads_active_and_leaves_pins_alone() {
@@ -2208,15 +2223,27 @@ fn unsettling_keeps_settled_threads_active_and_leaves_pins_alone() {
         .unwrap();
     assert_eq!(auto_settled.placement, Placement::Kept);
     let mut pinned = idle_thread(Some(1_000), Some(2_000));
-    pinned.placement = Placement::Pinned { at_ms: 5_000 };
+    pinned.placement = Placement::Pinned {
+        at_ms: 5_000,
+        kept: false,
+    };
     pinned.arrange(Arrange::Unsettle, 8_000).unwrap();
-    assert_eq!(pinned.placement, Placement::Pinned { at_ms: 5_000 });
+    assert_eq!(
+        pinned.placement,
+        Placement::Pinned {
+            at_ms: 5_000,
+            kept: false,
+        }
+    );
 }
 #[test]
 fn snoozing_keeps_the_placement_and_the_first_snooze_time_for_the_same_wake() {
     for placement in [
         Placement::Auto,
-        Placement::Pinned { at_ms: 5_000 },
+        Placement::Pinned {
+            at_ms: 5_000,
+            kept: false,
+        },
         Placement::Settled { at_ms: 5_000 },
     ] {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
@@ -2278,20 +2305,36 @@ fn snoozing_is_refused_for_a_wake_time_not_in_the_future_or_while_an_approval_wa
 #[test]
 fn waking_clears_only_the_snooze() {
     let mut thread = idle_thread(Some(1_000), Some(2_000));
-    thread.placement = Placement::Pinned { at_ms: 5_000 };
+    thread.placement = Placement::Pinned {
+        at_ms: 5_000,
+        kept: false,
+    };
     thread.snooze = Some(SNOOZE);
     thread.arrange(Arrange::Wake, 6_000).unwrap();
     assert_eq!(thread.snooze, None);
-    assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000 });
+    assert_eq!(
+        thread.placement,
+        Placement::Pinned {
+            at_ms: 5_000,
+            kept: false,
+        }
+    );
 }
 #[test]
 fn a_snoozed_pinned_thread_keeps_its_pin_and_reports_its_wake_time() {
     let mut thread = idle_thread(Some(1_000), Some(2_000));
-    thread.placement = Placement::Pinned { at_ms: 2_500 };
-    thread.snooze = Some(SNOOZE);
+    thread.placement = Placement::Pinned {
+        at_ms: 2_500,
+        kept: false,
+    };
+    let until_ms = now_ms() + HOUR_MS;
+    thread.snooze = Some(Snooze {
+        until_ms,
+        at_ms: 3_000,
+    });
     let summary = thread.summary();
     assert_eq!(summary.pinned_at_ms, Some(2_500));
-    assert_eq!(summary.snoozed_until_ms, Some(10_000));
+    assert_eq!(summary.snoozed_until_ms, Some(until_ms));
     assert_eq!(summary.settled_at_ms, None);
 }
 #[test]
@@ -2322,10 +2365,83 @@ fn a_snoozed_thread_raises_its_hand_for_a_newer_result_or_an_approval() {
     assert_eq!(waiting.summary().snoozed_until_ms, None);
 }
 #[test]
-fn pinned_threads_never_auto_settle() {
+fn an_idle_pinned_thread_reads_as_settled_and_not_pinned() {
     let mut thread = idle_thread(Some(1_000), Some(2_000));
-    thread.placement = Placement::Pinned { at_ms: 2_500 };
-    assert_eq!(thread.settled_at(2_000 + 30 * DAY_MS), None);
+    thread.placement = Placement::Pinned {
+        at_ms: 2_500,
+        kept: false,
+    };
+    assert_eq!(thread.settled_at(2_000 + 3 * DAY_MS - 1), None);
+    assert_eq!(thread.settled_at(2_000 + 3 * DAY_MS), Some(2_000));
+    let summary = thread.summary();
+    assert_eq!(summary.settled_at_ms, Some(2_000));
+    assert_eq!(summary.pinned_at_ms, None);
+}
+#[test]
+fn unsettling_an_auto_settled_pinned_thread_stores_kept_without_the_pin() {
+    let mut thread = idle_thread(Some(1_000), Some(2_000));
+    thread.placement = Placement::Pinned {
+        at_ms: 2_500,
+        kept: false,
+    };
+    thread.snooze = Some(SNOOZE);
+    thread
+        .arrange(Arrange::Unsettle, 2_000 + 4 * DAY_MS)
+        .unwrap();
+    assert_eq!(thread.placement, Placement::Kept);
+    assert_eq!(thread.snooze, None);
+    assert_eq!(thread.summary().pinned_at_ms, None);
+}
+#[test]
+fn pinning_a_settled_thread_keeps_it_from_auto_settling() {
+    let mut thread = idle_thread(Some(1_000), Some(2_000));
+    let now = 2_000 + 4 * DAY_MS;
+    assert_eq!(thread.settled_at(now), Some(2_000));
+    thread.arrange(Arrange::Pin, now).unwrap();
+    assert_eq!(
+        thread.placement,
+        Placement::Pinned {
+            at_ms: now,
+            kept: true
+        }
+    );
+    assert_eq!(thread.settled_at(u64::MAX), None);
+    let summary = thread.summary();
+    assert_eq!(summary.pinned_at_ms, Some(now));
+    assert_eq!(summary.settled_at_ms, None);
+}
+#[test]
+fn activity_drops_the_keep_from_a_pinned_thread() {
+    let mut thread = idle_thread(Some(1_000), Some(2_000));
+    thread.placement = Placement::Pinned {
+        at_ms: 2_500,
+        kept: true,
+    };
+    thread.record_activity(2_000 + 4 * DAY_MS);
+    assert_eq!(
+        thread.placement,
+        Placement::Pinned {
+            at_ms: 2_500,
+            kept: false
+        }
+    );
+}
+#[test]
+fn pins_saved_without_kept_load_as_pins_that_can_auto_settle() {
+    let mut value = serde_json::to_value(idle_thread(Some(1_000), Some(2_000))).unwrap();
+    value["placement"] = serde_json::json!({"kind": "pinned", "atMs": 2_500});
+    let restored: ThreadSnapshot = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        restored.placement,
+        Placement::Pinned {
+            at_ms: 2_500,
+            kept: false
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(restored.placement).unwrap(),
+        serde_json::json!({"kind": "pinned", "atMs": 2_500, "kept": false})
+    );
 }
 #[test]
 fn snoozed_threads_auto_settle_only_after_they_wake() {
@@ -2349,7 +2465,7 @@ async fn pins_and_snoozes_persist_across_reopen_and_reach_the_summary() {
         .await
         .unwrap();
     let stored = app.thread(thread.id.clone()).await.unwrap();
-    let Placement::Pinned { at_ms } = stored.placement else {
+    let Placement::Pinned { at_ms, kept: false } = stored.placement else {
         panic!("pinning stores the pinned placement")
     };
     assert!(at_ms >= before && at_ms <= now_ms());
@@ -2358,7 +2474,7 @@ async fn pins_and_snoozes_persist_across_reopen_and_reach_the_summary() {
     app.shutdown().await.unwrap();
     let app = reopen(&f.config).await;
     let reopened = app.thread(thread.id.clone()).await.unwrap();
-    assert_eq!(reopened.placement, Placement::Pinned { at_ms });
+    assert_eq!(reopened.placement, Placement::Pinned { at_ms, kept: false });
     assert_eq!(
         reopened.snooze,
         Some(Snooze {
@@ -2407,6 +2523,68 @@ async fn sending_a_prompt_clears_the_snooze_and_keeps_the_pin() {
     assert!(matches!(pinned, Placement::Pinned { .. }));
     assert_eq!(done.placement, pinned);
     assert_eq!(done.snooze, None);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn a_new_prompt_returns_an_auto_settled_pinned_thread_to_active_without_its_pin() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "first".into(), "hello".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    app.arrange(thread.id.clone(), Arrange::Pin).await.unwrap();
+    app.shutdown().await.unwrap();
+    age_turns(&f, &thread.id, 4 * DAY_MS);
+    let app = reopen(&f.config).await;
+    let view = app
+        .workspace_view(thread.workspace_id.clone(), None)
+        .await
+        .unwrap();
+    let summary = view.threads.iter().find(|s| s.id == thread.id).unwrap();
+    assert!(summary.settled_at_ms.is_some());
+    assert_eq!(summary.pinned_at_ms, None);
+    app.submit(thread.id.clone(), "second".into(), "hello".into())
+        .await
+        .unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(done.placement, Placement::Auto);
+    let summary = done.summary();
+    assert_eq!(summary.settled_at_ms, None);
+    assert_eq!(summary.pinned_at_ms, None);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn pinning_a_settled_thread_persists_the_keep_until_the_next_prompt() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.arrange(thread.id.clone(), Arrange::Settle)
+        .await
+        .unwrap();
+    app.arrange(thread.id.clone(), Arrange::Pin).await.unwrap();
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    let Placement::Pinned { at_ms, kept: true } =
+        app.thread(thread.id.clone()).await.unwrap().placement
+    else {
+        panic!("pinning a settled thread keeps it")
+    };
+    app.submit(thread.id.clone(), "first".into(), "hello".into())
+        .await
+        .unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(done.placement, Placement::Pinned { at_ms, kept: false });
     app.shutdown().await.unwrap();
 }
 #[tokio::test]
