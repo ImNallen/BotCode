@@ -207,6 +207,18 @@ export function Workbench() {
           kind: openSummary.settledAtMs === null ? "settle" : "unsettle",
         });
       }
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "p" &&
+        !settingsOpen &&
+        openSummary
+      ) {
+        event.preventDefault();
+        void arrange(openSummary.id, {
+          kind: openSummary.pinnedAtMs === null ? "pin" : "unpin",
+        });
+      }
     };
     const escape = (event: KeyboardEvent) => {
       if (
