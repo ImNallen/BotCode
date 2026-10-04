@@ -23,7 +23,7 @@ The browser build explains that the native runtime is required. It does not simu
 
 ## State and recovery
 
-Z1 keeps its data in `~/.z1`. That directory holds the SQLite database, worktrees under `worktrees`, and threads without a project under `scratch`. Set `Z1_DATA_DIR` to use another directory. Only one runtime can own a directory at a time. Set `Z1_CODEX_BIN` to choose an explicit Codex executable.
+Z1 keeps its data in `~/.z1`. That directory holds the SQLite database, which also stores UI preferences, worktrees under `worktrees`, and threads without a project under `scratch`. Set `Z1_DATA_DIR` to use another directory. Only one runtime can own a directory at a time. Set `Z1_CODEX_BIN` to choose an explicit Codex executable.
 
 Conversation history and native thread IDs survive restart. Reconnect resumes that saved native conversation. A lost prompt acknowledgement remains uncertain. Z1 never automatically sends that prompt a second time. Old approval callbacks expire when the provider process ends.
 
