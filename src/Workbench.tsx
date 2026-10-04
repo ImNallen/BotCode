@@ -24,7 +24,8 @@ import {
 import { checkoutKey, ipc, native, setThreadSnapshot } from "./ipc";
 import { Sidebar, SidebarBrand } from "./Sidebar";
 import { SidebarFooter } from "./SidebarFooter";
-import { SettingsSidebar, type SettingsSection } from "./settings/SettingsPage";
+import { SettingsSidebar } from "./settings/SettingsPage";
+import type { SettingsSection } from "./settings/settingsCatalog";
 import { ChatView } from "./chat/ChatView";
 import { Button } from "./ui/controls";
 
@@ -48,7 +49,7 @@ export function Workbench() {
   const wasSettingsOpen = useRef(false);
   const sidebarToggle = useRef<HTMLButtonElement>(null);
   const openSettingsAt = useCallback(
-    (section: SettingsSection, hash: string) => {
+    (section: SettingsSection, project?: string) => {
       if (settingsOpen) return;
       previousFocus.current =
         document.activeElement instanceof HTMLElement
@@ -57,19 +58,24 @@ export function Workbench() {
       void navigate({
         to: "/settings/$section",
         params: { section },
-        search: selection,
-        hash,
+        search: { ...selection, project },
+        hash: "",
         resetScroll: false,
       });
     },
     [navigate, selection, settingsOpen],
   );
   const openSettings = useCallback(
-    () => openSettingsAt("general", ""),
+    () => openSettingsAt("general"),
     [openSettingsAt],
   );
   const closeSettings = useCallback(() => {
-    void navigate({ to: "/", search: selection, hash: "", resetScroll: false });
+    void navigate({
+      to: "/",
+      search: { ...selection, project: undefined },
+      hash: "",
+      resetScroll: false,
+    });
   }, [navigate, selection]);
   const client = useQueryClient();
   const [error, setError] = useState<string>();
@@ -303,9 +309,7 @@ export function Workbench() {
                   onSelectThread={selectThread}
                   onNewThread={newThread}
                   onOpenRepository={() => void openRepository()}
-                  onOpenProjectSettings={(id) =>
-                    openSettingsAt("projects", `project-${id}`)
-                  }
+                  onOpenProjectSettings={(id) => openSettingsAt("projects", id)}
                 />
               </div>
               {settingsOpen ? (

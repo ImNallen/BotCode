@@ -1,31 +1,41 @@
 // Classes copied from pingdotgg/t3code v0.0.45 settings/settingsLayout.tsx and SettingsGroup.tsx (MIT).
 import type { ReactNode } from "react";
+import { cn } from "../lib/cn";
 
 export function SettingsGroup({
   id,
   title,
+  hideTitle = false,
   children,
 }: {
   id: string;
   title: ReactNode;
+  hideTitle?: boolean;
   children: ReactNode;
 }) {
   return (
     <section
       id={id}
       tabIndex={-1}
-      className="space-y-2.5 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+      className={cn(
+        !hideTitle && "space-y-2.5",
+        "focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+      )}
     >
-      <div
-        data-settings-scroll-target
-        className="flex min-h-7 items-start justify-between gap-4 px-3 sm:px-4"
-      >
-        <div className="min-w-0">
-          <h2 className="flex min-h-7 items-center gap-2 text-sm font-normal text-foreground/70">
-            {title}
-          </h2>
+      {hideTitle ? (
+        <h2 className="sr-only">{title}</h2>
+      ) : (
+        <div
+          data-settings-scroll-target
+          className="flex min-h-7 items-start justify-between gap-4 px-3 sm:px-4"
+        >
+          <div className="min-w-0">
+            <h2 className="flex min-h-7 items-center gap-2 text-sm font-normal text-foreground/70">
+              {title}
+            </h2>
+          </div>
         </div>
-      </div>
+      )}
       <div className="relative overflow-visible text-foreground rounded-xl border border-border/60 bg-card/40 shadow-xs/5 [&>*+*]:border-t [&>*+*]:border-border/50 [&>[data-slot=settings-row]]:rounded-none">
         {children}
       </div>

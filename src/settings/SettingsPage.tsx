@@ -5,14 +5,9 @@ import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
   ChevronDownIcon,
-  KeyboardIcon,
-  PaletteIcon,
-  PanelsTopLeftIcon,
   SearchIcon,
-  Settings2Icon,
   XIcon,
 } from "lucide-react";
-import { z } from "zod";
 import { SidebarMenuButton } from "../SidebarFooter";
 import {
   Button,
@@ -28,190 +23,42 @@ import {
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
 import { newWithoutProjectShortcut } from "../lib/shortcuts";
+import { cn } from "../lib/cn";
 import { checkoutModeLabels, usePreferences } from "./preferences";
 import { ProjectsSettings } from "./ProjectsSettings";
+import {
+  categories,
+  settingsSection,
+  visibleRows,
+  visibleSections,
+  type SettingsSection,
+} from "./settingsCatalog";
+import { SettingsScopeSentence, useSettingsScope } from "./settingsScope";
 import { SettingsGroup, SettingsRow } from "./settingsLayout";
-
-export const settingsSection = z.enum([
-  "general",
-  "appearance",
-  "projects",
-  "keybindings",
-]);
-export type SettingsSection = z.infer<typeof settingsSection>;
-const categories = [
-  {
-    section: "general",
-    title: "General",
-    icon: Settings2Icon,
-    groups: [
-      {
-        id: "application",
-        title: "Application",
-        rows: [
-          {
-            id: "provider",
-            title: "Provider",
-            description: "Z1 Code runs your conversations with Codex.",
-          },
-          {
-            id: "approval",
-            title: "Approval mode",
-            description:
-              "Choose Supervised, Auto-accept edits, Auto, or Full access in each conversation composer.",
-          },
-        ],
-      },
-      {
-        id: "new-threads",
-        title: "New threads",
-        rows: [
-          {
-            id: "workspace",
-            title: "Workspace",
-            description: "Where new threads start.",
-            keywords: "default mode draft current local checkout new worktree",
-          },
-          {
-            id: "start-from-origin",
-            title: "Start from origin",
-            description:
-              "Creates the worktree from the latest matching branch on origin instead of your local branch.",
-            keywords: "new worktrees latest matching remote branch local",
-          },
-        ],
-      },
-      {
-        id: "preferences",
-        title: "Device preferences",
-        rows: [
-          {
-            id: "restore",
-            title: "Restore defaults",
-            description:
-              "Reset appearance, font sizes and new thread defaults on this device.",
-          },
-        ],
-      },
-    ],
-  },
-  {
-    section: "appearance",
-    title: "Appearance",
-    icon: PaletteIcon,
-    groups: [
-      {
-        id: "colors",
-        title: "Colors",
-        rows: [
-          {
-            id: "theme",
-            title: "Appearance",
-            description:
-              "Use a light or dark interface, or follow your system.",
-          },
-        ],
-      },
-      {
-        id: "typography",
-        title: "Typography",
-        rows: [
-          {
-            id: "prompt-font",
-            title: "Prompt font size",
-            description: "Set the font size of the message composer.",
-          },
-          {
-            id: "code-font",
-            title: "Code font size",
-            description:
-              "Set the font size of code blocks, tool output, file previews and diffs.",
-          },
-        ],
-      },
-    ],
-  },
-  {
-    section: "projects",
-    title: "Projects",
-    icon: PanelsTopLeftIcon,
-    keywords: "project rename name remove delete location path folder",
-    groups: [],
-  },
-  {
-    section: "keybindings",
-    title: "Keyboard shortcuts",
-    icon: KeyboardIcon,
-    groups: [
-      {
-        id: "navigation",
-        title: "Navigation",
-        rows: [
-          {
-            id: "toggle-sidebar",
-            title: "Toggle sidebar",
-            description: "Show or hide the main sidebar.",
-          },
-          {
-            id: "new-without-project",
-            title: "New thread without a project",
-            description:
-              "Start a thread in its own folder instead of a project.",
-            keywords: "scratch no project",
-          },
-          {
-            id: "open-settings",
-            title: "Open settings",
-            description:
-              "Open General settings from anywhere in the workbench.",
-          },
-          {
-            id: "close-settings",
-            title: "Back to conversation",
-            description:
-              "Leave settings. Search and open menus handle Escape first.",
-          },
-        ],
-      },
-    ],
-  },
-] as const satisfies {
-  section: SettingsSection;
-  title: string;
-  icon: typeof Settings2Icon;
-  // Searched with the title when a category renders its rows at runtime.
-  keywords?: string;
-  groups: {
-    id: string;
-    title: string;
-    rows: {
-      id: string;
-      title: string;
-      description: string;
-      keywords?: string;
-    }[];
-  }[];
-}[];
 
 function useCategory() {
   const pathname = useLocation({ select: (location) => location.pathname });
-  return (
-    categories.find(
-      (category) => pathname === `/settings/${category.section}`,
-    ) ?? categories[0]
-  );
+  const section = settingsSection
+    .catch("general")
+    .parse(pathname.split("/")[2]);
+  return { section, ...categories[section] };
 }
 
 export function SettingsSidebar() {
   const category = useCategory();
   const navigate = useNavigate();
   const selection = useSearch({ from: "__root__" });
+  const { scope } = useSettingsScope();
+  const visible = visibleSections(scope).map((section) => ({
+    section,
+    ...categories[section],
+  }));
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
   const needle = query.trim().toLowerCase();
   const searching = needle.length > 0;
-  const results = categories
+  const results = visible
     .flatMap((item) => [
       {
         section: item.section,
@@ -219,26 +66,34 @@ export function SettingsSidebar() {
         icon: item.icon,
         id: `section-${item.section}`,
         title: item.title,
-        text: `${item.title} ${"keywords" in item ? item.keywords : ""}`,
+        text: item.title,
       },
-      ...item.groups.flatMap((group) => [
-        {
-          section: item.section,
-          category: item.title,
-          icon: item.icon,
-          id: group.id,
-          title: group.title,
-          text: `${item.title} ${group.title}`,
-        },
-        ...group.rows.map((row) => ({
-          section: item.section,
-          category: item.title,
-          icon: item.icon,
-          id: row.id,
-          title: row.title,
-          text: `${item.title} ${group.title} ${row.title} ${row.description} ${"keywords" in row ? row.keywords : ""}`,
-        })),
-      ]),
+      ...item.groups.flatMap((group) => {
+        const rows = visibleRows(group, scope);
+        if (rows === undefined) return [];
+        return [
+          ...(group.hideTitle
+            ? []
+            : [
+                {
+                  section: item.section,
+                  category: item.title,
+                  icon: item.icon,
+                  id: group.id,
+                  title: group.title,
+                  text: `${item.title} ${group.title}`,
+                },
+              ]),
+          ...rows.map((row) => ({
+            section: item.section,
+            category: item.title,
+            icon: item.icon,
+            id: row.id,
+            title: row.title,
+            text: `${item.title} ${group.title} ${row.title} ${row.description} ${row.keywords ?? ""}`,
+          })),
+        ];
+      }),
     ])
     .filter((result) => result.text.toLowerCase().includes(needle));
   const active = results[activeIndex];
@@ -394,7 +249,7 @@ export function SettingsSidebar() {
                       </SidebarMenuButton>
                     </li>
                   ))
-                : categories.map((item) => (
+                : visible.map((item) => (
                     <li key={item.section} className="group/menu-item relative">
                       <SidebarMenuButton
                         data-active={item.section === category.section}
@@ -464,6 +319,7 @@ export function SettingsPage() {
   const navigate = useNavigate();
   const selection = useSearch({ from: "__root__" });
   const { preferences, update, reset, persistenceError } = usePreferences();
+  const { scope, workspaces } = useSettingsScope();
   const modifier = /Mac/.test(navigator.userAgent) ? "⌘" : "Ctrl+";
   useEffect(() => {
     const target = document.getElementById(
@@ -602,7 +458,7 @@ export function SettingsPage() {
           onClick={() =>
             void navigate({
               to: "/",
-              search: selection,
+              search: { ...selection, project: undefined },
               hash: "",
               resetScroll: false,
             })
@@ -616,7 +472,12 @@ export function SettingsPage() {
         data-settings-page-scroll
         className="topbar-scroll-fade scrollbar-gutter-both flex-1 overflow-y-auto"
       >
-        <div className="mx-auto flex w-full flex-col gap-6 px-5 pt-6 pb-12 sm:px-6 max-w-4xl gap-8">
+        <div
+          className={cn(
+            "mx-auto flex w-full flex-col px-5 pt-6 pb-12 sm:px-6 max-w-4xl",
+            category.section === "projects" ? "gap-6" : "gap-8",
+          )}
+        >
           <h1
             id={`section-${category.section}`}
             tabIndex={-1}
@@ -624,6 +485,7 @@ export function SettingsPage() {
           >
             {category.title} settings
           </h1>
+          {category.scoped ? <SettingsScopeSentence /> : null}
           {persistenceError ? (
             <p
               role="alert"
@@ -632,14 +494,29 @@ export function SettingsPage() {
               {persistenceError}
             </p>
           ) : null}
-          {category.section === "projects" ? <ProjectsSettings /> : null}
-          {category.groups.map((group) => (
-            <SettingsGroup key={group.id} id={group.id} title={group.title}>
-              {group.rows.map((row) => (
-                <SettingsRow key={row.id} {...row} control={control(row.id)} />
-              ))}
-            </SettingsGroup>
-          ))}
+          {category.section === "projects"
+            ? scope && (
+                <ProjectsSettings scope={scope} workspaces={workspaces} />
+              )
+            : category.groups.map((group) => {
+                const rows = visibleRows(group, scope);
+                if (rows === undefined) return null;
+                return (
+                  <SettingsGroup
+                    key={group.id}
+                    id={group.id}
+                    title={group.title}
+                  >
+                    {rows.map((row) => (
+                      <SettingsRow
+                        key={row.id}
+                        {...row}
+                        control={control(row.id)}
+                      />
+                    ))}
+                  </SettingsGroup>
+                );
+              })}
         </div>
       </div>
     </div>

@@ -1,42 +1,43 @@
-// Rows, copy and confirmation follow pingdotgg/t3code v0.0.45 settings/ProjectSettingsPanel.tsx,
-// with input classes from ui/input.tsx (MIT).
+// Rows, copy and confirmation follow pingdotgg/t3code v0.0.45 settings/ProjectsSettings.tsx and
+// ProjectSettingsPanel.tsx, with input classes from ui/input.tsx and alert classes from ui/alert.tsx (MIT).
 import { useEffect, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { Trash2Icon } from "lucide-react";
-import {
-  checkoutKey,
-  ipc,
-  native,
-  workingSessions,
-  type Workspace,
-} from "../ipc";
-import { WorkspaceBadge } from "../ProjectBadge";
+import { InfoIcon, Trash2Icon } from "lucide-react";
+import { checkoutKey, ipc, workingSessions, type Workspace } from "../ipc";
+import { Alert } from "../ui/alert";
 import { Button } from "../ui/controls";
+import { projectRows } from "./settingsCatalog";
+import { SettingsScopeNotice, type SettingsScope } from "./settingsScope";
 import { SettingsGroup, SettingsRow } from "./settingsLayout";
 
-export function ProjectsSettings() {
-  const workspaces = useQuery({
-    queryKey: ["workspaces"],
-    queryFn: ipc.workspaces,
-    enabled: native,
-  });
-  const list = workspaces.data ?? [];
-  const ordered = [
-    ...list.filter((workspace) => workspace.kind === "scratch"),
-    ...list.filter((workspace) => workspace.kind === "repository"),
-  ];
-  if (workspaces.isPending) return null;
-  if (ordered.length === 0)
+export function ProjectsSettings({
+  scope,
+  workspaces,
+}: {
+  scope: SettingsScope;
+  workspaces: Workspace[];
+}) {
+  if (scope.kind === "project")
+    return <ProjectSettings key={scope.workspace.id} scope={scope} />;
+  if (scope.kind === "unavailable")
+    return (
+      <p className="text-sm text-muted-foreground">
+        This project is no longer available.
+      </p>
+    );
+  if (workspaces.length === 0)
     return (
       <p className="text-sm text-muted-foreground">
         Add a project from the sidebar to configure it here.
       </p>
     );
-  return ordered.map((workspace) => (
-    <ProjectSettings key={workspace.id} workspace={workspace} />
-  ));
+  return (
+    <SettingsScopeNotice>
+      Choose a project to manage its name and new-thread defaults.
+    </SettingsScopeNotice>
+  );
 }
 
 function removalMessage(workspace: Workspace, threads: number | undefined) {
@@ -59,7 +60,12 @@ function removalMessage(workspace: Workspace, threads: number | undefined) {
   ].join("\n");
 }
 
-function ProjectSettings({ workspace }: { workspace: Workspace }) {
+function ProjectSettings({
+  scope,
+}: {
+  scope: Extract<SettingsScope, { kind: "project" }>;
+}) {
+  const { workspace } = scope;
   const client = useQueryClient();
   const navigate = useNavigate();
   const selection = useSearch({ from: "__root__" });
@@ -76,13 +82,7 @@ function ProjectSettings({ workspace }: { workspace: Workspace }) {
   const [name, setName] = useState(workspace.label);
   const [error, setError] = useState<string>();
   const [removing, setRemoving] = useState(false);
-  const [copied, setCopied] = useState(false);
   useEffect(() => setName(workspace.label), [workspace.label]);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 1500);
-    return () => clearTimeout(timer);
-  }, [copied]);
   const rename = async () => {
     if (name.trim() === workspace.label) {
       setName(workspace.label);
@@ -119,120 +119,90 @@ function ProjectSettings({ workspace }: { workspace: Workspace }) {
       setRemoving(false);
       return;
     }
-    if (selection.workspace === workspace.id)
-      await navigate({
-        to: "/settings/$section",
-        params: { section: "projects" },
-        search: { ...selection, workspace: undefined, thread: undefined },
-        hash: "",
-        replace: true,
-        resetScroll: false,
-      });
+    const selected = selection.workspace === workspace.id;
+    await navigate({
+      to: "/",
+      search: {
+        workspace: selected ? undefined : selection.workspace,
+        thread: selected ? undefined : selection.thread,
+      },
+      hash: "",
+      replace: true,
+      resetScroll: false,
+    });
     await client.invalidateQueries({ queryKey: ["workspaces"] });
-    for (const scope of ["workspace", "file", "diff", "branches"])
-      client.removeQueries({ queryKey: [scope, workspace.id] });
+    for (const key of ["workspace", "file", "diff", "branches"])
+      client.removeQueries({ queryKey: [key, workspace.id] });
     for (const thread of threads ?? [])
       client.removeQueries({ queryKey: ["thread", thread.id] });
   };
   return (
-    <SettingsGroup
-      id={`project-${workspace.id}`}
-      title={
-        <>
-          <WorkspaceBadge workspace={workspace} className="size-4" />
-          <span className="min-w-0 truncate">{workspace.label}</span>
-        </>
-      }
-    >
+    <>
+      <Alert variant="info" icon={<InfoIcon aria-hidden />}>
+        Can't find a setting? Keep this project picked above and hop to any
+        other settings page.
+      </Alert>
       {error ? (
-        <div className="px-3 py-3 sm:px-4">
-          <p
-            role="alert"
-            className="rounded-lg border border-error/32 bg-error-surface px-3 py-2 text-sm text-error-foreground"
-          >
-            {error}
-          </p>
-        </div>
+        <p
+          role="alert"
+          className="rounded-lg border border-error/32 bg-error-surface px-3 py-2 text-sm text-error-foreground"
+        >
+          {error}
+        </p>
       ) : null}
       {workspace.kind === "repository" ? (
+        <SettingsGroup id="project-overview" title="Project" hideTitle>
+          <SettingsRow
+            {...projectRows.name}
+            control={
+              <span
+                data-size="sm"
+                data-slot="input-control"
+                className="relative inline-flex rounded-lg border border-input bg-background not-dark:bg-clip-padding text-base text-foreground shadow-xs/5 ring-ring/24 transition-shadow before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] not-has-disabled:not-has-focus-visible:not-has-aria-invalid:before:shadow-[0_1px_--theme(--color-black/4%)] has-focus-visible:has-aria-invalid:border-destructive/64 has-focus-visible:has-aria-invalid:ring-destructive/16 has-aria-invalid:border-destructive/36 has-focus-visible:border-ring has-autofill:bg-foreground/4 has-disabled:opacity-64 has-[:disabled,:focus-visible,[aria-invalid]]:shadow-none has-focus-visible:ring-[3px] sm:text-sm dark:bg-input/32 dark:has-autofill:bg-foreground/8 dark:has-aria-invalid:ring-destructive/24 dark:not-has-disabled:not-has-focus-visible:not-has-aria-invalid:before:shadow-[0_-1px_--theme(--color-white/6%)] w-full sm:w-64"
+              >
+                <input
+                  data-slot="input"
+                  aria-label="Project name"
+                  value={name}
+                  onChange={(event) => setName(event.currentTarget.value)}
+                  onBlur={() => void rename()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                    if (event.key === "Escape" && name !== workspace.label) {
+                      // An edit consumes Escape before settings closes.
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setName(workspace.label);
+                    }
+                  }}
+                  className="w-full min-w-0 rounded-[inherit] outline-none placeholder:text-placeholder [transition:background-color_5000000s_ease-in-out_0s] h-7.5 px-[calc(--spacing(2.5)-1px)] leading-7.5 sm:h-6.5 sm:leading-6.5"
+                />
+              </span>
+            }
+          />
+        </SettingsGroup>
+      ) : null}
+      <SettingsGroup id="project-danger" title="Danger">
         <SettingsRow
-          id={`project-${workspace.id}-name`}
-          title="Name"
-          description="The name for this project in the sidebar and thread lists."
+          {...projectRows.remove}
+          description={
+            working
+              ? "Stop this project's running conversations before removing it."
+              : projectRows.remove.description
+          }
           control={
-            <span
-              data-size="sm"
-              data-slot="input-control"
-              className="relative inline-flex rounded-lg border border-input bg-background not-dark:bg-clip-padding text-base text-foreground shadow-xs/5 ring-ring/24 transition-shadow before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] not-has-disabled:not-has-focus-visible:not-has-aria-invalid:before:shadow-[0_1px_--theme(--color-black/4%)] has-focus-visible:has-aria-invalid:border-destructive/64 has-focus-visible:has-aria-invalid:ring-destructive/16 has-aria-invalid:border-destructive/36 has-focus-visible:border-ring has-autofill:bg-foreground/4 has-disabled:opacity-64 has-[:disabled,:focus-visible,[aria-invalid]]:shadow-none has-focus-visible:ring-[3px] sm:text-sm dark:bg-input/32 dark:has-autofill:bg-foreground/8 dark:has-aria-invalid:ring-destructive/24 dark:not-has-disabled:not-has-focus-visible:not-has-aria-invalid:before:shadow-[0_-1px_--theme(--color-white/6%)] w-full sm:w-64"
+            <Button
+              size="sm"
+              variant="destructive-outline"
+              disabled={working || removing}
+              onClick={() => void remove()}
             >
-              <input
-                data-slot="input"
-                aria-label="Project name"
-                value={name}
-                onChange={(event) => setName(event.currentTarget.value)}
-                onBlur={() => void rename()}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
-                  if (event.key === "Escape" && name !== workspace.label) {
-                    // An edit consumes Escape before settings closes.
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setName(workspace.label);
-                  }
-                }}
-                className="w-full min-w-0 rounded-[inherit] outline-none placeholder:text-placeholder [transition:background-color_5000000s_ease-in-out_0s] h-7.5 px-[calc(--spacing(2.5)-1px)] leading-7.5 sm:h-6.5 sm:leading-6.5"
-              />
-            </span>
+              <Trash2Icon />
+              Remove project
+            </Button>
           }
         />
-      ) : null}
-      <SettingsRow
-        id={`project-${workspace.id}-location`}
-        title="Location"
-        description="Where this project lives on disk."
-        control={
-          <>
-            <span
-              title={workspace.root}
-              className="min-w-0 truncate font-mono text-xs text-muted-foreground"
-            >
-              {workspace.root}
-            </span>
-            <Button
-              size="xs"
-              variant="outline"
-              className="min-w-[4.75rem]"
-              onClick={() =>
-                void navigator.clipboard
-                  .writeText(workspace.root)
-                  .then(() => setCopied(true))
-              }
-            >
-              {copied ? "Copied" : "Copy path"}
-            </Button>
-          </>
-        }
-      />
-      <SettingsRow
-        id={`project-${workspace.id}-remove`}
-        title="Remove project"
-        description={
-          working
-            ? "Stop this project's running conversations before removing it."
-            : "Deletes the project entry and its threads. Files on disk are not touched."
-        }
-        control={
-          <Button
-            size="sm"
-            variant="destructive-outline"
-            disabled={working || removing}
-            onClick={() => void remove()}
-          >
-            <Trash2Icon />
-            Remove project
-          </Button>
-        }
-      />
-    </SettingsGroup>
+      </SettingsGroup>
+    </>
   );
 }
