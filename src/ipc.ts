@@ -178,6 +178,7 @@ const workspaceView = z.object({
     }),
   ),
   threads: z.array(threadSummary),
+  unavailable: z.string().nullable().default(null),
 });
 const file = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), name: z.string(), contents: z.string() }),
