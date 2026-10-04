@@ -115,6 +115,16 @@ export function Workbench() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [client, navigate]);
+  const autoStartScratch =
+    !workspaces.isPending &&
+    !availability.isPending &&
+    !workspaces.error &&
+    !workspaceId &&
+    scratchAvailable &&
+    !error;
+  useEffect(() => {
+    if (autoStartScratch) void startScratch();
+  }, [autoStartScratch, startScratch]);
   useLayoutEffect(() => {
     if (settingsOpen && !wasSettingsOpen.current && !previousFocus.current)
       previousFocus.current =
@@ -349,7 +359,8 @@ export function Workbench() {
           }}
         >
           {workspaces.isPending ||
-          availability.isPending ? null : workspaceId ? (
+          availability.isPending ||
+          autoStartScratch ? null : workspaceId ? (
             <ChatView
               key={workspaceId}
               workspaceId={workspaceId}
