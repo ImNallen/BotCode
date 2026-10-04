@@ -1,16 +1,15 @@
 import { ipc, native } from "../ipc";
+import { serial } from "./serial";
 
 const values = new Map<string, string>();
-let writes: Promise<unknown> = Promise.resolve();
+const enqueue = serial();
 
 function persist(key: string, value: string | null): Promise<void> {
   if (value === null) values.delete(key);
   else values.set(key, value);
-  const write = writes.then(async () => {
+  return enqueue(async () => {
     await ipc.setUiState(key, value);
   });
-  writes = write.catch(() => {});
-  return write;
 }
 
 export async function loadStorage(): Promise<void> {
