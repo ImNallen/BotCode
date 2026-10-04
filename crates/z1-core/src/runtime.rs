@@ -1,12 +1,12 @@
 use crate::{
     codex::{self, Codex, Signal},
     domain::*,
-    repo,
+    repo, settings,
     store::Store,
 };
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     time::Duration,
 };
@@ -68,6 +68,8 @@ enum Command {
     Submit(ThreadId, String, String, Reply<Receipt>),
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
+    UiState(Reply<BTreeMap<String, String>>),
+    SetUiState(String, Option<String>, Reply<()>),
     Shutdown(Reply<()>),
 }
 #[derive(Clone)]
@@ -76,6 +78,7 @@ pub struct App {
     changes: broadcast::Sender<ChangeHint>,
     worktrees: PathBuf,
     scratch: Option<PathBuf>,
+    settings: PathBuf,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
@@ -129,6 +132,7 @@ impl App {
             store.save(thread)?;
         }
         let worktrees = config.data_dir.join("worktrees");
+        let settings = config.data_dir.join("settings.json");
         let (commands, rx) = mpsc::channel(128);
         let (changes, _) = broadcast::channel(256);
         let (provider_events, signals) = mpsc::channel(512);
@@ -161,6 +165,7 @@ impl App {
             changes,
             worktrees,
             scratch,
+            settings,
         })
     }
     async fn call<T>(&self, build: impl FnOnce(Reply<T>) -> Command) -> Result<T> {
@@ -353,6 +358,18 @@ impl App {
     }
     pub async fn interrupt(&self, id: ThreadId) -> Result<()> {
         self.call(|r| Command::Interrupt(id, r)).await
+    }
+    pub async fn ui_state(&self) -> Result<BTreeMap<String, String>> {
+        self.call(Command::UiState).await
+    }
+    pub async fn set_ui_state(&self, key: String, value: Option<String>) -> Result<()> {
+        self.call(|r| Command::SetUiState(key, value, r)).await
+    }
+    pub fn settings(&self) -> Result<Option<String>> {
+        settings::read(&self.settings)
+    }
+    pub fn save_settings(&self, text: &str) -> Result<()> {
+        settings::write(&self.settings, text)
     }
     pub async fn shutdown(&self) -> Result<()> {
         self.call(Command::Shutdown).await
@@ -882,6 +899,12 @@ impl Owner {
                     Ok(())
                 })();
                 let _ = reply.send(result);
+            }
+            Command::UiState(reply) => {
+                let _ = reply.send(self.store.ui_state());
+            }
+            Command::SetUiState(key, value, reply) => {
+                let _ = reply.send(self.store.set_ui_state(&key, value.as_deref()));
             }
             Command::Shutdown(_) => {}
         }

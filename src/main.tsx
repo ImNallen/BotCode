@@ -3,8 +3,9 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { ipc, native, subscribe } from "./ipc";
+import { loadStorage } from "./lib/storage";
 import { router } from "./router";
-import { PreferencesProvider } from "./settings/preferences";
+import { loadPreferences, PreferencesProvider } from "./settings/preferences";
 import "./styles.css";
 const client = new QueryClient({
   defaultOptions: { queries: { retry: false, staleTime: 1500 } },
@@ -24,7 +25,7 @@ const mount = () =>
     </StrictMode>,
   );
 if (native) {
-  void subscribe(client)
+  void Promise.all([subscribe(client), loadStorage(), loadPreferences()])
     .then(() => {
       void client.prefetchQuery({
         queryKey: ["workspaces"],

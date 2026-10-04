@@ -42,6 +42,7 @@ import { WORD_WRAP_KEY } from "./FilesSurface";
 import { hideWhitespaceChanges } from "./hideWhitespace";
 import { DIFF_VIEW_UNSAFE_CSS } from "./surfaceCss";
 import { useResolvedTheme } from "./useResolvedTheme";
+import { storage } from "../lib/storage";
 
 type Change = WorkspaceView["changes"][number];
 type Basis = "staged" | "unstaged";
@@ -226,7 +227,7 @@ export function DiffSurface({
   const [scope, setScope] = useStoredState<Scope>("z1.diffScope", parseScope);
   const [split, setSplit] = useStoredState("z1.diffSplit", storedFlag(false));
   const [wordWrap, setWordWrap] = useState(() =>
-    storedFlag(true)(localStorage.getItem(WORD_WRAP_KEY)),
+    storedFlag(true)(storage.getItem(WORD_WRAP_KEY)),
   );
   const [ignoreWhitespace, setIgnoreWhitespace] = useStoredState(
     "z1.diffIgnoreWhitespace",

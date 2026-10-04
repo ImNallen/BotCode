@@ -1,6 +1,6 @@
 use crate::domain::*;
 use rusqlite::{Connection, OptionalExtension, params};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 pub struct Store {
     db: Connection,
     _lock: std::fs::File,
@@ -21,7 +21,7 @@ impl Store {
             )
         })?;
         let db = Connection::open(dir.join("z1.sqlite"))?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS threads(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS receipts(request_id TEXT PRIMARY KEY, input TEXT NOT NULL, data TEXT NOT NULL); PRAGMA user_version=1;")?;
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS threads(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS receipts(request_id TEXT PRIMARY KEY, input TEXT NOT NULL, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS ui_state(key TEXT PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version=1;")?;
         Ok(Self { db, _lock: lock })
     }
     pub fn workspaces(&self) -> Result<Vec<Workspace>> {
@@ -66,6 +66,18 @@ impl Store {
     }
     pub fn save(&mut self, t: &ThreadSnapshot) -> Result<()> {
         self.db.execute("INSERT INTO threads(id,workspace_id,data) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data",params![t.id.to_string(),t.workspace_id.to_string(),serde_json::to_string(t)?])?;
+        Ok(())
+    }
+    pub fn ui_state(&self) -> Result<BTreeMap<String, String>> {
+        let mut s = self.db.prepare("SELECT key,value FROM ui_state")?;
+        let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    pub fn set_ui_state(&self, key: &str, value: Option<&str>) -> Result<()> {
+        match value {
+            Some(v) => self.db.execute("INSERT INTO ui_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [key, v])?,
+            None => self.db.execute("DELETE FROM ui_state WHERE key=?1", [key])?,
+        };
         Ok(())
     }
     pub fn receipt(&self, id: &str, input: &str) -> Result<Option<Receipt>> {

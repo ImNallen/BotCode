@@ -6,7 +6,7 @@ The selected design uses one Rust runtime owner and one lazily started Codex app
 
 `runtime.rs` owns conversation transitions, canonical checkout leases, approval callback routes, and the single SQLite writer. Its loop processes commands, provider notifications, asynchronous request completions, and a streaming commit timer. Provider requests run outside that loop. The private Codex transport owns its request-correlation map and serialized JSONL writes.
 
-`store.rs` stores workspaces, thread snapshots, and operation receipts. WAL and short transactions preserve the local intent and receipt together. A file lock excludes a second runtime using the same state directory. The snapshot format replaces the proposed normalized item tables for this bounded slice.
+`store.rs` stores workspaces, thread snapshots, and operation receipts. WAL and short transactions preserve the local intent and receipt together. A file lock excludes a second runtime using the same state directory. The snapshot format replaces the proposed normalized item tables for this bounded slice. Machine-local renderer UI state, such as panel widths, lives in the `ui_state` key-value table instead of WebView storage. Preferences live in `settings.json` in the data directory, so a user can edit or sync them. Saves write to the resolved symlink target through a temporary file and a rename.
 
 `repo.rs` validates Git roots and canonical path containment. It excludes `.git` reads and external symlinks. File and historical blob reads have a 1 MB text limit. Git arguments do not pass through a shell. Repository inspection runs outside the conversation owner. Refresh is explicit, on focus, and after turn completion.
 
