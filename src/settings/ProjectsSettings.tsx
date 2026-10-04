@@ -8,6 +8,8 @@ import { InfoIcon, Trash2Icon } from "lucide-react";
 import { checkoutKey, ipc, workingSessions, type Workspace } from "../ipc";
 import { Alert } from "../ui/alert";
 import { Button } from "../ui/controls";
+import { NewThreadRow } from "./NewThreadSettings";
+import { usePreferences } from "./preferences";
 import { projectRows } from "./settingsCatalog";
 import { SettingsScopeNotice, type SettingsScope } from "./settingsScope";
 import { SettingsGroup, SettingsRow } from "./settingsLayout";
@@ -67,6 +69,7 @@ function ProjectSettings({
 }) {
   const { workspace } = scope;
   const client = useQueryClient();
+  const { forgetProject } = usePreferences();
   const navigate = useNavigate();
   const selection = useSearch({ from: "__root__" });
   const view = useQuery({
@@ -119,6 +122,7 @@ function ProjectSettings({
       setRemoving(false);
       return;
     }
+    forgetProject(workspace.id);
     const selected = selection.workspace === workspace.id;
     await navigate({
       to: "/",
@@ -182,6 +186,13 @@ function ProjectSettings({
           />
         </SettingsGroup>
       ) : null}
+      <SettingsGroup id="project-new-threads" title="New threads">
+        <NewThreadRow
+          id={projectRows.workspace.id}
+          setting="newThreadCheckout"
+          scope={scope}
+        />
+      </SettingsGroup>
       <SettingsGroup id="project-danger" title="Danger">
         <SettingsRow
           {...projectRows.remove}

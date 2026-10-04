@@ -1,6 +1,8 @@
 // Classes copied from pingdotgg/t3code v0.0.45 settings/settingsLayout.tsx and SettingsGroup.tsx (MIT).
 import type { ReactNode } from "react";
+import { Undo2Icon } from "lucide-react";
 import { cn } from "../lib/cn";
+import { Button } from "../ui/controls";
 
 export function SettingsGroup({
   id,
@@ -48,16 +50,23 @@ export function SettingsRow({
   title,
   description,
   control,
+  inheritance,
+  resetAction,
+  disabled = false,
 }: {
   id: string;
   title: string;
   description: string;
   control: ReactNode;
+  inheritance?: ReactNode;
+  resetAction?: ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <div
       id={id}
       tabIndex={-1}
+      aria-disabled={disabled || undefined}
       data-slot="settings-row"
       className="@container/settings-row rounded-xl px-3 sm:px-4 aria-disabled:opacity-64 aria-disabled:[&_*]:text-muted-foreground py-3 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
     >
@@ -65,6 +74,14 @@ export function SettingsRow({
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-h-5 items-center gap-1.5">
             <h3 className="text-sm font-medium text-foreground">{title}</h3>
+            {inheritance ? (
+              <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
+                {inheritance}
+              </span>
+            ) : null}
+            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
+              {resetAction}
+            </span>
           </div>
           <p className="max-w-xl text-xs leading-normal text-muted-foreground/80">
             {description}
@@ -77,5 +94,30 @@ export function SettingsRow({
         ) : null}
       </div>
     </div>
+  );
+}
+
+export function SettingResetButton({
+  label,
+  tooltip = "Reset to default",
+  onClick,
+}: {
+  label: string;
+  tooltip?: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      size="icon-micro"
+      variant="ghost-muted"
+      aria-label={`Reset ${label} to default`}
+      title={tooltip}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+    >
+      <Undo2Icon className="size-3" />
+    </Button>
   );
 }

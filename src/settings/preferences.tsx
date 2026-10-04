@@ -14,13 +14,25 @@ const favoriteModelSchema = z.object({
 });
 export type FavoriteModel = Readonly<z.infer<typeof favoriteModelSchema>>;
 
+const newThreadSchema = z.object({
+  newThreadCheckout: z.enum(["local", "worktree"]),
+  newWorktreesStartFromOrigin: z.boolean(),
+});
+export type NewThreadValues = z.infer<typeof newThreadSchema>;
+export type NewThreadSetting = keyof NewThreadValues;
+export type ProjectOverride = Partial<NewThreadValues>;
+export const builtInNewThread: NewThreadValues = {
+  newThreadCheckout: "local",
+  newWorktreesStartFromOrigin: true,
+};
+
 const schema = z.object({
   appearance: z.enum(["system", "light", "dark"]),
   promptFontSize: z.number().int().min(12).max(20),
   codeFontSize: z.number().int().min(11).max(20),
   favoriteModels: z.array(favoriteModelSchema),
-  newThreadCheckout: z.enum(["local", "worktree"]),
-  newWorktreesStartFromOrigin: z.boolean(),
+  ...newThreadSchema.shape,
+  projectOverrides: z.record(z.uuid(), newThreadSchema.partial()),
 });
 type Preferences = Readonly<z.infer<typeof schema>>;
 export const checkoutModeLabels = {
@@ -33,8 +45,8 @@ const defaults: Preferences = {
   promptFontSize: 14,
   codeFontSize: 13,
   favoriteModels: [],
-  newThreadCheckout: "local",
-  newWorktreesStartFromOrigin: true,
+  ...builtInNewThread,
+  projectOverrides: {},
 };
 const storageKey = "z1:preferences:v1";
 type PreferenceState = {
@@ -44,6 +56,9 @@ type PreferenceState = {
 const Context = createContext<
   | (PreferenceState & {
       update: (patch: Partial<Preferences>) => void;
+      // An undefined field removes that override.
+      patchProject: (workspaceId: string, patch: ProjectOverride) => void;
+      forgetProject: (workspaceId: string) => void;
       reset: () => void;
       setFavorite: (pair: FavoriteModel, wanted: boolean) => void;
     })
@@ -63,6 +78,7 @@ function readPreferences(): PreferenceState {
         favoriteModels: z.unknown().optional(),
         newThreadCheckout: z.unknown().optional(),
         newWorktreesStartFromOrigin: z.unknown().optional(),
+        projectOverrides: z.unknown().optional(),
       })
       .parse(JSON.parse(stored));
     const appearance = schema.shape.appearance.safeParse(object.appearance);
@@ -81,6 +97,32 @@ function readPreferences(): PreferenceState {
       );
     const favorites = schema.shape.favoriteModels.safeParse(
       object.favoriteModels,
+    );
+    const projectOverrides = Object.fromEntries(
+      Object.entries(
+        z
+          .record(z.string(), z.unknown())
+          .catch({})
+          .parse(object.projectOverrides),
+      ).flatMap(([id, value]) => {
+        const parsed = z.record(z.string(), z.unknown()).safeParse(value);
+        if (!z.uuid().safeParse(id).success || !parsed.success) return [];
+        const entry = parsed.data;
+        const checkout = newThreadSchema.shape.newThreadCheckout.safeParse(
+          entry.newThreadCheckout,
+        );
+        const fromOrigin =
+          newThreadSchema.shape.newWorktreesStartFromOrigin.safeParse(
+            entry.newWorktreesStartFromOrigin,
+          );
+        const override: ProjectOverride = {
+          ...(checkout.success ? { newThreadCheckout: checkout.data } : {}),
+          ...(fromOrigin.success
+            ? { newWorktreesStartFromOrigin: fromOrigin.data }
+            : {}),
+        };
+        return Object.keys(override).length > 0 ? [[id, override]] : [];
+      }),
     );
     const favoriteModels = favorites.success
       ? favorites.data.filter(
@@ -107,6 +149,7 @@ function readPreferences(): PreferenceState {
         newWorktreesStartFromOrigin: newWorktreesStartFromOrigin.success
           ? newWorktreesStartFromOrigin.data
           : defaults.newWorktreesStartFromOrigin,
+        projectOverrides,
       },
       persistenceError:
         object.favoriteModels !== undefined && !favorites.success
@@ -167,6 +210,23 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       value={{
         ...state,
         update,
+        patchProject: (workspaceId, patch) => {
+          const { [workspaceId]: previous, ...others } =
+            current.current.projectOverrides;
+          const next = { ...previous, ...patch };
+          update({
+            projectOverrides: Object.values(next).every(
+              (value) => value === undefined,
+            )
+              ? others
+              : { ...others, [workspaceId]: next },
+          });
+        },
+        forgetProject: (workspaceId) => {
+          const { [workspaceId]: _, ...others } =
+            current.current.projectOverrides;
+          update({ projectOverrides: others });
+        },
         reset: () =>
           update({
             ...defaults,
@@ -184,6 +244,28 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       {children}
     </Context.Provider>
   );
+}
+
+export function newThreadDefaults(
+  preferences: Preferences,
+  workspaceId: string | undefined,
+): { values: NewThreadValues; overridden: Record<NewThreadSetting, boolean> } {
+  const override =
+    workspaceId === undefined ? {} : preferences.projectOverrides[workspaceId];
+  return {
+    values: {
+      newThreadCheckout:
+        override?.newThreadCheckout ?? preferences.newThreadCheckout,
+      newWorktreesStartFromOrigin:
+        override?.newWorktreesStartFromOrigin ??
+        preferences.newWorktreesStartFromOrigin,
+    },
+    overridden: {
+      newThreadCheckout: override?.newThreadCheckout !== undefined,
+      newWorktreesStartFromOrigin:
+        override?.newWorktreesStartFromOrigin !== undefined,
+    },
+  };
 }
 
 export function usePreferences() {

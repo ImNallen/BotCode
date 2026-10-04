@@ -2,21 +2,9 @@
 // settingsLayout.tsx, WorkspacePageContainer.tsx, WorkspacePageHeader.tsx and ui/number-field.tsx (MIT).
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
-import {
-  ArrowLeftIcon,
-  ChevronDownIcon,
-  SearchIcon,
-  XIcon,
-} from "lucide-react";
+import { ArrowLeftIcon, SearchIcon, XIcon } from "lucide-react";
 import { SidebarMenuButton } from "../SidebarFooter";
-import {
-  Button,
-  Switch,
-  Toggle,
-  selectItem,
-  selectTrigger,
-} from "../ui/controls";
-import { Menu, MenuItem } from "../ui/menu";
+import { Button, Toggle } from "../ui/controls";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -24,13 +12,15 @@ import {
 } from "../WorkspaceBreadcrumb";
 import { newWithoutProjectShortcut } from "../lib/shortcuts";
 import { cn } from "../lib/cn";
-import { checkoutModeLabels, usePreferences } from "./preferences";
+import { NewThreadRow } from "./NewThreadSettings";
+import { usePreferences } from "./preferences";
 import { ProjectsSettings } from "./ProjectsSettings";
 import {
   categories,
   settingsSection,
   visibleRows,
   visibleSections,
+  type SettingsRowInfo,
   type SettingsSection,
 } from "./settingsCatalog";
 import { SettingsScopeSentence, useSettingsScope } from "./settingsScope";
@@ -366,53 +356,6 @@ export function SettingsPage() {
         />
       );
     }
-    if (id === "workspace")
-      return (
-        <Menu
-          align="end"
-          trigger={(props) => (
-            <button
-              type="button"
-              {...props}
-              aria-label="Default workspace"
-              className={selectTrigger()}
-            >
-              <span className="min-w-0 flex-1 truncate text-left">
-                {checkoutModeLabels[preferences.newThreadCheckout]}
-              </span>
-              <ChevronDownIcon
-                aria-hidden
-                className="-me-1 size-3 shrink-0 opacity-50"
-              />
-            </button>
-          )}
-        >
-          {(["local", "worktree"] as const).map((mode) => (
-            <MenuItem
-              key={mode}
-              role="menuitemradio"
-              aria-checked={preferences.newThreadCheckout === mode}
-              data-selected={
-                preferences.newThreadCheckout === mode ? "" : undefined
-              }
-              className={selectItem}
-              onClick={() => update({ newThreadCheckout: mode })}
-            >
-              {checkoutModeLabels[mode]}
-            </MenuItem>
-          ))}
-        </Menu>
-      );
-    if (id === "start-from-origin")
-      return (
-        <Switch
-          checked={preferences.newWorktreesStartFromOrigin}
-          onCheckedChange={(checked) =>
-            update({ newWorktreesStartFromOrigin: checked })
-          }
-          aria-label="Start new worktrees from origin by default"
-        />
-      );
     if (id === "restore")
       return (
         <Button size="sm" variant="outline" onClick={reset}>
@@ -438,6 +381,24 @@ export function SettingsPage() {
       );
     return null;
   };
+  const row = (info: SettingsRowInfo) =>
+    info.id === "workspace" ? (
+      <NewThreadRow
+        key={info.id}
+        id={info.id}
+        setting="newThreadCheckout"
+        scope={scope}
+      />
+    ) : info.id === "start-from-origin" ? (
+      <NewThreadRow
+        key={info.id}
+        id={info.id}
+        setting="newWorktreesStartFromOrigin"
+        scope={scope}
+      />
+    ) : (
+      <SettingsRow key={info.id} {...info} control={control(info.id)} />
+    );
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
       <header
@@ -507,13 +468,13 @@ export function SettingsPage() {
                     id={group.id}
                     title={group.title}
                   >
-                    {rows.map((row) => (
-                      <SettingsRow
-                        key={row.id}
-                        {...row}
-                        control={control(row.id)}
-                      />
-                    ))}
+                    {rows.length > 0 ? (
+                      rows.map(row)
+                    ) : (
+                      <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
+                        This project is no longer available.
+                      </p>
+                    )}
                   </SettingsGroup>
                 );
               })}

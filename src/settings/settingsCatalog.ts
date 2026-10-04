@@ -6,6 +6,7 @@ import {
   Settings2Icon,
 } from "lucide-react";
 import { z } from "zod";
+import type { NewThreadSetting } from "./preferences";
 import type { SettingsScope } from "./settingsScope";
 
 export const settingsSection = z.enum([
@@ -26,8 +27,9 @@ type SettingsGroupInfo = {
   id: string;
   title: string;
   hideTitle?: boolean;
-  // Groups that depend on the picked project.
-  when?: "all-projects" | "repository";
+  // Groups that depend on the picked project. "available" keeps the group
+  // and empties it when the project is gone.
+  when?: "all-projects" | "available" | "repository";
   rows: SettingsRowInfo[];
 };
 type SettingsCategory = {
@@ -37,12 +39,45 @@ type SettingsCategory = {
   groups: SettingsGroupInfo[];
 };
 
+export const newThreadRows = {
+  newThreadCheckout: {
+    title: "Workspace",
+    all: "Where new threads start. Projects can override it.",
+    project: "Where new threads in this project start.",
+    resetLabel: "default workspace",
+    keywords: "default mode draft current local checkout new worktree",
+  },
+  newWorktreesStartFromOrigin: {
+    title: "Start from origin",
+    all: "Creates the worktree from the latest matching branch on origin instead of your local branch.",
+    project:
+      "Creates this project's worktrees from the latest matching branch on origin instead of your local branch.",
+    resetLabel: "new worktrees start from origin",
+    keywords: "new worktrees latest matching remote branch local",
+  },
+} satisfies Record<
+  NewThreadSetting,
+  {
+    title: string;
+    all: string;
+    project: string;
+    resetLabel: string;
+    keywords: string;
+  }
+>;
+
 export const projectRows = {
   name: {
     id: "project-name",
     title: "Name",
     description: "The name for this project in the sidebar and thread lists.",
     keywords: "rename",
+  },
+  workspace: {
+    id: "project-workspace",
+    title: newThreadRows.newThreadCheckout.title,
+    description: newThreadRows.newThreadCheckout.project,
+    keywords: newThreadRows.newThreadCheckout.keywords,
   },
   remove: {
     id: "project-remove",
@@ -65,6 +100,11 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         hideTitle: true,
         when: "repository",
         rows: [projectRows.name],
+      },
+      {
+        id: "project-new-threads",
+        title: "New threads",
+        rows: [projectRows.workspace],
       },
       { id: "project-danger", title: "Danger", rows: [projectRows.remove] },
     ],
@@ -94,20 +134,19 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
       {
         id: "new-threads",
         title: "New threads",
-        when: "all-projects",
+        when: "available",
         rows: [
           {
             id: "workspace",
-            title: "Workspace",
-            description: "Where new threads start.",
-            keywords: "default mode draft current local checkout new worktree",
+            title: newThreadRows.newThreadCheckout.title,
+            description: newThreadRows.newThreadCheckout.all,
+            keywords: newThreadRows.newThreadCheckout.keywords,
           },
           {
             id: "start-from-origin",
-            title: "Start from origin",
-            description:
-              "Creates the worktree from the latest matching branch on origin instead of your local branch.",
-            keywords: "new worktrees latest matching remote branch local",
+            title: newThreadRows.newWorktreesStartFromOrigin.title,
+            description: newThreadRows.newWorktreesStartFromOrigin.all,
+            keywords: newThreadRows.newWorktreesStartFromOrigin.keywords,
           },
         ],
       },
@@ -120,7 +159,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "restore",
             title: "Restore defaults",
             description:
-              "Reset appearance, font sizes and new thread defaults on this device.",
+              "Reset appearance, font sizes and new thread defaults, including project overrides, on this device.",
           },
         ],
       },
@@ -218,6 +257,8 @@ export function visibleRows(
   switch (group.when) {
     case "all-projects":
       return scope.kind === "all" ? group.rows : undefined;
+    case "available":
+      return scope.kind === "unavailable" ? [] : group.rows;
     case "repository":
       return scope.kind === "project" && scope.workspace.kind === "repository"
         ? group.rows
