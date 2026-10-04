@@ -5,7 +5,7 @@ use std::{
 };
 const TEXT_LIMIT: usize = 1_000_000;
 const FILE_LIMIT: usize = 40_000;
-fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -171,11 +171,7 @@ pub fn branches(root: &Path) -> Result<Branches> {
             "refs/remotes",
         ],
     )?;
-    let origin_head = git(
-        root,
-        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
-    )
-    .ok();
+    let default = default_branch(root);
     let (mut local, mut remote) = (Vec::new(), Vec::new());
     for line in String::from_utf8_lossy(&refs).lines() {
         let [refname, head, worktree, symref] = line.split('\0').collect::<Vec<_>>()[..] else {
@@ -202,20 +198,6 @@ pub fn branches(root: &Path) -> Result<Branches> {
         }
     }
     let origin = remote.iter().any(|b| b.name.starts_with("origin/"));
-    let default = origin_head
-        .as_deref()
-        .map(|target| String::from_utf8_lossy(target).trim().to_owned())
-        .and_then(|target| {
-            target
-                .strip_prefix("refs/remotes/origin/")
-                .map(str::to_owned)
-        })
-        .or_else(|| {
-            ["main", "master"]
-                .into_iter()
-                .find(|name| local.iter().any(|b| b.name == *name))
-                .map(str::to_owned)
-        });
     remote.retain(|b| {
         b.name
             .strip_prefix("origin/")
@@ -242,6 +224,28 @@ pub fn branches(root: &Path) -> Result<Branches> {
         }
     });
     Ok(Branches { branches, origin })
+}
+/// The branch origin/HEAD points at, else a local `main` or `master`.
+pub(crate) fn default_branch(root: &Path) -> Option<String> {
+    git(
+        root,
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    )
+    .ok()
+    .and_then(|target| {
+        String::from_utf8_lossy(&target)
+            .trim()
+            .strip_prefix("refs/remotes/origin/")
+            .map(str::to_owned)
+    })
+    .or_else(|| {
+        ["main", "master"].into_iter().find_map(|name| {
+            let spec = format!("refs/heads/{name}");
+            git(root, &["show-ref", "--verify", "--quiet", &spec])
+                .is_ok()
+                .then(|| name.to_owned())
+        })
+    })
 }
 fn relative(path: &str) -> Result<&Path> {
     let p = Path::new(path);
@@ -355,6 +359,7 @@ pub fn inspect(workspace: Workspace, threads: Vec<ThreadSummary>) -> Result<Work
         files: paths,
         changes,
         threads,
+        unavailable: None,
     })
 }
 fn too_large() -> AppError {
@@ -390,6 +395,7 @@ pub fn inspect_folder(workspace: Workspace, threads: Vec<ThreadSummary>) -> Resu
         files,
         changes: vec![],
         threads,
+        unavailable: None,
     })
 }
 fn version(root: &Path, spec: &str) -> Result<String> {

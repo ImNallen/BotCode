@@ -561,7 +561,11 @@ export function ChatView({
                       </div>
                     </div>
                   ) : null}
-                  {dormant ? (
+                  {dormant && view?.unavailable ? (
+                    <div className="mb-2 flex items-center justify-between gap-2 px-4 text-xs text-muted-foreground">
+                      <span>{view.unavailable}</span>
+                    </div>
+                  ) : dormant ? (
                     <div className="mb-2 flex items-center justify-between gap-2 px-4 text-xs text-muted-foreground">
                       <span>
                         {thread.session.kind === "dormant"

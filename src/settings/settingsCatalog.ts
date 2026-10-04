@@ -1,5 +1,6 @@
 // Section order and labels follow pingdotgg/t3code v0.0.45 settings/settingsSearch.ts (MIT).
 import {
+  HardDriveIcon,
   KeyboardIcon,
   PaletteIcon,
   PanelsTopLeftIcon,
@@ -14,6 +15,7 @@ export const settingsSection = z.enum([
   "general",
   "appearance",
   "keybindings",
+  "storage",
 ]);
 export type SettingsSection = z.infer<typeof settingsSection>;
 
@@ -82,6 +84,8 @@ export const autoSettleDaysRow = {
   title: "Days of inactivity before auto-settle",
   description: "Any new activity un-settles a thread automatically.",
 };
+const worktreeCleanupKeywords =
+  "worktree cleanup disk storage delete threads old inactive unchanged worktrees retention days off";
 
 export const projectRows = {
   name: {
@@ -192,7 +196,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "restore",
             title: "Restore defaults",
             description:
-              "Reset appearance, font sizes, new thread defaults and auto-settle, including project overrides, on this device.",
+              "Reset appearance, font sizes, storage cleanup, new thread defaults and auto-settle, including project overrides, on this device.",
           },
         ],
       },
@@ -286,6 +290,33 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             description:
               "Keep the open thread at the top of the sidebar, or unpin it.",
             keywords: "pinned unpin",
+          },
+        ],
+      },
+    ],
+  },
+  storage: {
+    title: "Storage",
+    icon: HardDriveIcon,
+    scoped: false,
+    groups: [
+      {
+        id: "storage-worktrees",
+        title: "Worktrees",
+        rows: [
+          {
+            id: "worktree-after-days",
+            title: "Delete inactive worktrees",
+            description:
+              "Remove worktrees after their threads have been inactive for this many days. Branches and thread history are kept.",
+            keywords: worktreeCleanupKeywords,
+          },
+          {
+            id: "worktree-unchanged",
+            title: "Delete unchanged worktrees",
+            description:
+              "Remove worktrees with no commits beyond the default branch.",
+            keywords: worktreeCleanupKeywords,
           },
         ],
       },

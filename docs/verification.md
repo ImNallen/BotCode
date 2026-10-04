@@ -268,3 +268,21 @@ The native debug bundle used the temporary identifier `dev.z1.code.autosettlever
 - The alpha-app Project page had no auto-settle row, as in T3. Searching settings for "days of inactivity" found **Auto-settle inactive threads** under General.
 
 The sidebar is hidden while settings are open, so the run saw each reclassification after **Back**. The runtime test covers the change hint that updates the list.
+
+## Storage cleanup
+
+Verified on 2026-10-04 against the pinned T3 Code v0.0.45 source with Codex 0.160.0. The core suite passed 50 tests: 1 unit test, 3 repository tests, 35 runtime tests and 11 storage cleanup tests. Clippy, rustfmt, `pnpm typecheck`, `pnpm build` and Prettier passed.
+
+Core checks use real temporary repositories. An inactive clean worktree is removed, its branch survives, and the thread keeps its checkout. A modified file, an untracked file, or an ignored file outside `node_modules` keeps the worktree. Commits beyond origin's default branch keep it under the unchanged rule, and a worktree without them is removed. A running thread and a path shared with another thread keep their worktree. With both rules off, nothing is removed. Missing, unparseable and wrongly typed settings count as off, one key at a time. A removed thread reports the removed message for files and diffs, lists its branch as current, and refuses branch switches. The next message recreates the worktree at the same path on the same branch and Codex receives that cwd. A restore whose branch is gone refuses with `worktree_restore` and starts no turn.
+
+The native debug bundle used a disposable one-commit repository, an isolated `Z1_DATA_DIR`, the temporary identifier `dev.z1.code.storageverify` and real Codex. At 1100×780:
+
+- Settings › Storage showed **Worktrees** with **Delete inactive worktrees** and **Delete unchanged worktrees**, both off. The inactive row showed "Off" beside its switch (`02-storage-off.png`).
+- Switching the inactive rule on showed the stepper at 8 days, and `settings.json` held `"worktreeAfterDays": 8` (`03-storage-on-8.png`). The layout matches T3's rows, stepper and switch (`10-storage-vs-t3.png`).
+- Eight presses of the minus button stopped at 1 day, and `settings.json` held `"worktreeAfterDays": 1` (`04-storage-1-day.png`).
+- Two worktree threads each got a real Codex reply (`05-thread-a-reply.png`, `06-thread-b-reply.png`). A `notes.txt` was written into the second worktree. With the app closed, both threads' turn times were moved back three days in SQLite.
+- On relaunch, the startup sweep logged the removal of the first worktree and skipped the second with "working tree has changes". The first directory was gone, `git worktree list` no longer listed it, and its `z1code/09c8eb90` branch remained. The dirty worktree and its `notes.txt` stayed.
+- The removed thread opened with its history. The right panel read "This thread's worktree was removed to save space. Send a message to restore it.", and the branch picker read `z1code/09c8eb90` (`07-removed-thread-panel.png`). A rebuilt bundle also showed that line above the composer in place of Reconnect (`09-removed-thread-banner.png`).
+- A follow-up message recreated the worktree at the same path on `z1code/09c8eb90`, Codex replied `STORAGE_RESTORED_OK`, and the panel returned to its launcher (`08-restored-reply.png`). All six cwd records in that Codex session named the worktree.
+
+The screenshots were saved outside the repository in `/tmp/z1-storage-shots`. After the restart, the removed thread also showed the earlier "Z1 Code closed. Native execution stopped." notice, because opening a removed thread skipped the reconnect that normally clears it. Opening a removed thread now clears that notice. A runtime test covers the fix, and the native app has not been observed since.

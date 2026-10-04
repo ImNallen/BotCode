@@ -106,7 +106,7 @@ export function RightPanel({
   const tabList = useRef<HTMLDivElement>(null);
   const active =
     state.active === null ? undefined : state.surfaces[state.active];
-  const available = view !== undefined;
+  const available = view !== undefined && view.unavailable === null;
   const actions = git ? SURFACE_ACTIONS : FOLDER_ACTIONS;
   const open = (surface: Surface) => onChange(openSurface(state, surface));
   const handleOpenFile = (path: string) => onChange(openFile(state, path));
@@ -266,7 +266,11 @@ export function RightPanel({
             className="flex min-h-0 flex-1 flex-col"
             data-right-panel-surface-content
           >
-            {!active ? (
+            {view?.unavailable ? (
+              <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
+                <p className="text-center">{view.unavailable}</p>
+              </div>
+            ) : !active ? (
               <Launcher actions={actions} available={available} onOpen={open} />
             ) : active.kind === "diff" ? (
               <DiffSurface

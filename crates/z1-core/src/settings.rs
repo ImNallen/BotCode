@@ -80,3 +80,27 @@ pub fn write(path: &Path, text: &str) -> Result<()> {
     }
     Ok(result?)
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CleanupRules {
+    pub worktree_after_days: Option<u64>,
+    pub worktree_unchanged: bool,
+}
+impl CleanupRules {
+    pub fn enabled(self) -> bool {
+        self.worktree_after_days.is_some() || self.worktree_unchanged
+    }
+}
+/// Every malformed key, or a missing or unparseable file, reads as that rule being off.
+pub fn cleanup_rules(path: &Path) -> CleanupRules {
+    let settings: serde_json::Value = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let rules = &settings["storageCleanup"];
+    CleanupRules {
+        worktree_after_days: rules["worktreeAfterDays"]
+            .as_u64()
+            .filter(|days| (1..=3650).contains(days)),
+        worktree_unchanged: rules["worktreeUnchanged"].as_bool() == Some(true),
+    }
+}

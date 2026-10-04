@@ -1,3 +1,4 @@
+mod cleanup;
 mod codex;
 mod domain;
 pub mod repo;

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowLeftIcon, SearchIcon, XIcon } from "lucide-react";
 import { SidebarMenuButton } from "../SidebarFooter";
-import { Button, Toggle } from "../ui/controls";
+import { Button, Switch, Toggle } from "../ui/controls";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -29,6 +29,7 @@ import { cn } from "../lib/cn";
 import { ProjectSettingRow } from "./ProjectSettingRow";
 import { usePreferences } from "./preferences";
 import { ProjectsSettings } from "./ProjectsSettings";
+import { RetentionControl } from "./RetentionControl";
 import {
   categories,
   settingsSection,
@@ -369,6 +370,36 @@ export function SettingsPage() {
         />
       );
     }
+    if (id === "worktree-after-days")
+      return (
+        <RetentionControl
+          label="Delete inactive worktrees"
+          value={preferences.storageCleanup.worktreeAfterDays}
+          onChange={(worktreeAfterDays) =>
+            update({
+              storageCleanup: {
+                ...preferences.storageCleanup,
+                worktreeAfterDays,
+              },
+            })
+          }
+        />
+      );
+    if (id === "worktree-unchanged")
+      return (
+        <Switch
+          aria-label="Delete unchanged worktrees"
+          checked={preferences.storageCleanup.worktreeUnchanged}
+          onCheckedChange={(worktreeUnchanged) =>
+            update({
+              storageCleanup: {
+                ...preferences.storageCleanup,
+                worktreeUnchanged,
+              },
+            })
+          }
+        />
+      );
     if (id === "restore")
       return (
         <Button size="sm" variant="outline" onClick={reset}>

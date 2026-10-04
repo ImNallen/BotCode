@@ -32,6 +32,12 @@ export const builtInProject: ProjectValues = {
   sidebarAutoSettleAfterDays: autoSettleDefaultDays,
 };
 
+const storageCleanupSchema = z.object({
+  worktreeAfterDays: z.number().int().min(1).max(3650).nullable(),
+  worktreeUnchanged: z.boolean(),
+});
+export type StorageCleanup = z.infer<typeof storageCleanupSchema>;
+
 const schema = z.object({
   appearance: z.enum(["system", "light", "dark"]),
   promptFontSize: z.number().int().min(12).max(20),
@@ -39,6 +45,7 @@ const schema = z.object({
   favoriteModels: z.array(favoriteModelSchema),
   ...projectSchema.shape,
   projectOverrides: z.record(z.uuid(), projectSchema.partial()),
+  storageCleanup: storageCleanupSchema,
 });
 type Preferences = Readonly<z.infer<typeof schema>>;
 export const checkoutModeLabels = {
@@ -53,6 +60,7 @@ const defaults: Preferences = {
   favoriteModels: [],
   ...builtInProject,
   projectOverrides: {},
+  storageCleanup: { worktreeAfterDays: null, worktreeUnchanged: false },
 };
 const storageKey = "z1:preferences:v1";
 let fileText: string | null | Error = null;
@@ -103,6 +111,7 @@ function readPreferences(): PreferenceState {
         newWorktreesStartFromOrigin: z.unknown().optional(),
         sidebarAutoSettleAfterDays: z.unknown().optional(),
         projectOverrides: z.unknown().optional(),
+        storageCleanup: z.unknown().optional(),
       })
       .parse(JSON.parse(stored));
     const appearance = schema.shape.appearance.safeParse(object.appearance);
@@ -149,6 +158,18 @@ function readPreferences(): PreferenceState {
         return Object.keys(override).length > 0 ? [[id, override]] : [];
       }),
     );
+    const storageCleanup = z
+      .record(z.string(), z.unknown())
+      .catch({})
+      .parse(object.storageCleanup);
+    const worktreeAfterDays =
+      storageCleanupSchema.shape.worktreeAfterDays.safeParse(
+        storageCleanup.worktreeAfterDays,
+      );
+    const worktreeUnchanged =
+      storageCleanupSchema.shape.worktreeUnchanged.safeParse(
+        storageCleanup.worktreeUnchanged,
+      );
     const favoriteModels = favorites.success
       ? favorites.data.filter(
           (pair, index, pairs) =>
@@ -178,6 +199,14 @@ function readPreferences(): PreferenceState {
           ? sidebarAutoSettleAfterDays.data
           : defaults.sidebarAutoSettleAfterDays,
         projectOverrides,
+        storageCleanup: {
+          worktreeAfterDays: worktreeAfterDays.success
+            ? worktreeAfterDays.data
+            : defaults.storageCleanup.worktreeAfterDays,
+          worktreeUnchanged: worktreeUnchanged.success
+            ? worktreeUnchanged.data
+            : defaults.storageCleanup.worktreeUnchanged,
+        },
       },
       persistenceError:
         object.favoriteModels !== undefined && !favorites.success

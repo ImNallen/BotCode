@@ -1,4 +1,5 @@
 use crate::{
+    cleanup::{self, Candidate, Sweep},
     codex::{self, Codex, Signal},
     domain::*,
     repo, settings,
@@ -7,10 +8,11 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, Notify, broadcast, mpsc, oneshot};
 
 #[derive(Clone)]
 pub struct RuntimeConfig {
@@ -38,6 +40,42 @@ enum Location {
     Repository(PathBuf),
     Folder(PathBuf),
     Unassigned,
+    /// A worktree thread whose checkout no longer exists on disk. `root` is the workspace root.
+    Removed {
+        root: PathBuf,
+        branch: String,
+    },
+}
+/// Why a checkout path is temporarily closed to new turns and switches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    Switch,
+    Cleanup,
+    Restore,
+}
+impl Hold {
+    fn refusal(self) -> AppError {
+        AppError::new(
+            "checkout_busy",
+            match self {
+                Self::Switch => "Another conversation is running in this checkout.",
+                Self::Cleanup => "Z1 is removing this inactive worktree. Try again in a moment.",
+                Self::Restore => "Z1 is restoring this thread's worktree. Try again in a moment.",
+            },
+        )
+    }
+}
+fn worktree_removed() -> AppError {
+    AppError::new(
+        "worktree_removed",
+        "Send a message to restore this thread's worktree before switching branches.",
+    )
+}
+/// What `App::submit` recreates before the actor accepts the turn.
+struct Restore {
+    root: PathBuf,
+    path: PathBuf,
+    branch: String,
 }
 fn scratch_unavailable() -> AppError {
     AppError::new(
@@ -65,13 +103,19 @@ enum Command {
     Snapshot(ThreadId, bool, Reply<ThreadSnapshot>),
     Models(Reply<Vec<ModelOption>>),
     Settings(ThreadId, SessionSettings, Reply<ThreadSnapshot>),
-    Submit(ThreadId, String, String, Reply<Receipt>),
+    /// The path carries a `Hold::Restore` to release in the same step as acceptance.
+    Submit(ThreadId, String, String, Option<PathBuf>, Reply<Receipt>),
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
     Arrange(ThreadId, Arrange, Reply<()>),
     AutoSettle(settings::AutoSettle, Reply<()>),
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
+    CleanupCandidates(Reply<(Vec<Candidate>, Vec<PathBuf>)>),
+    ClaimCleanup(Candidate, Reply<()>),
+    ReleaseCleanup(Candidate, bool, Reply<()>),
+    ClaimRestore(ThreadId, Reply<Option<Restore>>),
+    ReleaseRestore(PathBuf, Reply<()>),
     Shutdown(Reply<()>),
 }
 #[derive(Clone)]
@@ -81,6 +125,8 @@ pub struct App {
     worktrees: PathBuf,
     scratch: Option<PathBuf>,
     settings: PathBuf,
+    sweeps: Arc<Mutex<()>>,
+    wake: Arc<Notify>,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
@@ -148,7 +194,7 @@ impl App {
                 threads,
                 auto_settle,
                 leases: HashMap::new(),
-                switching: HashSet::new(),
+                held: HashMap::new(),
                 routes: HashMap::new(),
                 provider: None,
                 epoch: 0,
@@ -164,22 +210,24 @@ impl App {
             }
             .run(rx, signals, completions),
         );
-        Ok(Self {
+        let app = Self {
             commands,
             changes,
             worktrees,
             scratch,
             settings,
-        })
+            sweeps: Arc::new(Mutex::new(())),
+            wake: Arc::new(Notify::new()),
+        };
+        tokio::spawn(Sweeper::from(&app).run(
+            app.commands.downgrade(),
+            app.sweeps.clone(),
+            app.wake.clone(),
+        ));
+        Ok(app)
     }
     async fn call<T>(&self, build: impl FnOnce(Reply<T>) -> Command) -> Result<T> {
-        let (tx, rx) = oneshot::channel();
-        self.commands
-            .send(build(tx))
-            .await
-            .map_err(|_| AppError::new("closed", "Z1 runtime is closed."))?;
-        rx.await
-            .map_err(|_| AppError::new("closed", "Z1 runtime is closed."))?
+        call(&self.commands, build).await
     }
     pub fn subscribe(&self) -> broadcast::Receiver<ChangeHint> {
         self.changes.subscribe()
@@ -230,6 +278,15 @@ impl App {
                 files: vec![],
                 changes: vec![],
                 threads,
+                unavailable: None,
+            }),
+            Location::Removed { branch, .. } => Ok(WorkspaceView {
+                workspace: w,
+                branch,
+                files: vec![],
+                changes: vec![],
+                threads,
+                unavailable: Some(WORKTREE_REMOVED.into()),
             }),
         })
         .await
@@ -249,6 +306,11 @@ impl App {
                     "Start a thread to see its files.",
                 ));
             }
+            Location::Removed { .. } => {
+                return Ok(FileView::Unavailable {
+                    reason: WORKTREE_REMOVED.into(),
+                });
+            }
         };
         tokio::task::spawn_blocking(move || repo::read_file(&root, &path))
             .await
@@ -261,10 +323,18 @@ impl App {
         path: String,
         basis: DiffBasis,
     ) -> Result<DiffView> {
-        let Location::Repository(root) = self.checkout(id, thread).await?.1 else {
-            return Ok(DiffView::Unavailable {
-                reason: "Threads without a project have no Git diff.".into(),
-            });
+        let root = match self.checkout(id, thread).await?.1 {
+            Location::Repository(root) => root,
+            Location::Removed { .. } => {
+                return Ok(DiffView::Unavailable {
+                    reason: WORKTREE_REMOVED.into(),
+                });
+            }
+            Location::Folder(_) | Location::Unassigned => {
+                return Ok(DiffView::Unavailable {
+                    reason: "Threads without a project have no Git diff.".into(),
+                });
+            }
         };
         tokio::task::spawn_blocking(move || repo::diff(&root, &path, basis))
             .await
@@ -275,12 +345,20 @@ impl App {
         id: WorkspaceId,
         thread: Option<ThreadId>,
     ) -> Result<Branches> {
-        let Location::Repository(root) = self.checkout(id, thread).await?.1 else {
-            return Err(not_repository());
+        let (root, removed) = match self.checkout(id, thread).await?.1 {
+            Location::Repository(root) => (root, None),
+            Location::Removed { root, branch } => (root, Some(branch)),
+            Location::Folder(_) | Location::Unassigned => return Err(not_repository()),
         };
-        tokio::task::spawn_blocking(move || repo::branches(&root))
+        let mut branches = tokio::task::spawn_blocking(move || repo::branches(&root))
             .await
-            .map_err(|e| AppError::new("repository", e))?
+            .map_err(|e| AppError::new("repository", e))??;
+        if let Some(branch) = removed {
+            for b in &mut branches.branches {
+                b.current = !b.remote && b.name == branch;
+            }
+        }
+        Ok(branches)
     }
     pub async fn switch_branch(
         &self,
@@ -354,7 +432,23 @@ impl App {
         self.call(|r| Command::Settings(id, settings, r)).await
     }
     pub async fn submit(&self, id: ThreadId, request_id: String, text: String) -> Result<Receipt> {
-        self.call(|r| Command::Submit(id, request_id, text, r))
+        let restored = match self.call(|r| Command::ClaimRestore(id.clone(), r)).await? {
+            Some(Restore { root, path, branch }) => {
+                let target = path.clone();
+                let restored =
+                    tokio::task::spawn_blocking(move || cleanup::restore(&root, &target, &branch))
+                        .await
+                        .map_err(|e| AppError::new("worktree_restore", e))
+                        .and_then(|r| r);
+                if let Err(e) = restored {
+                    let _ = self.call(|r| Command::ReleaseRestore(path, r)).await;
+                    return Err(e);
+                }
+                Some(path)
+            }
+            None => None,
+        };
+        self.call(|r| Command::Submit(id, request_id, text, restored, r))
             .await
     }
     pub async fn answer_approval(&self, id: ApprovalId, decision: ApprovalDecision) -> Result<()> {
@@ -377,12 +471,137 @@ impl App {
     }
     pub async fn save_settings(&self, text: &str) -> Result<()> {
         settings::write(&self.settings, text)?;
+        self.wake.notify_one();
         let rules = settings::auto_settle(&self.settings);
         self.call(|r| Command::AutoSettle(rules, r)).await
     }
     pub async fn shutdown(&self) -> Result<()> {
         self.call(Command::Shutdown).await
     }
+    /// Runs one worktree cleanup sweep as if the clock read `now_ms`.
+    #[doc(hidden)]
+    pub async fn sweep_worktrees_at(&self, now_ms: u64) {
+        let _serialized = self.sweeps.lock().await;
+        let _ = Sweeper::from(self).sweep(&self.commands, now_ms).await;
+    }
+}
+/// Worktree cleanup: once at startup, hourly, and after every settings save.
+struct Sweeper {
+    worktrees: PathBuf,
+    settings: PathBuf,
+}
+impl From<&App> for Sweeper {
+    fn from(app: &App) -> Self {
+        Self {
+            worktrees: app.worktrees.clone(),
+            settings: app.settings.clone(),
+        }
+    }
+}
+impl Sweeper {
+    /// Holds only a weak command sender so the loop never keeps the actor alive.
+    async fn run(
+        self,
+        commands: mpsc::WeakSender<Command>,
+        sweeps: Arc<Mutex<()>>,
+        wake: Arc<Notify>,
+    ) {
+        let mut hourly = tokio::time::interval(Duration::from_secs(3600));
+        loop {
+            tokio::select! {
+                _ = hourly.tick() => {}
+                _ = wake.notified() => {}
+            }
+            let Some(commands) = commands.upgrade() else {
+                return;
+            };
+            let _serialized = sweeps.lock().await;
+            if self.sweep(&commands, now_ms()).await.is_err() {
+                return;
+            }
+        }
+    }
+    /// Errors only when the runtime is closed. Every other failure is logged and skipped.
+    async fn sweep(&self, commands: &mpsc::Sender<Command>, now: u64) -> Result<()> {
+        let rules = settings::cleanup_rules(&self.settings);
+        if !rules.enabled() {
+            return Ok(());
+        }
+        let (candidates, roots) = call(commands, Command::CleanupCandidates).await?;
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let (worktrees, roots) = (Arc::new(self.worktrees.clone()), Arc::new(roots));
+        let eligible = {
+            let (worktrees, roots) = (worktrees.clone(), roots.clone());
+            tokio::task::spawn_blocking(move || {
+                Sweep {
+                    worktrees: &worktrees,
+                    roots: &roots,
+                    rules,
+                    now,
+                }
+                .evaluate(candidates)
+            })
+            .await
+            .unwrap_or_default()
+        };
+        for eligible in eligible {
+            let candidate = eligible.candidate.clone();
+            if let Err(e) = call(commands, |r| Command::ClaimCleanup(candidate.clone(), r)).await {
+                if e.code == "closed" {
+                    return Err(e);
+                }
+                eprintln!(
+                    "z1 storage cleanup: skipped {} ({})",
+                    candidate.path.display(),
+                    e.message
+                );
+                continue;
+            }
+            let (worktrees, roots, settings) =
+                (worktrees.clone(), roots.clone(), self.settings.clone());
+            let removed = tokio::task::spawn_blocking(move || {
+                Sweep {
+                    worktrees: &worktrees,
+                    roots: &roots,
+                    rules: settings::cleanup_rules(&settings),
+                    now,
+                }
+                .remove(&eligible)
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            match &removed {
+                Ok(()) => eprintln!(
+                    "z1 storage cleanup: removed {} for thread {}",
+                    candidate.path.display(),
+                    candidate.thread
+                ),
+                Err(reason) => eprintln!(
+                    "z1 storage cleanup: kept {} ({reason})",
+                    candidate.path.display()
+                ),
+            }
+            call(commands, |r| {
+                Command::ReleaseCleanup(candidate, removed.is_ok(), r)
+            })
+            .await?;
+        }
+        Ok(())
+    }
+}
+async fn call<T>(
+    commands: &mpsc::Sender<Command>,
+    build: impl FnOnce(Reply<T>) -> Command,
+) -> Result<T> {
+    let (tx, rx) = oneshot::channel();
+    commands
+        .send(build(tx))
+        .await
+        .map_err(|_| AppError::new("closed", "Z1 runtime is closed."))?;
+    rx.await
+        .map_err(|_| AppError::new("closed", "Z1 runtime is closed."))?
 }
 #[derive(Clone)]
 enum Prepare {
@@ -441,7 +660,7 @@ struct Owner {
     threads: HashMap<ThreadId, ThreadSnapshot>,
     auto_settle: settings::AutoSettle,
     leases: HashMap<PathBuf, ThreadId>,
-    switching: HashSet<PathBuf>,
+    held: HashMap<PathBuf, Hold>,
     routes: HashMap<ApprovalId, Route>,
     provider: Option<Codex>,
     epoch: u64,
@@ -493,8 +712,8 @@ impl Owner {
             matches!(
                 t.session,
                 SessionState::Connecting | SessionState::Running | SessionState::Interrupting
-            ) || self.switching.contains(t.root(w))
-        }) || self.switching.contains(&w.root)
+            ) || self.held.contains_key(t.root(w))
+        }) || self.held.contains_key(&w.root)
             || self.leases.values().any(owns)
             || self.pending.iter().any(|job| owns(job.thread()));
         if busy {
@@ -536,6 +755,10 @@ impl Owner {
                 }
                 match &t.checkout {
                     Checkout::Folder { path } => Location::Folder(path.clone()),
+                    Checkout::Worktree { path, branch } if !path.exists() => Location::Removed {
+                        root: w.root.clone(),
+                        branch: branch.clone(),
+                    },
                     Checkout::Local | Checkout::Worktree { .. } => {
                         Location::Repository(t.root(w).to_path_buf())
                     }
@@ -543,6 +766,93 @@ impl Owner {
             }
         };
         Ok((w.clone(), location))
+    }
+    /// A thread with no running turn, no open approval, and no job or hold on its checkout.
+    fn idle(&self, t: &ThreadSnapshot, root: &Path) -> bool {
+        !matches!(
+            t.session,
+            SessionState::Connecting | SessionState::Running | SessionState::Interrupting
+        ) && !t
+            .approvals
+            .iter()
+            .any(|a| matches!(a.state, ApprovalState::Pending | ApprovalState::Answering))
+            && !self.leases.contains_key(root)
+            && !self.pending.iter().any(|job| job.thread() == &t.id)
+            && !self.held.contains_key(root)
+    }
+    fn owners(&self, path: &Path) -> usize {
+        self.threads
+            .values()
+            .filter(|t| t.root(&self.workspaces[&t.workspace_id]) == path)
+            .count()
+    }
+    /// The thread as a cleanup candidate, or `None` when it is not an idle, sole-owner worktree thread.
+    fn candidate(&self, t: &ThreadSnapshot) -> Option<Candidate> {
+        let Checkout::Worktree { path, branch } = &t.checkout else {
+            return None;
+        };
+        let w = &self.workspaces[&t.workspace_id];
+        (self.owners(path) == 1 && self.idle(t, path)).then(|| Candidate {
+            thread: t.id.clone(),
+            workspace_root: w.root.clone(),
+            path: path.clone(),
+            branch: branch.clone(),
+            activity: t
+                .turns
+                .iter()
+                .flat_map(|turn| [turn.started_at_ms, turn.completed_at_ms])
+                .flatten()
+                .max(),
+        })
+    }
+    fn claim_cleanup(&mut self, candidate: &Candidate) -> Result<()> {
+        let t = self.thread(&candidate.thread)?;
+        if self.candidate(t).as_ref() != Some(candidate) {
+            return Err(AppError::new(
+                "cleanup_refused",
+                "the thread changed since the sweep began",
+            ));
+        }
+        self.held.insert(candidate.path.clone(), Hold::Cleanup);
+        Ok(())
+    }
+    fn release_cleanup(&mut self, candidate: &Candidate, removed: bool) {
+        self.held.remove(&candidate.path);
+        if removed && let Ok(t) = self.thread(&candidate.thread) {
+            let _ = self.changes.send(ChangeHint {
+                refresh_workspace: true,
+                ..ChangeHint::new(t, self.auto_settle.after_ms(&t.workspace_id))
+            });
+        }
+    }
+    fn claim_restore(&mut self, id: &ThreadId) -> Result<Option<Restore>> {
+        let t = self.thread(id)?;
+        let Checkout::Worktree { path, branch } = &t.checkout else {
+            return Ok(None);
+        };
+        if path.exists() {
+            return Ok(None);
+        }
+        match self.held.get(path) {
+            Some(Hold::Cleanup) => return Err(Hold::Cleanup.refusal()),
+            Some(_) => return Ok(None),
+            None => {}
+        }
+        let busy = self.leases.contains_key(path)
+            || matches!(
+                t.session,
+                SessionState::Connecting | SessionState::Running | SessionState::Interrupting
+            );
+        if busy {
+            return Ok(None);
+        }
+        let restore = Restore {
+            root: self.workspaces[&t.workspace_id].root.clone(),
+            path: path.clone(),
+            branch: branch.clone(),
+        };
+        self.held.insert(restore.path.clone(), Hold::Restore);
+        Ok(Some(restore))
     }
     fn commit(&mut self, id: &ThreadId) -> Result<()> {
         let t = self
@@ -681,21 +991,24 @@ impl Owner {
             }
             Command::BeginSwitch(id, thread, reply) => {
                 let result = self.checkout(&id, thread).and_then(|(_, location)| {
-                    let Location::Repository(root) = location else {
-                        return Err(not_repository());
+                    let root = match location {
+                        Location::Repository(root) => root,
+                        Location::Removed { .. } => return Err(worktree_removed()),
+                        Location::Folder(_) | Location::Unassigned => return Err(not_repository()),
                     };
-                    if self.leases.contains_key(&root) || !self.switching.insert(root.clone()) {
-                        return Err(AppError::new(
-                            "checkout_busy",
-                            "Another conversation is running in this checkout.",
-                        ));
+                    if let Some(hold) = self.held.get(&root) {
+                        return Err(hold.refusal());
                     }
+                    if self.leases.contains_key(&root) {
+                        return Err(Hold::Switch.refusal());
+                    }
+                    self.held.insert(root.clone(), Hold::Switch);
                     Ok(root)
                 });
                 let _ = reply.send(result);
             }
             Command::EndSwitch(root, switched, reply) => {
-                self.switching.remove(&root);
+                self.held.remove(&root);
                 let result = match switched {
                     Some((id, current)) => match self.threads.get_mut(&id) {
                         Some(ThreadSnapshot {
@@ -745,18 +1058,26 @@ impl Owner {
                 let _ = reply.send(result);
             }
             Command::Snapshot(id, resume, reply) => {
-                let should_resume = resume
-                    && self.thread(&id).is_ok_and(|t| {
-                        t.native_thread_id.is_some()
-                            && matches!(
-                                t.session,
-                                SessionState::Dormant | SessionState::Unavailable { .. }
-                            )
-                    });
+                // A removed worktree is restored by the next submit, which resumes as usual.
+                let should_resume = resume && self.thread(&id).is_ok_and(|t| {
+                    t.native_thread_id.is_some()
+                        && matches!(
+                            t.session,
+                            SessionState::Dormant | SessionState::Unavailable { .. }
+                        )
+                        && !matches!(&t.checkout, Checkout::Worktree { path, .. } if !path.exists())
+                });
                 if should_resume {
                     self.threads.get_mut(&id).unwrap().session = SessionState::Connecting;
                     let _ = self.commit(&id);
                     self.prepare(Prepare::Resume(id.clone()));
+                } else if resume
+                    && let Some(t) = self.threads.get_mut(&id)
+                    && matches!(&t.checkout, Checkout::Worktree { path, .. } if !path.exists())
+                    && t.diagnostic.take().is_some()
+                {
+                    // A resume would have cleared this notice about the previous session.
+                    let _ = self.commit(&id);
                 }
                 let result = if self.dirty.contains(&id) {
                     self.commit(&id).and_then(|_| self.thread(&id).cloned())
@@ -807,7 +1128,10 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
-            Command::Submit(id, request_id, text, reply) => {
+            Command::Submit(id, request_id, text, restored, reply) => {
+                if let Some(path) = restored {
+                    self.held.remove(&path);
+                }
                 let result = self.accept_submit(&id, &request_id, &text);
                 if let Ok((receipt, true)) = &result {
                     self.prepare(Prepare::Submit(id, receipt.turn_id.clone()));
@@ -945,6 +1269,29 @@ impl Owner {
             Command::SetUiState(key, value, reply) => {
                 let _ = reply.send(self.store.set_ui_state(&key, value.as_deref()));
             }
+            Command::CleanupCandidates(reply) => {
+                let candidates = self
+                    .threads
+                    .values()
+                    .filter_map(|t| self.candidate(t))
+                    .collect();
+                let roots = self.workspaces.values().map(|w| w.root.clone()).collect();
+                let _ = reply.send(Ok((candidates, roots)));
+            }
+            Command::ClaimCleanup(candidate, reply) => {
+                let _ = reply.send(self.claim_cleanup(&candidate));
+            }
+            Command::ReleaseCleanup(candidate, removed, reply) => {
+                self.release_cleanup(&candidate, removed);
+                let _ = reply.send(Ok(()));
+            }
+            Command::ClaimRestore(id, reply) => {
+                let _ = reply.send(self.claim_restore(&id));
+            }
+            Command::ReleaseRestore(path, reply) => {
+                self.held.remove(&path);
+                let _ = reply.send(Ok(()));
+            }
             Command::Shutdown(_) => {}
         }
     }
@@ -1002,11 +1349,11 @@ impl Owner {
         let root = thread
             .root(&self.workspaces[&thread.workspace_id])
             .to_path_buf();
-        if self.leases.contains_key(&root) || self.switching.contains(&root) {
-            return Err(AppError::new(
-                "checkout_busy",
-                "Another conversation is running in this checkout.",
-            ));
+        if let Some(hold) = self.held.get(&root) {
+            return Err(hold.refusal());
+        }
+        if self.leases.contains_key(&root) {
+            return Err(Hold::Switch.refusal());
         }
         let mut t = thread.clone();
         t.record_activity(now_ms(), self.auto_settle.after_ms(&t.workspace_id));
