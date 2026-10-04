@@ -218,7 +218,7 @@ export function Sidebar({
   const searching = query.trim() !== "";
   // Wake times are compared with the real clock on every render. The tick
   // re-renders at the next wake and once a minute for the wake labels.
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
   const now = Date.now();
   const {
     pinned,
@@ -248,7 +248,8 @@ export function Sidebar({
   const client = useQueryClient();
   useEffect(() => {
     if (nextWakeMs === Infinity) return;
-    // setTimeout delays are signed 32-bit, so a far wake re-arms instead of firing at once.
+    // setTimeout delays are signed 32-bit, so a far wake waits in clamped
+    // steps. Each tick re-arms the timer.
     const delay = Math.min(nextWakeMs - Date.now() + 50, 2_147_483_647);
     const id = window.setTimeout(() => {
       setTick((tick) => tick + 1);
@@ -256,7 +257,7 @@ export function Sidebar({
       void client.invalidateQueries({ queryKey: ["workspace"] });
     }, delay);
     return () => window.clearTimeout(id);
-  }, [nextWakeMs, client]);
+  }, [nextWakeMs, client, tick]);
   const wakeLabelsShown = snoozed.length > 0;
   useEffect(() => {
     if (!wakeLabelsShown) return;
@@ -279,13 +280,21 @@ export function Sidebar({
   const [menu, setMenu] = useState<{
     threadId: string;
     point: { x: number; y: number };
+    row: HTMLElement;
   }>();
   const menuRow = menu && rows.find((row) => row.thread.id === menu.threadId);
-  const openMenu = (row: Row) => (event: React.MouseEvent) => {
+  const openMenu = (row: Row) => (event: React.MouseEvent<HTMLElement>) => {
     event.preventDefault();
+    const element = event.currentTarget;
+    // A keyboard-opened context menu reports no pointer position.
+    const rect = element.getBoundingClientRect();
+    const keyboard = event.clientX === 0 && event.clientY === 0;
     setMenu({
       threadId: row.thread.id,
-      point: { x: event.clientX, y: event.clientY },
+      point: keyboard
+        ? { x: rect.left, y: rect.bottom }
+        : { x: event.clientX, y: event.clientY },
+      row: element,
     });
   };
   // Settling or snoozing the open thread moves forward to the next card,
@@ -544,6 +553,7 @@ export function Sidebar({
           key={`${menu.threadId}:${menu.point.x}:${menu.point.y}`}
           row={menuRow}
           point={menu.point}
+          returnFocus={menu.row}
           now={now}
           onClose={() => setMenu(undefined)}
           onArrange={(action) => void onArrange(menuRow.thread.id, action)}
@@ -559,6 +569,7 @@ export function Sidebar({
 function ThreadContextMenu({
   row: { thread },
   point,
+  returnFocus,
   now,
   onClose,
   onArrange,
@@ -566,6 +577,7 @@ function ThreadContextMenu({
 }: {
   row: Row;
   point: { x: number; y: number };
+  returnFocus: HTMLElement;
   now: number;
   onClose: () => void;
   onArrange: (action: Arrange) => void;
@@ -579,6 +591,7 @@ function ThreadContextMenu({
     <Menu
       open
       point={point}
+      returnFocus={returnFocus}
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
@@ -704,8 +717,8 @@ function PinIndicator({ onUnpin }: { onUnpin: () => void }) {
   );
 }
 
-// Clicks inside the portaled popup still bubble to the row through React,
-// so the wrapper keeps them from selecting the thread.
+// Clicks and right-clicks inside the portaled popup still bubble to the row
+// through React, so the wrapper keeps them from reaching it.
 function SnoozeMenuButton({
   open,
   onOpenChange,
@@ -721,7 +734,11 @@ function SnoozeMenuButton({
     [open],
   );
   return (
-    <span className="flex" onClick={(event) => event.stopPropagation()}>
+    <span
+      className="flex"
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.stopPropagation()}
+    >
       <Menu
         side="bottom"
         align="end"
@@ -762,7 +779,7 @@ function ThreadRow({
   row: Row;
   active: boolean;
   onSelect: () => void;
-  onContextMenu: (event: React.MouseEvent) => void;
+  onContextMenu: (event: React.MouseEvent<HTMLElement>) => void;
   onSettle: () => void;
   onSnooze: (untilMs: number) => void;
   onUnpin: () => void;
@@ -771,8 +788,11 @@ function ThreadRow({
   const recede = !active;
   // Settling and snoozing are refused while an approval waits, so the buttons stay hidden.
   const canSettle = !row.thread.awaitingApproval;
-  const [snoozeOpenRaw, setSnoozeOpen] = useState(false);
-  const snoozeOpen = snoozeOpenRaw && canSettle;
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  // The button unmounts while an approval waits, so it must not reopen after.
+  useEffect(() => {
+    if (!canSettle) setSnoozeOpen(false);
+  }, [canSettle]);
   return (
     <li
       data-thread-item
@@ -927,7 +947,7 @@ function SlimRow({
   label: string;
   active: boolean;
   onSelect: () => void;
-  onContextMenu: (event: React.MouseEvent) => void;
+  onContextMenu: (event: React.MouseEvent<HTMLElement>) => void;
   onAction: () => void;
   onUnpin: () => void;
 }) {

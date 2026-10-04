@@ -29,6 +29,7 @@ export function Menu({
   onOpenChange,
   anchor: positionAnchor,
   point,
+  returnFocus,
 }: {
   trigger: (props: {
     ref: (node: HTMLElement | null) => void;
@@ -50,6 +51,8 @@ export function Menu({
   anchor?: RefObject<HTMLElement | null>;
   // Opens at a pointer position, as a context menu does.
   point?: { x: number; y: number };
+  // Takes focus back on close when the menu has no trigger of its own.
+  returnFocus?: HTMLElement;
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -157,8 +160,9 @@ export function Menu({
       focusReturn.current = "idle";
       return;
     }
-    if (anchor.current?.matches(":disabled")) return;
-    anchor.current?.focus();
+    const target = returnFocus ?? anchor.current;
+    if (target?.matches(":disabled")) return;
+    target?.focus();
     focusReturn.current = "idle";
   });
   // Submenus portal outside this popup, but their events still bubble here
@@ -181,7 +185,7 @@ export function Menu({
         event.preventDefault();
         event.stopPropagation();
         setOpenRef.current(false);
-        anchor.current?.focus();
+        (returnFocus ?? anchor.current)?.focus();
       }
     };
     document.addEventListener("pointerdown", dismiss);
@@ -190,7 +194,7 @@ export function Menu({
       document.removeEventListener("pointerdown", dismiss);
       document.removeEventListener("keydown", escape);
     };
-  }, [open]);
+  }, [open, returnFocus]);
   return (
     <>
       {trigger({
@@ -260,7 +264,7 @@ export function Menu({
                 );
                 if (item && !item.hasAttribute("data-keep-open")) {
                   setOpen(false);
-                  anchor.current?.focus();
+                  (returnFocus ?? anchor.current)?.focus();
                 }
               }}
               className={cn(
