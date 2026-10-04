@@ -5,6 +5,7 @@ import { RefreshCwIcon, XIcon } from "lucide-react";
 import { type ComponentProps, type ReactNode, useState } from "react";
 import { cn } from "../lib/cn";
 import { Button, Toggle } from "../ui/controls";
+import { storage } from "../lib/storage";
 
 export function Kbd({ className, ...props }: ComponentProps<"kbd">) {
   return (
@@ -222,11 +223,11 @@ export function useStoredState<T extends string | boolean>(
   key: string,
   parse: (raw: string | null) => T,
 ): [T, (value: T) => void] {
-  const [value, setValue] = useState<T>(() => parse(localStorage.getItem(key)));
+  const [value, setValue] = useState<T>(() => parse(storage.getItem(key)));
   return [
     value,
     (next) => {
-      localStorage.setItem(key, String(next));
+      void storage.setItem(key, String(next));
       setValue(next);
     },
   ];

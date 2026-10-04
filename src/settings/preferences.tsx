@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { z } from "zod";
+import { storage } from "../lib/storage";
 
 const favoriteModelSchema = z.object({
   provider: z.string().min(1),
@@ -67,7 +68,7 @@ const Context = createContext<
 
 function readPreferences(): PreferenceState {
   try {
-    const stored = localStorage.getItem(storageKey);
+    const stored = storage.getItem(storageKey);
     if (stored === null)
       return { preferences: defaults, persistenceError: undefined };
     const object = z
@@ -170,15 +171,17 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   const update = (patch: Partial<Preferences>) => {
     const parsed = schema.safeParse({ ...current.current, ...patch });
     if (!parsed.success) return;
-    let persistenceError: string | undefined;
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(parsed.data));
-    } catch {
-      persistenceError =
-        "Changes apply now, but could not be saved. They may be lost when Z1 Code restarts.";
-    }
     current.current = parsed.data;
-    setState({ preferences: parsed.data, persistenceError });
+    setState((state) => ({ ...state, preferences: parsed.data }));
+    void storage.setItem(storageKey, JSON.stringify(parsed.data)).then(
+      () => setState((state) => ({ ...state, persistenceError: undefined })),
+      () =>
+        setState((state) => ({
+          ...state,
+          persistenceError:
+            "Changes apply now, but could not be saved. They may be lost when Z1 Code restarts.",
+        })),
+    );
   };
   useLayoutEffect(() => {
     const scheme = window.matchMedia("(prefers-color-scheme: dark)");

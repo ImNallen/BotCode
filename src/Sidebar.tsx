@@ -20,6 +20,7 @@ import { WorkspaceBadge } from "./ProjectBadge";
 import { OpenAI } from "./ui/icons";
 import { Button } from "./ui/controls";
 import { ProjectScopeMenu } from "./ProjectScopeMenu";
+import { storage } from "./lib/storage";
 
 type Row = {
   workspace: Workspace;
@@ -66,7 +67,7 @@ export function Sidebar({
   onOpenProjectSettings: (workspaceId: string) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [scopeId, setScopeId] = useState(() => localStorage.getItem(SCOPE_KEY));
+  const [scopeId, setScopeId] = useState(() => storage.getItem(SCOPE_KEY));
   const scope = workspaces.find((workspace) => workspace.id === scopeId);
   const searchField = useRef<HTMLLabelElement>(null);
   const scopeTrigger = useRef<HTMLElement | null>(null);
@@ -127,8 +128,8 @@ export function Sidebar({
                     anchor={searchField}
                     onScope={(id) => {
                       setScopeId(id);
-                      if (id) localStorage.setItem(SCOPE_KEY, id);
-                      else localStorage.removeItem(SCOPE_KEY);
+                      if (id) void storage.setItem(SCOPE_KEY, id);
+                      else void storage.removeItem(SCOPE_KEY);
                     }}
                     onOpenSettings={(id) => {
                       // Settings records the focused element so Back can restore it.

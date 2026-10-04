@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { storage } from "../lib/storage";
 
 const STORAGE_KEY = "z1:right-panel-width";
 const MIN_WIDTH = 360;
@@ -16,8 +17,8 @@ const MAX_WIDTH_FRACTION = 0.7;
 const SIBLING_COLUMN_MIN_WIDTH = 360;
 
 function readStoredWidth(): number {
-  const stored = Number(localStorage.getItem(STORAGE_KEY));
-  return localStorage.getItem(STORAGE_KEY) !== null && Number.isFinite(stored)
+  const stored = Number(storage.getItem(STORAGE_KEY));
+  return storage.getItem(STORAGE_KEY) !== null && Number.isFinite(stored)
     ? stored
     : DEFAULT_WIDTH;
 }
@@ -97,7 +98,7 @@ export function usePanelWidth(
       active.target.releasePointerCapture(active.pointerId);
     document.body.style.removeProperty("cursor");
     document.body.style.removeProperty("user-select");
-    if (commit) localStorage.setItem(STORAGE_KEY, String(active.width));
+    if (commit) void storage.setItem(STORAGE_KEY, String(active.width));
   };
   const finishRef = useRef(finish);
   finishRef.current = finish;

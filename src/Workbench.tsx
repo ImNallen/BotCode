@@ -28,6 +28,7 @@ import { SettingsSidebar } from "./settings/SettingsPage";
 import type { SettingsSection } from "./settings/settingsCatalog";
 import { ChatView } from "./chat/ChatView";
 import { Button } from "./ui/controls";
+import { storage } from "./lib/storage";
 
 const SIDEBAR_DEFAULT = 256;
 const SIDEBAR_MIN = 208;
@@ -81,7 +82,7 @@ export function Workbench() {
   const [error, setError] = useState<string>();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() =>
-    clampSidebar(Number(localStorage.getItem(SIDEBAR_KEY)) || SIDEBAR_DEFAULT),
+    clampSidebar(Number(storage.getItem(SIDEBAR_KEY)) || SIDEBAR_DEFAULT),
   );
   const workspaces = useQuery({
     queryKey: ["workspaces"],
@@ -328,7 +329,7 @@ export function Workbench() {
             width={sidebarWidth}
             onResize={setSidebarWidth}
             onReset={() => {
-              localStorage.removeItem(SIDEBAR_KEY);
+              void storage.removeItem(SIDEBAR_KEY);
               setSidebarWidth(clampSidebar(SIDEBAR_DEFAULT));
             }}
           />
@@ -503,7 +504,7 @@ function SidebarRail({
         drag.current = null;
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
-        localStorage.setItem(SIDEBAR_KEY, String(next));
+        void storage.setItem(SIDEBAR_KEY, String(next));
         onResize(next);
       }}
       onDoubleClick={onReset}
