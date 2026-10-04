@@ -26,7 +26,7 @@ const shortcuts: Record<string, string | undefined> = {
   "pin-thread": pinThreadShortcut,
 };
 import { cn } from "../lib/cn";
-import { NewThreadRow } from "./NewThreadSettings";
+import { ProjectSettingRow } from "./ProjectSettingRow";
 import { usePreferences } from "./preferences";
 import { ProjectsSettings } from "./ProjectsSettings";
 import {
@@ -385,18 +385,11 @@ export function SettingsPage() {
     return null;
   };
   const row = (info: SettingsRowInfo) =>
-    info.id === "workspace" ? (
-      <NewThreadRow
+    info.setting ? (
+      <ProjectSettingRow
         key={info.id}
         id={info.id}
-        setting="newThreadCheckout"
-        scope={scope}
-      />
-    ) : info.id === "start-from-origin" ? (
-      <NewThreadRow
-        key={info.id}
-        id={info.id}
-        setting="newWorktreesStartFromOrigin"
+        setting={info.setting}
         scope={scope}
       />
     ) : (

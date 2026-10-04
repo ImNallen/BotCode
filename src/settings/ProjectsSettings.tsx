@@ -8,7 +8,7 @@ import { InfoIcon, Trash2Icon } from "lucide-react";
 import { checkoutKey, ipc, workingSessions, type Workspace } from "../ipc";
 import { Alert } from "../ui/alert";
 import { Button } from "../ui/controls";
-import { NewThreadRow } from "./NewThreadSettings";
+import { ProjectSettingRow } from "./ProjectSettingRow";
 import { usePreferences } from "./preferences";
 import { projectRows } from "./settingsCatalog";
 import { SettingsScopeNotice, type SettingsScope } from "./settingsScope";
@@ -187,7 +187,7 @@ function ProjectSettings({
         </SettingsGroup>
       ) : null}
       <SettingsGroup id="project-new-threads" title="New threads">
-        <NewThreadRow
+        <ProjectSettingRow
           id={projectRows.workspace.id}
           setting="newThreadCheckout"
           scope={scope}
