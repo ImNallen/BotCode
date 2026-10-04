@@ -1813,13 +1813,10 @@ fn idle_threads_auto_settle_after_three_days_of_their_latest_activity() {
     assert_eq!(AUTO_SETTLE_AFTER_MS, 3 * DAY_MS);
     let thread = idle_thread(Some(1_000), Some(2_000));
     assert_eq!(thread.settled_at(2_000 + 3 * DAY_MS - 1), None);
-    assert_eq!(
-        thread.settled_at(2_000 + 3 * DAY_MS),
-        Some(2_000 + 3 * DAY_MS)
-    );
+    assert_eq!(thread.settled_at(2_000 + 3 * DAY_MS), Some(2_000));
     assert_eq!(
         idle_thread(Some(1_000), None).settled_at(1_000 + 3 * DAY_MS),
-        Some(1_000 + 3 * DAY_MS)
+        Some(1_000)
     );
     assert_eq!(idle_thread(None, None).settled_at(u64::MAX), None);
 }
@@ -1838,7 +1835,7 @@ fn auto_settle_waits_for_running_sessions_and_open_approvals_and_respects_overri
     for (state, settled) in [
         (ApprovalState::Pending, None),
         (ApprovalState::Answering, None),
-        (ApprovalState::Expired, Some(2_000 + 3 * DAY_MS)),
+        (ApprovalState::Expired, Some(2_000)),
     ] {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
         thread.approvals.push(Approval {
@@ -2069,10 +2066,7 @@ async fn stale_threads_read_as_settled_after_reopen_unless_kept() {
         .workspace_view(stale.workspace_id.clone(), None)
         .await
         .unwrap();
-    assert_eq!(
-        settled_at_ms(&view, &stale.id),
-        Some(completed + AUTO_SETTLE_AFTER_MS)
-    );
+    assert_eq!(settled_at_ms(&view, &stale.id), Some(completed));
     assert_eq!(settled_at_ms(&view, &kept.id), None);
     assert_eq!(settled_at_ms(&view, &fresh.id), None);
     assert_eq!(aged.settlement, Settlement::Auto);

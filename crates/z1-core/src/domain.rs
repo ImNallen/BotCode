@@ -385,7 +385,7 @@ impl ThreadSnapshot {
                 (!busy
                     && !self.approval_open()
                     && now.saturating_sub(last_activity) >= AUTO_SETTLE_AFTER_MS)
-                    .then_some(last_activity + AUTO_SETTLE_AFTER_MS)
+                    .then_some(last_activity)
             }
         }
     }

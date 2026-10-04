@@ -199,7 +199,7 @@ Verified on 2026-10-04 against T3 Code v0.0.45. The core suite passed 45 tests, 
 The native debug bundle used the temporary identifier `dev.z1.code.settledverify`, an isolated `Z1_DATA_DIR` and a disposable one-commit repository. Seventeen threads were written into the SQLite `threads` table before launch: three recent ones, one 4 days old, one `settled`, one `kept` and 10 days old, and eleven between 5 and 15 days old. At 1100×780:
 
 - The active list showed the three recent threads and the 10-day-old `kept` thread. The shelf sat at the bottom of the sidebar, collapsed, and read "Settled (13)".
-- Expanding showed slim rows with dimmed badges, newest first: "Ship release notes" at 5h, the 4-day-old thread at 1d, and the rest at 2d and older. Ten rows showed, then **Show 3 more**, which revealed the last three.
+- Expanding showed slim rows with dimmed badges, newest first: "Ship release notes" at 5h, the 4-day-old thread at 1d, and the rest at 2d and older. Ten rows showed, then **Show 3 more**, which revealed the last three. This run stamped an auto-settled thread 3 days after its last activity. The stamp now uses the last activity itself, as T3 does, so that thread reads 4d. The runtime test covers the new stamp, and the native shelf has not been observed since that change.
 - Hovering a slim row restored its badge and replaced the age with the Un-settle button. Hovering a card replaced its time with **Settle**.
 - **Settle** on a card that was not open moved it into the shelf, raised the count to 14, and kept the draft open. SQLite held `{"kind":"settled","atMs":...}`.
 - **Settle** on the open "Fix login redirect" opened the next active thread. Settling the only thread matched by a search opened a new draft in its project.
