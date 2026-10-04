@@ -16,8 +16,10 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CircleDashedIcon,
+  CircleCheckIcon,
   ClockIcon,
   PinIcon,
+  PinOffIcon,
   ShieldQuestionIcon,
   FolderGit2Icon,
   FolderIcon,
@@ -42,7 +44,7 @@ import { OpenAI } from "./ui/icons";
 import { Button } from "./ui/controls";
 import { ProjectScopeMenu } from "./ProjectScopeMenu";
 import { storage } from "./lib/storage";
-import { Menu, MenuItem, MenuShortcut } from "./ui/menu";
+import { Menu, MenuItem, MenuShortcut, MenuSub } from "./ui/menu";
 import { resolveSnoozePresets, snoozeWakeLabel } from "./lib/snooze";
 
 type Row = {
@@ -274,6 +276,18 @@ export function Sidebar({
     void storage.setItem(SETTLED_EXPANDED_KEY, String(next));
   };
   const cards = [...pinned, ...active];
+  const [menu, setMenu] = useState<{
+    threadId: string;
+    point: { x: number; y: number };
+  }>();
+  const menuRow = menu && rows.find((row) => row.thread.id === menu.threadId);
+  const openMenu = (row: Row) => (event: React.MouseEvent) => {
+    event.preventDefault();
+    setMenu({
+      threadId: row.thread.id,
+      point: { x: event.clientX, y: event.clientY },
+    });
+  };
   // Settling or snoozing the open thread moves forward to the next card,
   // wrapping, or to a new draft in its project. The plan is taken before the
   // list changes.
@@ -401,6 +415,7 @@ export function Sidebar({
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
+                    onContextMenu={openMenu(row)}
                     onSettle={() => void park(row, { kind: "settle" })}
                     onSnooze={(untilMs) =>
                       void park(row, { kind: "snooze", untilMs })
@@ -437,6 +452,7 @@ export function Sidebar({
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
+                    onContextMenu={openMenu(row)}
                     onAction={() =>
                       void onArrange(row.thread.id, { kind: "wake" })
                     }
@@ -470,6 +486,7 @@ export function Sidebar({
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
+                    onContextMenu={openMenu(row)}
                     onAction={() =>
                       void onArrange(row.thread.id, { kind: "unsettle" })
                     }
@@ -522,7 +539,87 @@ export function Sidebar({
           </div>
         </div>
       </div>
+      {menu && menuRow ? (
+        <ThreadContextMenu
+          key={`${menu.threadId}:${menu.point.x}:${menu.point.y}`}
+          row={menuRow}
+          point={menu.point}
+          now={now}
+          onClose={() => setMenu(undefined)}
+          onArrange={(action) => void onArrange(menuRow.thread.id, action)}
+          onPark={(action) => void park(menuRow, action)}
+        />
+      ) : null}
     </>
+  );
+}
+
+// Items and order follow T3's threadActionMenu.logic.ts, limited to the
+// actions Z1 backs.
+function ThreadContextMenu({
+  row: { thread },
+  point,
+  now,
+  onClose,
+  onArrange,
+  onPark,
+}: {
+  row: Row;
+  point: { x: number; y: number };
+  now: number;
+  onClose: () => void;
+  onArrange: (action: Arrange) => void;
+  onPark: (action: Arrange) => void;
+}) {
+  const pinned = thread.pinnedAtMs !== null;
+  const settled = thread.settledAtMs !== null;
+  const snoozed = thread.snoozedUntilMs !== null && thread.snoozedUntilMs > now;
+  const [presets] = useState(() => resolveSnoozePresets(new Date()));
+  return (
+    <Menu
+      open
+      point={point}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      trigger={() => null}
+    >
+      <MenuItem onClick={() => onArrange({ kind: pinned ? "unpin" : "pin" })}>
+        {pinned ? <PinOffIcon /> : <PinIcon />}
+        {pinned ? "Unpin thread" : "Pin thread"}
+      </MenuItem>
+      <MenuItem
+        onClick={() =>
+          settled ? onArrange({ kind: "unsettle" }) : onPark({ kind: "settle" })
+        }
+      >
+        <CircleCheckIcon />
+        {settled ? "Un-settle thread" : "Settle thread"}
+      </MenuItem>
+      {snoozed ? (
+        <MenuItem onClick={() => onArrange({ kind: "wake" })}>
+          <ClockIcon />
+          Wake thread
+        </MenuItem>
+      ) : (
+        <MenuSub
+          label="Snooze"
+          icon={<ClockIcon />}
+          disabled={thread.awaitingApproval}
+        >
+          {presets.map((preset) => (
+            <MenuItem
+              key={preset.id}
+              onClick={() =>
+                onPark({ kind: "snooze", untilMs: preset.untilMs })
+              }
+            >
+              {`${preset.label} (${preset.whenLabel})`}
+            </MenuItem>
+          ))}
+        </MenuSub>
+      )}
+    </Menu>
   );
 }
 
@@ -660,10 +757,12 @@ function ThreadRow({
   onSettle,
   onSnooze,
   onUnpin,
+  onContextMenu,
 }: {
   row: Row;
   active: boolean;
   onSelect: () => void;
+  onContextMenu: (event: React.MouseEvent) => void;
   onSettle: () => void;
   onSnooze: (untilMs: number) => void;
   onUnpin: () => void;
@@ -685,6 +784,7 @@ function ThreadRow({
         aria-current={active ? "page" : undefined}
         onClick={onSelect}
         onKeyDown={rowKeyDown(onSelect)}
+        onContextMenu={onContextMenu}
         className={cn(
           "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           active
@@ -820,12 +920,14 @@ function SlimRow({
   onSelect,
   onAction,
   onUnpin,
+  onContextMenu,
 }: {
   row: Row;
   action: "unsettle" | "unsnooze";
   label: string;
   active: boolean;
   onSelect: () => void;
+  onContextMenu: (event: React.MouseEvent) => void;
   onAction: () => void;
   onUnpin: () => void;
 }) {
@@ -842,6 +944,7 @@ function SlimRow({
         aria-current={active ? "page" : undefined}
         onClick={onSelect}
         onKeyDown={rowKeyDown(onSelect)}
+        onContextMenu={onContextMenu}
         className={cn(
           "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           unsettle &&
