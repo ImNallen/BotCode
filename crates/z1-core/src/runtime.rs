@@ -68,7 +68,7 @@ enum Command {
     Submit(ThreadId, String, String, Reply<Receipt>),
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
-    SetSettled(ThreadId, bool, Reply<()>),
+    Arrange(ThreadId, Arrange, Reply<()>),
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
     Shutdown(Reply<()>),
@@ -360,8 +360,8 @@ impl App {
     pub async fn interrupt(&self, id: ThreadId) -> Result<()> {
         self.call(|r| Command::Interrupt(id, r)).await
     }
-    pub async fn set_settled(&self, id: ThreadId, settled: bool) -> Result<()> {
-        self.call(|r| Command::SetSettled(id, settled, r)).await
+    pub async fn arrange(&self, id: ThreadId, action: Arrange) -> Result<()> {
+        self.call(|r| Command::Arrange(id, action, r)).await
     }
     pub async fn ui_state(&self) -> Result<BTreeMap<String, String>> {
         self.call(Command::UiState).await
@@ -729,6 +729,7 @@ impl Owner {
                         approvals: vec![],
                         diagnostic: None,
                         placement: Placement::Auto,
+                        snooze: None,
                     };
                     self.store.save(&t)?;
                     self.threads.insert(t.id.clone(), t.clone());
@@ -905,21 +906,15 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
-            Command::SetSettled(id, settled, reply) => {
+            Command::Arrange(id, action, reply) => {
                 let result = (|| -> Result<()> {
-                    let thread = self.thread(&id)?;
-                    let placement = match (settled, thread.settled_at(now_ms())) {
-                        (true, Some(_)) | (false, None) => return Ok(()),
-                        (true, None) if thread.approval_open() => {
-                            return Err(AppError::new(
-                                "settle_blocked",
-                                "Answer the pending approval before settling this thread.",
-                            ));
-                        }
-                        (true, None) => Placement::Settled { at_ms: now_ms() },
-                        (false, Some(_)) => Placement::Kept,
-                    };
-                    self.threads.get_mut(&id).unwrap().placement = placement;
+                    self.thread(&id)?;
+                    let thread = self.threads.get_mut(&id).unwrap();
+                    let before = (thread.placement, thread.snooze);
+                    thread.arrange(action, now_ms())?;
+                    if (thread.placement, thread.snooze) == before {
+                        return Ok(());
+                    }
                     self.commit(&id)
                 })();
                 let _ = reply.send(result);
@@ -1011,7 +1006,10 @@ impl Owner {
         t.turns.push(turn);
         t.session = SessionState::Connecting;
         t.diagnostic = None;
-        t.placement = Placement::Auto;
+        if matches!(t.placement, Placement::Settled { .. } | Placement::Kept) {
+            t.placement = Placement::Auto;
+        }
+        t.snooze = None;
         if t.turns.len() == 1 {
             t.title = text.chars().take(54).collect()
         }
@@ -1484,7 +1482,9 @@ impl Owner {
                     },
                 );
                 t.approvals.push(approval);
-                t.placement = Placement::Auto;
+                if matches!(t.placement, Placement::Settled { .. } | Placement::Kept) {
+                    t.placement = Placement::Auto;
+                }
                 self.commit(&id)?;
             } else {
                 t.diagnostic = Some(format!(

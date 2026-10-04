@@ -21,7 +21,13 @@ import {
   PanelLeftIcon,
   PlusIcon,
 } from "lucide-react";
-import { checkoutKey, ipc, native, setThreadSnapshot } from "./ipc";
+import {
+  checkoutKey,
+  ipc,
+  native,
+  setThreadSnapshot,
+  type Arrange,
+} from "./ipc";
 import { Sidebar, SidebarBrand } from "./Sidebar";
 import { SidebarFooter } from "./SidebarFooter";
 import { SettingsSidebar } from "./settings/SettingsPage";
@@ -105,9 +111,9 @@ export function Workbench() {
   const openSummary = views
     .flatMap((query) => query.data?.threads ?? [])
     .find((thread) => thread.id === selection.thread);
-  const setSettled = useCallback(async (threadId: string, settled: boolean) => {
+  const arrange = useCallback(async (threadId: string, action: Arrange) => {
     try {
-      await ipc.setSettled(threadId, settled);
+      await ipc.arrange(threadId, action);
       return true;
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
@@ -197,7 +203,9 @@ export function Workbench() {
         openSummary
       ) {
         event.preventDefault();
-        void setSettled(openSummary.id, openSummary.settledAtMs === null);
+        void arrange(openSummary.id, {
+          kind: openSummary.settledAtMs === null ? "settle" : "unsettle",
+        });
       }
     };
     const escape = (event: KeyboardEvent) => {
@@ -231,7 +239,7 @@ export function Workbench() {
     scratchAvailable,
     startScratch,
     openSummary,
-    setSettled,
+    arrange,
   ]);
   const openRepository = async () => {
     try {
@@ -346,7 +354,7 @@ export function Workbench() {
                   onNewThread={newThread}
                   onOpenRepository={() => void openRepository()}
                   onOpenProjectSettings={(id) => openSettingsAt("projects", id)}
-                  onSetSettled={setSettled}
+                  onArrange={arrange}
                 />
               </div>
               {settingsOpen ? (

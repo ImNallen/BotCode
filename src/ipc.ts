@@ -160,6 +160,8 @@ const threadSummary = z.object({
   checkout,
   updatedAtMs: z.number().nullable(),
   awaitingApproval: z.boolean(),
+  pinnedAtMs: z.number().nullable(),
+  snoozedUntilMs: z.number().nullable(),
   settledAtMs: z.number().nullable(),
 });
 const workspaceView = z.object({
@@ -199,6 +201,9 @@ export type ModelOption = z.infer<typeof modelOption>;
 export type Approval = z.infer<typeof approval>;
 export type Item = z.infer<typeof item>;
 export type ApprovalDecision = "accept" | "decline" | "cancel";
+export type Arrange =
+  | { kind: "pin" | "unpin" | "settle" | "unsettle" | "wake" }
+  | { kind: "snooze"; untilMs: number };
 export type Checkout = z.infer<typeof checkout>;
 export type NewCheckout =
   | { kind: "local" }
@@ -285,8 +290,8 @@ export const ipc = {
   approval: (approvalId: string, decision: ApprovalDecision) =>
     call("answer_approval", { approvalId, decision }, z.null()),
   interrupt: (threadId: string) => call("interrupt", { threadId }, z.null()),
-  setSettled: (threadId: string, settled: boolean) =>
-    call("set_settled", { threadId, settled }, z.null()),
+  arrange: (threadId: string, action: Arrange) =>
+    call("arrange_thread", { threadId, action }, z.null()),
   uiState: () => call("ui_state", {}, z.record(z.string(), z.string())),
   setUiState: (key: string, value: string | null) =>
     call("set_ui_state", { key, value }, z.null()),

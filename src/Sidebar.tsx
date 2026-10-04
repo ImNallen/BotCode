@@ -17,7 +17,12 @@ import {
   Undo2Icon,
   XIcon,
 } from "lucide-react";
-import { workingSessions, type Workspace, type WorkspaceView } from "./ipc";
+import {
+  workingSessions,
+  type Arrange,
+  type Workspace,
+  type WorkspaceView,
+} from "./ipc";
 import { cn } from "./lib/cn";
 import { formatSidebarTime } from "./lib/time";
 import { basename } from "./panel/panelState";
@@ -117,7 +122,7 @@ export function Sidebar({
   onNewThread,
   onOpenRepository,
   onOpenProjectSettings,
-  onSetSettled,
+  onArrange,
 }: {
   workspaces: Workspace[];
   views: (WorkspaceView | undefined)[];
@@ -127,7 +132,7 @@ export function Sidebar({
   onNewThread: (workspaceId?: string) => void;
   onOpenRepository: () => void;
   onOpenProjectSettings: (workspaceId: string) => void;
-  onSetSettled: (threadId: string, settled: boolean) => Promise<boolean>;
+  onArrange: (threadId: string, action: Arrange) => Promise<boolean>;
 }) {
   const [query, setQuery] = useState("");
   const [scopeId, setScopeId] = useState(() => storage.getItem(SCOPE_KEY));
@@ -191,7 +196,7 @@ export function Sidebar({
         : next
           ? () => onSelectThread(next.workspace.id, next.thread.id)
           : () => onNewThread(row.workspace.id);
-    if (!(await onSetSettled(row.thread.id, true))) return;
+    if (!(await onArrange(row.thread.id, { kind: "settle" }))) return;
     if (openThread.current === row.thread.id) forward?.();
   };
   return (
@@ -338,7 +343,9 @@ export function Sidebar({
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
-                    onUnsettle={() => void onSetSettled(row.thread.id, false)}
+                    onUnsettle={() =>
+                      void onArrange(row.thread.id, { kind: "unsettle" })
+                    }
                   />
                 ))}
                 {settledExpanded && hiddenCount > 0 ? (
