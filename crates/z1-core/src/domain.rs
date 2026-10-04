@@ -601,7 +601,11 @@ pub struct WorkspaceView {
     pub files: Vec<String>,
     pub changes: Vec<GitChange>,
     pub threads: Vec<ThreadSummary>,
+    #[serde(default)]
+    pub unavailable: Option<String>,
 }
+pub const WORKTREE_REMOVED: &str =
+    "This thread's worktree was removed to save space. Send a message to restore it.";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitChange {
