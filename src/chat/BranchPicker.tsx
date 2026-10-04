@@ -8,7 +8,13 @@ import {
   RefreshCwIcon,
   SearchIcon,
 } from "lucide-react";
-import { checkoutKey, ipc, type Branches, type CheckoutRef } from "../ipc";
+import {
+  checkoutKey,
+  invalidateCheckouts,
+  ipc,
+  type Branches,
+  type CheckoutRef,
+} from "../ipc";
 import { cn } from "../lib/cn";
 import { Switch } from "../ui/controls";
 import { Menu } from "../ui/menu";
@@ -86,10 +92,7 @@ export function BranchPicker({
     onSuccess: () => onError(undefined),
     onError: (error) => onError(error.message),
     onSettled: () => {
-      for (const scope of ["workspace", "file", "diff", "branches"])
-        void client.invalidateQueries({
-          queryKey: [scope, checkout.workspaceId],
-        });
+      invalidateCheckouts(client, checkout.workspaceId);
       if (checkout.threadId)
         void client.invalidateQueries({
           queryKey: ["thread", checkout.threadId],

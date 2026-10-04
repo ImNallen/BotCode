@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{State, ipc::Channel};
 use z1_core::*;
 #[tauri::command]
 pub async fn list_workspaces(app: State<'_, App>) -> Result<Vec<Workspace>> {
@@ -73,6 +73,55 @@ pub async fn switch_branch(
 ) -> Result<()> {
     app.switch_branch(workspace_id, thread_id, branch, create)
         .await
+}
+#[tauri::command]
+pub async fn git_status(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+) -> Result<GitStatus> {
+    app.git_status(workspace_id, thread_id).await
+}
+#[tauri::command]
+pub async fn pull_request(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    branch: String,
+) -> Result<PrLookup> {
+    app.pull_request(workspace_id, thread_id, branch).await
+}
+#[tauri::command]
+pub async fn run_git_action(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    action: GitAction,
+    on_progress: Channel<GitPhase>,
+) -> Result<GitOutcome> {
+    app.run_git_action(workspace_id, thread_id, action, move |phase| {
+        let _ = on_progress.send(phase);
+    })
+    .await
+}
+#[tauri::command]
+pub fn open_url(url: String) -> Result<()> {
+    if !url.starts_with("https://") {
+        return Err(AppError::new(
+            "invalid_url",
+            "Only https links can be opened.",
+        ));
+    }
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg(&url)
+        .status()?;
+    if !status.success() {
+        return Err(AppError::new(
+            "open_failed",
+            format!("Could not open {url}."),
+        ));
+    }
+    Ok(())
 }
 #[tauri::command]
 pub async fn create_thread(

@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { QueryClient } from "@tanstack/react-query";
 import { z } from "zod";
@@ -194,6 +194,71 @@ const diff = z.discriminatedUnion("kind", [
   }),
   z.object({ kind: z.literal("unavailable"), reason: z.string() }),
 ]);
+const tracking = z.object({
+  remote: z.string(),
+  branch: z.string(),
+  ahead: z.number().int(),
+  behind: z.number().int(),
+});
+const gitStatus = z.object({
+  branch: z
+    .object({
+      name: z.string(),
+      isDefault: z.boolean(),
+      base: z.string(),
+      aheadOfBase: z.number().int(),
+      upstream: tracking.nullable(),
+    })
+    .nullable(),
+  origin: z.boolean(),
+  files: z.array(
+    z.object({
+      path: z.string(),
+      insertions: z.number().int(),
+      deletions: z.number().int(),
+    }),
+  ),
+});
+const pullRequest = z.object({
+  number: z.number().int(),
+  title: z.string(),
+  url: z.string(),
+  base: z.string(),
+  head: z.string(),
+});
+const prLookup = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }),
+  z.object({ kind: z.literal("open"), pr: pullRequest }),
+  z.object({
+    kind: z.literal("unavailable"),
+    reason: z.enum(["missing", "unauthenticated", "failed"]),
+    message: z.string(),
+  }),
+]);
+const gitPhase = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("commit") }),
+  z.object({ kind: z.literal("push"), remote: z.string() }),
+  z.object({ kind: z.literal("pr") }),
+  z.object({ kind: z.literal("pull") }),
+]);
+const gitOutcome = z.object({
+  commit: z.object({ sha: z.string(), subject: z.string() }).nullable(),
+  push: z
+    .object({
+      sha: z.string(),
+      upstream: z.string(),
+      setUpstream: z.boolean(),
+    })
+    .nullable(),
+  pr: z.object({ pr: pullRequest, created: z.boolean() }).nullable(),
+  pull: z.object({ upstream: z.string(), updated: z.boolean() }).nullable(),
+  failure: z
+    .object({
+      phase: gitPhase,
+      error: z.object({ code: z.string(), message: z.string() }),
+    })
+    .nullable(),
+});
 export type Workspace = z.infer<typeof workspace>;
 export type WorkspaceView = z.infer<typeof workspaceView>;
 export type Thread = z.infer<typeof thread>;
@@ -213,10 +278,48 @@ export type NewCheckout =
 export type CheckoutRef = { workspaceId: string; threadId?: string };
 export type Branches = z.infer<typeof branches>;
 export type Branch = Branches["branches"][number];
+export type ThreadSummary = z.infer<typeof threadSummary>;
+export type GitStatus = z.infer<typeof gitStatus>;
+export type PullRequest = z.infer<typeof pullRequest>;
+export type PrLookup = z.infer<typeof prLookup>;
+export type GitPhase = z.infer<typeof gitPhase>;
+export type GitOutcome = z.infer<typeof gitOutcome>;
+/** Mirrors the core's GitAction: a variant that commits carries its message. */
+export type GitAction =
+  | { kind: "commit" | "commit_push" | "commit_push_pr"; message: string }
+  | { kind: "push" | "create_pr" | "pull" };
+export type CheckoutScope =
+  | "workspace"
+  | "file"
+  | "diff"
+  | "branches"
+  | "git"
+  | "pr";
 export const checkoutKey = (
-  scope: "workspace" | "file" | "diff" | "branches",
+  scope: CheckoutScope,
   { workspaceId, threadId }: CheckoutRef,
 ) => [scope, workspaceId, threadId ?? null];
+/** Refreshes everything a change to a repository's checkouts can affect. */
+export function invalidateCheckouts(client: QueryClient, workspaceId: string) {
+  const scopes: CheckoutScope[] = [
+    "workspace",
+    "file",
+    "diff",
+    "branches",
+    "git",
+    "pr",
+  ];
+  for (const scope of scopes)
+    void client.invalidateQueries({ queryKey: [scope, workspaceId] });
+}
+/** A rejection from the core, with its `AppError.code`. */
+export class IpcError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
 async function call<S extends z.ZodType>(
   command: string,
   args: Record<string, unknown>,
@@ -226,14 +329,15 @@ async function call<S extends z.ZodType>(
     const result: unknown = await invoke(command, args);
     return schema.parse(result);
   } catch (error: unknown) {
-    const parsed = z.object({ message: z.string() }).safeParse(error);
-    throw new Error(
-      parsed.success
-        ? parsed.data.message
-        : error instanceof Error
-          ? error.message
-          : String(error),
-    );
+    const parsed = z
+      .object({ code: z.string(), message: z.string() })
+      .safeParse(error);
+    throw parsed.success
+      ? new IpcError(parsed.data.code, parsed.data.message)
+      : new IpcError(
+          "ipc",
+          error instanceof Error ? error.message : String(error),
+        );
   }
 }
 export const ipc = {
@@ -279,6 +383,30 @@ export const ipc = {
       { workspaceId, threadId: threadId ?? null, branch, create },
       z.null(),
     ),
+  gitStatus: ({ workspaceId, threadId }: CheckoutRef) =>
+    call("git_status", { workspaceId, threadId: threadId ?? null }, gitStatus),
+  pullRequest: ({ workspaceId, threadId }: CheckoutRef, branch: string) =>
+    call(
+      "pull_request",
+      { workspaceId, threadId: threadId ?? null, branch },
+      prLookup,
+    ),
+  runGitAction: (
+    { workspaceId, threadId }: CheckoutRef,
+    action: GitAction,
+    onPhase: (phase: GitPhase) => void,
+  ) => {
+    const onProgress = new Channel<unknown>((message) => {
+      const phase = gitPhase.safeParse(message);
+      if (phase.success) onPhase(phase.data);
+    });
+    return call(
+      "run_git_action",
+      { workspaceId, threadId: threadId ?? null, action, onProgress },
+      gitOutcome,
+    );
+  },
+  openUrl: (url: string) => call("open_url", { url }, z.null()),
   create: (workspaceId: string, checkout: NewCheckout) =>
     call("create_thread", { workspaceId, checkout }, thread),
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),
@@ -315,6 +443,7 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
         void client.invalidateQueries({ queryKey: ["workspace", workspaceId] });
         void client.invalidateQueries({ queryKey: ["file", workspaceId] });
         void client.invalidateQueries({ queryKey: ["diff", workspaceId] });
+        void client.invalidateQueries({ queryKey: ["git", workspaceId] });
       }
       workspaces.clear();
     }, 160);
@@ -352,8 +481,9 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
   const offRefresh = await listen("z1:refresh", () => {
     void client.invalidateQueries();
   });
+  // Pull request lookups run gh over the network, so focus leaves them to their stale time.
   const focus = () => {
-    void client.invalidateQueries();
+    void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== "pr" });
   };
   window.addEventListener("focus", focus);
   return () => {
