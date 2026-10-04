@@ -236,6 +236,19 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
           },
         ],
       },
+      {
+        id: "threads",
+        title: "Threads",
+        rows: [
+          {
+            id: "settle-thread",
+            title: "Settle thread",
+            description:
+              "Move the open thread to the Settled shelf, or back to the active list.",
+            keywords: "settled un-settle archive",
+          },
+        ],
+      },
     ],
   },
 };

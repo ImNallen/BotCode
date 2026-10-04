@@ -102,6 +102,9 @@ export function Workbench() {
       queryFn: () => ipc.workspace({ workspaceId: workspace.id }),
     })),
   });
+  const openSummary = views
+    .flatMap((query) => query.data?.threads ?? [])
+    .find((thread) => thread.id === selection.thread);
   const setSettled = useCallback(async (threadId: string, settled: boolean) => {
     try {
       await ipc.setSettled(threadId, settled);
@@ -185,6 +188,17 @@ export function Workbench() {
         event.preventDefault();
         void startScratch();
       }
+      // As in T3, the shortcut toggles in place and never navigates.
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "s" &&
+        !settingsOpen &&
+        openSummary
+      ) {
+        event.preventDefault();
+        void setSettled(openSummary.id, openSummary.settledAtMs === null);
+      }
     };
     const escape = (event: KeyboardEvent) => {
       if (
@@ -216,6 +230,8 @@ export function Workbench() {
     settingsOpen,
     scratchAvailable,
     startScratch,
+    openSummary,
+    setSettled,
   ]);
   const openRepository = async () => {
     try {
