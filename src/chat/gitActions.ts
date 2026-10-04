@@ -19,22 +19,16 @@ import {
   type GitStackedAction,
   type VcsStatus,
 } from "./GitActionsControl.logic.ts";
+import { workingSessions } from "../lib/sessions.ts";
 
-/** Everything the control can start: T3's stacked actions plus pull. */
 export type GitTarget = GitStackedAction | "pull";
 
-export type Busy =
-  | { kind: "idle" }
-  /** A run from this window is in flight on this checkout. */
-  | { kind: "git" }
-  /** A Codex turn holds the checkout's lease. */
-  | { kind: "codex" };
+export type Busy = { kind: "idle" } | { kind: "git" } | { kind: "codex" };
 
 export interface GitControlModel {
   vcs: VcsStatus;
   quick: GitQuickAction;
   menu: (GitActionMenuItem & { reason: string | null })[];
-  /** T3's notes under the menu items. */
   notes: { tone: "warning" | "destructive"; text: string }[];
 }
 
@@ -42,7 +36,6 @@ const CODEX_BUSY = "Codex is working in this checkout.";
 
 type GhReason = Extract<PrLookup, { kind: "unavailable" }>["reason"];
 
-/** Why gh cannot create a pull request. A failed lookup still allows one, because the PR step looks up again before it creates. */
 const ghBlocks: Record<GhReason, string | null> = {
   missing: "Install GitHub CLI (gh) to create pull requests.",
   unauthenticated: "Run `gh auth login` to create pull requests.",
@@ -53,7 +46,6 @@ function ghHint(pr: PrLookup | undefined): string | null {
   return pr?.kind === "unavailable" ? ghBlocks[pr.reason] : null;
 }
 
-/** Domain status plus PR lookup, flattened into the fields the ported rules read. */
 export function toVcsStatus(
   status: GitStatus,
   pr: PrLookup | undefined,
@@ -88,10 +80,6 @@ export function toVcsStatus(
   };
 }
 
-/**
- * T3's rules with Z1's overlays. A pending or failed PR lookup reads as "no open PR", as T3
- * reads it before its remote status arrives.
- */
 export function gitControl(input: {
   status: GitStatus;
   pr: PrLookup | undefined;
@@ -143,7 +131,6 @@ export function gitControl(input: {
   return { vcs, quick, menu, notes };
 }
 
-/** Without gh, a quick action that would end in a pull request stops before it. */
 function withoutPr(
   quick: GitQuickAction,
   vcs: VcsStatus,
@@ -187,40 +174,26 @@ function menuReason(
   });
 }
 
-// ipc.ts `workingSessions`, repeated because ipc.ts loads Tauri at runtime and node cannot.
-const leaseHolding = new Set<ThreadSummary["session"]["kind"]>([
-  "connecting",
-  "running",
-  "interrupting",
-]);
-
-// The core keys the lease by checkout root: the repository root for local threads, the
-// checkout's own path otherwise.
 function leaseRoot(checkout: Checkout): string | null {
   return checkout.kind === "local" ? null : checkout.path;
 }
 
-/**
- * Whether a Codex turn holds the lease on this thread's checkout. The core still refuses
- * authoritatively (checkout_busy); this only disables the control early.
- */
 export function codexBusy(
   thread: Pick<ThreadSummary, "id" | "checkout" | "session">,
   threads: ThreadSummary[],
 ): boolean {
   const root = leaseRoot(thread.checkout);
   return (
-    leaseHolding.has(thread.session.kind) ||
+    workingSessions.has(thread.session.kind) ||
     threads.some(
       (other) =>
         other.id !== thread.id &&
         leaseRoot(other.checkout) === root &&
-        leaseHolding.has(other.session.kind),
+        workingSessions.has(other.session.kind),
     )
   );
 }
 
-/** What the user has supplied so far for one started action. */
 export interface Pending {
   target: GitTarget;
   message?: string;
@@ -228,16 +201,10 @@ export interface Pending {
 }
 
 export type Step =
-  /** Open the commit dialog; the action continues with the typed message. */
   | { kind: "compose" }
-  /** Open the default-branch dialog (Abort / Continue). */
   | { kind: "confirm"; copy: DefaultBranchActionDialogCopy }
   | { kind: "run"; action: GitAction };
 
-/**
- * Compose, then confirm, then run. The message comes first so the confirmation copy can say
- * whether a commit is included.
- */
 export function nextStep(pending: Pending, vcs: VcsStatus): Step {
   const action = toAction(pending, vcs);
   if (action === null) return { kind: "compose" };
@@ -261,10 +228,6 @@ export function nextStep(pending: Pending, vcs: VcsStatus): Step {
   return { kind: "run", action };
 }
 
-/**
- * `null` while a commit still needs its message. A stacked commit on a clean tree runs the
- * rest of its stack, as T3's server skips the empty commit step.
- */
 function toAction(
   { target, message }: Pending,
   vcs: VcsStatus,
@@ -283,6 +246,16 @@ function toAction(
   }
   const text = message?.trim();
   return text ? { kind: target, message: text } : null;
+}
+
+const commitLabels: Partial<Record<GitTarget, string>> = {
+  commit: "Commit",
+  commit_push: "Commit & push",
+  commit_push_pr: "Commit, push & PR",
+};
+
+export function commitButtonLabel(target: GitTarget): string {
+  return commitLabels[target] ?? "Commit";
 }
 
 export function phaseLabel(phase: GitPhase): string {
@@ -338,11 +311,6 @@ const failedStep: Record<GitPhase["kind"], string> = {
   pull: "Pull",
 };
 
-/**
- * T3's completion toast (GitManager buildCompletionToast), moved client-side. Unlike T3, a
- * failure after a landed step keeps what landed in the title instead of a bare "Action failed".
- * `before` is the status the action started from.
- */
 export function outcomeToast(
   outcome: GitOutcome,
   before: VcsStatus,
@@ -430,4 +398,66 @@ function completionCta(
     return { kind: "run", label: "Push", target: "push" };
   }
   return { kind: "none" };
+}
+
+export type GitRun =
+  | {
+      state: "running";
+      action: GitAction;
+      phase: GitPhase | null;
+      phaseStartedAtMs: number;
+    }
+  | {
+      state: "done";
+      outcome: GitOutcome;
+      before: VcsStatus;
+      pr: PrLookup | undefined;
+    }
+  | {
+      state: "refused";
+      action: GitAction;
+      error: { code: string; message: string };
+    };
+
+function formatElapsed(startedAtMs: number, nowMs: number): string {
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
+  if (elapsedSeconds < 60) return `Running for ${elapsedSeconds}s`;
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return `Running for ${minutes}m ${seconds}s`;
+}
+
+export function runToast(run: GitRun, nowMs: number): GitToast {
+  switch (run.state) {
+    case "running":
+      return run.phase
+        ? {
+            type: "loading",
+            title: phaseLabel(run.phase),
+            description: formatElapsed(run.phaseStartedAtMs, nowMs),
+            cta: { kind: "none" },
+          }
+        : {
+            type: "loading",
+            title: "Running git action...",
+            description: "Waiting for Git...",
+            cta: { kind: "none" },
+          };
+    case "done":
+      return outcomeToast(run.outcome, run.before, run.pr);
+    case "refused":
+      if (run.error.code === "checkout_busy") {
+        return {
+          type: "info",
+          title: run.error.message,
+          cta: { kind: "none" },
+        };
+      }
+      return {
+        type: "error",
+        title: run.action.kind === "pull" ? "Pull failed" : "Action failed",
+        description: run.error.message,
+        cta: { kind: "none" },
+      };
+  }
 }

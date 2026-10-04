@@ -3,10 +3,12 @@ import { describe, it } from "node:test";
 import type { GitOutcome, GitStatus, PrLookup, ThreadSummary } from "../ipc";
 import {
   codexBusy,
+  commitButtonLabel,
   gitControl,
   nextStep,
   outcomeToast,
   phaseLabel,
+  runToast,
   toVcsStatus,
 } from "./gitActions.ts";
 
@@ -412,6 +414,17 @@ describe("nextStep", () => {
   });
 });
 
+describe("commitButtonLabel", () => {
+  it("names the action the commit dialog starts", () => {
+    assert.deepEqual(
+      (["commit", "commit_push", "commit_push_pr"] as const).map(
+        commitButtonLabel,
+      ),
+      ["Commit", "Commit & push", "Commit, push & PR"],
+    );
+  });
+});
+
 describe("phaseLabel", () => {
   it("names each phase as T3 does", () => {
     assert.deepEqual(
@@ -622,6 +635,93 @@ describe("outcomeToast", () => {
     assert.equal(
       outcomeToast(outcome({ commit: long }), feature, undefined).description,
       `feat: ${"x".repeat(63)}...`,
+    );
+  });
+});
+
+describe("runToast", () => {
+  const started = 1_000_000;
+
+  it("waits for Git until the core reports the first phase", () => {
+    assert.deepEqual(
+      runToast(
+        {
+          state: "running",
+          action: { kind: "push" },
+          phase: null,
+          phaseStartedAtMs: started,
+        },
+        started + 400,
+      ),
+      {
+        type: "loading",
+        title: "Running git action...",
+        description: "Waiting for Git...",
+        cta: { kind: "none" },
+      },
+    );
+  });
+
+  it("labels the current phase with the time spent in it", () => {
+    const pushing = {
+      state: "running" as const,
+      action: { kind: "push" as const },
+      phase: { kind: "push" as const, remote: "origin" },
+      phaseStartedAtMs: started,
+    };
+    assert.deepEqual(runToast(pushing, started + 4_900), {
+      type: "loading",
+      title: "Pushing to origin...",
+      description: "Running for 4s",
+      cta: { kind: "none" },
+    });
+    assert.equal(
+      runToast(pushing, started + 125_000).description,
+      "Running for 2m 5s",
+    );
+  });
+
+  it("shows a busy checkout as information, in the core's words", () => {
+    assert.deepEqual(
+      runToast(
+        {
+          state: "refused",
+          action: { kind: "commit", message: "wip" },
+          error: {
+            code: "checkout_busy",
+            message:
+              "Codex is working in this checkout. Git actions return when the turn finishes.",
+          },
+        },
+        started,
+      ),
+      {
+        type: "info",
+        title:
+          "Codex is working in this checkout. Git actions return when the turn finishes.",
+        cta: { kind: "none" },
+      },
+    );
+  });
+
+  it("reports any other refusal as a failed action, or a failed pull", () => {
+    const error = { code: "not_repository", message: "Not a Git repository." };
+    assert.deepEqual(
+      runToast(
+        { state: "refused", action: { kind: "create_pr" }, error },
+        started,
+      ),
+      {
+        type: "error",
+        title: "Action failed",
+        description: "Not a Git repository.",
+        cta: { kind: "none" },
+      },
+    );
+    assert.equal(
+      runToast({ state: "refused", action: { kind: "pull" }, error }, started)
+        .title,
+      "Pull failed",
     );
   });
 });

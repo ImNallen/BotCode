@@ -14,11 +14,6 @@ const session = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("dormant") }),
   reason,
 ]);
-export const workingSessions = new Set([
-  "connecting",
-  "running",
-  "interrupting",
-]);
 const delivery = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("preparing") }),
   z.object({ kind: z.literal("sending") }),
@@ -284,7 +279,6 @@ export type PullRequest = z.infer<typeof pullRequest>;
 export type PrLookup = z.infer<typeof prLookup>;
 export type GitPhase = z.infer<typeof gitPhase>;
 export type GitOutcome = z.infer<typeof gitOutcome>;
-/** Mirrors the core's GitAction: a variant that commits carries its message. */
 export type GitAction =
   | { kind: "commit" | "commit_push" | "commit_push_pr"; message: string }
   | { kind: "push" | "create_pr" | "pull" };
@@ -299,7 +293,6 @@ export const checkoutKey = (
   scope: CheckoutScope,
   { workspaceId, threadId }: CheckoutRef,
 ) => [scope, workspaceId, threadId ?? null];
-/** Refreshes everything a change to a repository's checkouts can affect. */
 export function invalidateCheckouts(client: QueryClient, workspaceId: string) {
   const scopes: CheckoutScope[] = [
     "workspace",
@@ -312,7 +305,6 @@ export function invalidateCheckouts(client: QueryClient, workspaceId: string) {
   for (const scope of scopes)
     void client.invalidateQueries({ queryKey: [scope, workspaceId] });
 }
-/** A rejection from the core, with its `AppError.code`. */
 export class IpcError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -481,7 +473,6 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
   const offRefresh = await listen("z1:refresh", () => {
     void client.invalidateQueries();
   });
-  // Pull request lookups run gh over the network, so focus leaves them to their stale time.
   const focus = () => {
     void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== "pr" });
   };
