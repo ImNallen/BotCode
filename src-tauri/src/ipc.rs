@@ -92,6 +92,24 @@ pub async fn pull_request(
     app.pull_request(workspace_id, thread_id, branch).await
 }
 #[tauri::command]
+pub async fn review_findings(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+) -> Result<ReviewFindings> {
+    app.review_findings(workspace_id, thread_id).await
+}
+#[tauri::command]
+pub async fn set_review_disposition(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    input: SetReviewDisposition,
+) -> Result<Option<SavedDisposition>> {
+    app.set_review_disposition(workspace_id, thread_id, input)
+        .await
+}
+#[tauri::command]
 pub async fn run_git_action(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

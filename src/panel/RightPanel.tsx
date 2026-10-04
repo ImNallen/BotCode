@@ -4,6 +4,7 @@ import {
   FileDiffIcon,
   FilesIcon,
   PlusIcon,
+  MessageSquareTextIcon,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -21,18 +22,22 @@ import { Kbd, MenuShortcut, PanelTabCloseButton, ScrollRow } from "./chrome";
 import { DiffSurface } from "./DiffSurface";
 import { FileEntryIcon } from "./FileEntryIcon";
 import { FilesSurface } from "./FilesSurface";
+import { ReviewsSurface } from "./ReviewsSurface";
+import type { ReviewDraftRequest } from "./reviews";
 import {
   closeSurface,
   openFile,
   openSurface,
   surfaceKey,
   surfaceTitle,
+  eligibleSurfaces,
 } from "./panelState";
 import { usePanelWidth } from "./usePanelWidth";
 
 export type Surface =
   | { kind: "files" }
   | { kind: "diff" }
+  | { kind: "reviews" }
   | { kind: "file"; path: string };
 
 export type PanelState = { surfaces: Surface[]; active: number | null };
@@ -59,13 +64,19 @@ const SURFACE_ACTIONS: readonly SurfaceAction[] = [
     shortcut: "D",
     surface: { kind: "diff" },
   },
+  {
+    label: "Reviews",
+    icon: MessageSquareTextIcon,
+    shortcut: "R",
+    surface: { kind: "reviews" },
+  },
 ];
 
 const LAUNCHER_SHORTCUT_BLOCKING_LAYERS =
   '[data-slot="menu-popup"],[role="dialog"]';
 
 const FOLDER_ACTIONS = SURFACE_ACTIONS.filter(
-  (action) => action.surface.kind !== "diff",
+  (action) => action.surface.kind === "files",
 );
 
 function actionForKey(
@@ -89,9 +100,12 @@ export function RightPanel({
   checkout,
   git,
   view,
-  state,
+  state: savedState,
   onChange,
   maximized,
+  conversationId,
+  canAskCodex,
+  onAskCodex,
 }: {
   checkout: CheckoutRef;
   git: boolean;
@@ -99,7 +113,11 @@ export function RightPanel({
   state: PanelState;
   onChange: (state: PanelState) => void;
   maximized: boolean;
+  conversationId: string | undefined;
+  canAskCodex: boolean;
+  onAskCodex: (request: ReviewDraftRequest) => void;
 }) {
+  const state = eligibleSurfaces(savedState, git);
   const host = useRef<HTMLDivElement>(null);
   const { width, handlers } = usePanelWidth(host, !maximized);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -278,6 +296,15 @@ export function RightPanel({
                 view={view}
                 onOpenFile={handleOpenFile}
               />
+            ) : active.kind === "reviews" ? (
+              <ReviewsSurface
+                key={`${checkout.workspaceId}:${checkout.threadId ?? "local"}:${conversationId ?? "draft"}:${view?.branch ?? ""}`}
+                checkout={checkout}
+                branch={view?.branch}
+                conversationId={conversationId}
+                canAskCodex={canAskCodex}
+                onAskCodex={onAskCodex}
+              />
             ) : (
               <FilesSurface
                 key="files"
@@ -298,6 +325,8 @@ function SurfaceIcon({ surface }: { surface: Surface }) {
   switch (surface.kind) {
     case "diff":
       return <FileDiffIcon className="size-3 shrink-0" />;
+    case "reviews":
+      return <MessageSquareTextIcon className="size-3 shrink-0" />;
     case "files":
       return <FilesIcon className="size-3 shrink-0" />;
     case "file":
