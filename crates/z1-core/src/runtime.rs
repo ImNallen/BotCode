@@ -1071,6 +1071,13 @@ impl Owner {
                     self.threads.get_mut(&id).unwrap().session = SessionState::Connecting;
                     let _ = self.commit(&id);
                     self.prepare(Prepare::Resume(id.clone()));
+                } else if resume
+                    && let Some(t) = self.threads.get_mut(&id)
+                    && matches!(&t.checkout, Checkout::Worktree { path, .. } if !path.exists())
+                    && t.diagnostic.take().is_some()
+                {
+                    // A resume would have cleared this notice about the previous session.
+                    let _ = self.commit(&id);
                 }
                 let result = if self.dirty.contains(&id) {
                     self.commit(&id).and_then(|_| self.thread(&id).cloned())

@@ -402,6 +402,10 @@ async fn removed_threads_degrade_to_unavailable_views_and_refuse_switches() {
     let app = App::open(f.config.clone()).await.unwrap();
     let opened = app.open_thread(thread.id.clone()).await.unwrap();
     assert_eq!(opened.session, SessionState::Dormant);
+    assert_eq!(
+        opened.diagnostic, None,
+        "the shutdown notice must not outlive the skipped resume"
+    );
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         app.thread(thread.id.clone()).await.unwrap().session,
