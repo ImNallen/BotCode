@@ -44,7 +44,9 @@ fn main() {
             ipc::list_models,
             ipc::update_thread_settings,
             ipc::answer_approval,
-            ipc::interrupt
+            ipc::interrupt,
+            ipc::ui_state,
+            ipc::set_ui_state
         ])
         .build(tauri::generate_context!())
         .expect("Z1 Code could not start");

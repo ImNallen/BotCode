@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     time::Duration,
 };
@@ -68,6 +68,8 @@ enum Command {
     Submit(ThreadId, String, String, Reply<Receipt>),
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
+    UiState(Reply<BTreeMap<String, String>>),
+    SetUiState(String, Option<String>, Reply<()>),
     Shutdown(Reply<()>),
 }
 #[derive(Clone)]
@@ -353,6 +355,12 @@ impl App {
     }
     pub async fn interrupt(&self, id: ThreadId) -> Result<()> {
         self.call(|r| Command::Interrupt(id, r)).await
+    }
+    pub async fn ui_state(&self) -> Result<BTreeMap<String, String>> {
+        self.call(Command::UiState).await
+    }
+    pub async fn set_ui_state(&self, key: String, value: Option<String>) -> Result<()> {
+        self.call(|r| Command::SetUiState(key, value, r)).await
     }
     pub async fn shutdown(&self) -> Result<()> {
         self.call(Command::Shutdown).await
@@ -882,6 +890,12 @@ impl Owner {
                     Ok(())
                 })();
                 let _ = reply.send(result);
+            }
+            Command::UiState(reply) => {
+                let _ = reply.send(self.store.ui_state());
+            }
+            Command::SetUiState(key, value, reply) => {
+                let _ = reply.send(self.store.set_ui_state(&key, value.as_deref()));
             }
             Command::Shutdown(_) => {}
         }

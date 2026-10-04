@@ -1707,3 +1707,25 @@ async fn running_projects_cannot_be_removed_until_their_turn_ends() {
     );
     app.shutdown().await.unwrap();
 }
+#[tokio::test]
+async fn ui_state_survives_restart_with_overwrites_and_removals() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let set = |key: &str, value: Option<&str>| app.set_ui_state(key.into(), value.map(Into::into));
+    set("z1:sidebar-width", Some("260")).await.unwrap();
+    set("z1.wordWrap", Some("true")).await.unwrap();
+    set("z1:right-panel-width", Some("400")).await.unwrap();
+    set("z1:right-panel-width", None).await.unwrap();
+    set("z1:sidebar-width", Some("312")).await.unwrap();
+    set("z1:missing", None).await.unwrap();
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        app.ui_state().await.unwrap(),
+        std::collections::BTreeMap::from([
+            ("z1.wordWrap".to_string(), "true".to_string()),
+            ("z1:sidebar-width".to_string(), "312".to_string()),
+        ])
+    );
+    app.shutdown().await.unwrap();
+}
