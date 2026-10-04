@@ -2,6 +2,7 @@ mod cleanup;
 mod codex;
 mod domain;
 pub mod repo;
+mod reviews;
 mod runtime;
 mod settings;
 mod store;

@@ -2,7 +2,7 @@ use crate::{
     cleanup::{self, Candidate, Sweep},
     codex::{Codex, Signal},
     domain::*,
-    repo, settings,
+    repo, reviews, settings,
     store::Store,
     vcs,
 };
@@ -129,6 +129,20 @@ enum Command {
     RenameWorkspace(WorkspaceId, String, Reply<Workspace>),
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
+    ReviewFindings(
+        WorkspaceId,
+        Option<ThreadId>,
+        PathBuf,
+        ReviewFindings,
+        Reply<ReviewFindings>,
+    ),
+    SetReviewDisposition(
+        WorkspaceId,
+        Option<ThreadId>,
+        PathBuf,
+        SetReviewDisposition,
+        Reply<Option<SavedDisposition>>,
+    ),
     Claim(WorkspaceId, Option<ThreadId>, Hold, Reply<PathBuf>),
     Release(PathBuf, Option<(ThreadId, String)>, Reply<()>),
     Threads(WorkspaceId, Reply<Vec<ThreadSummary>>),
@@ -422,6 +436,42 @@ impl App {
     pub async fn git_status(&self, id: WorkspaceId, thread: Option<ThreadId>) -> Result<GitStatus> {
         let root = self.checkout(id, thread).await?.1.repository()?;
         vcs::status(&root).await
+    }
+    pub async fn review_findings(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+    ) -> Result<ReviewFindings> {
+        let root = self
+            .checkout(id.clone(), thread.clone())
+            .await?
+            .1
+            .repository()?;
+        let findings = reviews::fetch(&self.gh, &root, self.network).await?;
+        self.call(|reply| Command::ReviewFindings(id, thread, root, findings, reply))
+            .await
+    }
+    pub async fn set_review_disposition(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+        input: SetReviewDisposition,
+    ) -> Result<Option<SavedDisposition>> {
+        input.validate()?;
+        let root = self
+            .checkout(id.clone(), thread.clone())
+            .await?
+            .1
+            .repository()?;
+        let (branch, _) = reviews::checkout_identity(&root).await?;
+        if branch != input.branch {
+            return Err(AppError::new(
+                "review_checkout_changed",
+                "The checkout branch changed. Refresh reviews before deciding.",
+            ));
+        }
+        self.call(|reply| Command::SetReviewDisposition(id, thread, root, input, reply))
+            .await
     }
     /// The open pull request for `branch`. gh problems come back as `PrLookup::Unavailable`.
     pub async fn pull_request(
@@ -852,6 +902,24 @@ impl Owner {
         };
         Ok((w.clone(), location))
     }
+    fn review_checkout(
+        &self,
+        id: &WorkspaceId,
+        thread: Option<ThreadId>,
+        root: &Path,
+    ) -> Result<()> {
+        let current = self.checkout(id, thread)?.1.repository()?;
+        if current != root {
+            return Err(AppError::new(
+                "review_checkout_changed",
+                "The checkout changed. Refresh reviews.",
+            ));
+        }
+        if let Some(hold) = self.held.get(root) {
+            return Err(hold.refusal());
+        }
+        Ok(())
+    }
     /// A thread with no running turn, no open approval, and no job or hold on its checkout.
     fn idle(&self, t: &ThreadSnapshot, root: &Path) -> bool {
         !matches!(
@@ -1073,6 +1141,25 @@ impl Owner {
             }
             Command::Checkout(id, thread, reply) => {
                 let _ = reply.send(self.checkout(&id, thread));
+            }
+            Command::ReviewFindings(id, thread, root, mut findings, reply) => {
+                let result = (|| {
+                    self.review_checkout(&id, thread, &root)?;
+                    if let ReviewFindings::Ready { findings, .. } = &mut findings {
+                        for finding in findings {
+                            finding.saved =
+                                self.store.review_disposition(&id, &finding.observation)?;
+                        }
+                    }
+                    Ok(findings)
+                })();
+                let _ = reply.send(result);
+            }
+            Command::SetReviewDisposition(id, thread, root, input, reply) => {
+                let result = self
+                    .review_checkout(&id, thread, &root)
+                    .and_then(|_| self.store.set_review_disposition(&id, &input));
+                let _ = reply.send(result);
             }
             Command::Claim(id, thread, hold, reply) => {
                 let result = self.checkout(&id, thread).and_then(|(_, location)| {
