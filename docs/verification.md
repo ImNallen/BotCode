@@ -305,3 +305,22 @@ The native debug bundle used the same disposable GitHub repository, an isolated 
 - GitHub showed pull request #2 open from `z1code/dae67816` into `main` with both files. The branch then tracked `origin/z1code/dae67816`.
 - The header's **View PR** opened that pull request in the default browser.
 - While a second Codex turn ran in the worktree, the quick action read **Commit** and was disabled. When the turn completed, it read **View PR** again.
+
+
+## PR review triage
+
+Verified on 2026-10-04. The core suite passed 115 tests. The frontend suite passed 93 tests. Clippy with warnings denied, rustfmt, TypeScript checking, the production build, Prettier and the debug Mac bundle passed.
+
+Core tests use real disposable Git repositories, a scripted GitHub CLI and native SQLite storage. They cover independent pagination of threads and replies, review summaries and PR conversation comments, original reviewed commits, partial-response refusal, moving heads, checkout changes, bounded output and timeouts. Decisions survive restart, retain their evidence and reason, reject conflicting old writes and clear idempotently. Migration preserves existing data and refuses an unknown future schema. Frontend tests cover schema parsing, stale intent, draft preservation and a failed refresh with cached data.
+
+The native debug bundle used the temporary identifier `dev.z1.code.reviewverify`, a disposable repository and an isolated `Z1_DATA_DIR`. Both GitHub CLI and Codex were scripted peers. At 1100×780:
+
+- Reviews showed a PR conversation comment, two inline threads and a review summary. Inline details showed the original commit, path, line, diff hunk and reply. A general conversation comment showed unavailable source context. GitHub resolved and outdated flags stayed separate from local intent.
+- Dismiss opened a reason field and disabled Save until it had a reason. Saving stored the dismissal and its evidence in SQLite. Refresh and a quit/relaunch kept the choice and reason.
+- Editing a finding marked the saved dismissal stale and kept its reason. Saving Fix updated the evidence. Advancing the PR and checkout head marked Fix stale while the source commit and hunk still named the original reviewed version.
+- Ask Codex preserved the existing draft and appended feedback, its source and local intent. The peer log held no `turn/start` before Send. Explicit Send produced one turn with the full prompt and a scripted reply.
+- A maximized panel initially kept the composer hidden during the handoff. After a fix and rebuild, Ask Codex restored the panel size and focused the visible composer with the draft preserved.
+- Needs decision saved and Clear returned it to Untouched. Empty feedback, no open PR, an authentication failure and a transport failure each showed their own state. Failed refreshes removed old actionable findings and offered Retry.
+- A draft without a project offered only Files in the panel launcher. Resizing the panel and scrolling source details preserved the sidebar, centered conversation and bottom composer.
+
+This native run did not contact GitHub or run a real Codex fix. Read-only queries against a public GitHub PR separately confirmed the nonempty original commit, diff hunk, resolved/outdated, summary and conversation schema. Fix records planned work; this slice does not verify remediation or post to GitHub. GraphQL requests explicitly select `github.com`, including when `GH_HOST` names another host.

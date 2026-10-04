@@ -103,7 +103,16 @@ impl Fetch<'_> {
         let query_arg = format!("query={query}");
         let id_arg = format!("id={id}");
         let cursor_arg = cursor.map(|cursor| format!("cursor={cursor}"));
-        let mut args = vec!["api", "graphql", "-f", &query_arg, "-f", &id_arg];
+        let mut args = vec![
+            "api",
+            "graphql",
+            "--hostname",
+            "github.com",
+            "-f",
+            &query_arg,
+            "-f",
+            &id_arg,
+        ];
         if let Some(cursor) = &cursor_arg {
             args.extend(["-f", cursor]);
         }

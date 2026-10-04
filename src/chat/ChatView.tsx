@@ -337,6 +337,7 @@ export function ChatView({
     setDraft(
       (current) => appendReviewDraft(current, request, target) ?? current,
     );
+    setMaximized(false);
     setComposerFocusRequest((current) => current + 1);
   };
   const canStop = Boolean(

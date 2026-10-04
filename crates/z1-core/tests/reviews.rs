@@ -149,6 +149,15 @@ async fn fetches_every_feedback_page_and_keeps_original_source_separate() {
     assert!(calls.contains("ReviewReplies"));
     assert!(calls.contains("cursor=reviews-1"));
     assert!(calls.contains("cursor=conversation-1"));
+    for line in calls.lines() {
+        let args: Vec<String> = serde_json::from_str(line).unwrap();
+        if args.first().is_some_and(|arg| arg == "api") {
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--hostname", "github.com"])
+            );
+        }
+    }
     app.shutdown().await.unwrap();
 }
 
