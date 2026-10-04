@@ -287,6 +287,8 @@ export const ipc = {
   uiState: () => call("ui_state", {}, z.record(z.string(), z.string())),
   setUiState: (key: string, value: string | null) =>
     call("set_ui_state", { key, value }, z.null()),
+  settingsFile: () => call("settings", {}, z.string().nullable()),
+  saveSettingsFile: (text: string) => call("save_settings", { text }, z.null()),
 };
 export async function subscribe(client: QueryClient): Promise<() => void> {
   const hints = new Set<string>();

@@ -7,7 +7,8 @@ import {
   type ReactNode,
 } from "react";
 import { z } from "zod";
-import { storage } from "../lib/storage";
+import { ipc, native } from "../ipc";
+import { serial } from "../lib/serial";
 
 const favoriteModelSchema = z.object({
   provider: z.string().min(1),
@@ -50,6 +51,23 @@ const defaults: Preferences = {
   projectOverrides: {},
 };
 const storageKey = "z1:preferences:v1";
+let fileText: string | null | Error = null;
+export async function loadPreferences(): Promise<void> {
+  if (native)
+    fileText = await ipc
+      .settingsFile()
+      .catch(() => new Error("Unreadable settings file."));
+}
+function storedText(): string | null {
+  if (!native) return localStorage.getItem(storageKey);
+  if (fileText instanceof Error) throw fileText;
+  return fileText;
+}
+const enqueue = serial();
+async function saveText(text: string): Promise<void> {
+  if (native) await enqueue(() => ipc.saveSettingsFile(text));
+  else localStorage.setItem(storageKey, text);
+}
 type PreferenceState = {
   preferences: Preferences;
   persistenceError: string | undefined;
@@ -68,7 +86,7 @@ const Context = createContext<
 
 function readPreferences(): PreferenceState {
   try {
-    const stored = storage.getItem(storageKey);
+    const stored = storedText();
     if (stored === null)
       return { preferences: defaults, persistenceError: undefined };
     const object = z
@@ -173,7 +191,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     if (!parsed.success) return;
     current.current = parsed.data;
     setState((state) => ({ ...state, preferences: parsed.data }));
-    void storage.setItem(storageKey, JSON.stringify(parsed.data)).then(
+    void saveText(`${JSON.stringify(parsed.data, null, 2)}\n`).then(
       () => setState((state) => ({ ...state, persistenceError: undefined })),
       () =>
         setState((state) => ({
