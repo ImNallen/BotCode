@@ -4,7 +4,7 @@ Z1 Code is a local macOS coding workbench built with Rust, Tauri 2, React, Vite,
 
 ## Run locally
 
-Install Rust 1.89 or newer, Node.js 20.19 or Node.js 22.12 or newer, pnpm, and the macOS Command Line Tools. This slice was verified with Rust 1.93 and Node.js 26.7. Rust 1.89 is required for the state-directory file lock. Install Codex and sign in through its own CLI. Z1 uses that account without changing Codex credentials or `CODEX_HOME`.
+Install Rust 1.89 or newer, Node.js 20.19 or Node.js 22.12 or newer, pnpm, and the macOS Command Line Tools. `pnpm test:ui` needs Node.js 22.18 or newer. This slice was verified with Rust 1.93 and Node.js 26.7. Rust 1.89 is required for the state-directory file lock. Install Codex and sign in through its own CLI. Z1 uses that account without changing Codex credentials or `CODEX_HOME`.
 
 ```sh
 pnpm install
@@ -19,11 +19,13 @@ The sidebar's bottom Settings button opens General, Appearance, Keyboard shortcu
 
 The composer has model, reasoning effort, and access menus. Model and effort choices come from the installed Codex. Settings save per conversation and apply to the next turn. Supervised is the default access mode. The other modes are Auto-accept edits, Auto, and Full access.
 
+In a repository thread, the Git actions control at the right of the header commits, pushes, pulls, and opens GitHub pull requests for that thread's checkout. Its button runs the next step for the branch. Its menu lists Commit, Push, and Create PR or View PR. Every commit needs a message. Pull requests go through the GitHub CLI, so install `gh` and run `gh auth login`. Z1 opens a pull request with `gh pr create --fill` against the branch the worktree started from, or else the default branch. Z1 refuses a Git action while Codex works in the same checkout, and refuses a prompt or a branch switch there while a Git action runs.
+
 The browser build explains that the native runtime is required. It does not simulate repositories or conversations.
 
 ## State and recovery
 
-Z1 keeps its data in `~/.z1`. That directory holds preferences in `settings.json`, the SQLite database, worktrees under `worktrees`, and threads without a project under `scratch`. Settings > Storage can remove worktrees of inactive or unchanged threads to save space, and the thread's next message recreates its worktree. You can edit `settings.json` by hand or symlink it to sync preferences between machines. The database holds machine-local UI state, such as panel widths. Set `Z1_DATA_DIR` to use another directory. Only one runtime can own a directory at a time. Set `Z1_CODEX_BIN` to choose an explicit Codex executable.
+Z1 keeps its data in `~/.z1`. That directory holds preferences in `settings.json`, the SQLite database, worktrees under `worktrees`, and threads without a project under `scratch`. Settings > Storage can remove worktrees of inactive or unchanged threads to save space, and the thread's next message recreates its worktree. You can edit `settings.json` by hand or symlink it to sync preferences between machines. The database holds machine-local UI state, such as panel widths. Set `Z1_DATA_DIR` to use another directory. Only one runtime can own a directory at a time. Set `Z1_CODEX_BIN` to choose an explicit Codex executable, and `Z1_GH_BIN` to choose an explicit `gh`.
 
 Conversation history and native thread IDs survive restart. Reconnect resumes that saved native conversation. A lost prompt acknowledgement remains uncertain. Z1 never automatically sends that prompt a second time. Old approval callbacks expire when the provider process ends.
 
@@ -34,12 +36,13 @@ One conversation may run in each canonical checkout at a time. Other checkouts c
 ```sh
 pnpm typecheck
 pnpm build
+pnpm test:ui
 cargo test -p z1-core
 pnpm smoke
 pnpm tauri build --debug --bundles app
 ```
 
-The core tests use temporary Git repositories and a scripted JSONL provider. They cover real staged, unstaged, untracked, and rename diffs, path containment, operation deduplication, uncertain delivery, approval routing, storage failures, interruption, stalled provider input, and subprocess cleanup.
+The core tests use temporary Git repositories and a scripted JSONL provider. They cover real staged, unstaged, untracked, and rename diffs, path containment, operation deduplication, uncertain delivery, approval routing, storage failures, interruption, stalled provider input, and subprocess cleanup. Git actions run against temporary repositories with a bare origin and a scripted `gh`. `pnpm test:ui` runs the Git action rules ported from T3 with `node --test`.
 
 The real smoke uses the installed Codex account in a disposable checkout and an isolated state directory. It observes streaming, completion, durable history, and same-native-thread continuation after reopening. It asserts the checkout remains unchanged.
 
@@ -49,7 +52,7 @@ Pierre helper packages currently report a theme peer-version warning. Tree, file
 
 ## Roadmap
 
-AI review triage for pull requests is the intended differentiator. Review findings, reviewed commit identity, explicit dispositions, and verified fixes belong in the next slice. This version does not include PR automation, a terminal, browser preview, worktree management, Cursor, or a provider plugin system.
+AI review triage for pull requests is the intended differentiator. Review findings, reviewed commit identity, explicit dispositions, and verified fixes belong in the next slice. This version opens pull requests but does not triage their reviews. It does not include a terminal, browser preview, worktree management, Cursor, or a provider plugin system.
 
 The implementation and recovery decisions are in [docs/architecture.md](docs/architecture.md).
 
