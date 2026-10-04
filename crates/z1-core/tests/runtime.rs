@@ -822,8 +822,10 @@ fn legacy_snapshots_default_settings() {
         }],
         approvals: vec![],
         diagnostic: None,
+        settlement: Settlement::Kept,
     };
     let mut value = serde_json::to_value(thread).unwrap();
+    value.as_object_mut().unwrap().remove("settlement");
     value.as_object_mut().unwrap().remove("settings");
     value.as_object_mut().unwrap().remove("checkout");
     value["turns"][0]
@@ -834,6 +836,7 @@ fn legacy_snapshots_default_settings() {
     assert_eq!(restored.settings, SessionSettings::default());
     assert_eq!(restored.checkout, Checkout::Local);
     assert!(restored.turns[0].settings.is_none());
+    assert_eq!(restored.settlement, Settlement::Auto);
 }
 #[tokio::test]
 async fn provider_loss_invalidates_catalog_and_reloads_on_request() {
@@ -1776,5 +1779,302 @@ async fn saving_over_unparseable_settings_keeps_a_backup() {
         std::fs::read_to_string(f.config.data_dir.join("settings.json")).unwrap(),
         "{}"
     );
+    app.shutdown().await.unwrap();
+}
+const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> ThreadSnapshot {
+    ThreadSnapshot {
+        id: ThreadId::default(),
+        workspace_id: WorkspaceId::default(),
+        title: "Idle".into(),
+        native_thread_id: Some("native".into()),
+        revision: 1,
+        session: SessionState::Dormant,
+        settings: SessionSettings::default(),
+        checkout: Checkout::Local,
+        turns: vec![Turn {
+            id: TurnId::default(),
+            prompt: "hello".into(),
+            native_turn_id: None,
+            delivery: Delivery::Accepted,
+            execution: Execution::Completed,
+            items: vec![],
+            settings: None,
+            started_at_ms,
+            completed_at_ms,
+        }],
+        approvals: vec![],
+        diagnostic: None,
+        settlement: Settlement::Auto,
+    }
+}
+#[test]
+fn idle_threads_auto_settle_after_three_days_of_their_latest_activity() {
+    assert_eq!(AUTO_SETTLE_AFTER_MS, 3 * DAY_MS);
+    let thread = idle_thread(Some(1_000), Some(2_000));
+    assert_eq!(thread.settled_at(2_000 + 3 * DAY_MS - 1), None);
+    assert_eq!(
+        thread.settled_at(2_000 + 3 * DAY_MS),
+        Some(2_000 + 3 * DAY_MS)
+    );
+    assert_eq!(
+        idle_thread(Some(1_000), None).settled_at(1_000 + 3 * DAY_MS),
+        Some(1_000 + 3 * DAY_MS)
+    );
+    assert_eq!(idle_thread(None, None).settled_at(u64::MAX), None);
+}
+#[test]
+fn auto_settle_waits_for_running_sessions_and_open_approvals_and_respects_overrides() {
+    let later = 2_000 + 4 * DAY_MS;
+    for session in [
+        SessionState::Connecting,
+        SessionState::Running,
+        SessionState::Interrupting,
+    ] {
+        let mut thread = idle_thread(Some(1_000), Some(2_000));
+        thread.session = session;
+        assert_eq!(thread.settled_at(later), None);
+    }
+    for (state, settled) in [
+        (ApprovalState::Pending, None),
+        (ApprovalState::Answering, None),
+        (ApprovalState::Expired, Some(2_000 + 3 * DAY_MS)),
+    ] {
+        let mut thread = idle_thread(Some(1_000), Some(2_000));
+        thread.approvals.push(Approval {
+            id: ApprovalId::default(),
+            turn_id: thread.turns[0].id.clone(),
+            action: ApprovalAction::Command {
+                command: "ls".into(),
+                cwd: "/".into(),
+                reason: String::new(),
+            },
+            state,
+        });
+        assert_eq!(thread.settled_at(later), settled);
+    }
+    let mut kept = idle_thread(Some(1_000), Some(2_000));
+    kept.settlement = Settlement::Kept;
+    assert_eq!(kept.settled_at(later), None);
+    let mut settled = idle_thread(Some(1_000), None);
+    settled.settlement = Settlement::Settled { at_ms: 1_500 };
+    settled.session = SessionState::Running;
+    assert_eq!(settled.settled_at(1_600), Some(1_500));
+}
+fn settled_at_ms(view: &WorkspaceView, id: &ThreadId) -> Option<u64> {
+    view.threads
+        .iter()
+        .find(|summary| &summary.id == id)
+        .unwrap()
+        .settled_at_ms
+}
+#[tokio::test]
+async fn manual_settlement_persists_across_reopen_and_unsettling_keeps_threads_active() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let other = app
+        .create_thread(thread.workspace_id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    app.set_settled(other.id.clone(), false).await.unwrap();
+    assert_eq!(
+        app.thread(other.id.clone()).await.unwrap().settlement,
+        Settlement::Auto
+    );
+    let before = now_ms();
+    app.set_settled(thread.id.clone(), true).await.unwrap();
+    let Settlement::Settled { at_ms } = app.thread(thread.id.clone()).await.unwrap().settlement
+    else {
+        panic!("settling stores the settled override")
+    };
+    assert!(at_ms >= before && at_ms <= now_ms());
+    app.set_settled(thread.id.clone(), true).await.unwrap();
+    assert_eq!(
+        app.thread(thread.id.clone()).await.unwrap().settlement,
+        Settlement::Settled { at_ms }
+    );
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    let view = app
+        .workspace_view(thread.workspace_id.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(settled_at_ms(&view, &thread.id), Some(at_ms));
+    assert_eq!(settled_at_ms(&view, &other.id), None);
+    app.set_settled(thread.id.clone(), false).await.unwrap();
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        app.thread(thread.id.clone()).await.unwrap().settlement,
+        Settlement::Kept
+    );
+    let view = app
+        .workspace_view(thread.workspace_id.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(settled_at_ms(&view, &thread.id), None);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn sending_a_prompt_returns_settled_and_kept_threads_to_auto() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.set_settled(thread.id.clone(), true).await.unwrap();
+    app.submit(thread.id.clone(), "first".into(), "hello".into())
+        .await
+        .unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(done.settlement, Settlement::Auto);
+    app.set_settled(thread.id.clone(), true).await.unwrap();
+    app.set_settled(thread.id.clone(), false).await.unwrap();
+    assert_eq!(
+        app.thread(thread.id.clone()).await.unwrap().settlement,
+        Settlement::Kept
+    );
+    app.submit(thread.id.clone(), "second".into(), "hello".into())
+        .await
+        .unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(done.settlement, Settlement::Auto);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn settling_is_refused_while_an_approval_waits_but_allowed_while_running() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "approvals".into(), "approval".into())
+        .await
+        .unwrap();
+    let waiting = wait(&app, &thread.id, |t| t.approvals.len() == 2).await;
+    let refused = app.set_settled(thread.id.clone(), true).await.unwrap_err();
+    assert_eq!(refused.code, "settle_blocked");
+    assert_eq!(
+        refused.message,
+        "Answer the pending approval before settling this thread."
+    );
+    assert_eq!(
+        app.thread(thread.id.clone()).await.unwrap().settlement,
+        Settlement::Auto
+    );
+    for approval in waiting.approvals {
+        app.answer_approval(approval.id, ApprovalDecision::Decline)
+            .await
+            .unwrap();
+    }
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    app.submit(thread.id.clone(), "hold".into(), "hold".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Running)
+    })
+    .await;
+    app.set_settled(thread.id.clone(), true).await.unwrap();
+    let view = app
+        .workspace_view(thread.workspace_id.clone(), None)
+        .await
+        .unwrap();
+    assert!(settled_at_ms(&view, &thread.id).is_some());
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn a_new_approval_returns_a_settled_thread_to_auto() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "late".into(), "late-approval".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Running)
+    })
+    .await;
+    app.set_settled(thread.id.clone(), true).await.unwrap();
+    assert!(matches!(
+        app.thread(thread.id.clone()).await.unwrap().settlement,
+        Settlement::Settled { .. }
+    ));
+    let waiting = wait(&app, &thread.id, |t| t.approvals.len() == 1).await;
+    assert_eq!(waiting.settlement, Settlement::Auto);
+    let view = app
+        .workspace_view(thread.workspace_id.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(settled_at_ms(&view, &thread.id), None);
+    app.shutdown().await.unwrap();
+}
+fn age_turns(f: &Fixture, id: &ThreadId, by_ms: u64) {
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    let data: String = db
+        .query_row(
+            "SELECT data FROM threads WHERE id=?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut thread: ThreadSnapshot = serde_json::from_str(&data).unwrap();
+    for turn in &mut thread.turns {
+        turn.started_at_ms = turn.started_at_ms.map(|at| at - by_ms);
+        turn.completed_at_ms = turn.completed_at_ms.map(|at| at - by_ms);
+    }
+    db.execute(
+        "UPDATE threads SET data=?2 WHERE id=?1",
+        [id.to_string(), serde_json::to_string(&thread).unwrap()],
+    )
+    .unwrap();
+}
+#[tokio::test]
+async fn stale_threads_read_as_settled_after_reopen_unless_kept() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let stale = conversation(&app, &f).await;
+    let kept = app
+        .create_thread(stale.workspace_id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    let fresh = app
+        .create_thread(stale.workspace_id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    for (n, thread) in [&stale, &kept, &fresh].into_iter().enumerate() {
+        app.submit(thread.id.clone(), format!("op-{n}"), "hello".into())
+            .await
+            .unwrap();
+        wait(&app, &thread.id, |t| {
+            matches!(t.turns[0].execution, Execution::Completed)
+        })
+        .await;
+    }
+    app.set_settled(kept.id.clone(), true).await.unwrap();
+    app.set_settled(kept.id.clone(), false).await.unwrap();
+    app.shutdown().await.unwrap();
+    age_turns(&f, &stale.id, 4 * DAY_MS);
+    age_turns(&f, &kept.id, 4 * DAY_MS);
+    let app = reopen(&f.config).await;
+    let aged = app.thread(stale.id.clone()).await.unwrap();
+    let completed = aged.turns[0].completed_at_ms.unwrap();
+    let view = app
+        .workspace_view(stale.workspace_id.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        settled_at_ms(&view, &stale.id),
+        Some(completed + AUTO_SETTLE_AFTER_MS)
+    );
+    assert_eq!(settled_at_ms(&view, &kept.id), None);
+    assert_eq!(settled_at_ms(&view, &fresh.id), None);
+    assert_eq!(aged.settlement, Settlement::Auto);
     app.shutdown().await.unwrap();
 }
