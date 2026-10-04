@@ -69,6 +69,7 @@ enum Command {
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
     Arrange(ThreadId, Arrange, Reply<()>),
+    AutoSettle(settings::AutoSettle, Reply<()>),
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
     Shutdown(Reply<()>),
@@ -134,6 +135,7 @@ impl App {
         }
         let worktrees = config.data_dir.join("worktrees");
         let settings = config.data_dir.join("settings.json");
+        let auto_settle = settings::auto_settle(&settings);
         let (commands, rx) = mpsc::channel(128);
         let (changes, _) = broadcast::channel(256);
         let (provider_events, signals) = mpsc::channel(512);
@@ -144,6 +146,7 @@ impl App {
                 store,
                 workspaces,
                 threads,
+                auto_settle,
                 leases: HashMap::new(),
                 switching: HashSet::new(),
                 routes: HashMap::new(),
@@ -372,8 +375,10 @@ impl App {
     pub fn settings(&self) -> Result<Option<String>> {
         settings::read(&self.settings)
     }
-    pub fn save_settings(&self, text: &str) -> Result<()> {
-        settings::write(&self.settings, text)
+    pub async fn save_settings(&self, text: &str) -> Result<()> {
+        settings::write(&self.settings, text)?;
+        let rules = settings::auto_settle(&self.settings);
+        self.call(|r| Command::AutoSettle(rules, r)).await
     }
     pub async fn shutdown(&self) -> Result<()> {
         self.call(Command::Shutdown).await
@@ -434,6 +439,7 @@ struct Owner {
     store: Store,
     workspaces: HashMap<WorkspaceId, Workspace>,
     threads: HashMap<ThreadId, ThreadSnapshot>,
+    auto_settle: settings::AutoSettle,
     leases: HashMap<PathBuf, ThreadId>,
     switching: HashSet<PathBuf>,
     routes: HashMap<ApprovalId, Route>,
@@ -547,14 +553,15 @@ impl Owner {
         t.revision += 1;
         self.store.save(t)?;
         self.dirty.remove(id);
-        let _ = self.changes.send(ChangeHint::from(&*t));
+        let hint = ChangeHint::new(t, self.auto_settle.after_ms(&t.workspace_id));
+        let _ = self.changes.send(hint);
         Ok(())
     }
     fn install(&mut self, mut next: ThreadSnapshot) -> Result<()> {
         next.stamp_completions();
         next.revision += 1;
         self.store.save(&next)?;
-        let hint = ChangeHint::from(&next);
+        let hint = ChangeHint::new(&next, self.auto_settle.after_ms(&next.workspace_id));
         self.dirty.remove(&next.id);
         self.threads.insert(next.id.clone(), next);
         let _ = self.changes.send(hint);
@@ -709,7 +716,7 @@ impl Owner {
                     .threads
                     .values()
                     .filter(|t| t.workspace_id == id)
-                    .map(ThreadSnapshot::summary)
+                    .map(|t| t.summary(self.auto_settle.after_ms(&id)))
                     .collect();
                 let _ = reply.send(Ok(rows));
             }
@@ -911,13 +918,26 @@ impl Owner {
                     self.thread(&id)?;
                     let thread = self.threads.get_mut(&id).unwrap();
                     let before = (thread.placement, thread.snooze);
-                    let arranged = thread.arrange(action, now_ms());
+                    let after_ms = self.auto_settle.after_ms(&thread.workspace_id);
+                    let arranged = thread.arrange(action, now_ms(), after_ms);
                     if (thread.placement, thread.snooze) != before {
                         self.commit(&id)?;
                     }
                     arranged
                 })();
                 let _ = reply.send(result);
+            }
+            Command::AutoSettle(rules, reply) => {
+                let now = now_ms();
+                for t in self.threads.values() {
+                    let before = self.auto_settle.after_ms(&t.workspace_id);
+                    let after = rules.after_ms(&t.workspace_id);
+                    if t.settled_at(now, before) != t.settled_at(now, after) {
+                        let _ = self.changes.send(ChangeHint::new(t, after));
+                    }
+                }
+                self.auto_settle = rules;
+                let _ = reply.send(Ok(()));
             }
             Command::UiState(reply) => {
                 let _ = reply.send(self.store.ui_state());
@@ -989,7 +1009,7 @@ impl Owner {
             ));
         }
         let mut t = thread.clone();
-        t.record_activity(now_ms());
+        t.record_activity(now_ms(), self.auto_settle.after_ms(&t.workspace_id));
         let turn = Turn {
             id: TurnId::default(),
             prompt: text.into(),
@@ -1014,7 +1034,8 @@ impl Owner {
         t.revision += 1;
         self.store.accept(&t, request_id, &input, &receipt)?;
         self.leases.insert(root, t.id.clone());
-        let _ = self.changes.send(ChangeHint::from(&t));
+        let hint = ChangeHint::new(&t, self.auto_settle.after_ms(&t.workspace_id));
+        let _ = self.changes.send(hint);
         self.threads.insert(t.id.clone(), t);
         Ok((receipt, true))
     }
@@ -1479,7 +1500,7 @@ impl Owner {
                         epoch: self.epoch,
                     },
                 );
-                t.record_activity(now_ms());
+                t.record_activity(now_ms(), self.auto_settle.after_ms(&t.workspace_id));
                 t.approvals.push(approval);
                 self.commit(&id)?;
             } else {
