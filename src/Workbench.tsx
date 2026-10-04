@@ -102,6 +102,15 @@ export function Workbench() {
       queryFn: () => ipc.workspace({ workspaceId: workspace.id }),
     })),
   });
+  const setSettled = useCallback(async (threadId: string, settled: boolean) => {
+    try {
+      await ipc.setSettled(threadId, settled);
+      return true;
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+      return false;
+    }
+  }, []);
   const repositories = list.filter((w) => w.kind === "repository");
   const scratch = list.find((w) => w.kind === "scratch");
   const workspaceId = selection.workspace ?? repositories[0]?.id ?? scratch?.id;
@@ -321,6 +330,7 @@ export function Workbench() {
                   onNewThread={newThread}
                   onOpenRepository={() => void openRepository()}
                   onOpenProjectSettings={(id) => openSettingsAt("projects", id)}
+                  onSetSettled={setSettled}
                 />
               </div>
               {settingsOpen ? (
