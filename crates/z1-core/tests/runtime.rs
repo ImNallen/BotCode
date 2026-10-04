@@ -822,10 +822,10 @@ fn legacy_snapshots_default_settings() {
         }],
         approvals: vec![],
         diagnostic: None,
-        settlement: Settlement::Kept,
+        placement: Placement::Kept,
     };
     let mut value = serde_json::to_value(thread).unwrap();
-    value.as_object_mut().unwrap().remove("settlement");
+    value.as_object_mut().unwrap().remove("placement");
     value.as_object_mut().unwrap().remove("settings");
     value.as_object_mut().unwrap().remove("checkout");
     value["turns"][0]
@@ -836,7 +836,7 @@ fn legacy_snapshots_default_settings() {
     assert_eq!(restored.settings, SessionSettings::default());
     assert_eq!(restored.checkout, Checkout::Local);
     assert!(restored.turns[0].settings.is_none());
-    assert_eq!(restored.settlement, Settlement::Auto);
+    assert_eq!(restored.placement, Placement::Auto);
 }
 #[tokio::test]
 async fn provider_loss_invalidates_catalog_and_reloads_on_request() {
@@ -1805,7 +1805,7 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
         }],
         approvals: vec![],
         diagnostic: None,
-        settlement: Settlement::Auto,
+        placement: Placement::Auto,
     }
 }
 #[test]
@@ -1851,10 +1851,10 @@ fn auto_settle_waits_for_running_sessions_and_open_approvals_and_respects_overri
         assert_eq!(thread.settled_at(later), settled);
     }
     let mut kept = idle_thread(Some(1_000), Some(2_000));
-    kept.settlement = Settlement::Kept;
+    kept.placement = Placement::Kept;
     assert_eq!(kept.settled_at(later), None);
     let mut settled = idle_thread(Some(1_000), None);
-    settled.settlement = Settlement::Settled { at_ms: 1_500 };
+    settled.placement = Placement::Settled { at_ms: 1_500 };
     settled.session = SessionState::Running;
     assert_eq!(settled.settled_at(1_600), Some(1_500));
 }
@@ -1876,20 +1876,20 @@ async fn manual_settlement_persists_across_reopen_and_unsettling_keeps_threads_a
         .unwrap();
     app.set_settled(other.id.clone(), false).await.unwrap();
     assert_eq!(
-        app.thread(other.id.clone()).await.unwrap().settlement,
-        Settlement::Auto
+        app.thread(other.id.clone()).await.unwrap().placement,
+        Placement::Auto
     );
     let before = now_ms();
     app.set_settled(thread.id.clone(), true).await.unwrap();
-    let Settlement::Settled { at_ms } = app.thread(thread.id.clone()).await.unwrap().settlement
+    let Placement::Settled { at_ms } = app.thread(thread.id.clone()).await.unwrap().placement
     else {
         panic!("settling stores the settled override")
     };
     assert!(at_ms >= before && at_ms <= now_ms());
     app.set_settled(thread.id.clone(), true).await.unwrap();
     assert_eq!(
-        app.thread(thread.id.clone()).await.unwrap().settlement,
-        Settlement::Settled { at_ms }
+        app.thread(thread.id.clone()).await.unwrap().placement,
+        Placement::Settled { at_ms }
     );
     app.shutdown().await.unwrap();
     let app = reopen(&f.config).await;
@@ -1903,8 +1903,8 @@ async fn manual_settlement_persists_across_reopen_and_unsettling_keeps_threads_a
     app.shutdown().await.unwrap();
     let app = reopen(&f.config).await;
     assert_eq!(
-        app.thread(thread.id.clone()).await.unwrap().settlement,
-        Settlement::Kept
+        app.thread(thread.id.clone()).await.unwrap().placement,
+        Placement::Kept
     );
     let view = app
         .workspace_view(thread.workspace_id.clone(), None)
@@ -1926,12 +1926,12 @@ async fn sending_a_prompt_returns_settled_and_kept_threads_to_auto() {
         matches!(t.turns[0].execution, Execution::Completed)
     })
     .await;
-    assert_eq!(done.settlement, Settlement::Auto);
+    assert_eq!(done.placement, Placement::Auto);
     app.set_settled(thread.id.clone(), true).await.unwrap();
     app.set_settled(thread.id.clone(), false).await.unwrap();
     assert_eq!(
-        app.thread(thread.id.clone()).await.unwrap().settlement,
-        Settlement::Kept
+        app.thread(thread.id.clone()).await.unwrap().placement,
+        Placement::Kept
     );
     app.submit(thread.id.clone(), "second".into(), "hello".into())
         .await
@@ -1940,7 +1940,7 @@ async fn sending_a_prompt_returns_settled_and_kept_threads_to_auto() {
         t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
     })
     .await;
-    assert_eq!(done.settlement, Settlement::Auto);
+    assert_eq!(done.placement, Placement::Auto);
     app.shutdown().await.unwrap();
 }
 #[tokio::test]
@@ -1959,8 +1959,8 @@ async fn settling_is_refused_while_an_approval_waits_but_allowed_while_running()
         "Answer the pending approval before settling this thread."
     );
     assert_eq!(
-        app.thread(thread.id.clone()).await.unwrap().settlement,
-        Settlement::Auto
+        app.thread(thread.id.clone()).await.unwrap().placement,
+        Placement::Auto
     );
     for approval in waiting.approvals {
         app.answer_approval(approval.id, ApprovalDecision::Decline)
@@ -2000,11 +2000,11 @@ async fn a_new_approval_returns_a_settled_thread_to_auto() {
     .await;
     app.set_settled(thread.id.clone(), true).await.unwrap();
     assert!(matches!(
-        app.thread(thread.id.clone()).await.unwrap().settlement,
-        Settlement::Settled { .. }
+        app.thread(thread.id.clone()).await.unwrap().placement,
+        Placement::Settled { .. }
     ));
     let waiting = wait(&app, &thread.id, |t| t.approvals.len() == 1).await;
-    assert_eq!(waiting.settlement, Settlement::Auto);
+    assert_eq!(waiting.placement, Placement::Auto);
     let view = app
         .workspace_view(thread.workspace_id.clone(), None)
         .await
@@ -2069,6 +2069,27 @@ async fn stale_threads_read_as_settled_after_reopen_unless_kept() {
     assert_eq!(settled_at_ms(&view, &stale.id), Some(completed));
     assert_eq!(settled_at_ms(&view, &kept.id), None);
     assert_eq!(settled_at_ms(&view, &fresh.id), None);
-    assert_eq!(aged.settlement, Settlement::Auto);
+    assert_eq!(aged.placement, Placement::Auto);
     app.shutdown().await.unwrap();
+}
+#[test]
+fn snapshots_saved_with_settlement_load_it_as_placement() {
+    for (settlement, placement) in [
+        (serde_json::json!({"kind": "auto"}), Placement::Auto),
+        (serde_json::json!({"kind": "kept"}), Placement::Kept),
+        (
+            serde_json::json!({"kind": "settled", "atMs": 1_500}),
+            Placement::Settled { at_ms: 1_500 },
+        ),
+    ] {
+        let mut value = serde_json::to_value(idle_thread(Some(1_000), Some(2_000))).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("placement");
+        object.insert("settlement".into(), settlement.clone());
+        let restored: ThreadSnapshot = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.placement, placement);
+        let saved = serde_json::to_value(&restored).unwrap();
+        assert_eq!(saved["placement"], settlement);
+        assert!(saved.get("settlement").is_none());
+    }
 }

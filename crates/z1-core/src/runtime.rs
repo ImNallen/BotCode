@@ -728,7 +728,7 @@ impl Owner {
                         turns: vec![],
                         approvals: vec![],
                         diagnostic: None,
-                        settlement: Settlement::Auto,
+                        placement: Placement::Auto,
                     };
                     self.store.save(&t)?;
                     self.threads.insert(t.id.clone(), t.clone());
@@ -908,7 +908,7 @@ impl Owner {
             Command::SetSettled(id, settled, reply) => {
                 let result = (|| -> Result<()> {
                     let thread = self.thread(&id)?;
-                    let settlement = match (settled, thread.settled_at(now_ms())) {
+                    let placement = match (settled, thread.settled_at(now_ms())) {
                         (true, Some(_)) | (false, None) => return Ok(()),
                         (true, None) if thread.approval_open() => {
                             return Err(AppError::new(
@@ -916,10 +916,10 @@ impl Owner {
                                 "Answer the pending approval before settling this thread.",
                             ));
                         }
-                        (true, None) => Settlement::Settled { at_ms: now_ms() },
-                        (false, Some(_)) => Settlement::Kept,
+                        (true, None) => Placement::Settled { at_ms: now_ms() },
+                        (false, Some(_)) => Placement::Kept,
                     };
-                    self.threads.get_mut(&id).unwrap().settlement = settlement;
+                    self.threads.get_mut(&id).unwrap().placement = placement;
                     self.commit(&id)
                 })();
                 let _ = reply.send(result);
@@ -1011,7 +1011,7 @@ impl Owner {
         t.turns.push(turn);
         t.session = SessionState::Connecting;
         t.diagnostic = None;
-        t.settlement = Settlement::Auto;
+        t.placement = Placement::Auto;
         if t.turns.len() == 1 {
             t.title = text.chars().take(54).collect()
         }
@@ -1484,7 +1484,7 @@ impl Owner {
                     },
                 );
                 t.approvals.push(approval);
-                t.settlement = Settlement::Auto;
+                t.placement = Placement::Auto;
                 self.commit(&id)?;
             } else {
                 t.diagnostic = Some(format!(

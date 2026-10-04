@@ -306,19 +306,19 @@ pub struct Branches {
 // T3 v0.0.45 sidebarAutoSettleAfterDays default.
 pub const AUTO_SETTLE_AFTER_MS: u64 = 3 * 24 * 60 * 60 * 1000;
 // Ports T3 v0.0.45 settledOverride (orchestration/projector.ts, ThreadSettlementPolicy.ts).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
     rename_all_fields = "camelCase"
 )]
-pub enum Settlement {
+pub enum Placement {
     #[default]
     Auto,
+    Kept,
     Settled {
         at_ms: u64,
     },
-    Kept,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -336,8 +336,8 @@ pub struct ThreadSnapshot {
     pub turns: Vec<Turn>,
     pub approvals: Vec<Approval>,
     pub diagnostic: Option<String>,
-    #[serde(default)]
-    pub settlement: Settlement,
+    #[serde(default, alias = "settlement")]
+    pub placement: Placement,
 }
 impl ThreadSnapshot {
     pub fn root<'a>(&'a self, workspace: &'a Workspace) -> &'a Path {
@@ -368,10 +368,10 @@ impl ThreadSnapshot {
     }
     // Auto-settling is derived on every read, so it needs no timer and survives restarts.
     pub fn settled_at(&self, now: u64) -> Option<u64> {
-        match self.settlement {
-            Settlement::Settled { at_ms } => Some(at_ms),
-            Settlement::Kept => None,
-            Settlement::Auto => {
+        match self.placement {
+            Placement::Settled { at_ms } => Some(at_ms),
+            Placement::Kept => None,
+            Placement::Auto => {
                 let busy = matches!(
                     self.session,
                     SessionState::Connecting | SessionState::Running | SessionState::Interrupting
