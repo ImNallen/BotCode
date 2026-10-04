@@ -68,6 +68,7 @@ enum Command {
     Submit(ThreadId, String, String, Reply<Receipt>),
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
+    SetSettled(ThreadId, bool, Reply<()>),
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
     Shutdown(Reply<()>),
@@ -358,6 +359,9 @@ impl App {
     }
     pub async fn interrupt(&self, id: ThreadId) -> Result<()> {
         self.call(|r| Command::Interrupt(id, r)).await
+    }
+    pub async fn set_settled(&self, id: ThreadId, settled: bool) -> Result<()> {
+        self.call(|r| Command::SetSettled(id, settled, r)).await
     }
     pub async fn ui_state(&self) -> Result<BTreeMap<String, String>> {
         self.call(Command::UiState).await
@@ -724,6 +728,7 @@ impl Owner {
                         turns: vec![],
                         approvals: vec![],
                         diagnostic: None,
+                        settlement: Settlement::Auto,
                     };
                     self.store.save(&t)?;
                     self.threads.insert(t.id.clone(), t.clone());
@@ -900,6 +905,25 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
+            Command::SetSettled(id, settled, reply) => {
+                let result = (|| -> Result<()> {
+                    let thread = self.thread(&id)?;
+                    let settlement = match (settled, thread.settled_at(now_ms())) {
+                        (true, Some(_)) | (false, None) => return Ok(()),
+                        (true, None) if thread.approval_open() => {
+                            return Err(AppError::new(
+                                "settle_blocked",
+                                "Answer the pending approval before settling this thread.",
+                            ));
+                        }
+                        (true, None) => Settlement::Settled { at_ms: now_ms() },
+                        (false, Some(_)) => Settlement::Kept,
+                    };
+                    self.threads.get_mut(&id).unwrap().settlement = settlement;
+                    self.commit(&id)
+                })();
+                let _ = reply.send(result);
+            }
             Command::UiState(reply) => {
                 let _ = reply.send(self.store.ui_state());
             }
@@ -987,6 +1011,7 @@ impl Owner {
         t.turns.push(turn);
         t.session = SessionState::Connecting;
         t.diagnostic = None;
+        t.settlement = Settlement::Auto;
         if t.turns.len() == 1 {
             t.title = text.chars().take(54).collect()
         }
@@ -1459,6 +1484,7 @@ impl Owner {
                     },
                 );
                 t.approvals.push(approval);
+                t.settlement = Settlement::Auto;
                 self.commit(&id)?;
             } else {
                 t.diagnostic = Some(format!(

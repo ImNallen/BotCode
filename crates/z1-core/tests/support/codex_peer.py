@@ -64,6 +64,10 @@ for line in sys.stdin:
                     emit({'id': callback, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'same-parent-item', 'command': None if prompt == 'missing-command' else 'echo ' + callback, 'cwd': '/fixture', 'reason': 'Fixture approval'}})
         elif prompt == 'hold':
             pass
+        elif prompt == 'late-approval':
+            time.sleep(0.5)
+            callbacks = {'late-route'}
+            emit({'id': 'late-route', 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'late-item', 'command': 'echo late', 'cwd': '/fixture', 'reason': 'Fixture approval'}})
         elif prompt == 'descendant':
             child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'])
             pid_file = root / 'descendant.pid.tmp'

@@ -191,3 +191,23 @@ A second native pass on 2026-10-04 used a fresh data directory with two reposito
 - A new alpha-app draft opened in **New worktree**, and a new beta-service draft opened in **Current checkout**.
 - The sidebar filter's gear for beta-service opened the Project page with beta-service picked. Removing it named "1 thread", deleted the project and its thread from SQLite, returned to the conversation, and reset the sidebar filter to all projects.
 - After a full restart, the alpha-app draft still opened in **New worktree**, and Settings from the footer opened unscoped.
+
+## Settled threads
+
+Verified on 2026-10-04 against T3 Code v0.0.45. The core suite passed 45 tests, 42 of them runtime tests. New tests cover a settle and un-settle round trip across reopen, auto-settling at exactly 3 idle days and not a millisecond before, `kept` suppressing auto-settle, a prompt or a new approval returning a thread to `auto`, `settle_blocked` while an approval waits, settling a running thread, and snapshots saved without `settlement` loading as `auto`. Clippy, rustfmt, `pnpm typecheck`, `pnpm build` and Prettier passed.
+
+The native debug bundle used the temporary identifier `dev.z1.code.settledverify`, an isolated `Z1_DATA_DIR` and a disposable one-commit repository. Seventeen threads were written into the SQLite `threads` table before launch: three recent ones, one 4 days old, one `settled`, one `kept` and 10 days old, and eleven between 5 and 15 days old. At 1100×780:
+
+- The active list showed the three recent threads and the 10-day-old `kept` thread. The shelf sat at the bottom of the sidebar, collapsed, and read "Settled (13)".
+- Expanding showed slim rows with dimmed badges, newest first: "Ship release notes" at 5h, the 4-day-old thread at 1d, and the rest at 2d and older. Ten rows showed, then **Show 3 more**, which revealed the last three. This run stamped an auto-settled thread 3 days after its last activity. The stamp now uses the last activity itself, as T3 does, so that thread reads 4d. The runtime test covers the new stamp, and the native shelf has not been observed since that change.
+- Hovering a slim row restored its badge and replaced the age with the Un-settle button. Hovering a card replaced its time with **Settle**.
+- **Settle** on a card that was not open moved it into the shelf, raised the count to 14, and kept the draft open. SQLite held `{"kind":"settled","atMs":...}`.
+- **Settle** on the open "Fix login redirect" opened the next active thread. Settling the only thread matched by a search opened a new draft in its project.
+- Command+Shift+S on the open thread moved it to the collapsed shelf, which then showed only its row at "now". Pressing it again returned the thread to the active list, and SQLite held `{"kind":"kept"}`.
+- **Un-settle** on a slim row moved the thread back to the active list and stored `kept`.
+- With the shelf collapsed, searching "chore 1" showed the three matching settled rows. Clearing the search collapsed the shelf again.
+- After quitting and relaunching, the shelf was still expanded, starting again at ten rows, and every settled and kept thread kept its place. SQLite held `z1:sidebar:settled-expanded` as `true` in `ui_state`. The thread seeded without `settlement` was saved back as `auto`.
+- With real Codex waiting on a command approval, the card showed **Approval** and no Settle button on hover. Command+Shift+S showed the error banner "Answer the pending approval before settling this thread." and the thread stayed active.
+- Keyboard shortcuts listed **Settle thread** as ⇧⌘S under Threads.
+
+A thread that reaches 3 idle days while Z1 is open moves to the shelf at the next sidebar refresh, such as a window focus or a change to the thread. The run did not observe that transition live.

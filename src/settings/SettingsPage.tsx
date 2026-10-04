@@ -10,7 +10,19 @@ import {
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
-import { newWithoutProjectShortcut } from "../lib/shortcuts";
+import {
+  newWithoutProjectShortcut,
+  settleThreadShortcut,
+} from "../lib/shortcuts";
+
+const modifier = /Mac/.test(navigator.userAgent) ? "⌘" : "Ctrl+";
+const shortcuts: Record<string, string | undefined> = {
+  "toggle-sidebar": `${modifier}B`,
+  "new-without-project": newWithoutProjectShortcut,
+  "open-settings": `${modifier},`,
+  "close-settings": "Escape",
+  "settle-thread": settleThreadShortcut,
+};
 import { cn } from "../lib/cn";
 import { NewThreadRow } from "./NewThreadSettings";
 import { usePreferences } from "./preferences";
@@ -310,7 +322,6 @@ export function SettingsPage() {
   const selection = useSearch({ from: "__root__" });
   const { preferences, update, reset, persistenceError } = usePreferences();
   const { scope, workspaces } = useSettingsScope();
-  const modifier = /Mac/.test(navigator.userAgent) ? "⌘" : "Ctrl+";
   useEffect(() => {
     const target = document.getElementById(
       hash || `section-${category.section}`,
@@ -362,21 +373,11 @@ export function SettingsPage() {
           Restore defaults
         </Button>
       );
-    if (
-      id === "toggle-sidebar" ||
-      id === "new-without-project" ||
-      id === "open-settings" ||
-      id === "close-settings"
-    )
+    const shortcut = shortcuts[id];
+    if (shortcut)
       return (
         <kbd className="rounded-md border border-border bg-muted px-2 py-1 font-mono text-xs">
-          {id === "toggle-sidebar"
-            ? `${modifier}B`
-            : id === "new-without-project"
-              ? newWithoutProjectShortcut
-              : id === "open-settings"
-                ? `${modifier},`
-                : "Escape"}
+          {shortcut}
         </kbd>
       );
     return null;

@@ -1,3 +1,4 @@
-export const newWithoutProjectShortcut = /Mac/.test(navigator.userAgent)
-  ? "⌥⌘N"
-  : "Ctrl+Alt+N";
+const mac = /Mac/.test(navigator.userAgent);
+
+export const newWithoutProjectShortcut = mac ? "⌥⌘N" : "Ctrl+Alt+N";
+export const settleThreadShortcut = mac ? "⇧⌘S" : "Ctrl+Shift+S";

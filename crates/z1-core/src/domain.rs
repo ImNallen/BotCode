@@ -303,6 +303,23 @@ pub struct Branches {
     pub branches: Vec<Branch>,
     pub origin: bool,
 }
+// T3 v0.0.45 sidebarAutoSettleAfterDays default.
+pub const AUTO_SETTLE_AFTER_MS: u64 = 3 * 24 * 60 * 60 * 1000;
+// Ports T3 v0.0.45 settledOverride (orchestration/projector.ts, ThreadSettlementPolicy.ts).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum Settlement {
+    #[default]
+    Auto,
+    Settled {
+        at_ms: u64,
+    },
+    Kept,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSnapshot {
@@ -319,6 +336,8 @@ pub struct ThreadSnapshot {
     pub turns: Vec<Turn>,
     pub approvals: Vec<Approval>,
     pub diagnostic: Option<String>,
+    #[serde(default)]
+    pub settlement: Settlement,
 }
 impl ThreadSnapshot {
     pub fn root<'a>(&'a self, workspace: &'a Workspace) -> &'a Path {
@@ -339,6 +358,37 @@ impl ThreadSnapshot {
             }
         }
     }
+    pub fn approval_open(&self) -> bool {
+        self.approvals.iter().any(|approval| {
+            matches!(
+                approval.state,
+                ApprovalState::Pending | ApprovalState::Answering
+            )
+        })
+    }
+    // Auto-settling is derived on every read, so it needs no timer and survives restarts.
+    pub fn settled_at(&self, now: u64) -> Option<u64> {
+        match self.settlement {
+            Settlement::Settled { at_ms } => Some(at_ms),
+            Settlement::Kept => None,
+            Settlement::Auto => {
+                let busy = matches!(
+                    self.session,
+                    SessionState::Connecting | SessionState::Running | SessionState::Interrupting
+                );
+                let last_activity = self
+                    .turns
+                    .iter()
+                    .flat_map(|turn| [turn.started_at_ms, turn.completed_at_ms])
+                    .flatten()
+                    .max()?;
+                (!busy
+                    && !self.approval_open()
+                    && now.saturating_sub(last_activity) >= AUTO_SETTLE_AFTER_MS)
+                    .then_some(last_activity)
+            }
+        }
+    }
     pub fn summary(&self) -> ThreadSummary {
         ThreadSummary {
             id: self.id.clone(),
@@ -350,6 +400,7 @@ impl ThreadSnapshot {
                 .approvals
                 .iter()
                 .any(|approval| approval.state == ApprovalState::Pending),
+            settled_at_ms: self.settled_at(now_ms()),
         }
     }
 }
@@ -362,6 +413,7 @@ pub struct ThreadSummary {
     pub checkout: Checkout,
     pub updated_at_ms: Option<u64>,
     pub awaiting_approval: bool,
+    pub settled_at_ms: Option<u64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

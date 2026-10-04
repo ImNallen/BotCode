@@ -160,6 +160,7 @@ const threadSummary = z.object({
   checkout,
   updatedAtMs: z.number().nullable(),
   awaitingApproval: z.boolean(),
+  settledAtMs: z.number().nullable(),
 });
 const workspaceView = z.object({
   workspace,
@@ -284,6 +285,8 @@ export const ipc = {
   approval: (approvalId: string, decision: ApprovalDecision) =>
     call("answer_approval", { approvalId, decision }, z.null()),
   interrupt: (threadId: string) => call("interrupt", { threadId }, z.null()),
+  setSettled: (threadId: string, settled: boolean) =>
+    call("set_settled", { threadId, settled }, z.null()),
   uiState: () => call("ui_state", {}, z.record(z.string(), z.string())),
   setUiState: (key: string, value: string | null) =>
     call("set_ui_state", { key, value }, z.null()),
