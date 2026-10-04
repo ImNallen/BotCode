@@ -211,3 +211,27 @@ The native debug bundle used the temporary identifier `dev.z1.code.settledverify
 - Keyboard shortcuts listed **Settle thread** as ⇧⌘S under Threads.
 
 A thread that reaches 3 idle days while Z1 is open moves to the shelf at the next sidebar refresh, such as a window focus or a change to the thread. The run did not observe that transition live.
+
+## Pinned and snoozed threads
+
+Verified on 2026-10-04 against T3 Code v0.0.45. The core suite passed 61 tests, 58 of them runtime tests. New tests cover each pin, unpin, settle, un-settle, snooze and wake transition with fixed times. They cover the refusals of a snooze with an open approval or a wake time that is not in the future, and a repeated snooze to the same time keeping the first snooze time unless the thread raised its hand. They cover a raised hand from a newer completed or failed turn or an approval, pinned threads never auto-settling, snoozed threads auto-settling only after they wake, a prompt clearing the snooze but keeping the pin, a new approval returning `kept` to `auto` while keeping a pin, and snapshots saved with `settlement` loading it as `placement`. Clippy, rustfmt, `pnpm typecheck`, `pnpm build` and Prettier passed.
+
+The native debug bundle used the temporary identifier `dev.z1.code.pinverify` through `tauri build --config`, so `tauri.conf.json` never changed. It ran with an isolated `Z1_DATA_DIR` and a disposable one-commit repository. Thirteen threads were written into the SQLite `threads` table before launch. They included one pinned thread, one snooze ending 90 seconds after seeding, a pinned thread with a snooze ending after 150 seconds, a snooze ending after 20 hours, a 4-day-old idle thread, and a 10-day-old thread saved with the old `settlement` field as `kept`. At 1100×780:
+
+- The pinned thread sat at the top as a card with a pin icon and no header. The shelves read "Snoozed (3)" and "Settled (5)". The `kept` thread saved under `settlement` showed in the active list.
+- Expanded, the Snoozed shelf listed the three threads soonest first with "2m", "3m" and "20h" in the info color. The pinned one showed its pin icon. Hovering a row showed the **Wake thread now** button.
+- With the app left open, the 90-second snooze moved into the active list, and the 150-second one moved into Pinned, each without a reload.
+- **Wake thread now** moved the 20-hour thread to the active list. SQLite then held no `snooze` for it.
+- Right-clicking a card opened the menu at the pointer with Pin thread, Settle thread and Snooze. Hovering Snooze opened the presets. On a Sunday these were In 1 hour, In 3 hours, This evening and Tomorrow, because Next week falls on the same Monday morning. **Pin thread** moved the card to the top of Pinned and stored `{"kind":"pinned","atMs":...}`.
+- **Settle** on a pinned card moved it to the Settled shelf without a pin and stored `settled`. **Settle thread** from the menu on the open pinned thread did the same and opened the next card.
+- The pin icon on a pinned card unpinned it and stored `auto`, keeping its expired `snooze` value.
+- Command+Shift+P on the open thread pinned it in place without navigating. Keyboard shortcuts listed **Pin thread** as ⇧⌘P under Threads.
+- On the open pinned thread, hovering showed the pin, the clock and **Settle**. The clock opened the presets with their times. **In 1 hour** opened the next card and added the thread to the Snoozed shelf at "60m" with its pin icon. Collapsed, the shelf read "Snoozed (1)". SQLite kept `pinned` and held `{"untilMs":...,"atMs":...}`.
+- **In 3 hours** from the menu's Snooze submenu on another thread raised the count to "Snoozed (2)". **Wake thread** from the menu on a snoozed row returned it to the active list.
+- The Settled shelf showed the 4-day-old idle thread at "4d".
+- After quitting and relaunching, both shelves were still expanded and SQLite held `z1:sidebar:snoozed-expanded` as `true`. Every thread was saved back with `placement`, and none kept a `settlement` field.
+- With a snoozed thread open, collapsing the shelf left only that thread's row under "Snoozed (1)".
+
+A second run after review fixes used a fresh seed. Escape on the thread menu returned focus to the right-clicked row, which showed its focus ring. A right-click inside the open snooze presets did not open the thread menu. The debug build's own Reload and Inspect Element menu appeared instead. The 90-second snooze again moved into the active list without a reload, and the shelf count dropped to "Snoozed (2)".
+
+The run did not observe the hidden Snooze button while an approval waits, or a raised hand from a turn that finished after the snooze. The runtime tests cover the snooze refusal and the raised hand, but not the hidden button.
