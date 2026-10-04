@@ -1,12 +1,23 @@
 // Layout and classes follow pingdotgg/t3code v0.0.45 components/Sidebar.tsx,
 // sidebar/SidebarChrome.tsx, sidebar/SidebarThreadHeader.tsx and ThreadStatusIndicators.tsx (MIT).
-// The Settled shelf follows Sidebar.tsx SidebarSectionHeader, slim rows, settled paging and
+// The Pinned section, Snoozed shelf and Settled shelf follow Sidebar.tsx classification,
+// SidebarSectionHeader, SnoozeMenuButton, slim rows, settled paging, the snooze wake timer and
 // planForwardNavigation, and Sidebar.logic.ts shouldNavigateAfterThreadPark.
-import { useEffect, useRef, useState, type ComponentProps } from "react";
 import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+} from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  AlarmClockOffIcon,
   CheckIcon,
   ChevronDownIcon,
   CircleDashedIcon,
+  ClockIcon,
+  PinIcon,
   ShieldQuestionIcon,
   FolderGit2Icon,
   FolderIcon,
@@ -31,6 +42,8 @@ import { OpenAI } from "./ui/icons";
 import { Button } from "./ui/controls";
 import { ProjectScopeMenu } from "./ProjectScopeMenu";
 import { storage } from "./lib/storage";
+import { Menu, MenuItem, MenuShortcut } from "./ui/menu";
+import { resolveSnoozePresets, snoozeWakeLabel } from "./lib/snooze";
 
 type Row = {
   workspace: Workspace;
@@ -39,23 +52,30 @@ type Row = {
 };
 
 const SCOPE_KEY = "z1:sidebar-project-scope";
+const SNOOZED_EXPANDED_KEY = "z1:sidebar:snoozed-expanded";
 const SETTLED_EXPANDED_KEY = "z1:sidebar:settled-expanded";
 const SETTLED_TAIL_INITIAL_COUNT = 10;
 const SETTLED_TAIL_PAGE_COUNT = 25;
 
 type SidebarSections = {
+  pinned: Row[];
   active: Row[];
+  snoozed: Row[];
+  snoozedTotal: number;
   settled: Row[];
   settledTotal: number;
   hiddenCount: number;
 };
 
-// Search shows every matching settled row, so a query never hides a result.
+// A thread is Snoozed, then Settled, then Pinned, then Active, in T3's order.
+// Search shows every matching shelf row, so a query never hides a result.
 function partitionSidebarRows({
   rows,
   query,
   scopeId,
   openThreadId,
+  now,
+  snoozedExpanded,
   settledExpanded,
   settledVisibleCount,
 }: {
@@ -63,35 +83,58 @@ function partitionSidebarRows({
   query: string;
   scopeId: string | undefined;
   openThreadId: string | undefined;
+  now: number;
+  snoozedExpanded: boolean;
   settledExpanded: boolean;
   settledVisibleCount: number;
 }): SidebarSections {
   const needle = query.trim().toLowerCase();
-  const matching = rows.filter(
-    (row) =>
-      (!scopeId || row.workspace.id === scopeId) &&
-      (!needle || row.thread.title.toLowerCase().includes(needle)),
+  const pinned: Row[] = [];
+  const active: Row[] = [];
+  const snoozed: Row[] = [];
+  const settled: Row[] = [];
+  for (const row of rows) {
+    if (scopeId && row.workspace.id !== scopeId) continue;
+    if (needle && !row.thread.title.toLowerCase().includes(needle)) continue;
+    const { snoozedUntilMs, settledAtMs, pinnedAtMs } = row.thread;
+    (snoozedUntilMs !== null && snoozedUntilMs > now
+      ? snoozed
+      : settledAtMs !== null
+        ? settled
+        : pinnedAtMs !== null
+          ? pinned
+          : active
+    ).push(row);
+  }
+  pinned.sort(
+    (a, b) => (b.thread.pinnedAtMs ?? 0) - (a.thread.pinnedAtMs ?? 0),
   );
-  const active = matching
-    .filter((row) => row.thread.settledAtMs === null)
-    .sort((a, b) => (b.thread.updatedAtMs ?? 0) - (a.thread.updatedAtMs ?? 0));
-  const settled = matching
-    .filter((row) => row.thread.settledAtMs !== null)
-    .sort((a, b) => (b.thread.settledAtMs ?? 0) - (a.thread.settledAtMs ?? 0));
+  active.sort(
+    (a, b) => (b.thread.updatedAtMs ?? 0) - (a.thread.updatedAtMs ?? 0),
+  );
+  snoozed.sort(
+    (a, b) => (a.thread.snoozedUntilMs ?? 0) - (b.thread.snoozedUntilMs ?? 0),
+  );
+  settled.sort(
+    (a, b) => (b.thread.settledAtMs ?? 0) - (a.thread.settledAtMs ?? 0),
+  );
+  const totals = {
+    snoozedTotal: snoozed.length,
+    settledTotal: settled.length,
+  };
   if (needle)
-    return { active, settled, settledTotal: settled.length, hiddenCount: 0 };
-  const page = settled.slice(0, settledVisibleCount);
+    return { pinned, active, snoozed, settled, ...totals, hiddenCount: 0 };
   // The open thread never hides under Show more or a collapsed shelf.
-  const open = settled
-    .slice(settledVisibleCount)
-    .find((row) => row.thread.id === openThreadId);
+  const isOpen = (row: Row) => row.thread.id === openThreadId;
+  const page = settled.slice(0, settledVisibleCount);
+  const open = settled.slice(settledVisibleCount).find(isOpen);
   if (open) page.push(open);
   return {
+    pinned,
     active,
-    settled: settledExpanded
-      ? page
-      : page.filter((row) => row.thread.id === openThreadId),
-    settledTotal: settled.length,
+    snoozed: snoozedExpanded ? snoozed : snoozed.filter(isOpen),
+    settled: settledExpanded ? page : page.filter(isOpen),
+    ...totals,
     hiddenCount: settled.length - page.length,
   };
 }
@@ -139,6 +182,9 @@ export function Sidebar({
   const scope = workspaces.find((workspace) => workspace.id === scopeId);
   const searchField = useRef<HTMLLabelElement>(null);
   const scopeTrigger = useRef<HTMLElement | null>(null);
+  const [snoozedExpanded, setSnoozedExpanded] = useState(
+    () => storage.getItem(SNOOZED_EXPANDED_KEY) === "true",
+  );
   const [settledExpanded, setSettledExpanded] = useState(
     () => storage.getItem(SETTLED_EXPANDED_KEY) === "true",
   );
@@ -168,27 +214,74 @@ export function Sidebar({
       : [],
   );
   const searching = query.trim() !== "";
-  const { active, settled, settledTotal, hiddenCount } = partitionSidebarRows({
+  // Wake times are compared with the real clock on every render. The tick
+  // re-renders at the next wake and once a minute for the wake labels.
+  const [, setTick] = useState(0);
+  const now = Date.now();
+  const {
+    pinned,
+    active,
+    snoozed,
+    snoozedTotal,
+    settled,
+    settledTotal,
+    hiddenCount,
+  } = partitionSidebarRows({
     rows,
     query,
     scopeId: scope?.id,
     openThreadId: threadId,
+    now,
+    snoozedExpanded,
     settledExpanded,
     settledVisibleCount,
   });
-  const shelfExpanded = settledExpanded || searching;
+  const nextWakeMs = Math.min(
+    ...rows.flatMap(({ thread }) =>
+      thread.snoozedUntilMs !== null && thread.snoozedUntilMs > now
+        ? [thread.snoozedUntilMs]
+        : [],
+    ),
+  );
+  const client = useQueryClient();
+  useEffect(() => {
+    if (nextWakeMs === Infinity) return;
+    // setTimeout delays are signed 32-bit, so a far wake re-arms instead of firing at once.
+    const delay = Math.min(nextWakeMs - Date.now() + 50, 2_147_483_647);
+    const id = window.setTimeout(() => {
+      setTick((tick) => tick + 1);
+      // The core decides auto-settling, so a woken idle thread needs a fresh summary.
+      void client.invalidateQueries({ queryKey: ["workspace"] });
+    }, delay);
+    return () => window.clearTimeout(id);
+  }, [nextWakeMs, client]);
+  const wakeLabelsShown = snoozed.length > 0;
+  useEffect(() => {
+    if (!wakeLabelsShown) return;
+    const id = window.setInterval(() => setTick((tick) => tick + 1), 60_000);
+    return () => window.clearInterval(id);
+  }, [wakeLabelsShown]);
+  const snoozedShelfExpanded = snoozedExpanded || searching;
+  const settledShelfExpanded = settledExpanded || searching;
+  const toggleSnoozed = () => {
+    const next = !snoozedExpanded;
+    setSnoozedExpanded(next);
+    void storage.setItem(SNOOZED_EXPANDED_KEY, String(next));
+  };
   const toggleSettled = () => {
     const next = !settledExpanded;
     setSettledExpanded(next);
     void storage.setItem(SETTLED_EXPANDED_KEY, String(next));
   };
-  // Settling the open thread moves forward to the next active card, wrapping,
-  // or to a new draft in its project. The plan is taken before the list changes.
-  const settle = async (row: Row) => {
-    const index = active.indexOf(row);
+  const cards = [...pinned, ...active];
+  // Settling or snoozing the open thread moves forward to the next card,
+  // wrapping, or to a new draft in its project. The plan is taken before the
+  // list changes.
+  const park = async (row: Row, action: Arrange) => {
+    const index = cards.findIndex((card) => card.thread.id === row.thread.id);
     const next =
-      index !== -1 && active.length > 1
-        ? active[(index + 1) % active.length]
+      index !== -1 && cards.length > 1
+        ? cards[(index + 1) % cards.length]
         : undefined;
     const forward =
       row.thread.id !== threadId
@@ -196,7 +289,7 @@ export function Sidebar({
         : next
           ? () => onSelectThread(next.workspace.id, next.thread.id)
           : () => onNewThread(row.workspace.id);
-    if (!(await onArrange(row.thread.id, { kind: "settle" }))) return;
+    if (!(await onArrange(row.thread.id, action))) return;
     if (openThread.current === row.thread.id) forward?.();
   };
   return (
@@ -298,9 +391,9 @@ export function Sidebar({
       <div className="h-auto min-h-0 flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div className="flex w-full min-w-0 flex-col [overflow-anchor:none] min-h-full">
           <div className="relative flex w-full min-w-0 flex-col p-[var(--sidebar-content-inset)] pt-0 flex-1">
-            {active.length + settledTotal > 0 ? (
+            {cards.length + snoozedTotal + settledTotal > 0 ? (
               <ul className="relative flex flex-col gap-px flex-1">
-                {active.map((row) => (
+                {cards.map((row) => (
                   <ThreadRow
                     key={row.thread.id}
                     row={row}
@@ -308,43 +401,80 @@ export function Sidebar({
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
-                    onSettle={() => void settle(row)}
+                    onSettle={() => void park(row, { kind: "settle" })}
+                    onSnooze={(untilMs) =>
+                      void park(row, { kind: "snooze", untilMs })
+                    }
+                    onUnpin={() =>
+                      void onArrange(row.thread.id, { kind: "unpin" })
+                    }
                   />
                 ))}
-                <li className="list-none mx-0.5 h-8 mt-auto">
-                  <button
-                    type="button"
-                    onClick={toggleSettled}
-                    aria-expanded={shelfExpanded}
+                {snoozedTotal > 0 ? (
+                  <SectionHeader
+                    snoozed
+                    className="mt-auto"
+                    label={
+                      snoozedShelfExpanded
+                        ? "Snoozed"
+                        : `Snoozed (${snoozedTotal})`
+                    }
+                    expanded={snoozedShelfExpanded}
                     disabled={searching}
-                    className="flex h-full w-full items-center gap-2 px-2 text-left text-xs font-medium text-sidebar-muted-foreground/60 cursor-pointer disabled:cursor-default"
-                  >
-                    <span className="shrink-0">
-                      {shelfExpanded ? "Settled" : `Settled (${settledTotal})`}
-                    </span>
-                    <span
-                      aria-hidden
-                      className="h-px min-w-2 flex-1 bg-sidebar-border/60"
-                    />
-                    <ChevronDownIcon
-                      aria-hidden
-                      className={cn(
-                        "size-3 shrink-0 transition-transform",
-                        shelfExpanded && "rotate-180",
-                      )}
-                    />
-                  </button>
-                </li>
-                {settled.map((row) => (
-                  <SettledRow
+                    onToggle={toggleSnoozed}
+                  />
+                ) : null}
+                {snoozed.map((row) => (
+                  <SlimRow
                     key={row.thread.id}
                     row={row}
+                    action="unsnooze"
+                    label={snoozeWakeLabel(
+                      row.thread.snoozedUntilMs ?? now,
+                      now,
+                    )}
                     active={row.thread.id === threadId}
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
-                    onUnsettle={() =>
+                    onAction={() =>
+                      void onArrange(row.thread.id, { kind: "wake" })
+                    }
+                    onUnpin={() =>
+                      void onArrange(row.thread.id, { kind: "unpin" })
+                    }
+                  />
+                ))}
+                <SectionHeader
+                  className={cn(snoozedTotal === 0 && "mt-auto")}
+                  label={
+                    settledShelfExpanded
+                      ? "Settled"
+                      : `Settled (${settledTotal})`
+                  }
+                  expanded={settledShelfExpanded}
+                  disabled={searching}
+                  onToggle={toggleSettled}
+                />
+                {settled.map((row) => (
+                  <SlimRow
+                    key={row.thread.id}
+                    row={row}
+                    action="unsettle"
+                    label={
+                      row.thread.settledAtMs === null
+                        ? ""
+                        : formatSidebarTime(row.thread.settledAtMs)
+                    }
+                    active={row.thread.id === threadId}
+                    onSelect={() =>
+                      onSelectThread(row.workspace.id, row.thread.id)
+                    }
+                    onAction={() =>
                       void onArrange(row.thread.id, { kind: "unsettle" })
+                    }
+                    onUnpin={() =>
+                      void onArrange(row.thread.id, { kind: "unpin" })
                     }
                   />
                 ))}
@@ -415,21 +545,135 @@ function rowAction(action: () => void) {
   };
 }
 
+function SectionHeader({
+  label,
+  snoozed = false,
+  className,
+  expanded,
+  disabled,
+  onToggle,
+}: {
+  label: string;
+  snoozed?: boolean;
+  className?: string;
+  expanded: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <li className={cn("list-none mx-0.5 h-8", className)}>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        disabled={disabled}
+        className={cn(
+          "flex h-full w-full items-center gap-2 px-2 text-left text-xs font-medium",
+          snoozed ? "text-info-foreground" : "text-sidebar-muted-foreground/60",
+          "cursor-pointer disabled:cursor-default",
+        )}
+      >
+        <span className="shrink-0">{label}</span>
+        <span
+          aria-hidden
+          className={cn(
+            "h-px min-w-2 flex-1",
+            snoozed ? "bg-info/20" : "bg-sidebar-border/60",
+          )}
+        />
+        <ChevronDownIcon
+          aria-hidden
+          className={cn(
+            "size-3 shrink-0 transition-transform",
+            expanded && "rotate-180",
+          )}
+        />
+      </button>
+    </li>
+  );
+}
+
+function PinIndicator({ onUnpin }: { onUnpin: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label="Unpin thread"
+      title="Unpin thread"
+      onClick={rowAction(onUnpin)}
+      className="inline-flex cursor-pointer items-center rounded-sm text-muted-foreground/65 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <PinIcon aria-hidden className="size-3 shrink-0" />
+    </button>
+  );
+}
+
+// Clicks inside the portaled popup still bubble to the row through React,
+// so the wrapper keeps them from selecting the thread.
+function SnoozeMenuButton({
+  open,
+  onOpenChange,
+  onSnooze,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSnooze: (untilMs: number) => void;
+}) {
+  // Presets resolve when the menu opens, so "In 1 hour" counts from the click.
+  const presets = useMemo(
+    () => (open ? resolveSnoozePresets(new Date()) : []),
+    [open],
+  );
+  return (
+    <span className="flex" onClick={(event) => event.stopPropagation()}>
+      <Menu
+        side="bottom"
+        align="end"
+        open={open}
+        onOpenChange={onOpenChange}
+        trigger={(props) => (
+          <button
+            type="button"
+            aria-label="Snooze thread"
+            title="Snooze thread"
+            className="inline-flex h-full cursor-pointer items-center gap-0.5 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
+            {...props}
+          >
+            <ClockIcon className="size-3" />
+          </button>
+        )}
+      >
+        {presets.map((preset) => (
+          <MenuItem key={preset.id} onClick={() => onSnooze(preset.untilMs)}>
+            {preset.label}
+            <MenuShortcut>{preset.whenLabel}</MenuShortcut>
+          </MenuItem>
+        ))}
+      </Menu>
+    </span>
+  );
+}
+
 function ThreadRow({
   row,
   active,
   onSelect,
   onSettle,
+  onSnooze,
+  onUnpin,
 }: {
   row: Row;
   active: boolean;
   onSelect: () => void;
   onSettle: () => void;
+  onSnooze: (untilMs: number) => void;
+  onUnpin: () => void;
 }) {
   const isWorking = workingSessions.has(row.thread.session.kind);
   const recede = !active;
-  // Settling is refused while an approval waits, so the button stays hidden.
+  // Settling and snoozing are refused while an approval waits, so the buttons stay hidden.
   const canSettle = !row.thread.awaitingApproval;
+  const [snoozeOpenRaw, setSnoozeOpen] = useState(false);
+  const snoozeOpen = snoozeOpenRaw && canSettle;
   return (
     <li
       data-thread-item
@@ -468,6 +712,9 @@ function ThreadRow({
             >
               {row.workspace.label}
             </span>
+            {row.thread.pinnedAtMs !== null ? (
+              <PinIndicator onUnpin={onUnpin} />
+            ) : null}
             <span className="group/sidebar-status-slot relative ml-auto flex h-5 min-w-8 shrink-0 items-stretch justify-end text-xs">
               <span
                 className={cn(
@@ -475,6 +722,8 @@ function ThreadRow({
                   canSettle &&
                     "group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-hover/sidebar-row:absolute group-hover/sidebar-row:right-0 group-hover/sidebar-row:opacity-0",
                   "flex items-center self-center justify-self-end tabular-nums text-secondary-label transition-opacity",
+                  snoozeOpen &&
+                    "pointer-events-none absolute right-0 opacity-0",
                 )}
               >
                 {row.thread.awaitingApproval ? (
@@ -495,7 +744,17 @@ function ThreadRow({
                 ) : null}
               </span>
               {canSettle ? (
-                <span className="pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100 group-hover/sidebar-row:pointer-events-auto group-hover/sidebar-row:static group-hover/sidebar-row:opacity-100">
+                <span
+                  className={cn(
+                    "pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100 group-hover/sidebar-row:pointer-events-auto group-hover/sidebar-row:static group-hover/sidebar-row:opacity-100",
+                    snoozeOpen && "pointer-events-auto static opacity-100",
+                  )}
+                >
+                  <SnoozeMenuButton
+                    open={snoozeOpen}
+                    onOpenChange={setSnoozeOpen}
+                    onSnooze={onSnooze}
+                  />
                   <button
                     type="button"
                     aria-label="Settle thread"
@@ -553,18 +812,25 @@ function ThreadRow({
   );
 }
 
-function SettledRow({
+function SlimRow({
   row,
+  action,
+  label,
   active,
   onSelect,
-  onUnsettle,
+  onAction,
+  onUnpin,
 }: {
   row: Row;
+  action: "unsettle" | "unsnooze";
+  label: string;
   active: boolean;
   onSelect: () => void;
-  onUnsettle: () => void;
+  onAction: () => void;
+  onUnpin: () => void;
 }) {
   const recede = !active;
+  const unsettle = action === "unsettle";
   return (
     <li
       data-thread-item
@@ -578,7 +844,8 @@ function SettledRow({
         onKeyDown={rowKeyDown(onSelect)}
         className={cn(
           "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-          "[&:not(:hover):not(:focus-within)_*]:text-secondary-label/70",
+          unsettle &&
+            "[&:not(:hover):not(:focus-within)_*]:text-secondary-label/70",
           active
             ? "bg-sidebar-row-active text-sidebar-foreground"
             : "text-sidebar-muted-foreground/75 hover:bg-sidebar-row-hover hover:text-sidebar-foreground",
@@ -586,7 +853,13 @@ function SettledRow({
         )}
       >
         <span className="sr-only">{row.thread.title}</span>
-        <span className="shrink-0 transition-opacity opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0">
+        <span
+          className={cn(
+            "shrink-0 transition-opacity",
+            (recede || unsettle) &&
+              "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
+          )}
+        >
           <WorkspaceBadge workspace={row.workspace} className="size-4" />
         </span>
         <span
@@ -600,22 +873,32 @@ function SettledRow({
         >
           {row.thread.title}
         </span>
+        {row.thread.pinnedAtMs !== null ? (
+          <PinIndicator onUnpin={onUnpin} />
+        ) : null}
         <span className="relative ml-auto flex h-6 min-w-8 shrink-0 items-center justify-end">
           <span className="inline-flex justify-end tabular-nums text-secondary-label transition-opacity group-hover/sidebar-row:opacity-0">
-            <span className="text-xs">
-              {row.thread.settledAtMs === null
-                ? ""
-                : formatSidebarTime(row.thread.settledAtMs)}
+            <span
+              className={cn(
+                "text-xs",
+                !unsettle && "text-info-foreground tabular-nums",
+              )}
+            >
+              {label}
             </span>
           </span>
           <button
             type="button"
-            aria-label="Un-settle thread"
-            title="Un-settle thread"
-            onClick={rowAction(onUnsettle)}
+            aria-label={unsettle ? "Un-settle thread" : "Wake thread now"}
+            title={unsettle ? "Un-settle thread" : "Wake thread now"}
+            onClick={rowAction(onAction)}
             className="pointer-events-none absolute inset-y-0 right-0 -mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/sidebar-row:pointer-events-auto group-hover/sidebar-row:opacity-100"
           >
-            <Undo2Icon className="mb-px size-3.5" />
+            {unsettle ? (
+              <Undo2Icon className="mb-px size-3.5" />
+            ) : (
+              <AlarmClockOffIcon className="mb-px size-3" />
+            )}
           </button>
         </span>
       </div>
