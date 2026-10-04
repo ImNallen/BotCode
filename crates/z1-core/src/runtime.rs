@@ -68,7 +68,7 @@ enum Command {
     Submit(ThreadId, String, String, Reply<Receipt>),
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
-    SetSettled(ThreadId, bool, Reply<()>),
+    Arrange(ThreadId, Arrange, Reply<()>),
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
     Shutdown(Reply<()>),
@@ -360,8 +360,8 @@ impl App {
     pub async fn interrupt(&self, id: ThreadId) -> Result<()> {
         self.call(|r| Command::Interrupt(id, r)).await
     }
-    pub async fn set_settled(&self, id: ThreadId, settled: bool) -> Result<()> {
-        self.call(|r| Command::SetSettled(id, settled, r)).await
+    pub async fn arrange(&self, id: ThreadId, action: Arrange) -> Result<()> {
+        self.call(|r| Command::Arrange(id, action, r)).await
     }
     pub async fn ui_state(&self) -> Result<BTreeMap<String, String>> {
         self.call(Command::UiState).await
@@ -728,7 +728,8 @@ impl Owner {
                         turns: vec![],
                         approvals: vec![],
                         diagnostic: None,
-                        settlement: Settlement::Auto,
+                        placement: Placement::Auto,
+                        snooze: None,
                     };
                     self.store.save(&t)?;
                     self.threads.insert(t.id.clone(), t.clone());
@@ -905,22 +906,16 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
-            Command::SetSettled(id, settled, reply) => {
+            Command::Arrange(id, action, reply) => {
                 let result = (|| -> Result<()> {
-                    let thread = self.thread(&id)?;
-                    let settlement = match (settled, thread.settled_at(now_ms())) {
-                        (true, Some(_)) | (false, None) => return Ok(()),
-                        (true, None) if thread.approval_open() => {
-                            return Err(AppError::new(
-                                "settle_blocked",
-                                "Answer the pending approval before settling this thread.",
-                            ));
-                        }
-                        (true, None) => Settlement::Settled { at_ms: now_ms() },
-                        (false, Some(_)) => Settlement::Kept,
-                    };
-                    self.threads.get_mut(&id).unwrap().settlement = settlement;
-                    self.commit(&id)
+                    self.thread(&id)?;
+                    let thread = self.threads.get_mut(&id).unwrap();
+                    let before = (thread.placement, thread.snooze);
+                    let arranged = thread.arrange(action, now_ms());
+                    if (thread.placement, thread.snooze) != before {
+                        self.commit(&id)?;
+                    }
+                    arranged
                 })();
                 let _ = reply.send(result);
             }
@@ -994,6 +989,7 @@ impl Owner {
             ));
         }
         let mut t = thread.clone();
+        t.record_activity(now_ms());
         let turn = Turn {
             id: TurnId::default(),
             prompt: text.into(),
@@ -1011,7 +1007,7 @@ impl Owner {
         t.turns.push(turn);
         t.session = SessionState::Connecting;
         t.diagnostic = None;
-        t.settlement = Settlement::Auto;
+        t.snooze = None;
         if t.turns.len() == 1 {
             t.title = text.chars().take(54).collect()
         }
@@ -1483,8 +1479,8 @@ impl Owner {
                         epoch: self.epoch,
                     },
                 );
+                t.record_activity(now_ms());
                 t.approvals.push(approval);
-                t.settlement = Settlement::Auto;
                 self.commit(&id)?;
             } else {
                 t.diagnostic = Some(format!(

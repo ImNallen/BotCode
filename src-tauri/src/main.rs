@@ -45,7 +45,7 @@ fn main() {
             ipc::update_thread_settings,
             ipc::answer_approval,
             ipc::interrupt,
-            ipc::set_settled,
+            ipc::arrange_thread,
             ipc::ui_state,
             ipc::set_ui_state,
             ipc::settings,

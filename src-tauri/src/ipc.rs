@@ -112,8 +112,12 @@ pub async fn interrupt(app: State<'_, App>, thread_id: ThreadId) -> Result<()> {
     app.interrupt(thread_id).await
 }
 #[tauri::command]
-pub async fn set_settled(app: State<'_, App>, thread_id: ThreadId, settled: bool) -> Result<()> {
-    app.set_settled(thread_id, settled).await
+pub async fn arrange_thread(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    action: Arrange,
+) -> Result<()> {
+    app.arrange(thread_id, action).await
 }
 #[tauri::command]
 pub async fn list_models(app: State<'_, App>) -> Result<Vec<ModelOption>> {

@@ -247,6 +247,13 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
               "Move the open thread to the Settled shelf, or back to the active list.",
             keywords: "settled un-settle archive",
           },
+          {
+            id: "pin-thread",
+            title: "Pin thread",
+            description:
+              "Keep the open thread at the top of the sidebar, or unpin it.",
+            keywords: "pinned unpin",
+          },
         ],
       },
     ],

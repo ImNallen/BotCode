@@ -12,6 +12,7 @@ import {
 } from "../WorkspaceBreadcrumb";
 import {
   newWithoutProjectShortcut,
+  pinThreadShortcut,
   settleThreadShortcut,
 } from "../lib/shortcuts";
 
@@ -22,6 +23,7 @@ const shortcuts: Record<string, string | undefined> = {
   "open-settings": `${modifier},`,
   "close-settings": "Escape",
   "settle-thread": settleThreadShortcut,
+  "pin-thread": pinThreadShortcut,
 };
 import { cn } from "../lib/cn";
 import { NewThreadRow } from "./NewThreadSettings";

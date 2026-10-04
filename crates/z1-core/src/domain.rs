@@ -305,20 +305,48 @@ pub struct Branches {
 }
 // T3 v0.0.45 sidebarAutoSettleAfterDays default.
 pub const AUTO_SETTLE_AFTER_MS: u64 = 3 * 24 * 60 * 60 * 1000;
-// Ports T3 v0.0.45 settledOverride (orchestration/projector.ts, ThreadSettlementPolicy.ts).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+// Ports T3 v0.0.45 pinnedAt and settledOverride (orchestration/projector.ts,
+// ThreadSettlementPolicy.ts). Pin and settle exclude each other, so one value holds both.
+// `kept` on a pin is T3's settledOverride "active" alongside pinnedAt.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
     rename_all_fields = "camelCase"
 )]
-pub enum Settlement {
+pub enum Placement {
     #[default]
     Auto,
+    Kept,
+    Pinned {
+        at_ms: u64,
+        #[serde(default)]
+        kept: bool,
+    },
     Settled {
         at_ms: u64,
     },
-    Kept,
+}
+// Ports T3 v0.0.45 snoozedUntil and snoozedAt. Snooze overlays any placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snooze {
+    pub until_ms: u64,
+    pub at_ms: u64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum Arrange {
+    Pin,
+    Unpin,
+    Settle,
+    Unsettle,
+    Snooze { until_ms: u64 },
+    Wake,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -336,8 +364,10 @@ pub struct ThreadSnapshot {
     pub turns: Vec<Turn>,
     pub approvals: Vec<Approval>,
     pub diagnostic: Option<String>,
+    #[serde(default, alias = "settlement")]
+    pub placement: Placement,
     #[serde(default)]
-    pub settlement: Settlement,
+    pub snooze: Option<Snooze>,
 }
 impl ThreadSnapshot {
     pub fn root<'a>(&'a self, workspace: &'a Workspace) -> &'a Path {
@@ -366,16 +396,35 @@ impl ThreadSnapshot {
             )
         })
     }
+    // Ports threadRaisedHandWhileSnoozed (client-runtime state/threadSettled.ts). Z1 has no
+    // user-input requests, and a failed turn is its session error.
+    fn raised_hand(&self, snooze: &Snooze) -> bool {
+        self.approval_open()
+            || self.turns.last().is_some_and(|turn| {
+                matches!(
+                    turn.execution,
+                    Execution::Completed | Execution::Failed { .. }
+                ) && turn.completed_at_ms.is_some_and(|at| at > snooze.at_ms)
+            })
+    }
+    // The wake time while the snooze still holds. It stays set after that time passes, so
+    // callers compare it with their own clock.
+    pub fn snoozed_until(&self) -> Option<u64> {
+        self.snooze
+            .filter(|snooze| !self.raised_hand(snooze))
+            .map(|snooze| snooze.until_ms)
+    }
     // Auto-settling is derived on every read, so it needs no timer and survives restarts.
     pub fn settled_at(&self, now: u64) -> Option<u64> {
-        match self.settlement {
-            Settlement::Settled { at_ms } => Some(at_ms),
-            Settlement::Kept => None,
-            Settlement::Auto => {
+        match self.placement {
+            Placement::Settled { at_ms } => Some(at_ms),
+            Placement::Kept | Placement::Pinned { kept: true, .. } => None,
+            Placement::Auto | Placement::Pinned { kept: false, .. } => {
                 let busy = matches!(
                     self.session,
                     SessionState::Connecting | SessionState::Running | SessionState::Interrupting
                 );
+                let snoozed = self.snoozed_until().is_some_and(|until| until > now);
                 let last_activity = self
                     .turns
                     .iter()
@@ -383,13 +432,105 @@ impl ThreadSnapshot {
                     .flatten()
                     .max()?;
                 (!busy
+                    && !snoozed
                     && !self.approval_open()
                     && now.saturating_sub(last_activity) >= AUTO_SETTLE_AFTER_MS)
                     .then_some(last_activity)
             }
         }
     }
+    // Stores a due auto-settle as T3's thread.auto-settle command would: settled at the last
+    // activity, with the pin and the snooze cleared.
+    pub fn auto_settle(&mut self, now: u64) {
+        if let (Placement::Auto | Placement::Pinned { .. }, Some(at_ms)) =
+            (self.placement, self.settled_at(now))
+        {
+            self.placement = Placement::Settled { at_ms };
+            self.snooze = None;
+        }
+    }
+    // Ports the activity reset of decider.ts: it wakes a settled thread and clears a keep.
+    pub fn record_activity(&mut self, now: u64) {
+        self.auto_settle(now);
+        self.placement = match self.placement {
+            Placement::Settled { .. } | Placement::Kept => Placement::Auto,
+            Placement::Pinned { at_ms, .. } => Placement::Pinned { at_ms, kept: false },
+            Placement::Auto => Placement::Auto,
+        };
+    }
+    // Ports the pin, settle and snooze rules of orchestration/decider.ts.
+    pub fn arrange(&mut self, action: Arrange, now: u64) -> Result<()> {
+        self.auto_settle(now);
+        match action {
+            Arrange::Pin => {
+                self.placement = match self.placement {
+                    Placement::Pinned { .. } => self.placement,
+                    Placement::Settled { .. } | Placement::Kept => Placement::Pinned {
+                        at_ms: now,
+                        kept: true,
+                    },
+                    Placement::Auto => Placement::Pinned {
+                        at_ms: now,
+                        kept: false,
+                    },
+                };
+                self.snooze = None;
+            }
+            Arrange::Unpin => {
+                if let Placement::Pinned { kept, .. } = self.placement {
+                    self.placement = if kept {
+                        Placement::Kept
+                    } else {
+                        Placement::Auto
+                    };
+                }
+            }
+            Arrange::Settle => {
+                if !matches!(self.placement, Placement::Settled { .. }) {
+                    if self.approval_open() {
+                        return Err(AppError::new(
+                            "settle_blocked",
+                            "Answer the pending approval before settling this thread.",
+                        ));
+                    }
+                    self.placement = Placement::Settled { at_ms: now };
+                }
+                self.snooze = None;
+            }
+            Arrange::Unsettle => {
+                if matches!(self.placement, Placement::Settled { .. }) {
+                    self.placement = Placement::Kept;
+                }
+            }
+            Arrange::Snooze { until_ms } => {
+                if until_ms <= now {
+                    return Err(AppError::new(
+                        "snooze_in_past",
+                        "Choose a wake time in the future.",
+                    ));
+                }
+                if self.approval_open() {
+                    return Err(AppError::new(
+                        "snooze_blocked",
+                        "Answer the pending approval before snoozing this thread.",
+                    ));
+                }
+                // A raised hand would stay raised under the old time, so only a
+                // snooze that still holds keeps it.
+                let at_ms = match self.snooze {
+                    Some(snooze) if snooze.until_ms == until_ms && !self.raised_hand(&snooze) => {
+                        snooze.at_ms
+                    }
+                    _ => now,
+                };
+                self.snooze = Some(Snooze { until_ms, at_ms });
+            }
+            Arrange::Wake => self.snooze = None,
+        }
+        Ok(())
+    }
     pub fn summary(&self) -> ThreadSummary {
+        let settled_at_ms = self.settled_at(now_ms());
         ThreadSummary {
             id: self.id.clone(),
             title: self.title.clone(),
@@ -400,7 +541,12 @@ impl ThreadSnapshot {
                 .approvals
                 .iter()
                 .any(|approval| approval.state == ApprovalState::Pending),
-            settled_at_ms: self.settled_at(now_ms()),
+            pinned_at_ms: match self.placement {
+                Placement::Pinned { at_ms, .. } if settled_at_ms.is_none() => Some(at_ms),
+                _ => None,
+            },
+            snoozed_until_ms: self.snoozed_until(),
+            settled_at_ms,
         }
     }
 }
@@ -413,6 +559,8 @@ pub struct ThreadSummary {
     pub checkout: Checkout,
     pub updated_at_ms: Option<u64>,
     pub awaiting_approval: bool,
+    pub pinned_at_ms: Option<u64>,
+    pub snoozed_until_ms: Option<u64>,
     pub settled_at_ms: Option<u64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

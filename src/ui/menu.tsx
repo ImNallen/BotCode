@@ -11,7 +11,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { CheckIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon } from "lucide-react";
 import { cn } from "../lib/cn";
 import { useLocation } from "@tanstack/react-router";
 
@@ -28,6 +28,8 @@ export function Menu({
   open: controlledOpen,
   onOpenChange,
   anchor: positionAnchor,
+  point,
+  returnFocus,
 }: {
   trigger: (props: {
     ref: (node: HTMLElement | null) => void;
@@ -37,7 +39,7 @@ export function Menu({
     "data-popup-open"?: "";
   }) => ReactNode;
   children: ReactNode;
-  side?: "bottom" | "top";
+  side?: "bottom" | "top" | "right";
   align?: "start" | "center" | "end";
   sideOffset?: number;
   className?: string;
@@ -47,6 +49,10 @@ export function Menu({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   anchor?: RefObject<HTMLElement | null>;
+  // Opens at a pointer position, as a context menu does.
+  point?: { x: number; y: number };
+  // Takes focus back on close when the menu has no trigger of its own.
+  returnFocus?: HTMLElement;
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -68,10 +74,34 @@ export function Menu({
   useLayoutEffect(() => {
     if (!open) return;
     const positionPopup = () => {
+      if (point && popup.current) {
+        const { width, height } = popup.current.getBoundingClientRect();
+        setPosition({
+          maxWidth: "calc(100vw - 16px)",
+          left: Math.max(8, Math.min(point.x, window.innerWidth - width - 8)),
+          top: Math.max(8, Math.min(point.y, window.innerHeight - height - 8)),
+        });
+        return;
+      }
       const target = positionAnchor?.current ?? anchor.current;
       if (!target || !popup.current) return;
       const rect = target.getBoundingClientRect();
-      const width = popup.current.getBoundingClientRect().width;
+      const { width, height } = popup.current.getBoundingClientRect();
+      if (side === "right") {
+        const right = rect.right + sideOffset;
+        setPosition({
+          maxWidth: "calc(100vw - 16px)",
+          left:
+            right + width > window.innerWidth - 8
+              ? Math.max(8, rect.left - sideOffset - width)
+              : right,
+          top: Math.max(
+            8,
+            Math.min(rect.top - 5, window.innerHeight - height - 8),
+          ),
+        });
+        return;
+      }
       const desiredLeft =
         align === "start"
           ? rect.left
@@ -109,7 +139,7 @@ export function Menu({
       observer.disconnect();
       window.removeEventListener("resize", positionPopup);
     };
-  }, [open, side, align, sideOffset, positionAnchor]);
+  }, [open, side, align, sideOffset, positionAnchor, point]);
   useEffect(() => {
     if (!open) return;
     const first = popup.current?.querySelector<HTMLElement>(
@@ -130,13 +160,21 @@ export function Menu({
       focusReturn.current = "idle";
       return;
     }
-    if (anchor.current?.matches(":disabled")) return;
-    anchor.current?.focus();
+    const target = returnFocus ?? anchor.current;
+    if (target?.matches(":disabled")) return;
+    target?.focus();
     focusReturn.current = "idle";
   });
+  // Submenus portal outside this popup, but their events still bubble here
+  // through React, which runs before the document listener below.
+  const pointerInside = useRef(false);
   useEffect(() => {
     if (!open) return;
     const dismiss = (event: PointerEvent) => {
+      if (pointerInside.current) {
+        pointerInside.current = false;
+        return;
+      }
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (!popup.current?.contains(target) && !anchor.current?.contains(target))
@@ -147,7 +185,7 @@ export function Menu({
         event.preventDefault();
         event.stopPropagation();
         setOpenRef.current(false);
-        anchor.current?.focus();
+        (returnFocus ?? anchor.current)?.focus();
       }
     };
     document.addEventListener("pointerdown", dismiss);
@@ -156,7 +194,7 @@ export function Menu({
       document.removeEventListener("pointerdown", dismiss);
       document.removeEventListener("keydown", escape);
     };
-  }, [open]);
+  }, [open, returnFocus]);
   return (
     <>
       {trigger({
@@ -179,9 +217,16 @@ export function Menu({
               tabIndex={-1}
               data-slot="menu-popup"
               style={position}
+              onPointerDown={() => {
+                pointerInside.current = true;
+              }}
               onKeyDownCapture={(event) => {
                 onKeyDownCapture?.(event);
-                if (event.defaultPrevented || popupKind.kind === "dialog")
+                if (
+                  event.defaultPrevented ||
+                  popupKind.kind === "dialog" ||
+                  !popup.current?.contains(document.activeElement)
+                )
                   return;
                 const items = Array.from(
                   popup.current?.querySelectorAll<HTMLElement>(
@@ -219,7 +264,7 @@ export function Menu({
                 );
                 if (item && !item.hasAttribute("data-keep-open")) {
                   setOpen(false);
-                  anchor.current?.focus();
+                  (returnFocus ?? anchor.current)?.focus();
                 }
               }}
               className={cn(
@@ -294,4 +339,90 @@ export function MenuRadioItemIndicator({ checked }: { checked: boolean }) {
       <CheckIcon className="size-3.5" />
     </span>
   ) : null;
+}
+
+export function MenuShortcut({ className, ...props }: ComponentProps<"kbd">) {
+  return (
+    <kbd
+      className={cn(
+        "ms-auto font-medium font-sans text-secondary-label text-xs tracking-widest",
+        className,
+      )}
+      data-slot="menu-shortcut"
+      {...props}
+    />
+  );
+}
+
+// Classes follow T3's MenuSubTrigger, with Base UI's data-highlighted and
+// data-disabled states mapped to hover, focus-visible and disabled.
+export function MenuSub({
+  label,
+  icon,
+  disabled,
+  children,
+}: {
+  label: ReactNode;
+  icon?: ReactNode;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target;
+      const parent = trigger.current?.closest('[data-slot="menu-popup"]');
+      if (
+        target instanceof Node &&
+        parent?.contains(target) &&
+        !trigger.current?.contains(target)
+      )
+        setOpen(false);
+    };
+    document.addEventListener("mouseover", close);
+    return () => document.removeEventListener("mouseover", close);
+  }, [open]);
+  return (
+    <Menu
+      side="right"
+      sideOffset={0}
+      open={open}
+      onOpenChange={setOpen}
+      onKeyDownCapture={(event) => {
+        if (event.key !== "ArrowLeft") return;
+        event.preventDefault();
+        setOpen(false);
+      }}
+      trigger={({ ref, onClick: _toggle, ...props }) => (
+        <button
+          type="button"
+          role="menuitem"
+          data-slot="menu-sub-trigger"
+          data-keep-open
+          disabled={disabled}
+          ref={(node) => {
+            ref(node);
+            trigger.current = node;
+          }}
+          onClick={() => setOpen(true)}
+          onMouseEnter={() => setOpen(true)}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowRight") return;
+            event.preventDefault();
+            setOpen(true);
+          }}
+          className="[&>svg:not(:last-child)]:-mx-0.5 flex min-h-8 w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-left text-base text-foreground outline-none disabled:cursor-not-allowed disabled:pointer-events-none hover:bg-accent focus-visible:bg-accent data-popup-open:bg-accent hover:text-accent-foreground focus-visible:text-accent-foreground data-popup-open:text-accent-foreground disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground [&>svg:not(:last-child):not([class*='opacity-'])]:opacity-80 [&_svg]:pointer-events-none [&>svg]:shrink-0"
+          {...props}
+        >
+          {icon}
+          {label}
+          <ChevronRightIcon className="-me-0.5 ms-auto opacity-80" />
+        </button>
+      )}
+    >
+      {children}
+    </Menu>
+  );
 }
