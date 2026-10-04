@@ -896,7 +896,7 @@ async fn worktree_threads_start_codex_in_their_own_checkout() {
         .await
         .unwrap();
     let (path, branch) = worktree(&isolated.checkout);
-    let id = branch.strip_prefix("z1/").unwrap();
+    let id = branch.strip_prefix("z1code/").unwrap();
     assert_eq!(id.len(), 8);
     assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
     assert_eq!(
@@ -906,7 +906,7 @@ async fn worktree_threads_start_codex_in_their_own_checkout() {
             .join("worktrees/repository")
             .canonicalize()
             .unwrap()
-            .join(format!("z1-{id}"))
+            .join(format!("z1code-{id}"))
     );
     assert_eq!(git_output(&path, &["branch", "--show-current"]), branch);
     for thread in [&local, &isolated] {

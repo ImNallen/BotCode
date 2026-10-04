@@ -25,7 +25,7 @@ impl RuntimeConfig {
                 std::env::var_os("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_default()
-                    .join("Library/Application Support/Z1 Code")
+                    .join(".z1")
             });
         Ok(Self {
             data_dir,

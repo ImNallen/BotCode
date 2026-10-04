@@ -101,8 +101,8 @@ pub fn add_worktree(
         None
     };
     let id = &uuid::Uuid::new_v4().simple().to_string()[..8];
-    let branch = format!("z1/{id}");
-    let path = worktrees.join(format!("z1-{id}"));
+    let branch = format!("z1code/{id}");
+    let path = worktrees.join(format!("z1code-{id}"));
     std::fs::create_dir_all(worktrees)?;
     git(
         root,
