@@ -1,16 +1,17 @@
-use crate::domain::*;
+use crate::{domain::*, vcs};
 use std::{
     path::{Component, Path, PathBuf},
     process::Command,
 };
 const TEXT_LIMIT: usize = 1_000_000;
 const FILE_LIMIT: usize = 40_000;
+fn command(root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(root).envs(vcs::NON_INTERACTIVE);
+    command
+}
 pub(crate) fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()?;
+    let out = command(root).args(args).output()?;
     if !out.status.success() {
         return Err(AppError::new("git", String::from_utf8_lossy(&out.stderr)));
     }
@@ -109,12 +110,14 @@ pub fn add_worktree(
         &[
             "worktree",
             "add",
+            "--no-track",
             "-b",
             &branch,
             &path.to_string_lossy(),
             start.as_deref().unwrap_or(base),
         ],
     )?;
+    git(root, &["config", &merge_base_key(&branch), base])?;
     Ok(Checkout::Worktree {
         path: path.canonicalize()?,
         branch,
@@ -149,7 +152,10 @@ pub fn switch_branch(root: &Path, name: &str, create: bool) -> Result<String> {
     let current = git(root, &["branch", "--show-current"])?;
     Ok(String::from_utf8_lossy(&current).trim().to_owned())
 }
-fn branch_name(root: &Path, name: &str) -> Result<()> {
+pub(crate) fn merge_base_key(branch: &str) -> String {
+    format!("branch.{branch}.gh-merge-base")
+}
+pub(crate) fn branch_name(root: &Path, name: &str) -> Result<()> {
     git(root, &["check-ref-format", "--branch", name])
         .map(drop)
         .map_err(|_| {
@@ -399,11 +405,7 @@ pub fn inspect_folder(workspace: Workspace, threads: Vec<ThreadSummary>) -> Resu
     })
 }
 fn version(root: &Path, spec: &str) -> Result<String> {
-    let size = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["cat-file", "-s", spec])
-        .output()?;
+    let size = command(root).args(["cat-file", "-s", spec]).output()?;
     if !size.status.success() {
         let message = String::from_utf8_lossy(&size.stderr);
         if message.contains("does not exist")

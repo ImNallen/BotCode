@@ -1,9 +1,10 @@
 use crate::{
     cleanup::{self, Candidate, Sweep},
-    codex::{self, Codex, Signal},
+    codex::{Codex, Signal},
     domain::*,
     repo, settings,
     store::Store,
+    vcs,
 };
 use serde_json::{Value, json};
 use std::{
@@ -18,6 +19,8 @@ use tokio::sync::{Mutex, Notify, broadcast, mpsc, oneshot};
 pub struct RuntimeConfig {
     pub data_dir: PathBuf,
     pub codex_binary: PathBuf,
+    pub gh_binary: PathBuf,
+    pub network_timeout: Duration,
 }
 impl RuntimeConfig {
     pub fn from_environment() -> Result<Self> {
@@ -31,7 +34,9 @@ impl RuntimeConfig {
             });
         Ok(Self {
             data_dir,
-            codex_binary: codex::installed_binary(),
+            codex_binary: vcs::installed_binary("codex", "Z1_CODEX_BIN"),
+            gh_binary: vcs::installed_binary("gh", "Z1_GH_BIN"),
+            network_timeout: Duration::from_secs(180),
         })
     }
 }
@@ -46,29 +51,57 @@ enum Location {
         branch: String,
     },
 }
+impl Location {
+    fn repository(self) -> Result<PathBuf> {
+        match self {
+            Self::Repository(root) => Ok(root),
+            Self::Removed { .. } => Err(worktree_removed()),
+            Self::Folder(_) | Self::Unassigned => Err(not_repository()),
+        }
+    }
+}
 /// Why a checkout path is temporarily closed to new turns and switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Hold {
     Switch,
     Cleanup,
     Restore,
+    Git,
 }
 impl Hold {
     fn refusal(self) -> AppError {
         AppError::new(
             "checkout_busy",
             match self {
-                Self::Switch => "Another conversation is running in this checkout.",
+                Self::Switch => "Z1 is switching this checkout's branch. Try again in a moment.",
                 Self::Cleanup => "Z1 is removing this inactive worktree. Try again in a moment.",
                 Self::Restore => "Z1 is restoring this thread's worktree. Try again in a moment.",
+                Self::Git => {
+                    "A Git action is running in this checkout. Try again when it finishes."
+                }
             },
         )
     }
+    fn lease_refusal(self) -> AppError {
+        match self {
+            Self::Git => AppError::new(
+                "checkout_busy",
+                "Codex is working in this checkout. Git actions return when the turn finishes.",
+            ),
+            Self::Switch | Self::Cleanup | Self::Restore => turn_running(),
+        }
+    }
+}
+fn turn_running() -> AppError {
+    AppError::new(
+        "checkout_busy",
+        "Another conversation is running in this checkout.",
+    )
 }
 fn worktree_removed() -> AppError {
     AppError::new(
         "worktree_removed",
-        "Send a message to restore this thread's worktree before switching branches.",
+        "Send a message to restore this thread's worktree first.",
     )
 }
 /// What `App::submit` recreates before the actor accepts the turn.
@@ -96,8 +129,8 @@ enum Command {
     RenameWorkspace(WorkspaceId, String, Reply<Workspace>),
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
-    BeginSwitch(WorkspaceId, Option<ThreadId>, Reply<PathBuf>),
-    EndSwitch(PathBuf, Option<(ThreadId, String)>, Reply<()>),
+    Claim(WorkspaceId, Option<ThreadId>, Hold, Reply<PathBuf>),
+    Release(PathBuf, Option<(ThreadId, String)>, Reply<()>),
     Threads(WorkspaceId, Reply<Vec<ThreadSummary>>),
     Create(WorkspaceId, Checkout, Reply<ThreadSnapshot>),
     Snapshot(ThreadId, bool, Reply<ThreadSnapshot>),
@@ -127,6 +160,8 @@ pub struct App {
     settings: PathBuf,
     sweeps: Arc<Mutex<()>>,
     wake: Arc<Notify>,
+    gh: PathBuf,
+    network: Duration,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
@@ -180,6 +215,7 @@ impl App {
             store.save(thread)?;
         }
         let worktrees = config.data_dir.join("worktrees");
+        let (gh, network) = (config.gh_binary.clone(), config.network_timeout);
         let settings = config.data_dir.join("settings.json");
         let auto_settle = settings::auto_settle(&settings);
         let (commands, rx) = mpsc::channel(128);
@@ -218,6 +254,8 @@ impl App {
             settings,
             sweeps: Arc::new(Mutex::new(())),
             wake: Arc::new(Notify::new()),
+            gh,
+            network,
         };
         tokio::spawn(Sweeper::from(&app).run(
             app.commands.downgrade(),
@@ -368,7 +406,7 @@ impl App {
         create: bool,
     ) -> Result<()> {
         let root = self
-            .call(|r| Command::BeginSwitch(id, thread.clone(), r))
+            .call(|r| Command::Claim(id, thread.clone(), Hold::Switch, r))
             .await?;
         let path = root.clone();
         let switched =
@@ -377,9 +415,56 @@ impl App {
                 .map_err(|e| AppError::new("repository", e))
                 .and_then(|r| r);
         let current = switched.as_ref().ok().cloned();
-        self.call(|r| Command::EndSwitch(root, thread.zip(current), r))
+        self.call(|r| Command::Release(root, thread.zip(current), r))
             .await?;
         switched.map(drop)
+    }
+    pub async fn git_status(&self, id: WorkspaceId, thread: Option<ThreadId>) -> Result<GitStatus> {
+        let root = self.checkout(id, thread).await?.1.repository()?;
+        vcs::status(&root).await
+    }
+    /// The open pull request for `branch`. gh problems come back as `PrLookup::Unavailable`.
+    pub async fn pull_request(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+        branch: String,
+    ) -> Result<PrLookup> {
+        let root = self.checkout(id, thread).await?.1.repository()?;
+        let (path, name) = (root.clone(), branch.clone());
+        tokio::task::spawn_blocking(move || repo::branch_name(&path, &name))
+            .await
+            .map_err(|e| AppError::new("repository", e))??;
+        Ok(vcs::pull_request(&self.gh, &root, &branch).await)
+    }
+    /// Runs a Git action on a thread's checkout, holding it against turns and other mutations.
+    /// `Err` means the action never started. `progress` hears each step as it starts.
+    pub async fn run_git_action(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+        action: GitAction,
+        progress: impl Fn(GitPhase) + Send + Sync + 'static,
+    ) -> Result<GitOutcome> {
+        let root = self
+            .call(|r| Command::Claim(id, thread, Hold::Git, r))
+            .await?;
+        let cx = vcs::Context {
+            root: root.clone(),
+            gh: self.gh.clone(),
+            network: self.network,
+            progress: Box::new(progress),
+        };
+        let commands = self.commands.clone();
+        // Spawned twice: the outer task releases the hold even when the caller drops this
+        // future, and the inner one keeps a panic in a step from skipping the release.
+        tokio::spawn(async move {
+            let ran = tokio::spawn(async move { vcs::run(&cx, action).await }).await;
+            call(&commands, |r| Command::Release(root, None, r)).await?;
+            ran.map_err(|e| AppError::new("repository", e))?
+        })
+        .await
+        .map_err(|e| AppError::new("repository", e))?
     }
     pub async fn create_thread(
         &self,
@@ -989,25 +1074,21 @@ impl Owner {
             Command::Checkout(id, thread, reply) => {
                 let _ = reply.send(self.checkout(&id, thread));
             }
-            Command::BeginSwitch(id, thread, reply) => {
+            Command::Claim(id, thread, hold, reply) => {
                 let result = self.checkout(&id, thread).and_then(|(_, location)| {
-                    let root = match location {
-                        Location::Repository(root) => root,
-                        Location::Removed { .. } => return Err(worktree_removed()),
-                        Location::Folder(_) | Location::Unassigned => return Err(not_repository()),
-                    };
-                    if let Some(hold) = self.held.get(&root) {
-                        return Err(hold.refusal());
+                    let root = location.repository()?;
+                    if let Some(held) = self.held.get(&root) {
+                        return Err(held.refusal());
                     }
                     if self.leases.contains_key(&root) {
-                        return Err(Hold::Switch.refusal());
+                        return Err(hold.lease_refusal());
                     }
-                    self.held.insert(root.clone(), Hold::Switch);
+                    self.held.insert(root.clone(), hold);
                     Ok(root)
                 });
                 let _ = reply.send(result);
             }
-            Command::EndSwitch(root, switched, reply) => {
+            Command::Release(root, switched, reply) => {
                 self.held.remove(&root);
                 let result = match switched {
                     Some((id, current)) => match self.threads.get_mut(&id) {
@@ -1353,7 +1434,7 @@ impl Owner {
             return Err(hold.refusal());
         }
         if self.leases.contains_key(&root) {
-            return Err(Hold::Switch.refusal());
+            return Err(turn_running());
         }
         let mut t = thread.clone();
         t.record_activity(now_ms(), self.auto_settle.after_ms(&t.workspace_id));

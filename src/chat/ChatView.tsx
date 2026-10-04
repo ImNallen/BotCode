@@ -16,7 +16,7 @@ import {
   Minimize2Icon,
   PanelRightIcon,
 } from "lucide-react";
-import { checkoutKey, ipc, setThreadSnapshot, workingSessions } from "../ipc";
+import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
 import type {
   ApprovalDecision,
   CheckoutRef,
@@ -25,6 +25,7 @@ import type {
   SessionSettings,
 } from "../ipc";
 import { cn } from "../lib/cn";
+import { workingSessions } from "../lib/sessions";
 import { newWithoutProjectShortcut } from "../lib/shortcuts";
 import {
   type CheckoutMode,
@@ -43,6 +44,7 @@ import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import { RightPanel, emptyPanel, type PanelState } from "../panel/RightPanel";
 import { closeFiles, openFile } from "../panel/panelState";
 import { FileLinkProvider, type FileLinks } from "./ChatMarkdown";
+import { GitActionsControl } from "./GitActionsControl";
 import { ApprovalDrawer } from "./ApprovalDrawer";
 import { BranchPicker, startsFromOrigin } from "./BranchPicker";
 import { Composer } from "./Composer";
@@ -195,6 +197,7 @@ export function ChatView({
       void client.invalidateQueries({ queryKey: ["workspace"] });
       void client.invalidateQueries({ queryKey: ["file"] });
       void client.invalidateQueries({ queryKey: ["diff"] });
+      void client.invalidateQueries({ queryKey: ["git"] });
     }
   }, [sessionKind, client]);
   const send = useMutation({
@@ -492,6 +495,24 @@ export function ChatView({
                 </h2>
               </WorkspaceBreadcrumbItem>
             </WorkspaceBreadcrumb>
+            {thread && !isScratch && !view?.unavailable ? (
+              <div
+                data-chat-header-actions
+                className={cn(
+                  "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
+                  panelOpen
+                    ? "pr-0"
+                    : "pr-10.25 sm:pr-7.25 @3xl/header-actions:pr-8.25",
+                )}
+              >
+                <GitActionsControl
+                  checkout={checkout}
+                  thread={thread}
+                  threads={view?.threads ?? []}
+                  onError={setError}
+                />
+              </div>
+            ) : null}
           </div>
         </header>
         <div className="flex min-h-0 min-w-0 flex-1">

@@ -213,28 +213,3 @@ impl Codex {
         Ok(())
     }
 }
-pub fn installed_binary() -> PathBuf {
-    if let Some(path) = std::env::var_os("Z1_CODEX_BIN") {
-        return path.into();
-    }
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let path = dir.join("codex");
-            if path.is_file() {
-                return path;
-            }
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let path = PathBuf::from(home).join(".local/bin/codex");
-        if path.is_file() {
-            return path;
-        }
-    }
-    for path in ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"] {
-        if std::path::Path::new(path).exists() {
-            return path.into();
-        }
-    }
-    PathBuf::from("codex")
-}

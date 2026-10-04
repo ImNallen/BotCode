@@ -30,13 +30,9 @@ import {
   Undo2Icon,
   XIcon,
 } from "lucide-react";
-import {
-  workingSessions,
-  type Arrange,
-  type Workspace,
-  type WorkspaceView,
-} from "./ipc";
+import { type Arrange, type Workspace, type WorkspaceView } from "./ipc";
 import { cn } from "./lib/cn";
+import { workingSessions } from "./lib/sessions";
 import { formatSidebarTime } from "./lib/time";
 import { basename } from "./panel/panelState";
 import { WorkspaceBadge } from "./ProjectBadge";

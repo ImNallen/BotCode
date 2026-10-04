@@ -27,6 +27,8 @@ impl Fixture {
             config: RuntimeConfig {
                 data_dir: dir.path().join("state"),
                 codex_binary: peer.clone(),
+                gh_binary: dir.path().join("no-gh"),
+                network_timeout: Duration::from_secs(180),
             },
             _dir: dir,
             repository,

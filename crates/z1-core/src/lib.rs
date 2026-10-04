@@ -5,5 +5,6 @@ pub mod repo;
 mod runtime;
 mod settings;
 mod store;
+mod vcs;
 pub use domain::*;
 pub use runtime::{App, RuntimeConfig};
