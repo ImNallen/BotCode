@@ -1739,6 +1739,7 @@ async fn settings_round_trip_through_the_settings_file() {
     let app = App::open(f.config.clone()).await.unwrap();
     assert_eq!(app.settings().unwrap(), None);
     app.save_settings("{\n  \"appearance\": \"dark\"\n}\n")
+        .await
         .unwrap();
     assert_eq!(
         app.settings().unwrap().as_deref(),
@@ -1758,7 +1759,9 @@ async fn saving_settings_keeps_a_symlinked_file_linked() {
     let synced = f.config.data_dir.with_file_name("synced-settings.json");
     std::fs::write(&synced, "{}").unwrap();
     std::os::unix::fs::symlink(&synced, &link).unwrap();
-    app.save_settings("{\"appearance\":\"light\"}").unwrap();
+    app.save_settings("{\"appearance\":\"light\"}")
+        .await
+        .unwrap();
     assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
     assert_eq!(
         std::fs::read_to_string(&synced).unwrap(),
@@ -1771,7 +1774,7 @@ async fn saving_over_unparseable_settings_keeps_a_backup() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     std::fs::write(f.config.data_dir.join("settings.json"), "{not json").unwrap();
-    app.save_settings("{}").unwrap();
+    app.save_settings("{}").await.unwrap();
     assert_eq!(
         std::fs::read_to_string(f.config.data_dir.join("settings.json.bak")).unwrap(),
         "{not json"
@@ -1784,6 +1787,7 @@ async fn saving_over_unparseable_settings_keeps_a_backup() {
 }
 const HOUR_MS: u64 = 60 * 60 * 1000;
 const DAY_MS: u64 = 24 * HOUR_MS;
+const DEFAULT_LIMIT: Option<u64> = Some(AUTO_SETTLE_AFTER_MS);
 fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> ThreadSnapshot {
     ThreadSnapshot {
         id: ThreadId::default(),
@@ -1815,13 +1819,24 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
 fn idle_threads_auto_settle_after_three_days_of_their_latest_activity() {
     assert_eq!(AUTO_SETTLE_AFTER_MS, 3 * DAY_MS);
     let thread = idle_thread(Some(1_000), Some(2_000));
-    assert_eq!(thread.settled_at(2_000 + 3 * DAY_MS - 1), None);
-    assert_eq!(thread.settled_at(2_000 + 3 * DAY_MS), Some(2_000));
     assert_eq!(
-        idle_thread(Some(1_000), None).settled_at(1_000 + 3 * DAY_MS),
+        thread.settled_at(2_000 + 3 * DAY_MS - 1, DEFAULT_LIMIT),
+        None
+    );
+    assert_eq!(
+        thread.settled_at(2_000 + 3 * DAY_MS, DEFAULT_LIMIT),
+        Some(2_000)
+    );
+    assert_eq!(thread.settled_at(2_000 + DAY_MS, Some(DAY_MS)), Some(2_000));
+    assert_eq!(thread.settled_at(u64::MAX, None), None);
+    assert_eq!(
+        idle_thread(Some(1_000), None).settled_at(1_000 + 3 * DAY_MS, DEFAULT_LIMIT),
         Some(1_000)
     );
-    assert_eq!(idle_thread(None, None).settled_at(u64::MAX), None);
+    assert_eq!(
+        idle_thread(None, None).settled_at(u64::MAX, DEFAULT_LIMIT),
+        None
+    );
 }
 #[test]
 fn auto_settle_waits_for_running_sessions_and_open_approvals_and_respects_overrides() {
@@ -1833,7 +1848,7 @@ fn auto_settle_waits_for_running_sessions_and_open_approvals_and_respects_overri
     ] {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
         thread.session = session;
-        assert_eq!(thread.settled_at(later), None);
+        assert_eq!(thread.settled_at(later, DEFAULT_LIMIT), None);
     }
     for (state, settled) in [
         (ApprovalState::Pending, None),
@@ -1851,15 +1866,15 @@ fn auto_settle_waits_for_running_sessions_and_open_approvals_and_respects_overri
             },
             state,
         });
-        assert_eq!(thread.settled_at(later), settled);
+        assert_eq!(thread.settled_at(later, DEFAULT_LIMIT), settled);
     }
     let mut kept = idle_thread(Some(1_000), Some(2_000));
     kept.placement = Placement::Kept;
-    assert_eq!(kept.settled_at(later), None);
+    assert_eq!(kept.settled_at(later, DEFAULT_LIMIT), None);
     let mut settled = idle_thread(Some(1_000), None);
     settled.placement = Placement::Settled { at_ms: 1_500 };
     settled.session = SessionState::Running;
-    assert_eq!(settled.settled_at(1_600), Some(1_500));
+    assert_eq!(settled.settled_at(1_600, DEFAULT_LIMIT), Some(1_500));
 }
 fn settled_at_ms(view: &WorkspaceView, id: &ThreadId) -> Option<u64> {
     view.threads
@@ -2158,10 +2173,10 @@ fn pinning_clears_settle_and_snooze_and_keeps_the_first_pin_time() {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
         thread.placement = placement;
         thread.snooze = Some(SNOOZE);
-        thread.arrange(Arrange::Pin, 5_000).unwrap();
+        thread.arrange(Arrange::Pin, 5_000, DEFAULT_LIMIT).unwrap();
         assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000, kept });
         assert_eq!(thread.snooze, None);
-        thread.arrange(Arrange::Pin, 6_000).unwrap();
+        thread.arrange(Arrange::Pin, 6_000, DEFAULT_LIMIT).unwrap();
         assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000, kept });
     }
 }
@@ -2171,13 +2186,17 @@ fn unpinning_returns_a_pinned_thread_to_its_keep_and_leaves_others_alone() {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
         thread.placement = Placement::Pinned { at_ms: 5_000, kept };
         thread.snooze = Some(SNOOZE);
-        thread.arrange(Arrange::Unpin, 6_000).unwrap();
+        thread
+            .arrange(Arrange::Unpin, 6_000, DEFAULT_LIMIT)
+            .unwrap();
         assert_eq!(thread.placement, unpinned);
         assert_eq!(thread.snooze, Some(SNOOZE));
     }
     let mut thread = idle_thread(Some(1_000), Some(2_000));
     thread.placement = Placement::Kept;
-    thread.arrange(Arrange::Unpin, 6_000).unwrap();
+    thread
+        .arrange(Arrange::Unpin, 6_000, DEFAULT_LIMIT)
+        .unwrap();
     assert_eq!(thread.placement, Placement::Kept);
 }
 #[test]
@@ -2188,11 +2207,15 @@ fn settling_clears_pin_and_snooze_and_is_refused_while_an_approval_waits() {
         kept: false,
     };
     thread.snooze = Some(SNOOZE);
-    thread.arrange(Arrange::Settle, 7_000).unwrap();
+    thread
+        .arrange(Arrange::Settle, 7_000, DEFAULT_LIMIT)
+        .unwrap();
     assert_eq!(thread.placement, Placement::Settled { at_ms: 7_000 });
     assert_eq!(thread.snooze, None);
     thread.snooze = Some(SNOOZE);
-    thread.arrange(Arrange::Settle, 8_000).unwrap();
+    thread
+        .arrange(Arrange::Settle, 8_000, DEFAULT_LIMIT)
+        .unwrap();
     assert_eq!(thread.placement, Placement::Settled { at_ms: 7_000 });
     assert_eq!(thread.snooze, None);
     let mut waiting = idle_thread(Some(1_000), Some(2_000));
@@ -2201,7 +2224,9 @@ fn settling_clears_pin_and_snooze_and_is_refused_while_an_approval_waits() {
         kept: false,
     };
     waiting.approvals.push(pending_approval(&waiting));
-    let refused = waiting.arrange(Arrange::Settle, 7_000).unwrap_err();
+    let refused = waiting
+        .arrange(Arrange::Settle, 7_000, DEFAULT_LIMIT)
+        .unwrap_err();
     assert_eq!(refused.code, "settle_blocked");
     assert_eq!(
         waiting.placement,
@@ -2215,11 +2240,13 @@ fn settling_clears_pin_and_snooze_and_is_refused_while_an_approval_waits() {
 fn unsettling_keeps_settled_threads_active_and_leaves_pins_alone() {
     let mut settled = idle_thread(Some(1_000), Some(2_000));
     settled.placement = Placement::Settled { at_ms: 7_000 };
-    settled.arrange(Arrange::Unsettle, 8_000).unwrap();
+    settled
+        .arrange(Arrange::Unsettle, 8_000, DEFAULT_LIMIT)
+        .unwrap();
     assert_eq!(settled.placement, Placement::Kept);
     let mut auto_settled = idle_thread(Some(1_000), Some(2_000));
     auto_settled
-        .arrange(Arrange::Unsettle, 2_000 + 4 * DAY_MS)
+        .arrange(Arrange::Unsettle, 2_000 + 4 * DAY_MS, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(auto_settled.placement, Placement::Kept);
     let mut pinned = idle_thread(Some(1_000), Some(2_000));
@@ -2227,7 +2254,9 @@ fn unsettling_keeps_settled_threads_active_and_leaves_pins_alone() {
         at_ms: 5_000,
         kept: false,
     };
-    pinned.arrange(Arrange::Unsettle, 8_000).unwrap();
+    pinned
+        .arrange(Arrange::Unsettle, 8_000, DEFAULT_LIMIT)
+        .unwrap();
     assert_eq!(
         pinned.placement,
         Placement::Pinned {
@@ -2249,7 +2278,7 @@ fn snoozing_keeps_the_placement_and_the_first_snooze_time_for_the_same_wake() {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
         thread.placement = placement;
         thread
-            .arrange(Arrange::Snooze { until_ms: 10_000 }, 6_000)
+            .arrange(Arrange::Snooze { until_ms: 10_000 }, 6_000, DEFAULT_LIMIT)
             .unwrap();
         assert_eq!(thread.placement, placement);
         assert_eq!(
@@ -2260,7 +2289,7 @@ fn snoozing_keeps_the_placement_and_the_first_snooze_time_for_the_same_wake() {
             })
         );
         thread
-            .arrange(Arrange::Snooze { until_ms: 10_000 }, 7_000)
+            .arrange(Arrange::Snooze { until_ms: 10_000 }, 7_000, DEFAULT_LIMIT)
             .unwrap();
         assert_eq!(
             thread.snooze,
@@ -2270,7 +2299,7 @@ fn snoozing_keeps_the_placement_and_the_first_snooze_time_for_the_same_wake() {
             })
         );
         thread
-            .arrange(Arrange::Snooze { until_ms: 12_000 }, 7_000)
+            .arrange(Arrange::Snooze { until_ms: 12_000 }, 7_000, DEFAULT_LIMIT)
             .unwrap();
         assert_eq!(
             thread.snooze,
@@ -2286,14 +2315,14 @@ fn snoozing_is_refused_for_a_wake_time_not_in_the_future_or_while_an_approval_wa
     let mut thread = idle_thread(Some(1_000), Some(2_000));
     for until_ms in [6_000, 5_999] {
         let refused = thread
-            .arrange(Arrange::Snooze { until_ms }, 6_000)
+            .arrange(Arrange::Snooze { until_ms }, 6_000, DEFAULT_LIMIT)
             .unwrap_err();
         assert_eq!(refused.code, "snooze_in_past");
         assert_eq!(refused.message, "Choose a wake time in the future.");
     }
     thread.approvals.push(pending_approval(&thread));
     let refused = thread
-        .arrange(Arrange::Snooze { until_ms: 10_000 }, 6_000)
+        .arrange(Arrange::Snooze { until_ms: 10_000 }, 6_000, DEFAULT_LIMIT)
         .unwrap_err();
     assert_eq!(refused.code, "snooze_blocked");
     assert_eq!(
@@ -2310,7 +2339,7 @@ fn waking_clears_only_the_snooze() {
         kept: false,
     };
     thread.snooze = Some(SNOOZE);
-    thread.arrange(Arrange::Wake, 6_000).unwrap();
+    thread.arrange(Arrange::Wake, 6_000, DEFAULT_LIMIT).unwrap();
     assert_eq!(thread.snooze, None);
     assert_eq!(
         thread.placement,
@@ -2332,7 +2361,7 @@ fn a_snoozed_pinned_thread_keeps_its_pin_and_reports_its_wake_time() {
         until_ms,
         at_ms: 3_000,
     });
-    let summary = thread.summary();
+    let summary = thread.summary(DEFAULT_LIMIT);
     assert_eq!(summary.pinned_at_ms, Some(2_500));
     assert_eq!(summary.snoozed_until_ms, Some(until_ms));
     assert_eq!(summary.settled_at_ms, None);
@@ -2362,7 +2391,7 @@ fn a_snoozed_thread_raises_its_hand_for_a_newer_result_or_an_approval() {
     waiting.snooze = Some(SNOOZE);
     waiting.approvals.push(pending_approval(&waiting));
     assert_eq!(waiting.snoozed_until(), None);
-    assert_eq!(waiting.summary().snoozed_until_ms, None);
+    assert_eq!(waiting.summary(DEFAULT_LIMIT).snoozed_until_ms, None);
 }
 #[test]
 fn an_idle_pinned_thread_reads_as_settled_and_not_pinned() {
@@ -2371,9 +2400,15 @@ fn an_idle_pinned_thread_reads_as_settled_and_not_pinned() {
         at_ms: 2_500,
         kept: false,
     };
-    assert_eq!(thread.settled_at(2_000 + 3 * DAY_MS - 1), None);
-    assert_eq!(thread.settled_at(2_000 + 3 * DAY_MS), Some(2_000));
-    let summary = thread.summary();
+    assert_eq!(
+        thread.settled_at(2_000 + 3 * DAY_MS - 1, DEFAULT_LIMIT),
+        None
+    );
+    assert_eq!(
+        thread.settled_at(2_000 + 3 * DAY_MS, DEFAULT_LIMIT),
+        Some(2_000)
+    );
+    let summary = thread.summary(DEFAULT_LIMIT);
     assert_eq!(summary.settled_at_ms, Some(2_000));
     assert_eq!(summary.pinned_at_ms, None);
 }
@@ -2386,18 +2421,18 @@ fn unsettling_an_auto_settled_pinned_thread_stores_kept_without_the_pin() {
     };
     thread.snooze = Some(SNOOZE);
     thread
-        .arrange(Arrange::Unsettle, 2_000 + 4 * DAY_MS)
+        .arrange(Arrange::Unsettle, 2_000 + 4 * DAY_MS, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(thread.placement, Placement::Kept);
     assert_eq!(thread.snooze, None);
-    assert_eq!(thread.summary().pinned_at_ms, None);
+    assert_eq!(thread.summary(DEFAULT_LIMIT).pinned_at_ms, None);
 }
 #[test]
 fn pinning_a_settled_thread_keeps_it_from_auto_settling() {
     let mut thread = idle_thread(Some(1_000), Some(2_000));
     let now = 2_000 + 4 * DAY_MS;
-    assert_eq!(thread.settled_at(now), Some(2_000));
-    thread.arrange(Arrange::Pin, now).unwrap();
+    assert_eq!(thread.settled_at(now, DEFAULT_LIMIT), Some(2_000));
+    thread.arrange(Arrange::Pin, now, DEFAULT_LIMIT).unwrap();
     assert_eq!(
         thread.placement,
         Placement::Pinned {
@@ -2405,8 +2440,8 @@ fn pinning_a_settled_thread_keeps_it_from_auto_settling() {
             kept: true
         }
     );
-    assert_eq!(thread.settled_at(u64::MAX), None);
-    let summary = thread.summary();
+    assert_eq!(thread.settled_at(u64::MAX, DEFAULT_LIMIT), None);
+    let summary = thread.summary(DEFAULT_LIMIT);
     assert_eq!(summary.pinned_at_ms, Some(now));
     assert_eq!(summary.settled_at_ms, None);
 }
@@ -2417,7 +2452,7 @@ fn activity_drops_the_keep_from_a_pinned_thread() {
         at_ms: 2_500,
         kept: true,
     };
-    thread.record_activity(2_000 + 4 * DAY_MS);
+    thread.record_activity(2_000 + 4 * DAY_MS, DEFAULT_LIMIT);
     assert_eq!(
         thread.placement,
         Placement::Pinned {
@@ -2450,8 +2485,11 @@ fn snoozed_threads_auto_settle_only_after_they_wake() {
         until_ms: 2_000 + 5 * DAY_MS,
         at_ms: 2_500,
     });
-    assert_eq!(thread.settled_at(2_000 + 4 * DAY_MS), None);
-    assert_eq!(thread.settled_at(2_000 + 5 * DAY_MS), Some(2_000));
+    assert_eq!(thread.settled_at(2_000 + 4 * DAY_MS, DEFAULT_LIMIT), None);
+    assert_eq!(
+        thread.settled_at(2_000 + 5 * DAY_MS, DEFAULT_LIMIT),
+        Some(2_000)
+    );
 }
 #[tokio::test]
 async fn pins_and_snoozes_persist_across_reopen_and_reach_the_summary() {
@@ -2556,7 +2594,7 @@ async fn a_new_prompt_returns_an_auto_settled_pinned_thread_to_active_without_it
     })
     .await;
     assert_eq!(done.placement, Placement::Auto);
-    let summary = done.summary();
+    let summary = done.summary(DEFAULT_LIMIT);
     assert_eq!(summary.settled_at_ms, None);
     assert_eq!(summary.pinned_at_ms, None);
     app.shutdown().await.unwrap();
@@ -2624,7 +2662,7 @@ async fn a_new_approval_returns_kept_threads_to_auto_keeps_pins_and_raises_a_sno
         }
         assert_eq!(waiting.snooze, before.snooze);
         assert_eq!(waiting.snooze.unwrap().until_ms, until_ms);
-        assert_eq!(waiting.summary().snoozed_until_ms, None);
+        assert_eq!(waiting.summary(DEFAULT_LIMIT).snoozed_until_ms, None);
         app.shutdown().await.unwrap();
     }
 }
@@ -2634,7 +2672,7 @@ fn snoozing_again_after_a_raised_hand_takes_a_fresh_snooze_time() {
     thread.snooze = Some(SNOOZE);
     assert_eq!(thread.snoozed_until(), None);
     thread
-        .arrange(Arrange::Snooze { until_ms: 10_000 }, 6_000)
+        .arrange(Arrange::Snooze { until_ms: 10_000 }, 6_000, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(
         thread.snooze,
@@ -2644,4 +2682,210 @@ fn snoozing_again_after_a_raised_hand_takes_a_fresh_snooze_time() {
         })
     );
     assert_eq!(thread.snoozed_until(), Some(10_000));
+}
+struct Projects {
+    alpha: WorkspaceId,
+    beta: WorkspaceId,
+    scratch: WorkspaceId,
+    threads: [ThreadId; 3],
+}
+async fn finished_thread(app: &App, workspace: &WorkspaceId, checkout: NewCheckout) -> ThreadId {
+    let thread = app
+        .create_thread(workspace.clone(), checkout)
+        .await
+        .unwrap();
+    app.submit(thread.id.clone(), thread.id.to_string(), "hello".into())
+        .await
+        .unwrap();
+    wait(app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    thread.id
+}
+// One finished thread in each of two repositories and No project, all idle for 2 days.
+async fn two_day_old_projects(f: &Fixture) -> Projects {
+    let app = App::open(f.config.clone()).await.unwrap();
+    let second = f.repository.with_file_name("second");
+    std::fs::create_dir(&second).unwrap();
+    git_output(&second, &["init", "-q", "-b", "main"]);
+    let alpha = app.open_workspace(f.repository.clone()).await.unwrap().id;
+    let beta = app.open_workspace(second).await.unwrap().id;
+    let scratch = app.ensure_scratch().await.unwrap().id;
+    let threads = [
+        finished_thread(&app, &alpha, NewCheckout::Local).await,
+        finished_thread(&app, &beta, NewCheckout::Local).await,
+        finished_thread(
+            &app,
+            &scratch,
+            NewCheckout::Folder {
+                prompt: "hello".into(),
+            },
+        )
+        .await,
+    ];
+    app.shutdown().await.unwrap();
+    for id in &threads {
+        age_turns(f, id, 2 * DAY_MS);
+    }
+    Projects {
+        alpha,
+        beta,
+        scratch,
+        threads,
+    }
+}
+async fn settled_by_project(app: &App, projects: &Projects) -> [bool; 3] {
+    let mut settled = [false; 3];
+    for (n, workspace) in [&projects.alpha, &projects.beta, &projects.scratch]
+        .into_iter()
+        .enumerate()
+    {
+        let view = app.workspace_view(workspace.clone(), None).await.unwrap();
+        settled[n] = settled_at_ms(&view, &projects.threads[n]).is_some();
+    }
+    settled
+}
+fn write_settings(f: &Fixture, settings: &serde_json::Value) {
+    std::fs::write(
+        f.config.data_dir.join("settings.json"),
+        settings.to_string(),
+    )
+    .unwrap();
+}
+#[tokio::test]
+async fn a_project_override_beats_the_auto_settle_default() {
+    let f = Fixture::new();
+    let projects = two_day_old_projects(&f).await;
+    write_settings(
+        &f,
+        &serde_json::json!({
+            "sidebarAutoSettleAfterDays": 3,
+            "projectOverrides": {
+                projects.alpha.to_string(): {"sidebarAutoSettleAfterDays": 1},
+            },
+        }),
+    );
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        settled_by_project(&app, &projects).await,
+        [true, false, false]
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn a_null_project_override_turns_auto_settle_off_for_that_project_only() {
+    let f = Fixture::new();
+    let projects = two_day_old_projects(&f).await;
+    write_settings(
+        &f,
+        &serde_json::json!({
+            "sidebarAutoSettleAfterDays": 1,
+            "projectOverrides": {
+                projects.alpha.to_string(): {"sidebarAutoSettleAfterDays": null},
+            },
+        }),
+    );
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        settled_by_project(&app, &projects).await,
+        [false, true, true]
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn no_project_uses_its_own_override_and_a_null_default_turns_others_off() {
+    let f = Fixture::new();
+    let projects = two_day_old_projects(&f).await;
+    for id in &projects.threads {
+        age_turns(&f, id, 2 * DAY_MS);
+    }
+    write_settings(
+        &f,
+        &serde_json::json!({
+            "sidebarAutoSettleAfterDays": null,
+            "projectOverrides": {
+                projects.scratch.to_string(): {"sidebarAutoSettleAfterDays": 1},
+            },
+        }),
+    );
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        settled_by_project(&app, &projects).await,
+        [false, false, true]
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn a_missing_or_invalid_auto_settle_limit_falls_back_to_three_days() {
+    let f = Fixture::new();
+    let projects = two_day_old_projects(&f).await;
+    let variants = [
+        None,
+        Some("{not json".to_string()),
+        Some(
+            serde_json::json!({
+                "sidebarAutoSettleAfterDays": 0,
+                "projectOverrides": {
+                    projects.alpha.to_string(): {"sidebarAutoSettleAfterDays": 91},
+                    projects.beta.to_string(): {"sidebarAutoSettleAfterDays": "1"},
+                },
+            })
+            .to_string(),
+        ),
+        Some(serde_json::json!({"sidebarAutoSettleAfterDays": "off"}).to_string()),
+    ];
+    for settled in [[false; 3], [true; 3]] {
+        for settings in &variants {
+            let path = f.config.data_dir.join("settings.json");
+            match settings {
+                Some(text) => std::fs::write(&path, text).unwrap(),
+                None => drop(std::fs::remove_file(&path)),
+            }
+            let app = reopen(&f.config).await;
+            assert_eq!(
+                settled_by_project(&app, &projects).await,
+                settled,
+                "{settings:?}"
+            );
+            app.shutdown().await.unwrap();
+        }
+        for id in &projects.threads {
+            age_turns(&f, id, DAY_MS + HOUR_MS);
+        }
+    }
+}
+#[tokio::test]
+async fn saving_settings_reclassifies_threads_without_a_restart() {
+    let f = Fixture::new();
+    let projects = two_day_old_projects(&f).await;
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        settled_by_project(&app, &projects).await,
+        [false, false, false]
+    );
+    let mut changes = app.subscribe();
+    let settings = serde_json::json!({
+        "projectOverrides": {
+            projects.alpha.to_string(): {"sidebarAutoSettleAfterDays": 1},
+        },
+    });
+    app.save_settings(&settings.to_string()).await.unwrap();
+    let hint = changes.try_recv().unwrap();
+    assert_eq!(hint.thread_id, projects.threads[0]);
+    assert!(hint.summary.settled_at_ms.is_some());
+    assert!(changes.try_recv().is_err());
+    assert_eq!(
+        settled_by_project(&app, &projects).await,
+        [true, false, false]
+    );
+    app.save_settings("{}").await.unwrap();
+    let hint = changes.try_recv().unwrap();
+    assert_eq!(hint.thread_id, projects.threads[0]);
+    assert_eq!(hint.summary.settled_at_ms, None);
+    assert_eq!(
+        settled_by_project(&app, &projects).await,
+        [false, false, false]
+    );
+    app.shutdown().await.unwrap();
 }

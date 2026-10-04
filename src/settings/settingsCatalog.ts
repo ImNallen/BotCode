@@ -6,7 +6,7 @@ import {
   Settings2Icon,
 } from "lucide-react";
 import { z } from "zod";
-import type { NewThreadSetting } from "./preferences";
+import type { ProjectSetting } from "./preferences";
 import type { SettingsScope } from "./settingsScope";
 
 export const settingsSection = z.enum([
@@ -22,6 +22,8 @@ export type SettingsRowInfo = {
   title: string;
   description: string;
   keywords?: string;
+  // Rows for a project-scoped setting read and write the picked project's override.
+  setting?: ProjectSetting;
 };
 type SettingsGroupInfo = {
   id: string;
@@ -39,7 +41,7 @@ type SettingsCategory = {
   groups: SettingsGroupInfo[];
 };
 
-export const newThreadRows = {
+export const projectSettingRows = {
   newThreadCheckout: {
     title: "Workspace",
     all: "Where new threads start. Projects can override it.",
@@ -55,8 +57,17 @@ export const newThreadRows = {
     resetLabel: "new worktrees start from origin",
     keywords: "new worktrees latest matching remote branch local",
   },
+  sidebarAutoSettleAfterDays: {
+    title: "Auto-settle inactive threads",
+    all: "Sidebar threads with no activity for this long settle automatically. Projects can override it.",
+    project:
+      "Sidebar threads with no activity for this long settle automatically.",
+    resetLabel: "auto-settle",
+    keywords:
+      "sidebar inactivity days no activity automatically days of inactivity before auto-settle thread timeout activity",
+  },
 } satisfies Record<
-  NewThreadSetting,
+  ProjectSetting,
   {
     title: string;
     all: string;
@@ -65,6 +76,12 @@ export const newThreadRows = {
     keywords: string;
   }
 >;
+
+export const autoSettleDaysRow = {
+  id: "auto-settle-days",
+  title: "Days of inactivity before auto-settle",
+  description: "Any new activity un-settles a thread automatically.",
+};
 
 export const projectRows = {
   name: {
@@ -75,9 +92,9 @@ export const projectRows = {
   },
   workspace: {
     id: "project-workspace",
-    title: newThreadRows.newThreadCheckout.title,
-    description: newThreadRows.newThreadCheckout.project,
-    keywords: newThreadRows.newThreadCheckout.keywords,
+    title: projectSettingRows.newThreadCheckout.title,
+    description: projectSettingRows.newThreadCheckout.project,
+    keywords: projectSettingRows.newThreadCheckout.keywords,
   },
   remove: {
     id: "project-remove",
@@ -138,15 +155,31 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         rows: [
           {
             id: "workspace",
-            title: newThreadRows.newThreadCheckout.title,
-            description: newThreadRows.newThreadCheckout.all,
-            keywords: newThreadRows.newThreadCheckout.keywords,
+            title: projectSettingRows.newThreadCheckout.title,
+            description: projectSettingRows.newThreadCheckout.all,
+            keywords: projectSettingRows.newThreadCheckout.keywords,
+            setting: "newThreadCheckout",
           },
           {
             id: "start-from-origin",
-            title: newThreadRows.newWorktreesStartFromOrigin.title,
-            description: newThreadRows.newWorktreesStartFromOrigin.all,
-            keywords: newThreadRows.newWorktreesStartFromOrigin.keywords,
+            title: projectSettingRows.newWorktreesStartFromOrigin.title,
+            description: projectSettingRows.newWorktreesStartFromOrigin.all,
+            keywords: projectSettingRows.newWorktreesStartFromOrigin.keywords,
+            setting: "newWorktreesStartFromOrigin",
+          },
+        ],
+      },
+      {
+        id: "organization",
+        title: "Organization",
+        when: "available",
+        rows: [
+          {
+            id: "auto-settle",
+            title: projectSettingRows.sidebarAutoSettleAfterDays.title,
+            description: projectSettingRows.sidebarAutoSettleAfterDays.all,
+            keywords: projectSettingRows.sidebarAutoSettleAfterDays.keywords,
+            setting: "sidebarAutoSettleAfterDays",
           },
         ],
       },
@@ -159,7 +192,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "restore",
             title: "Restore defaults",
             description:
-              "Reset appearance, font sizes and new thread defaults, including project overrides, on this device.",
+              "Reset appearance, font sizes, new thread defaults and auto-settle, including project overrides, on this device.",
           },
         ],
       },

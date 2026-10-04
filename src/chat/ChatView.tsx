@@ -28,7 +28,7 @@ import { cn } from "../lib/cn";
 import { newWithoutProjectShortcut } from "../lib/shortcuts";
 import {
   type CheckoutMode,
-  newThreadDefaults,
+  projectSetting,
   usePreferences,
 } from "../settings/preferences";
 import { WorkspaceBadge } from "../ProjectBadge";
@@ -86,10 +86,17 @@ export function ChatView({
     effort: null,
     permissionMode: "approval-required",
   });
-  const { newThreadCheckout, newWorktreesStartFromOrigin } = newThreadDefaults(
-    usePreferences().preferences,
+  const { preferences } = usePreferences();
+  const newThreadCheckout = projectSetting(
+    preferences,
     workspaceId,
-  ).values;
+    "newThreadCheckout",
+  ).value;
+  const newWorktreesStartFromOrigin = projectSetting(
+    preferences,
+    workspaceId,
+    "newWorktreesStartFromOrigin",
+  ).value;
   const draftDefaults = (): DraftCheckout => ({
     mode: newThreadCheckout,
     base: null,

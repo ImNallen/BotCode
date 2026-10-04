@@ -145,5 +145,5 @@ pub async fn settings(app: State<'_, App>) -> Result<Option<String>> {
 }
 #[tauri::command]
 pub async fn save_settings(app: State<'_, App>, text: String) -> Result<()> {
-    app.save_settings(&text)
+    app.save_settings(&text).await
 }

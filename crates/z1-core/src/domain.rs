@@ -303,7 +303,7 @@ pub struct Branches {
     pub branches: Vec<Branch>,
     pub origin: bool,
 }
-// T3 v0.0.45 sidebarAutoSettleAfterDays default.
+// T3 v0.0.45 sidebarAutoSettleAfterDays default. settings.json can change it per project.
 pub const AUTO_SETTLE_AFTER_MS: u64 = 3 * 24 * 60 * 60 * 1000;
 // Ports T3 v0.0.45 pinnedAt and settledOverride (orchestration/projector.ts,
 // ThreadSettlementPolicy.ts). Pin and settle exclude each other, so one value holds both.
@@ -415,11 +415,13 @@ impl ThreadSnapshot {
             .map(|snooze| snooze.until_ms)
     }
     // Auto-settling is derived on every read, so it needs no timer and survives restarts.
-    pub fn settled_at(&self, now: u64) -> Option<u64> {
+    // `after_ms` is the project's idle limit, and `None` turns auto-settling off.
+    pub fn settled_at(&self, now: u64, after_ms: Option<u64>) -> Option<u64> {
         match self.placement {
             Placement::Settled { at_ms } => Some(at_ms),
             Placement::Kept | Placement::Pinned { kept: true, .. } => None,
             Placement::Auto | Placement::Pinned { kept: false, .. } => {
+                let after_ms = after_ms?;
                 let busy = matches!(
                     self.session,
                     SessionState::Connecting | SessionState::Running | SessionState::Interrupting
@@ -434,24 +436,24 @@ impl ThreadSnapshot {
                 (!busy
                     && !snoozed
                     && !self.approval_open()
-                    && now.saturating_sub(last_activity) >= AUTO_SETTLE_AFTER_MS)
+                    && now.saturating_sub(last_activity) >= after_ms)
                     .then_some(last_activity)
             }
         }
     }
     // Stores a due auto-settle as T3's thread.auto-settle command would: settled at the last
     // activity, with the pin and the snooze cleared.
-    pub fn auto_settle(&mut self, now: u64) {
+    pub fn auto_settle(&mut self, now: u64, after_ms: Option<u64>) {
         if let (Placement::Auto | Placement::Pinned { .. }, Some(at_ms)) =
-            (self.placement, self.settled_at(now))
+            (self.placement, self.settled_at(now, after_ms))
         {
             self.placement = Placement::Settled { at_ms };
             self.snooze = None;
         }
     }
     // Ports the activity reset of decider.ts: it wakes a settled thread and clears a keep.
-    pub fn record_activity(&mut self, now: u64) {
-        self.auto_settle(now);
+    pub fn record_activity(&mut self, now: u64, after_ms: Option<u64>) {
+        self.auto_settle(now, after_ms);
         self.placement = match self.placement {
             Placement::Settled { .. } | Placement::Kept => Placement::Auto,
             Placement::Pinned { at_ms, .. } => Placement::Pinned { at_ms, kept: false },
@@ -459,8 +461,8 @@ impl ThreadSnapshot {
         };
     }
     // Ports the pin, settle and snooze rules of orchestration/decider.ts.
-    pub fn arrange(&mut self, action: Arrange, now: u64) -> Result<()> {
-        self.auto_settle(now);
+    pub fn arrange(&mut self, action: Arrange, now: u64, after_ms: Option<u64>) -> Result<()> {
+        self.auto_settle(now, after_ms);
         match action {
             Arrange::Pin => {
                 self.placement = match self.placement {
@@ -529,8 +531,8 @@ impl ThreadSnapshot {
         }
         Ok(())
     }
-    pub fn summary(&self) -> ThreadSummary {
-        let settled_at_ms = self.settled_at(now_ms());
+    pub fn summary(&self, auto_settle_after_ms: Option<u64>) -> ThreadSummary {
+        let settled_at_ms = self.settled_at(now_ms(), auto_settle_after_ms);
         ThreadSummary {
             id: self.id.clone(),
             title: self.title.clone(),
@@ -577,13 +579,13 @@ pub struct ChangeHint {
     pub refresh_workspace: bool,
     pub summary: ThreadSummary,
 }
-impl From<&ThreadSnapshot> for ChangeHint {
-    fn from(thread: &ThreadSnapshot) -> Self {
+impl ChangeHint {
+    pub fn new(thread: &ThreadSnapshot, auto_settle_after_ms: Option<u64>) -> Self {
         Self {
             thread_id: thread.id.clone(),
             workspace_id: thread.workspace_id.clone(),
             revision: thread.revision,
-            summary: thread.summary(),
+            summary: thread.summary(auto_settle_after_ms),
             refresh_workspace: matches!(
                 thread.session,
                 SessionState::Ready | SessionState::Unavailable { .. }

@@ -16,16 +16,20 @@ const favoriteModelSchema = z.object({
 });
 export type FavoriteModel = Readonly<z.infer<typeof favoriteModelSchema>>;
 
-const newThreadSchema = z.object({
+export const autoSettleDefaultDays = 3;
+// Settings that a project can override. Null auto-settle days turn auto-settling off.
+const projectSchema = z.object({
   newThreadCheckout: z.enum(["local", "worktree"]),
   newWorktreesStartFromOrigin: z.boolean(),
+  sidebarAutoSettleAfterDays: z.number().min(1).max(90).nullable(),
 });
-export type NewThreadValues = z.infer<typeof newThreadSchema>;
-export type NewThreadSetting = keyof NewThreadValues;
-export type ProjectOverride = Partial<NewThreadValues>;
-export const builtInNewThread: NewThreadValues = {
+export type ProjectValues = z.infer<typeof projectSchema>;
+export type ProjectSetting = keyof ProjectValues;
+export type ProjectOverride = Partial<ProjectValues>;
+export const builtInProject: ProjectValues = {
   newThreadCheckout: "local",
   newWorktreesStartFromOrigin: true,
+  sidebarAutoSettleAfterDays: autoSettleDefaultDays,
 };
 
 const schema = z.object({
@@ -33,8 +37,8 @@ const schema = z.object({
   promptFontSize: z.number().int().min(12).max(20),
   codeFontSize: z.number().int().min(11).max(20),
   favoriteModels: z.array(favoriteModelSchema),
-  ...newThreadSchema.shape,
-  projectOverrides: z.record(z.uuid(), newThreadSchema.partial()),
+  ...projectSchema.shape,
+  projectOverrides: z.record(z.uuid(), projectSchema.partial()),
 });
 type Preferences = Readonly<z.infer<typeof schema>>;
 export const checkoutModeLabels = {
@@ -47,7 +51,7 @@ const defaults: Preferences = {
   promptFontSize: 14,
   codeFontSize: 13,
   favoriteModels: [],
-  ...builtInNewThread,
+  ...builtInProject,
   projectOverrides: {},
 };
 const storageKey = "z1:preferences:v1";
@@ -97,6 +101,7 @@ function readPreferences(): PreferenceState {
         favoriteModels: z.unknown().optional(),
         newThreadCheckout: z.unknown().optional(),
         newWorktreesStartFromOrigin: z.unknown().optional(),
+        sidebarAutoSettleAfterDays: z.unknown().optional(),
         projectOverrides: z.unknown().optional(),
       })
       .parse(JSON.parse(stored));
@@ -114,6 +119,10 @@ function readPreferences(): PreferenceState {
       schema.shape.newWorktreesStartFromOrigin.safeParse(
         object.newWorktreesStartFromOrigin,
       );
+    const sidebarAutoSettleAfterDays =
+      schema.shape.sidebarAutoSettleAfterDays.safeParse(
+        object.sidebarAutoSettleAfterDays,
+      );
     const favorites = schema.shape.favoriteModels.safeParse(
       object.favoriteModels,
     );
@@ -126,20 +135,17 @@ function readPreferences(): PreferenceState {
       ).flatMap(([id, value]) => {
         const parsed = z.record(z.string(), z.unknown()).safeParse(value);
         if (!z.uuid().safeParse(id).success || !parsed.success) return [];
-        const entry = parsed.data;
-        const checkout = newThreadSchema.shape.newThreadCheckout.safeParse(
-          entry.newThreadCheckout,
+        const override = projectSchema.partial().parse(
+          Object.fromEntries(
+            projectSchema
+              .keyof()
+              .options.filter(
+                (key) =>
+                  projectSchema.shape[key].safeParse(parsed.data[key]).success,
+              )
+              .map((key) => [key, parsed.data[key]]),
+          ),
         );
-        const fromOrigin =
-          newThreadSchema.shape.newWorktreesStartFromOrigin.safeParse(
-            entry.newWorktreesStartFromOrigin,
-          );
-        const override: ProjectOverride = {
-          ...(checkout.success ? { newThreadCheckout: checkout.data } : {}),
-          ...(fromOrigin.success
-            ? { newWorktreesStartFromOrigin: fromOrigin.data }
-            : {}),
-        };
         return Object.keys(override).length > 0 ? [[id, override]] : [];
       }),
     );
@@ -168,6 +174,9 @@ function readPreferences(): PreferenceState {
         newWorktreesStartFromOrigin: newWorktreesStartFromOrigin.success
           ? newWorktreesStartFromOrigin.data
           : defaults.newWorktreesStartFromOrigin,
+        sidebarAutoSettleAfterDays: sidebarAutoSettleAfterDays.success
+          ? sidebarAutoSettleAfterDays.data
+          : defaults.sidebarAutoSettleAfterDays,
         projectOverrides,
       },
       persistenceError:
@@ -267,26 +276,18 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function newThreadDefaults(
+export function projectSetting<K extends ProjectSetting>(
   preferences: Preferences,
   workspaceId: string | undefined,
-): { values: NewThreadValues; overridden: Record<NewThreadSetting, boolean> } {
+  key: K,
+): { value: ProjectValues[K]; overridden: boolean } {
   const override =
-    workspaceId === undefined ? {} : preferences.projectOverrides[workspaceId];
-  return {
-    values: {
-      newThreadCheckout:
-        override?.newThreadCheckout ?? preferences.newThreadCheckout,
-      newWorktreesStartFromOrigin:
-        override?.newWorktreesStartFromOrigin ??
-        preferences.newWorktreesStartFromOrigin,
-    },
-    overridden: {
-      newThreadCheckout: override?.newThreadCheckout !== undefined,
-      newWorktreesStartFromOrigin:
-        override?.newWorktreesStartFromOrigin !== undefined,
-    },
-  };
+    workspaceId === undefined
+      ? undefined
+      : preferences.projectOverrides[workspaceId]?.[key];
+  return override === undefined
+    ? { value: preferences[key], overridden: false }
+    : { value: override as ProjectValues[K], overridden: true };
 }
 
 export function usePreferences() {
