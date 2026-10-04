@@ -119,7 +119,7 @@ Collaborative-preview checks confirmed favorite-first Codex ordering, Favorites 
 
 Verified on 2026-10-03 with Codex 0.160.0 against the pinned T3 Code v0.0.45 source. All 24 core tests passed in parallel. Frontend typechecking, production build, Prettier, rustfmt, and the debug Mac bundle passed.
 
-Core checks cover the `z1/<id>` branch and its directory under `worktrees/<repository>/`, the `thread/start` cwd for local and worktree threads, and a worktree turn that completes while a local turn holds the checkout lease. A second local thread still receives `checkout_busy`. A repository without commits rejects a worktree thread and creates no directory. Legacy snapshots load as local threads. Worktree views list worktree files and branches only, and a thread from another repository is rejected. Moving the lease key or the cwd back to the repository root fails the concurrency and cwd tests.
+Core checks cover the `z1code/<id>` branch and its directory under `worktrees/<repository>/`, the `thread/start` cwd for local and worktree threads, and a worktree turn that completes while a local turn holds the checkout lease. A second local thread still receives `checkout_busy`. A repository without commits rejects a worktree thread and creates no directory. Legacy snapshots load as local threads. Worktree views list worktree files and branches only, and a thread from another repository is rejected. Moving the lease key or the cwd back to the repository root fails the concurrency and cwd tests.
 
 The native debug bundle used a disposable one-commit repository, an isolated `Z1_DATA_DIR`, and the temporary identifier `dev.z1.code.worktreeverify`. At 1100×780:
 
