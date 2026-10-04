@@ -2450,3 +2450,20 @@ async fn a_new_approval_returns_kept_threads_to_auto_keeps_pins_and_raises_a_sno
         app.shutdown().await.unwrap();
     }
 }
+#[test]
+fn snoozing_again_after_a_raised_hand_takes_a_fresh_snooze_time() {
+    let mut thread = idle_thread(Some(1_000), Some(4_000));
+    thread.snooze = Some(SNOOZE);
+    assert_eq!(thread.snoozed_until(), None);
+    thread
+        .arrange(Arrange::Snooze { until_ms: 10_000 }, 6_000)
+        .unwrap();
+    assert_eq!(
+        thread.snooze,
+        Some(Snooze {
+            until_ms: 10_000,
+            at_ms: 6_000
+        })
+    );
+    assert_eq!(thread.snoozed_until(), Some(10_000));
+}

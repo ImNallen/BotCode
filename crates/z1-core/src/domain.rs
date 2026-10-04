@@ -480,8 +480,12 @@ impl ThreadSnapshot {
                         "Answer the pending approval before snoozing this thread.",
                     ));
                 }
+                // A raised hand would stay raised under the old time, so only a
+                // snooze that still holds keeps it.
                 let at_ms = match self.snooze {
-                    Some(snooze) if snooze.until_ms == until_ms => snooze.at_ms,
+                    Some(snooze) if snooze.until_ms == until_ms && !self.raised_hand(&snooze) => {
+                        snooze.at_ms
+                    }
                     _ => now,
                 };
                 self.snooze = Some(Snooze { until_ms, at_ms });
