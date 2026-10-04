@@ -117,11 +117,7 @@ pub fn add_worktree(
             start.as_deref().unwrap_or(base),
         ],
     )?;
-    // The pull request base. gh reads the same key, so `gh pr create` agrees with Z1.
-    git(
-        root,
-        &["config", &format!("branch.{branch}.gh-merge-base"), base],
-    )?;
+    git(root, &["config", &merge_base_key(&branch), base])?;
     Ok(Checkout::Worktree {
         path: path.canonicalize()?,
         branch,
@@ -156,7 +152,10 @@ pub fn switch_branch(root: &Path, name: &str, create: bool) -> Result<String> {
     let current = git(root, &["branch", "--show-current"])?;
     Ok(String::from_utf8_lossy(&current).trim().to_owned())
 }
-fn branch_name(root: &Path, name: &str) -> Result<()> {
+pub(crate) fn merge_base_key(branch: &str) -> String {
+    format!("branch.{branch}.gh-merge-base")
+}
+pub(crate) fn branch_name(root: &Path, name: &str) -> Result<()> {
     git(root, &["check-ref-format", "--branch", name])
         .map(drop)
         .map_err(|_| {

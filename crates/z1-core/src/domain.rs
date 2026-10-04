@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppError {
     pub code: String,
@@ -639,4 +639,160 @@ pub enum DiffView {
     Unavailable {
         reason: String,
     },
+}
+/// A checkout's local Git state. Reading it never touches the network.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatus {
+    /// `None` on a detached HEAD.
+    pub branch: Option<BranchStatus>,
+    /// `git remote get-url origin` succeeds.
+    pub origin: bool,
+    /// Changes against HEAD, untracked files included with 0/0. Empty when clean.
+    pub files: Vec<FileStat>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchStatus {
+    pub name: String,
+    pub is_default: bool,
+    /// The branch a pull request targets: `branch.<name>.gh-merge-base`, else the branch it
+    /// was cut from when it still tracks it, else the default branch.
+    pub base: String,
+    /// Commits on HEAD that `origin/<base>` (else `<base>`) lacks. 0 on the default branch.
+    pub ahead_of_base: u32,
+    /// `None` until the branch tracks a remote branch of the same name.
+    pub upstream: Option<Tracking>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tracking {
+    pub remote: String,
+    pub branch: String,
+    pub ahead: u32,
+    pub behind: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileStat {
+    pub path: String,
+    pub insertions: u32,
+    pub deletions: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequest {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub base: String,
+    pub head: String,
+}
+/// The open pull request for a branch, as gh reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PrLookup {
+    None,
+    Open { pr: PullRequest },
+    Unavailable { reason: GhProblem, message: String },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GhProblem {
+    Missing,
+    Unauthenticated,
+    /// Network, timeout or a non-GitHub origin.
+    Failed,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GitAction {
+    Commit { message: CommitMessage },
+    CommitPush { message: CommitMessage },
+    CommitPushPr { message: CommitMessage },
+    Push,
+    CreatePr,
+    Pull,
+}
+/// Trimmed, non-empty and at most 10,000 bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CommitMessage(String);
+impl TryFrom<String> for CommitMessage {
+    type Error = AppError;
+    fn try_from(value: String) -> Result<Self> {
+        let message = value.trim();
+        if message.is_empty() || message.len() > 10_000 {
+            return Err(AppError::new(
+                "invalid_commit_message",
+                "Write a commit message of up to 10,000 characters.",
+            ));
+        }
+        Ok(Self(message.into()))
+    }
+}
+impl From<CommitMessage> for String {
+    fn from(message: CommitMessage) -> Self {
+        message.0
+    }
+}
+impl CommitMessage {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub fn subject(&self) -> &str {
+        self.0.lines().next().unwrap_or_default()
+    }
+}
+/// The step a Git action is running, or the one that stopped it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GitPhase {
+    Commit,
+    Push { remote: String },
+    Pr,
+    Pull,
+}
+/// What a started Git action did. Steps before a failure stay reported.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitOutcome {
+    pub commit: Option<Committed>,
+    pub push: Option<Pushed>,
+    pub pr: Option<PrOpened>,
+    pub pull: Option<Pulled>,
+    pub failure: Option<GitFailure>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Committed {
+    pub sha: String,
+    pub subject: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pushed {
+    pub sha: String,
+    /// "origin/feature".
+    pub upstream: String,
+    pub set_upstream: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrOpened {
+    pub pr: PullRequest,
+    /// False when the branch already had an open pull request.
+    pub created: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pulled {
+    pub upstream: String,
+    pub updated: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFailure {
+    pub phase: GitPhase,
+    pub error: AppError,
 }
