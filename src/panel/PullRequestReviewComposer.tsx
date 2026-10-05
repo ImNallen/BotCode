@@ -1,3 +1,4 @@
+import { changeResultText } from "./prLifecycle";
 import { useState, useSyncExternalStore } from "react";
 import { ipc } from "../ipc";
 import { Button } from "../ui/controls";
@@ -169,7 +170,7 @@ export function PullRequestReviewComposer({
         <p role="status" className="mt-2 text-xs">
           {draft.operation.result.kind === "applied"
             ? `Review submitted (${draft.operation.result.hostId}).`
-            : draft.operation.result.message}
+            : changeResultText(draft.operation.result)}
         </p>
       ) : null}
       {uncertain ? (

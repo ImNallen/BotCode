@@ -1057,3 +1057,28 @@ async fn pending_mutation_refuses_shared_detail_reads_but_allows_receipt_replay_
     assert_eq!(f.mutations().len(), 1);
     app.shutdown().await.unwrap();
 }
+
+#[path = "reviews/lifecycle.rs"]
+mod lifecycle_tests;
+
+#[tokio::test]
+async fn check_conclusions_preserve_startup_failure_and_stale_states() {
+    let f = Fixture::new();
+    let (app, thread) = f.open().await;
+    for conclusion in ["STARTUP_FAILURE", "STALE"] {
+        f.state(json!({"checkConclusion":conclusion}));
+        let detail = app
+            .read_pull_request(thread.clone(), f.key())
+            .await
+            .unwrap();
+        assert_eq!(detail.checks.len(), 1);
+        assert_eq!(detail.checks[0].name, "unit tests");
+        assert_eq!(detail.checks[0].state, conclusion);
+        assert_eq!(
+            detail.checks[0].url.as_deref(),
+            Some("https://github.com/fixture/project/pull/41/checks")
+        );
+        assert!(detail.problems.is_empty());
+    }
+    app.shutdown().await.unwrap();
+}

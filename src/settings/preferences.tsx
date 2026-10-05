@@ -19,6 +19,7 @@ export type FavoriteModel = Readonly<z.infer<typeof favoriteModelSchema>>;
 export const autoSettleDefaultDays = 3;
 // Settings that a project can override. Null auto-settle days turn auto-settling off.
 const projectSchema = z.object({
+  autoSettleOnMerge: z.boolean(),
   newThreadCheckout: z.enum(["local", "worktree"]),
   newWorktreesStartFromOrigin: z.boolean(),
   sidebarAutoSettleAfterDays: z.number().min(1).max(90).nullable(),
@@ -27,6 +28,7 @@ export type ProjectValues = z.infer<typeof projectSchema>;
 export type ProjectSetting = keyof ProjectValues;
 export type ProjectOverride = Partial<ProjectValues>;
 export const builtInProject: ProjectValues = {
+  autoSettleOnMerge: true,
   newThreadCheckout: "local",
   newWorktreesStartFromOrigin: true,
   sidebarAutoSettleAfterDays: autoSettleDefaultDays,
@@ -103,6 +105,7 @@ function readPreferences(): PreferenceState {
       return { preferences: defaults, persistenceError: undefined };
     const object = z
       .object({
+        autoSettleOnMerge: z.unknown().optional(),
         appearance: z.unknown().optional(),
         promptFontSize: z.unknown().optional(),
         codeFontSize: z.unknown().optional(),
@@ -114,6 +117,9 @@ function readPreferences(): PreferenceState {
         storageCleanup: z.unknown().optional(),
       })
       .parse(JSON.parse(stored));
+    const autoSettleOnMerge = schema.shape.autoSettleOnMerge.safeParse(
+      object.autoSettleOnMerge,
+    );
     const appearance = schema.shape.appearance.safeParse(object.appearance);
     const promptFontSize = schema.shape.promptFontSize.safeParse(
       object.promptFontSize,
@@ -195,6 +201,9 @@ function readPreferences(): PreferenceState {
         newWorktreesStartFromOrigin: newWorktreesStartFromOrigin.success
           ? newWorktreesStartFromOrigin.data
           : defaults.newWorktreesStartFromOrigin,
+        autoSettleOnMerge: autoSettleOnMerge.success
+          ? autoSettleOnMerge.data
+          : defaults.autoSettleOnMerge,
         sidebarAutoSettleAfterDays: sidebarAutoSettleAfterDays.success
           ? sidebarAutoSettleAfterDays.data
           : defaults.sidebarAutoSettleAfterDays,

@@ -1,4 +1,5 @@
-use crate::pr_review::{PrChangeResult, PrReviewChange};
+use crate::PullRequestKey;
+use crate::pr_review::{PrChangeResult, PrOperation, PrReviewChange};
 use crate::{
     domain::*,
     pull_requests::{CachedPr, Membership},
@@ -6,11 +7,6 @@ use crate::{
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path};
-#[derive(serde::Serialize, serde::Deserialize)]
-struct PrOperation {
-    input: PrReviewChange,
-    result: PrChangeResult,
-}
 pub struct Store {
     db: Connection,
     _lock: std::fs::File,
@@ -104,6 +100,18 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+    pub fn pending_lifecycle_operations(&self) -> Result<Vec<PrOperation>> {
+        let mut statement = self.db.prepare("SELECT data FROM pull_request_operations WHERE state IN ('started','uncertain','pending')")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut pending = vec![];
+        for row in rows {
+            let operation: PrOperation = serde_json::from_str(&row?)?;
+            if operation.input.action.is_lifecycle() {
+                pending.push(operation);
+            }
+        }
+        Ok(pending)
+    }
     pub fn pr_operation(&self, input: &PrReviewChange) -> Result<Option<PrChangeResult>> {
         let row: Option<(String, String)> = self
             .db
@@ -131,6 +139,28 @@ impl Store {
         }
         Ok(Some(receipt.result))
     }
+    pub fn saved_pr_operation(
+        &self,
+        key: &PullRequestKey,
+        request_id: &str,
+    ) -> Result<PrOperation> {
+        let data: Option<String> = self
+            .db
+            .query_row(
+                "SELECT data FROM pull_request_operations WHERE request_id=?1 AND pr_key=?2",
+                params![request_id, key.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let operation: PrOperation = serde_json::from_str(&data.ok_or_else(|| {
+            AppError::new(
+                "pr_receipt_missing",
+                "No lifecycle receipt exists for this pull request.",
+            )
+        })?)?;
+        self.pr_operation(&operation.input)?;
+        Ok(operation)
+    }
     pub fn start_pr_operation(&self, input: &PrReviewChange) -> Result<()> {
         let result=PrChangeResult::Uncertain{message:"This operation started without a confirmed result. Check GitHub before submitting again.".into()};
         self.db.execute("INSERT INTO pull_request_operations(request_id,pr_key,action_digest,state,data) VALUES(?1,?2,?3,'started',?4)",params![input.request_id,input.target.key.as_str(),format!("{:x}",Sha256::digest(serde_json::to_vec(input)?)),serde_json::to_string(&PrOperation{input:input.clone(),result})?])?;
@@ -141,21 +171,40 @@ impl Store {
         input: &PrReviewChange,
         result: &PrChangeResult,
     ) -> Result<()> {
-        self.db.execute(
-            "UPDATE pull_request_operations SET state=?2,data=?3 WHERE request_id=?1",
-            params![
-                input.request_id,
-                match result {
-                    PrChangeResult::Applied { .. } => "applied",
-                    PrChangeResult::Refused { .. } => "refused",
-                    PrChangeResult::Uncertain { .. } => "uncertain",
-                },
-                serde_json::to_string(&PrOperation {
-                    input: input.clone(),
-                    result: result.clone()
-                })?
-            ],
-        )?;
+        self.finish_pr_operations(&[(input, result)])
+    }
+    pub fn finish_pr_operations(
+        &self,
+        operations: &[(&PrReviewChange, &PrChangeResult)],
+    ) -> Result<()> {
+        let tx = self.db.unchecked_transaction()?;
+        for &(input, result) in operations {
+            let previous = self.pr_operation(input)?.ok_or_else(|| {
+                AppError::new("pr_receipt_missing", "The pull request receipt is missing.")
+            })?;
+            if !previous.pending() {
+                continue;
+            }
+            tx.execute(
+                "UPDATE pull_request_operations SET state=?2,data=?3 WHERE request_id=?1",
+                params![
+                    input.request_id,
+                    match result {
+                        PrChangeResult::Applied { .. }
+                        | PrChangeResult::Confirmed { .. }
+                        | PrChangeResult::Superseded { .. } => "applied",
+                        PrChangeResult::Accepted { .. } => "pending",
+                        PrChangeResult::Refused { .. } => "refused",
+                        PrChangeResult::Uncertain { .. } => "uncertain",
+                    },
+                    serde_json::to_string(&PrOperation {
+                        input: input.clone(),
+                        result: result.clone()
+                    })?
+                ],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
     pub fn workspaces(&self) -> Result<Vec<Workspace>> {

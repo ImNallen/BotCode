@@ -18,7 +18,115 @@ export const draftComment = z.object({
   line: z.number().int().positive(),
   body: z.string(),
 });
+export const lifecycleAction = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("merge"),
+    method: z.enum(["merge", "squash", "rebase"]),
+  }),
+  z.object({ kind: z.literal("enqueue") }),
+  z.object({
+    kind: z.literal("enable_auto_merge"),
+    method: z.enum(["merge", "squash", "rebase"]),
+  }),
+  z.object({ kind: z.literal("disable_auto_merge") }),
+  z.object({ kind: z.literal("set_draft"), draft: z.boolean() }),
+  z.object({ kind: z.literal("set_closed"), closed: z.boolean() }),
+  z.object({
+    kind: z.literal("update_branch"),
+    method: z.enum(["merge", "rebase"]),
+  }),
+]);
+export type LifecycleAction = z.infer<typeof lifecycleAction>;
+export const prReviewAction = z.discriminatedUnion("kind", [
+  ...lifecycleAction.options,
+  z.object({
+    kind: z.literal("submit_review"),
+    verdict: reviewVerdict,
+    body: z.string(),
+    comments: z.array(draftComment),
+  }),
+  z.object({
+    kind: z.literal("reply"),
+    threadId: z.string(),
+    body: z.string(),
+  }),
+  z.object({
+    kind: z.literal("set_resolved"),
+    threadId: z.string(),
+    resolved: z.boolean(),
+  }),
+]);
+export const acknowledgeUncertainUpdate = z.object({
+  key: pullRequestKey,
+  requestId: z.string(),
+  inspected: prObservation,
+});
+export type AcknowledgeUncertainUpdate = z.infer<
+  typeof acknowledgeUncertainUpdate
+>;
+export const prChangeResult = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("applied"), hostId: z.string() }),
+  z.object({
+    kind: z.literal("confirmed"),
+    state: z.enum([
+      "merged",
+      "auto_merge_disabled",
+      "draft",
+      "ready",
+      "closed",
+      "reopened",
+      "branch_updated",
+    ]),
+  }),
+  z.object({
+    kind: z.literal("accepted"),
+    progress: z.enum(["queued", "auto_merge_enabled", "awaiting_confirmation"]),
+  }),
+  z.object({ kind: z.literal("refused"), message: z.string() }),
+  z.object({ kind: z.literal("uncertain"), message: z.string() }),
+  z.object({
+    kind: z.literal("superseded"),
+    evidence: z.discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("pull_request_merged"),
+        key: pullRequestKey,
+        nodeId: z.string(),
+        observedHeadOid: prObservation.shape.headOid,
+      }),
+      z.object({
+        kind: z.literal("continued_from_observed_head"),
+        observation: prObservation,
+      }),
+    ]),
+    message: z.string(),
+  }),
+]);
+export const prOperation = z.object({
+  input: z.object({
+    requestId: z.string(),
+    target: prObservation,
+    action: prReviewAction,
+  }),
+  result: prChangeResult,
+});
+export type PrOperation = z.infer<typeof prOperation>;
 export const prReviewDetail = z.object({
+  capabilities: z.object({
+    primary: z.enum([
+      "resolve_conflicts",
+      "ready",
+      "queued",
+      "auto_merge_armed",
+      "merge",
+      "enable_auto_merge",
+      "closed",
+      "merged",
+      "unavailable",
+    ]),
+    actions: z.array(lifecycleAction),
+    explanation: z.string().nullable(),
+  }),
+  operations: z.array(prOperation),
   observation: prObservation,
   snapshot: cachedPr.shape.snapshot.unwrap(),
   body: z.string(),
@@ -73,29 +181,6 @@ export const prReviewDetail = z.object({
     }),
   ),
 });
-export const prReviewAction = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("submit_review"),
-    verdict: reviewVerdict,
-    body: z.string(),
-    comments: z.array(draftComment),
-  }),
-  z.object({
-    kind: z.literal("reply"),
-    threadId: z.string(),
-    body: z.string(),
-  }),
-  z.object({
-    kind: z.literal("set_resolved"),
-    threadId: z.string(),
-    resolved: z.boolean(),
-  }),
-]);
-export const prChangeResult = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("applied"), hostId: z.string() }),
-  z.object({ kind: z.literal("refused"), message: z.string() }),
-  z.object({ kind: z.literal("uncertain"), message: z.string() }),
-]);
 export type PrObservation = z.infer<typeof prObservation>;
 export type PrReviewDetail = z.infer<typeof prReviewDetail>;
 export type PrReviewAction = z.infer<typeof prReviewAction>;

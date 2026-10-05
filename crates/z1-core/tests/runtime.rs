@@ -800,6 +800,8 @@ async fn refreshed_catalog_rejects_removed_saved_model_before_acceptance() {
 #[test]
 fn legacy_snapshots_default_settings() {
     let thread = ThreadSnapshot {
+        created_at_ms: None,
+        latest_user_activity_at_ms: None,
         id: ThreadId::default(),
         workspace_id: WorkspaceId::default(),
         title: "Legacy".into(),
@@ -1790,8 +1792,39 @@ async fn saving_over_unparseable_settings_keeps_a_backup() {
 const HOUR_MS: u64 = 60 * 60 * 1000;
 const DAY_MS: u64 = 24 * HOUR_MS;
 const DEFAULT_LIMIT: Option<u64> = Some(AUTO_SETTLE_AFTER_MS);
+trait SettlementFixture {
+    fn settlement_for_test(&self, now: u64, after_ms: Option<u64>) -> Option<u64>;
+    fn summary_for_test(&self, after_ms: Option<u64>) -> ThreadSummary;
+    fn arrange_for_test(&mut self, action: Arrange, now: u64, after_ms: Option<u64>) -> Result<()>;
+    fn activity_for_test(&mut self, now: u64, after_ms: Option<u64>);
+}
+impl SettlementFixture for ThreadSnapshot {
+    fn settlement_for_test(&self, now: u64, after_ms: Option<u64>) -> Option<u64> {
+        settlement_at(SettlementInput {
+            thread: self,
+            links: &[],
+            rules: SettlementRules {
+                after_ms,
+                on_merge: true,
+            },
+            blocked: false,
+            now,
+        })
+    }
+    fn summary_for_test(&self, after_ms: Option<u64>) -> ThreadSummary {
+        self.summary(self.settlement_for_test(now_ms(), after_ms))
+    }
+    fn arrange_for_test(&mut self, action: Arrange, now: u64, after_ms: Option<u64>) -> Result<()> {
+        self.arrange(action, now, self.settlement_for_test(now, after_ms))
+    }
+    fn activity_for_test(&mut self, now: u64, after_ms: Option<u64>) {
+        self.record_activity(self.settlement_for_test(now, after_ms));
+    }
+}
 fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> ThreadSnapshot {
     ThreadSnapshot {
+        created_at_ms: None,
+        latest_user_activity_at_ms: None,
         id: ThreadId::default(),
         workspace_id: WorkspaceId::default(),
         title: "Idle".into(),
@@ -1822,21 +1855,24 @@ fn idle_threads_auto_settle_after_three_days_of_their_latest_activity() {
     assert_eq!(AUTO_SETTLE_AFTER_MS, 3 * DAY_MS);
     let thread = idle_thread(Some(1_000), Some(2_000));
     assert_eq!(
-        thread.settled_at(2_000 + 3 * DAY_MS - 1, DEFAULT_LIMIT),
+        thread.settlement_for_test(2_000 + 3 * DAY_MS - 1, DEFAULT_LIMIT),
         None
     );
     assert_eq!(
-        thread.settled_at(2_000 + 3 * DAY_MS, DEFAULT_LIMIT),
+        thread.settlement_for_test(2_000 + 3 * DAY_MS, DEFAULT_LIMIT),
         Some(2_000)
     );
-    assert_eq!(thread.settled_at(2_000 + DAY_MS, Some(DAY_MS)), Some(2_000));
-    assert_eq!(thread.settled_at(u64::MAX, None), None);
     assert_eq!(
-        idle_thread(Some(1_000), None).settled_at(1_000 + 3 * DAY_MS, DEFAULT_LIMIT),
+        thread.settlement_for_test(2_000 + DAY_MS, Some(DAY_MS)),
+        Some(2_000)
+    );
+    assert_eq!(thread.settlement_for_test(u64::MAX, None), None);
+    assert_eq!(
+        idle_thread(Some(1_000), None).settlement_for_test(1_000 + 3 * DAY_MS, DEFAULT_LIMIT),
         Some(1_000)
     );
     assert_eq!(
-        idle_thread(None, None).settled_at(u64::MAX, DEFAULT_LIMIT),
+        idle_thread(None, None).settlement_for_test(u64::MAX, DEFAULT_LIMIT),
         None
     );
 }
@@ -1850,7 +1886,7 @@ fn auto_settle_waits_for_running_sessions_and_open_approvals_and_respects_overri
     ] {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
         thread.session = session;
-        assert_eq!(thread.settled_at(later, DEFAULT_LIMIT), None);
+        assert_eq!(thread.settlement_for_test(later, DEFAULT_LIMIT), None);
     }
     for (state, settled) in [
         (ApprovalState::Pending, None),
@@ -1868,15 +1904,18 @@ fn auto_settle_waits_for_running_sessions_and_open_approvals_and_respects_overri
             },
             state,
         });
-        assert_eq!(thread.settled_at(later, DEFAULT_LIMIT), settled);
+        assert_eq!(thread.settlement_for_test(later, DEFAULT_LIMIT), settled);
     }
     let mut kept = idle_thread(Some(1_000), Some(2_000));
     kept.placement = Placement::Kept;
-    assert_eq!(kept.settled_at(later, DEFAULT_LIMIT), None);
+    assert_eq!(kept.settlement_for_test(later, DEFAULT_LIMIT), None);
     let mut settled = idle_thread(Some(1_000), None);
     settled.placement = Placement::Settled { at_ms: 1_500 };
     settled.session = SessionState::Running;
-    assert_eq!(settled.settled_at(1_600, DEFAULT_LIMIT), Some(1_500));
+    assert_eq!(
+        settled.settlement_for_test(1_600, DEFAULT_LIMIT),
+        Some(1_500)
+    );
 }
 fn settled_at_ms(view: &WorkspaceView, id: &ThreadId) -> Option<u64> {
     view.threads
@@ -2076,6 +2115,8 @@ fn age_turns(f: &Fixture, id: &ThreadId, by_ms: u64) {
         )
         .unwrap();
     let mut thread: ThreadSnapshot = serde_json::from_str(&data).unwrap();
+    thread.created_at_ms = thread.created_at_ms.map(|at| at - by_ms);
+    thread.latest_user_activity_at_ms = thread.latest_user_activity_at_ms.map(|at| at - by_ms);
     for turn in &mut thread.turns {
         turn.started_at_ms = turn.started_at_ms.map(|at| at - by_ms);
         turn.completed_at_ms = turn.completed_at_ms.map(|at| at - by_ms);
@@ -2175,10 +2216,14 @@ fn pinning_clears_settle_and_snooze_and_keeps_the_first_pin_time() {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
         thread.placement = placement;
         thread.snooze = Some(SNOOZE);
-        thread.arrange(Arrange::Pin, 5_000, DEFAULT_LIMIT).unwrap();
+        thread
+            .arrange_for_test(Arrange::Pin, 5_000, DEFAULT_LIMIT)
+            .unwrap();
         assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000, kept });
         assert_eq!(thread.snooze, None);
-        thread.arrange(Arrange::Pin, 6_000, DEFAULT_LIMIT).unwrap();
+        thread
+            .arrange_for_test(Arrange::Pin, 6_000, DEFAULT_LIMIT)
+            .unwrap();
         assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000, kept });
     }
 }
@@ -2189,7 +2234,7 @@ fn unpinning_returns_a_pinned_thread_to_its_keep_and_leaves_others_alone() {
         thread.placement = Placement::Pinned { at_ms: 5_000, kept };
         thread.snooze = Some(SNOOZE);
         thread
-            .arrange(Arrange::Unpin, 6_000, DEFAULT_LIMIT)
+            .arrange_for_test(Arrange::Unpin, 6_000, DEFAULT_LIMIT)
             .unwrap();
         assert_eq!(thread.placement, unpinned);
         assert_eq!(thread.snooze, Some(SNOOZE));
@@ -2197,7 +2242,7 @@ fn unpinning_returns_a_pinned_thread_to_its_keep_and_leaves_others_alone() {
     let mut thread = idle_thread(Some(1_000), Some(2_000));
     thread.placement = Placement::Kept;
     thread
-        .arrange(Arrange::Unpin, 6_000, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Unpin, 6_000, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(thread.placement, Placement::Kept);
 }
@@ -2210,13 +2255,13 @@ fn settling_clears_pin_and_snooze_and_is_refused_while_an_approval_waits() {
     };
     thread.snooze = Some(SNOOZE);
     thread
-        .arrange(Arrange::Settle, 7_000, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Settle, 7_000, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(thread.placement, Placement::Settled { at_ms: 7_000 });
     assert_eq!(thread.snooze, None);
     thread.snooze = Some(SNOOZE);
     thread
-        .arrange(Arrange::Settle, 8_000, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Settle, 8_000, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(thread.placement, Placement::Settled { at_ms: 7_000 });
     assert_eq!(thread.snooze, None);
@@ -2227,7 +2272,7 @@ fn settling_clears_pin_and_snooze_and_is_refused_while_an_approval_waits() {
     };
     waiting.approvals.push(pending_approval(&waiting));
     let refused = waiting
-        .arrange(Arrange::Settle, 7_000, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Settle, 7_000, DEFAULT_LIMIT)
         .unwrap_err();
     assert_eq!(refused.code, "settle_blocked");
     assert_eq!(
@@ -2243,12 +2288,12 @@ fn unsettling_keeps_settled_threads_active_and_leaves_pins_alone() {
     let mut settled = idle_thread(Some(1_000), Some(2_000));
     settled.placement = Placement::Settled { at_ms: 7_000 };
     settled
-        .arrange(Arrange::Unsettle, 8_000, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Unsettle, 8_000, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(settled.placement, Placement::Kept);
     let mut auto_settled = idle_thread(Some(1_000), Some(2_000));
     auto_settled
-        .arrange(Arrange::Unsettle, 2_000 + 4 * DAY_MS, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Unsettle, 2_000 + 4 * DAY_MS, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(auto_settled.placement, Placement::Kept);
     let mut pinned = idle_thread(Some(1_000), Some(2_000));
@@ -2257,7 +2302,7 @@ fn unsettling_keeps_settled_threads_active_and_leaves_pins_alone() {
         kept: false,
     };
     pinned
-        .arrange(Arrange::Unsettle, 8_000, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Unsettle, 8_000, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(
         pinned.placement,
@@ -2280,7 +2325,7 @@ fn snoozing_keeps_the_placement_and_the_first_snooze_time_for_the_same_wake() {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
         thread.placement = placement;
         thread
-            .arrange(Arrange::Snooze { until_ms: 10_000 }, 6_000, DEFAULT_LIMIT)
+            .arrange_for_test(Arrange::Snooze { until_ms: 10_000 }, 6_000, DEFAULT_LIMIT)
             .unwrap();
         assert_eq!(thread.placement, placement);
         assert_eq!(
@@ -2291,7 +2336,7 @@ fn snoozing_keeps_the_placement_and_the_first_snooze_time_for_the_same_wake() {
             })
         );
         thread
-            .arrange(Arrange::Snooze { until_ms: 10_000 }, 7_000, DEFAULT_LIMIT)
+            .arrange_for_test(Arrange::Snooze { until_ms: 10_000 }, 7_000, DEFAULT_LIMIT)
             .unwrap();
         assert_eq!(
             thread.snooze,
@@ -2301,7 +2346,7 @@ fn snoozing_keeps_the_placement_and_the_first_snooze_time_for_the_same_wake() {
             })
         );
         thread
-            .arrange(Arrange::Snooze { until_ms: 12_000 }, 7_000, DEFAULT_LIMIT)
+            .arrange_for_test(Arrange::Snooze { until_ms: 12_000 }, 7_000, DEFAULT_LIMIT)
             .unwrap();
         assert_eq!(
             thread.snooze,
@@ -2317,14 +2362,14 @@ fn snoozing_is_refused_for_a_wake_time_not_in_the_future_or_while_an_approval_wa
     let mut thread = idle_thread(Some(1_000), Some(2_000));
     for until_ms in [6_000, 5_999] {
         let refused = thread
-            .arrange(Arrange::Snooze { until_ms }, 6_000, DEFAULT_LIMIT)
+            .arrange_for_test(Arrange::Snooze { until_ms }, 6_000, DEFAULT_LIMIT)
             .unwrap_err();
         assert_eq!(refused.code, "snooze_in_past");
         assert_eq!(refused.message, "Choose a wake time in the future.");
     }
     thread.approvals.push(pending_approval(&thread));
     let refused = thread
-        .arrange(Arrange::Snooze { until_ms: 10_000 }, 6_000, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Snooze { until_ms: 10_000 }, 6_000, DEFAULT_LIMIT)
         .unwrap_err();
     assert_eq!(refused.code, "snooze_blocked");
     assert_eq!(
@@ -2341,7 +2386,9 @@ fn waking_clears_only_the_snooze() {
         kept: false,
     };
     thread.snooze = Some(SNOOZE);
-    thread.arrange(Arrange::Wake, 6_000, DEFAULT_LIMIT).unwrap();
+    thread
+        .arrange_for_test(Arrange::Wake, 6_000, DEFAULT_LIMIT)
+        .unwrap();
     assert_eq!(thread.snooze, None);
     assert_eq!(
         thread.placement,
@@ -2363,7 +2410,7 @@ fn a_snoozed_pinned_thread_keeps_its_pin_and_reports_its_wake_time() {
         until_ms,
         at_ms: 3_000,
     });
-    let summary = thread.summary(DEFAULT_LIMIT);
+    let summary = thread.summary_for_test(DEFAULT_LIMIT);
     assert_eq!(summary.pinned_at_ms, Some(2_500));
     assert_eq!(summary.snoozed_until_ms, Some(until_ms));
     assert_eq!(summary.settled_at_ms, None);
@@ -2393,7 +2440,10 @@ fn a_snoozed_thread_raises_its_hand_for_a_newer_result_or_an_approval() {
     waiting.snooze = Some(SNOOZE);
     waiting.approvals.push(pending_approval(&waiting));
     assert_eq!(waiting.snoozed_until(), None);
-    assert_eq!(waiting.summary(DEFAULT_LIMIT).snoozed_until_ms, None);
+    assert_eq!(
+        waiting.summary_for_test(DEFAULT_LIMIT).snoozed_until_ms,
+        None
+    );
 }
 #[test]
 fn an_idle_pinned_thread_reads_as_settled_and_not_pinned() {
@@ -2403,14 +2453,14 @@ fn an_idle_pinned_thread_reads_as_settled_and_not_pinned() {
         kept: false,
     };
     assert_eq!(
-        thread.settled_at(2_000 + 3 * DAY_MS - 1, DEFAULT_LIMIT),
+        thread.settlement_for_test(2_000 + 3 * DAY_MS - 1, DEFAULT_LIMIT),
         None
     );
     assert_eq!(
-        thread.settled_at(2_000 + 3 * DAY_MS, DEFAULT_LIMIT),
+        thread.settlement_for_test(2_000 + 3 * DAY_MS, DEFAULT_LIMIT),
         Some(2_000)
     );
-    let summary = thread.summary(DEFAULT_LIMIT);
+    let summary = thread.summary_for_test(DEFAULT_LIMIT);
     assert_eq!(summary.settled_at_ms, Some(2_000));
     assert_eq!(summary.pinned_at_ms, None);
 }
@@ -2423,18 +2473,20 @@ fn unsettling_an_auto_settled_pinned_thread_stores_kept_without_the_pin() {
     };
     thread.snooze = Some(SNOOZE);
     thread
-        .arrange(Arrange::Unsettle, 2_000 + 4 * DAY_MS, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Unsettle, 2_000 + 4 * DAY_MS, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(thread.placement, Placement::Kept);
     assert_eq!(thread.snooze, None);
-    assert_eq!(thread.summary(DEFAULT_LIMIT).pinned_at_ms, None);
+    assert_eq!(thread.summary_for_test(DEFAULT_LIMIT).pinned_at_ms, None);
 }
 #[test]
 fn pinning_a_settled_thread_keeps_it_from_auto_settling() {
     let mut thread = idle_thread(Some(1_000), Some(2_000));
     let now = 2_000 + 4 * DAY_MS;
-    assert_eq!(thread.settled_at(now, DEFAULT_LIMIT), Some(2_000));
-    thread.arrange(Arrange::Pin, now, DEFAULT_LIMIT).unwrap();
+    assert_eq!(thread.settlement_for_test(now, DEFAULT_LIMIT), Some(2_000));
+    thread
+        .arrange_for_test(Arrange::Pin, now, DEFAULT_LIMIT)
+        .unwrap();
     assert_eq!(
         thread.placement,
         Placement::Pinned {
@@ -2442,8 +2494,8 @@ fn pinning_a_settled_thread_keeps_it_from_auto_settling() {
             kept: true
         }
     );
-    assert_eq!(thread.settled_at(u64::MAX, DEFAULT_LIMIT), None);
-    let summary = thread.summary(DEFAULT_LIMIT);
+    assert_eq!(thread.settlement_for_test(u64::MAX, DEFAULT_LIMIT), None);
+    let summary = thread.summary_for_test(DEFAULT_LIMIT);
     assert_eq!(summary.pinned_at_ms, Some(now));
     assert_eq!(summary.settled_at_ms, None);
 }
@@ -2454,7 +2506,7 @@ fn activity_drops_the_keep_from_a_pinned_thread() {
         at_ms: 2_500,
         kept: true,
     };
-    thread.record_activity(2_000 + 4 * DAY_MS, DEFAULT_LIMIT);
+    thread.activity_for_test(2_000 + 4 * DAY_MS, DEFAULT_LIMIT);
     assert_eq!(
         thread.placement,
         Placement::Pinned {
@@ -2487,9 +2539,12 @@ fn snoozed_threads_auto_settle_only_after_they_wake() {
         until_ms: 2_000 + 5 * DAY_MS,
         at_ms: 2_500,
     });
-    assert_eq!(thread.settled_at(2_000 + 4 * DAY_MS, DEFAULT_LIMIT), None);
     assert_eq!(
-        thread.settled_at(2_000 + 5 * DAY_MS, DEFAULT_LIMIT),
+        thread.settlement_for_test(2_000 + 4 * DAY_MS, DEFAULT_LIMIT),
+        None
+    );
+    assert_eq!(
+        thread.settlement_for_test(2_000 + 5 * DAY_MS, DEFAULT_LIMIT),
         Some(2_000)
     );
 }
@@ -2596,7 +2651,7 @@ async fn a_new_prompt_returns_an_auto_settled_pinned_thread_to_active_without_it
     })
     .await;
     assert_eq!(done.placement, Placement::Auto);
-    let summary = done.summary(DEFAULT_LIMIT);
+    let summary = done.summary_for_test(DEFAULT_LIMIT);
     assert_eq!(summary.settled_at_ms, None);
     assert_eq!(summary.pinned_at_ms, None);
     app.shutdown().await.unwrap();
@@ -2664,7 +2719,10 @@ async fn a_new_approval_returns_kept_threads_to_auto_keeps_pins_and_raises_a_sno
         }
         assert_eq!(waiting.snooze, before.snooze);
         assert_eq!(waiting.snooze.unwrap().until_ms, until_ms);
-        assert_eq!(waiting.summary(DEFAULT_LIMIT).snoozed_until_ms, None);
+        assert_eq!(
+            waiting.summary_for_test(DEFAULT_LIMIT).snoozed_until_ms,
+            None
+        );
         app.shutdown().await.unwrap();
     }
 }
@@ -2674,7 +2732,7 @@ fn snoozing_again_after_a_raised_hand_takes_a_fresh_snooze_time() {
     thread.snooze = Some(SNOOZE);
     assert_eq!(thread.snoozed_until(), None);
     thread
-        .arrange(Arrange::Snooze { until_ms: 10_000 }, 6_000, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Snooze { until_ms: 10_000 }, 6_000, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(
         thread.snooze,

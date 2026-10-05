@@ -1,9 +1,11 @@
+mod lifecycle;
 mod mutation;
 use super::*;
 use crate::{
     pull_requests::{FIELDS, Row},
     vcs::Tool,
 };
+pub(crate) use lifecycle::{Confirmation, acknowledge_update, confirm};
 pub(crate) use mutation::change;
 use serde::Deserialize;
 use serde_json::Value;
@@ -132,7 +134,7 @@ impl Fetch<'_> {
     async fn meta(&mut self, key: &PullRequestKey) -> Result<Meta> {
         let (owner, name) = key.repository();
         let query = format!(
-            "query Z1ReviewMeta($owner:String!,$name:String!,$number:Int!){{viewer{{login}} repository(owner:$owner,name:$name){{pullRequest(number:$number){{{FIELDS} body reviewDecision locked viewerDidAuthor createdAt author {{ login }}}}}}}}"
+            "query Z1ReviewMeta($owner:String!,$name:String!,$number:Int!){{viewer{{login}} repository(owner:$owner,name:$name){{mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed viewerPermission pullRequest(number:$number){{{FIELDS} mergeable mergeStateStatus isMergeQueueEnabled mergeQueueEntry {{ id }} autoMergeRequest {{ mergeMethod }} viewerCanClose viewerCanReopen viewerCanUpdate viewerCanUpdateBranch viewerCanEnableAutoMerge viewerCanDisableAutoMerge body reviewDecision locked viewerDidAuthor createdAt author {{ login }}}}}}}}"
         );
         let value = self
             .query(
@@ -171,6 +173,11 @@ impl Fetch<'_> {
                 head_oid: snapshot.head_oid.clone(),
                 viewer,
             },
+            capabilities: lifecycle::capabilities(&value["data"]["repository"], pr, &snapshot),
+            queued: pr["mergeQueueEntry"]["id"].as_str().is_some(),
+            auto_merge: pr["autoMergeRequest"]["mergeMethod"]
+                .as_str()
+                .map(str::to_owned),
             snapshot,
             body: required(pr, "body")?,
             review_decision: pr["reviewDecision"].as_str().map(str::to_owned),
@@ -310,6 +317,9 @@ impl Fetch<'_> {
     }
 }
 struct Meta {
+    capabilities: PrCapabilities,
+    queued: bool,
+    auto_merge: Option<String>,
     observation: PrObservation,
     snapshot: PrSnapshot,
     body: String,
@@ -729,6 +739,8 @@ pub(crate) async fn read(
         files,
         problems,
         timeline,
+        capabilities: final_meta.capabilities,
+        operations: vec![],
     })
 }
 fn parse_patch(patch: &str) -> Vec<PrLine> {

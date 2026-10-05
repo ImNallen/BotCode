@@ -30,11 +30,14 @@ impl Job {
     }
 }
 pub(super) struct PrCompletion {
+    epoch: u64,
     job: Job,
     result: Result<Option<(PullRequestKey, PrSnapshot)>>,
 }
 pub(super) struct PrWork {
     sequence: Cell<u64>,
+    epoch: u64,
+    read_epochs: BTreeMap<PullRequestKey, u64>,
     records: BTreeMap<PullRequestKey, CachedPr>,
     memberships: HashMap<ThreadId, BTreeMap<PullRequestKey, Membership>>,
     threads_by_pr: BTreeMap<PullRequestKey, HashSet<ThreadId>>,
@@ -64,6 +67,8 @@ impl PrWork {
         }
         let mut work = Self {
             sequence: Cell::new(0),
+            epoch: 0,
+            read_epochs: BTreeMap::new(),
             records,
             memberships: HashMap::new(),
             threads_by_pr: BTreeMap::new(),
@@ -120,6 +125,14 @@ impl PrWork {
     }
 }
 impl Owner {
+    pub(super) fn pr_read_epoch(&self, key: &PullRequestKey) -> u64 {
+        self.prs.read_epochs.get(key).copied().unwrap_or(0)
+    }
+    pub(super) fn invalidate_pr_reads(&mut self, key: &PullRequestKey) {
+        self.prs.epoch += 1;
+        self.prs.read_epochs.insert(key.clone(), self.prs.epoch);
+    }
+
     pub(super) fn forget_pr_threads(&mut self, removed: &HashSet<ThreadId>) {
         self.prs.memberships.retain(|id, _| !removed.contains(id));
         self.prs.generations.retain(|id, _| !removed.contains(id));
@@ -178,16 +191,55 @@ impl Owner {
             discovery_error: self.prs.errors.get(id).cloned(),
         }
     }
+    pub(super) fn settlement(
+        &self,
+        thread: &ThreadSnapshot,
+        rules: crate::SettlementRules,
+        now: u64,
+    ) -> Option<u64> {
+        let root = self
+            .workspaces
+            .get(&thread.workspace_id)
+            .map(|w| thread.root(w));
+        let links = self.pr_summary(&thread.id).links;
+        let blocked = root
+            .is_some_and(|root| self.leases.contains_key(root) || self.held.contains_key(root))
+            || self.pending.iter().any(|job| {
+                job.thread() == &thread.id
+                    || root.is_some_and(|root| {
+                        self.threads.get(job.thread()).is_some_and(|pending| {
+                            self.workspaces
+                                .get(&pending.workspace_id)
+                                .is_some_and(|workspace| pending.root(workspace) == root)
+                        })
+                    })
+            })
+            || links.iter().any(|link| {
+                self.review_work
+                    .pending
+                    .values()
+                    .any(|operation| operation.input.target.key == link.pr.key)
+            });
+        crate::settlement_at(crate::SettlementInput {
+            thread,
+            links: &links,
+            rules,
+            blocked,
+            now,
+        })
+    }
     pub(super) fn thread_summary(&self, thread: &ThreadSnapshot) -> ThreadSummary {
-        let mut summary = thread.summary(self.auto_settle.after_ms(&thread.workspace_id));
+        let settled = self.settlement(
+            thread,
+            self.auto_settle.rules(&thread.workspace_id),
+            now_ms(),
+        );
+        let mut summary = thread.summary(settled);
         summary.pull_requests = self.pr_summary(&thread.id);
         summary
     }
     pub(super) fn thread_hint(&self, thread: &ThreadSnapshot) -> ChangeHint {
-        ChangeHint {
-            summary: self.thread_summary(thread),
-            ..ChangeHint::new(thread, self.auto_settle.after_ms(&thread.workspace_id))
-        }
+        ChangeHint::new(thread, self.thread_summary(thread))
     }
     fn pr_hint(&self, id: &ThreadId) {
         if let Some(thread) = self.threads.get(id) {
@@ -277,22 +329,64 @@ impl Owner {
         }
         Ok(())
     }
+    pub(super) fn validate_pr_snapshot(
+        &self,
+        key: &PullRequestKey,
+        snapshot: &PrSnapshot,
+    ) -> Result<()> {
+        if self
+            .prs
+            .records
+            .get(key)
+            .and_then(|record| record.snapshot.as_ref())
+            .is_some_and(|old| snapshot_is_older(snapshot, old))
+        {
+            return Err(AppError::new(
+                "pr_review_stale",
+                "A newer PR observation arrived. Refresh detail.",
+            ));
+        }
+        Ok(())
+    }
+    fn confirm_terminal_operations(
+        &mut self,
+        key: &PullRequestKey,
+        snapshot: &PrSnapshot,
+    ) -> Result<()> {
+        if !matches!(snapshot.lifecycle, PrLifecycle::Merged { .. }) {
+            return Ok(());
+        }
+        let confirmed: Vec<_> = self
+            .review_work
+            .pending
+            .values()
+            .filter_map(|operation| {
+                operation
+                    .merged_result(key, snapshot)
+                    .map(|result| (operation.input.clone(), result))
+            })
+            .collect();
+        if confirmed.is_empty() {
+            return Ok(());
+        }
+        let completions: Vec<_> = confirmed
+            .iter()
+            .map(|(input, result)| (input, result))
+            .collect();
+        self.store.finish_pr_operations(&completions)?;
+        for (input, _) in confirmed {
+            self.review_work.pending.remove(&input.request_id);
+        }
+        Ok(())
+    }
     pub(super) fn accept_review_snapshot(
         &mut self,
         key: &PullRequestKey,
         snapshot: &PrSnapshot,
     ) -> Result<()> {
         if let Some(mut record) = self.prs.records.get(key).cloned() {
-            if record
-                .snapshot
-                .as_ref()
-                .is_some_and(|old| old.host_updated_at > snapshot.host_updated_at)
-            {
-                return Err(AppError::new(
-                    "pr_review_stale",
-                    "A newer PR observation arrived. Refresh detail.",
-                ));
-            }
+            self.validate_pr_snapshot(key, snapshot)?;
+            self.confirm_terminal_operations(key, snapshot)?;
             if record.snapshot.as_ref() != Some(snapshot) {
                 record.revision += 1;
             }
@@ -399,6 +493,18 @@ impl Owner {
             let Some(job) = self.prs.ready.pop_front() else {
                 break;
             };
+            if let Job::Read(key) = &job
+                && self.review_work.changing.contains(key)
+            {
+                self.prs
+                    .due
+                    .insert(key.clone(), now_ms().saturating_add(1_000));
+                continue;
+            }
+            let epoch = match &job {
+                Job::Read(key) => self.prs.read_epochs.get(key).copied().unwrap_or(0),
+                Job::Discover { .. } => self.prs.epoch,
+            };
             self.prs.running.insert(job.key());
             let gh = self.config.gh_binary.clone();
             let timeout = self.config.network_timeout.min(Duration::from_secs(30));
@@ -423,7 +529,7 @@ impl Owner {
                         }
                         .await,
                     };
-                PrCompletion { job, result }
+                PrCompletion { job, result, epoch }
             });
         }
     }
@@ -431,6 +537,23 @@ impl Owner {
         let key = completion.job.key();
         self.prs.running.remove(&key);
         let rerun = self.prs.rerun.remove(&key);
+        let epoch = match &completion.job {
+            Job::Read(key) => self.prs.read_epochs.get(key).copied().unwrap_or(0),
+            Job::Discover { .. } => match &completion.result {
+                Ok(Some((key, _))) => self.prs.read_epochs.get(key).copied().unwrap_or(0),
+                _ => 0,
+            },
+        };
+        if epoch > completion.epoch {
+            if let Some(job) = rerun {
+                self.prs.enqueue(job)?;
+            }
+            self.start_pr_jobs();
+            return match completion.result {
+                Err(error) if error.code == "process_cleanup" => Err(error),
+                _ => Ok(()),
+            };
+        }
         match completion.job {
             Job::Read(key) => {
                 if let Some(mut record) = self.prs.records.get(&key).cloned() {
@@ -439,8 +562,9 @@ impl Owner {
                             if record
                                 .snapshot
                                 .as_ref()
-                                .is_none_or(|old| old.host_updated_at <= snapshot.host_updated_at)
+                                .is_none_or(|old| !snapshot_is_older(&snapshot, old))
                             {
+                                self.confirm_terminal_operations(&key, &snapshot)?;
                                 if record.snapshot.as_ref() != Some(&snapshot) {
                                     record.revision += 1;
                                 }
@@ -468,8 +592,12 @@ impl Owner {
                     let all_settled = self.prs.threads_by_pr.get(&key).is_some_and(|ids| {
                         ids.iter().all(|id| {
                             self.threads.get(id).is_none_or(|t| {
-                                t.settled_at(now_ms(), self.auto_settle.after_ms(&t.workspace_id))
-                                    .is_some()
+                                self.settlement(
+                                    t,
+                                    self.auto_settle.rules(&t.workspace_id),
+                                    now_ms(),
+                                )
+                                .is_some()
                             })
                         })
                     });

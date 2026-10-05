@@ -59,6 +59,13 @@ export const projectSettingRows = {
     resetLabel: "new worktrees start from origin",
     keywords: "new worktrees latest matching remote branch local",
   },
+  autoSettleOnMerge: {
+    title: "Auto-settle merged pull requests",
+    all: "Settle eligible threads after their linked pull requests merge. Projects can override it.",
+    project: "Settle eligible threads after their linked pull requests merge.",
+    resetLabel: "auto-settle on merge",
+    keywords: "pull request PR merge merged automatic settlement",
+  },
   sidebarAutoSettleAfterDays: {
     title: "Auto-settle inactive threads",
     all: "Sidebar threads with no activity for this long settle automatically. Projects can override it.",
@@ -178,6 +185,13 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         title: "Organization",
         when: "available",
         rows: [
+          {
+            id: "auto-settle-on-merge",
+            title: projectSettingRows.autoSettleOnMerge.title,
+            description: projectSettingRows.autoSettleOnMerge.all,
+            keywords: projectSettingRows.autoSettleOnMerge.keywords,
+            setting: "autoSettleOnMerge",
+          },
           {
             id: "auto-settle",
             title: projectSettingRows.sidebarAutoSettleAfterDays.title,

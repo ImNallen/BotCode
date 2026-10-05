@@ -690,3 +690,103 @@ async fn timed_out_creation_is_uncertain_and_is_not_retried() {
     app.shutdown().await.unwrap();
     assert_eq!(create_calls(&f), 1);
 }
+
+#[tokio::test]
+async fn unrelated_mutation_preserves_in_flight_checkout_discovery() {
+    for review in [true, false] {
+        let f = Fixture::new();
+        let (app, _, first) = f.open().await;
+        f.state(json!({}));
+        app.link_pull_request(first.clone(), key(41).url())
+            .await
+            .unwrap();
+        wait(&app, &first, current).await;
+        let detail = app.read_pull_request(first.clone(), key(41)).await.unwrap();
+        let other_root = f.dir.path().join("other");
+        git(
+            f.dir.path(),
+            &[
+                "clone",
+                "-q",
+                f.root.to_str().unwrap(),
+                other_root.to_str().unwrap(),
+            ],
+        );
+        git(
+            &other_root,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/fixture/project.git",
+            ],
+        );
+        let release = f.dir.path().join("release-discovery");
+        f.state(json!({"number":42,"matchNumber":true,"waitFor":{"Z1Discover":release}}));
+        let log = f.dir.path().join("gh.log");
+        std::fs::write(&log, "").unwrap();
+        let workspace = app.open_workspace(other_root).await.unwrap();
+        let second = app
+            .create_thread(workspace.id, NewCheckout::Local)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !std::fs::read_to_string(&log)
+                .unwrap()
+                .contains("Z1Discover")
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let action = if review {
+            PrReviewAction::SubmitReview {
+                verdict: ReviewVerdict::Comment,
+                body: "Review while another checkout discovers its PR".into(),
+                comments: vec![],
+            }
+        } else {
+            PrReviewAction::SetDraft { draft: true }
+        };
+        let result = app
+            .change_pull_request(
+                first,
+                PrReviewChange {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    target: detail.observation,
+                    action,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                result,
+                PrChangeResult::Applied { .. }
+                    | PrChangeResult::Confirmed {
+                        state: PrConfirmedState::Draft
+                    }
+            ),
+            "{result:?}"
+        );
+        std::fs::write(release, "").unwrap();
+        let projection = wait(&app, &second.id, |s| !s.discovering).await;
+        app.shutdown().await.unwrap();
+        assert_eq!(
+            projection
+                .links
+                .iter()
+                .map(|link| link.pr.key.clone())
+                .collect::<Vec<_>>(),
+            vec![key(42)],
+            "review mutation = {review}, discovery error = {:?}",
+            projection.discovery_error
+        );
+        assert_eq!(projection.links[0].source, PrLinkSource::BranchDiscovery);
+        assert!(matches!(
+            projection.links[0].pr.freshness,
+            PrFreshness::Current { .. }
+        ));
+    }
+}

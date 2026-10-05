@@ -1,9 +1,27 @@
+import {
+  PullRequestLifecycle,
+  UncertainUpdateConfirmation,
+  PullRequestConfirmation,
+} from "./PullRequestLifecycle.tsx";
+import {
+  captureLifecycle,
+  captureUpdateContinuation,
+  changeResultText,
+} from "./prLifecycle.ts";
+import type { LifecycleAction, PrOperation } from "./prReview.ts";
+import {
+  createRootRoute,
+  createRouter,
+  createMemoryHistory,
+  RouterContextProvider,
+} from "@tanstack/react-router";
 import { createElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderStatic } from "react-dom/server";
 import { assert, describe, it } from "../test/chai.ts";
 import {
   appendReviewDraft,
+  captureRepairDraft,
   dispositionState,
   reviewFinding,
   type ReviewDraftRequest,
@@ -65,6 +83,12 @@ const target = {
   canAccept: true,
 };
 const detail = prReviewDetail.parse({
+  capabilities: {
+    primary: "merge",
+    actions: [{ kind: "merge", method: "squash" }],
+    explanation: null,
+  },
+  operations: [],
   observation: {
     key: request.key,
     nodeId: "PR_fixture",
@@ -426,4 +450,286 @@ it("renders lifecycle and commit entries alongside original finding context and 
   assert.isTrue(html.includes("Original review diff hunk"));
   assert.isTrue(html.includes("Date unavailable"));
   assert.isFalse(html.includes("Invalid Date"));
+});
+
+function renderToStaticMarkup(node: Parameters<typeof renderStatic>[0]) {
+  const router = createRouter({
+    routeTree: createRootRoute(),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  return renderStatic(
+    createElement(RouterContextProvider, { router, children: node }),
+  );
+}
+
+it("prepares aggregate and conflict drafts with captured identity, original evidence and explicit incomplete coverage", () => {
+  for (const intent of ["resolve_conflicts", "fix_findings"] as const) {
+    const repair: ReviewDraftRequest = {
+      workspaceId: target.workspaceId,
+      threadId: target.threadId,
+      key: request.key,
+      intent,
+      observation: {
+        nodeId: detail.observation.nodeId,
+        headOid: detail.observation.headOid,
+        viewer: detail.observation.viewer,
+      },
+      base: "main",
+      head: "feature",
+      findings: [finding],
+      checks: [
+        {
+          name: "Unit tests",
+          state: "FAILURE",
+          url: "https://github.com/test/repo/pull/7/checks",
+        },
+      ],
+      problems: [
+        {
+          kind: "limited",
+          section: "threads",
+          message: "Only four pages loaded.",
+        },
+      ],
+    };
+    const draft = appendReviewDraft("Existing unsent text", repair, target);
+    assert.isTrue(draft?.startsWith("Existing unsent text\n\n") ?? false);
+    assert.isTrue(draft?.includes(detail.observation.headOid) ?? false);
+    assert.isTrue(draft?.includes("Base branch: main") ?? false);
+    assert.isTrue(draft?.includes("Only loaded evidence is included") ?? false);
+    assert.isTrue(draft?.includes("Only four pages loaded") ?? false);
+    assert.isTrue(draft?.includes("Original reviewed commit") ?? false);
+    assert.isTrue(draft?.includes("Unit tests; state FAILURE") ?? false);
+    assert.isTrue(
+      draft?.includes("does not switch or create a checkout") ?? false,
+    );
+    assert.equal(
+      appendReviewDraft("Preserve", repair, { ...target, threadId: "another" }),
+      null,
+    );
+  }
+});
+
+it("renders lifecycle confirmations bound to the captured PR, method and head", () => {
+  const target = { ...detail.observation };
+  const action: LifecycleAction = {
+    kind: "enable_auto_merge",
+    method: "squash",
+  };
+  const captured = captureLifecycle(target, action, "captured-request");
+  target.headOid = "b".repeat(40);
+  target.viewer = "another-account";
+  action.method = "rebase";
+  let dispatches = 0;
+  const html = renderToStaticMarkup(
+    createElement(PullRequestConfirmation, {
+      confirmation: captured,
+      onCancel() {},
+      onConfirm() {
+        dispatches++;
+      },
+    }),
+  );
+  assert.isTrue(html.includes("squash"));
+  assert.isTrue(html.includes("a".repeat(40)));
+  assert.isFalse(html.includes("b".repeat(40)));
+  assert.isTrue(html.includes(detail.observation.key));
+  assert.isTrue(html.includes(`Account ${detail.observation.viewer}`));
+  assert.isFalse(html.includes("another-account"));
+  assert.isTrue(html.includes("may merge immediately"));
+  assert.isTrue(html.includes("Confirm"));
+  assert.equal(dispatches, 0);
+});
+it("renders queued and uncertain durable receipts with reconciliation and no merged claim", () => {
+  for (const result of [
+    { kind: "accepted", progress: "queued" },
+    { kind: "uncertain", message: "Transport lost" },
+  ] satisfies PrChangeResult[]) {
+    const client = new QueryClient();
+    client.setQueryData(
+      ["pr-operations", target.threadId, detail.observation.key],
+      [
+        {
+          input: {
+            requestId: "pending",
+            target: detail.observation,
+            action: { kind: "enqueue" },
+          },
+          result,
+        },
+      ],
+    );
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(PullRequestLifecycle, {
+          threadId: target.threadId,
+          prKey: detail.observation.key,
+          detail: undefined,
+          disabled: true,
+          refresh() {},
+          resolveConflicts() {},
+          canAskCodex: true,
+        }),
+      ),
+    );
+    assert.isTrue(html.includes("Reconcile"));
+    assert.isFalse(html.includes("Merged. Confirmed"));
+    assert.isTrue(
+      html.includes(
+        result.kind === "accepted" ? "Queued. Waiting" : "Outcome uncertain",
+      ),
+    );
+    client.clear();
+  }
+});
+
+it("captures startup failures from complete raw checks into the repair draft without calling stale checks failed", () => {
+  const loaded = prReviewDetail.parse({
+    ...detail,
+    findings: [],
+    problems: [],
+    checks: [
+      {
+        name: "Runner provisioning",
+        state: "STARTUP_FAILURE",
+        url: "https://github.com/test/repo/actions/runs/41",
+      },
+      {
+        name: "Unit tests",
+        state: "FAILURE",
+        url: "https://github.com/test/repo/actions/runs/42",
+      },
+      {
+        name: "Outdated run",
+        state: "STALE",
+        url: "https://github.com/test/repo/actions/runs/43",
+      },
+      {
+        name: "Passing run",
+        state: "SUCCESS",
+        url: "https://github.com/test/repo/actions/runs/44",
+      },
+    ],
+  });
+  const captured = captureRepairDraft({
+    workspaceId: target.workspaceId,
+    threadId: target.threadId,
+    key: request.key,
+    intent: "fix_findings",
+    detail: loaded,
+  });
+  const draft = appendReviewDraft("Keep my existing text", captured, target);
+  assert.deepEqual(
+    draft?.split("\n\n").filter((line) => line.startsWith("Check:")),
+    [
+      "Check: Runner provisioning; state STARTUP_FAILURE; source https://github.com/test/repo/actions/runs/41",
+      "Check: Unit tests; state FAILURE; source https://github.com/test/repo/actions/runs/42",
+    ],
+  );
+  assert.isTrue(draft?.startsWith("Keep my existing text\n\n") ?? false);
+  assert.deepEqual(captured.observation, loaded.observation);
+  assert.deepEqual(captured.problems, []);
+  assert.isTrue(draft?.includes("Only loaded evidence is included") ?? false);
+  assert.equal(loaded.checks[2]?.state, "STALE");
+  assert.equal(
+    appendReviewDraft("Keep", captured, { ...target, threadId: "elsewhere" }),
+    null,
+  );
+});
+
+it("captures uncertain update continuation identities and explicit unknown-outcome confirmation", () => {
+  const observed = prReviewDetail.parse({
+    ...detail,
+    observation: {
+      ...detail.observation,
+      headOid: "d".repeat(40),
+      viewer: "current-account",
+    },
+  });
+  const operation = {
+    input: captureLifecycle(
+      detail.observation,
+      { kind: "update_branch", method: "rebase" },
+      "old-request",
+    ),
+    result: { kind: "uncertain", message: "Transport lost" },
+  } satisfies PrOperation;
+  const captured = captureUpdateContinuation(operation, observed);
+  if (!captured) throw new Error("Expected changed-head continuation");
+  operation.input.target.headOid = "e".repeat(40);
+  operation.input.target.viewer = "later-captured-account";
+  observed.observation.headOid = "f".repeat(40);
+  observed.observation.viewer = "later-current-account";
+  let dispatches = 0;
+  const html = renderToStaticMarkup(
+    createElement(UncertainUpdateConfirmation, {
+      confirmation: captured,
+      onCancel() {},
+      onConfirm() {
+        dispatches++;
+      },
+    }),
+  );
+  for (const text of [
+    "Continue from inspected head?",
+    "Continue</button>",
+    "Cancel",
+    detail.observation.key,
+    "rebase",
+    "a".repeat(40),
+    "d".repeat(40),
+    detail.observation.viewer,
+    "current-account",
+    "earlier update outcome is unknown",
+    "GitHub may still apply it",
+    "does not cancel",
+  ])
+    assert.isTrue(html.includes(text));
+  for (const text of [
+    "later-captured-account",
+    "later-current-account",
+    "e".repeat(40),
+    "f".repeat(40),
+    "Branch updated.",
+  ])
+    assert.isFalse(html.includes(text));
+  assert.equal(dispatches, 0);
+  assert.equal(captured.input.requestId, "old-request");
+  assert.equal(
+    captureUpdateContinuation(
+      {
+        ...operation,
+        input: captureLifecycle(
+          detail.observation,
+          { kind: "update_branch", method: "merge" },
+          "same-head",
+        ),
+      },
+      detail,
+    ),
+    undefined,
+  );
+  for (const evidence of [
+    {
+      kind: "pull_request_merged",
+      key: detail.observation.key,
+      nodeId: detail.observation.nodeId,
+      observedHeadOid: "d".repeat(40),
+    },
+    {
+      kind: "continued_from_observed_head",
+      observation: captured.input.inspected,
+    },
+  ] satisfies Extract<PrChangeResult, { kind: "superseded" }>["evidence"][]) {
+    const text = changeResultText({
+      kind: "superseded",
+      evidence,
+      message: "Transport lost",
+    });
+    assert.isTrue(text.includes("earlier operation outcome remains unknown"));
+    assert.isTrue(text.includes("Transport lost"));
+    assert.isFalse(text.includes("Branch updated."));
+  }
 });
