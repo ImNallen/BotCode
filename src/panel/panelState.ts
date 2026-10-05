@@ -1,9 +1,17 @@
 // Surface transitions follow pingdotgg/t3code v0.0.45 apps/web/src/rightPanelStore.ts (MIT).
 import type { PanelState, Surface } from "./RightPanel";
+import type { ThreadPrSummary } from "./pullRequests";
 
-const sameSurface = (a: Surface, b: Surface) =>
-  a.kind === b.kind &&
-  (a.kind !== "file" || (b.kind === "file" && a.path === b.path));
+type PrLinks = ThreadPrSummary["links"];
+
+const sameSurface = (a: Surface, b: Surface) => surfaceKey(a) === surfaceKey(b);
+
+export function pullRequestSurface(links: PrLinks): Surface {
+  const [only, ...rest] = links;
+  return only && rest.length === 0
+    ? { kind: "pull_request", key: only.pr.key }
+    : { kind: "pull_requests" };
+}
 
 export function openSurface(state: PanelState, surface: Surface): PanelState {
   const index = state.surfaces.findIndex((entry) =>
@@ -56,12 +64,20 @@ export const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 export function eligibleSurfaces(
   state: PanelState,
   repository: boolean,
-  conversation = false,
+  links?: PrLinks,
 ): PanelState {
-  const allowed = (surface: Surface) =>
-    surface.kind === "pull_requests"
-      ? conversation
-      : repository || surface.kind === "files" || surface.kind === "file";
+  const allowed = (surface: Surface) => {
+    switch (surface.kind) {
+      case "pull_requests":
+        return links !== undefined;
+      case "pull_request":
+        return links?.some((link) => link.pr.key === surface.key) ?? false;
+      default:
+        return (
+          repository || surface.kind === "files" || surface.kind === "file"
+        );
+    }
+  };
   if (state.surfaces.every(allowed)) return state;
   const active =
     state.active === null ? undefined : state.surfaces[state.active];
@@ -80,11 +96,20 @@ export function surfaceTitle(surface: Surface): string {
       return "Diff";
     case "pull_requests":
       return "Pull requests";
+    case "pull_request":
+      return `#${surface.key.split("/").at(-1)}`;
     case "file":
       return basename(surface.path);
   }
 }
 
 export function surfaceKey(surface: Surface): string {
-  return surface.kind === "file" ? `file:${surface.path}` : surface.kind;
+  switch (surface.kind) {
+    case "file":
+      return `file:${surface.path}`;
+    case "pull_request":
+      return `pr:${surface.key}`;
+    default:
+      return surface.kind;
+  }
 }

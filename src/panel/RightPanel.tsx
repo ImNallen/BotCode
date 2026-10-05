@@ -22,12 +22,15 @@ import { Kbd, MenuShortcut, PanelTabCloseButton, ScrollRow } from "./chrome";
 import { DiffSurface } from "./DiffSurface";
 import { FileEntryIcon } from "./FileEntryIcon";
 import { FilesSurface } from "./FilesSurface";
+import { PullRequestDetail } from "./PullRequestDetail";
 import { PullRequestsSurface } from "./PullRequestsSurface";
+import type { PullRequestKey, ThreadPrSummary } from "./pullRequests";
 import type { ReviewDraftRequest } from "./reviews";
 import {
   closeSurface,
   openFile,
   openSurface,
+  pullRequestSurface,
   surfaceKey,
   surfaceTitle,
   eligibleSurfaces,
@@ -38,6 +41,7 @@ export type Surface =
   | { kind: "files" }
   | { kind: "diff" }
   | { kind: "pull_requests" }
+  | { kind: "pull_request"; key: PullRequestKey }
   | { kind: "file"; path: string };
 
 export type PanelState = { surfaces: Surface[]; active: number | null };
@@ -51,14 +55,7 @@ type SurfaceAction = {
   surface: Surface;
 };
 
-const PR_ACTION: SurfaceAction = {
-  label: "Pull requests",
-  icon: GitPullRequestIcon,
-  shortcut: "P",
-  surface: { kind: "pull_requests" },
-};
 const SURFACE_ACTIONS: readonly SurfaceAction[] = [
-  PR_ACTION,
   {
     label: "Files",
     icon: FilesIcon,
@@ -105,6 +102,7 @@ export function RightPanel({
   onChange,
   maximized,
   conversationId,
+  pullRequests,
   canAskCodex,
   onAskCodex,
 }: {
@@ -115,10 +113,15 @@ export function RightPanel({
   onChange: (state: PanelState) => void;
   maximized: boolean;
   conversationId: string | undefined;
+  pullRequests: ThreadPrSummary["links"];
   canAskCodex: boolean;
   onAskCodex: (request: ReviewDraftRequest) => void;
 }) {
-  const state = eligibleSurfaces(savedState, git, Boolean(conversationId));
+  const state = eligibleSurfaces(
+    savedState,
+    git,
+    conversationId ? pullRequests : undefined,
+  );
   const host = useRef<HTMLDivElement>(null);
   const { width, handlers } = usePanelWidth(host, !maximized);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -129,16 +132,19 @@ export function RightPanel({
     Boolean(conversationId) ||
     (view !== undefined && view.unavailable === null);
   const localAvailable = view !== undefined && view.unavailable === null;
-  const actions = (
-    !localAvailable ? [] : git ? SURFACE_ACTIONS : FOLDER_ACTIONS
-  ).filter(
-    (action) => action.surface.kind !== "pull_requests" || conversationId,
-  );
-  if (
-    conversationId &&
-    !actions.some((action) => action.surface.kind === "pull_requests")
-  )
-    actions.unshift(PR_ACTION);
+  const actions: SurfaceAction[] = [
+    ...(conversationId && pullRequests.length > 0
+      ? [
+          {
+            label: "Pull requests",
+            icon: GitPullRequestIcon,
+            shortcut: "P",
+            surface: pullRequestSurface(pullRequests),
+          },
+        ]
+      : []),
+    ...(!localAvailable ? [] : git ? SURFACE_ACTIONS : FOLDER_ACTIONS),
+  ];
   const open = (surface: Surface) => onChange(openSurface(state, surface));
   const handleOpenFile = (path: string) => onChange(openFile(state, path));
 
@@ -301,9 +307,17 @@ export function RightPanel({
               <PullRequestsSurface
                 key={conversationId}
                 threadId={conversationId}
+                onOpen={(key) => open({ kind: "pull_request", key })}
+              />
+            ) : active?.kind === "pull_request" && conversationId ? (
+              <PullRequestDetail
+                key={`${conversationId}/${active.key}`}
+                prKey={active.key}
+                threadId={conversationId}
                 workspaceId={checkout.workspaceId}
                 canAskCodex={canAskCodex}
                 onAskCodex={onAskCodex}
+                onBack={() => open({ kind: "pull_requests" })}
               />
             ) : view?.unavailable && active ? (
               <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
@@ -338,6 +352,7 @@ function SurfaceIcon({ surface }: { surface: Surface }) {
     case "diff":
       return <FileDiffIcon className="size-3 shrink-0" />;
     case "pull_requests":
+    case "pull_request":
       return <GitPullRequestIcon className="size-3 shrink-0" />;
     case "files":
       return <FilesIcon className="size-3 shrink-0" />;
