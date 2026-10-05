@@ -1,7 +1,8 @@
 import {
-  PullRequestLifecycle,
+  PullRequestLifecycleNotices,
   UncertainUpdateConfirmation,
   PullRequestConfirmation,
+  usePullRequestLifecycle,
 } from "./PullRequestLifecycle.tsx";
 import {
   captureLifecycle,
@@ -106,6 +107,13 @@ const detail = prReviewDetail.parse({
     hostUpdatedAt: "2026-10-05T12:00:00Z",
   },
   body: "The remote description.",
+  author: { login: "author", avatarUrl: null },
+  labels: [],
+  reviewers: [],
+  additions: 3,
+  deletions: 1,
+  changedFiles: 2,
+  autoMergeMethod: null,
   reviewDecision: "CHANGES_REQUESTED",
   verdicts: ["comment", "approve", "request_changes"],
   findings: [
@@ -208,9 +216,20 @@ describe("linked review draft handoff", () => {
         }),
       ),
     );
-    assert.isTrue(html.includes("Calculation update"));
-    assert.isTrue(html.includes("Unit tests"));
-    assert.isTrue(html.includes("FAILURE"));
+    for (const text of [
+      "Calculation update",
+      "test/repo",
+      "#7",
+      "author",
+      "gh pr checkout 7",
+      "feature",
+      "2 files",
+      "+3",
+      "Squash and merge",
+      "1 of 1 failing",
+      "The remote description.",
+    ])
+      assert.equal(html.includes(text) ? text : `missing ${text}`, text);
     assert.isTrue(html.includes("Summary"));
     assert.isTrue(html.includes("Timeline"));
     assert.isTrue(html.includes("Code"));
@@ -563,14 +582,18 @@ it("renders queued and uncertain durable receipts with reconciliation and no mer
       createElement(
         QueryClientProvider,
         { client },
-        createElement(PullRequestLifecycle, {
-          threadId: target.threadId,
-          prKey: detail.observation.key,
-          detail: undefined,
-          disabled: true,
-          refresh() {},
-          resolveConflicts() {},
-          canAskCodex: true,
+        createElement(function Notices() {
+          return createElement(PullRequestLifecycleNotices, {
+            lifecycle: usePullRequestLifecycle({
+              threadId: target.threadId,
+              prKey: detail.observation.key,
+              detail: undefined,
+              disabled: true,
+              refresh() {},
+            }),
+            detail: undefined,
+            disabled: true,
+          });
         }),
       ),
     );
@@ -581,6 +604,41 @@ it("renders queued and uncertain durable receipts with reconciliation and no mer
         result.kind === "accepted" ? "Queued. Waiting" : "Outcome uncertain",
       ),
     );
+    client.clear();
+  }
+});
+
+it("renders no lifecycle box when there is nothing to report, and leaves queued and armed state to the header", () => {
+  for (const primary of ["merge", "queued", "auto_merge_armed"] as const) {
+    const client = new QueryClient();
+    client.setQueryData(
+      ["pr-operations", target.threadId, detail.observation.key],
+      [],
+    );
+    const loaded = prReviewDetail.parse({
+      ...detail,
+      capabilities: { ...detail.capabilities, primary },
+    });
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(function Notices() {
+          return createElement(PullRequestLifecycleNotices, {
+            lifecycle: usePullRequestLifecycle({
+              threadId: target.threadId,
+              prKey: detail.observation.key,
+              detail: loaded,
+              disabled: false,
+              refresh() {},
+            }),
+            detail: loaded,
+            disabled: false,
+          });
+        }),
+      ),
+    );
+    assert.equal(html, "");
     client.clear();
   }
 });

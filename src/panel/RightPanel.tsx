@@ -24,6 +24,7 @@ import { FileEntryIcon } from "./FileEntryIcon";
 import { FilesSurface } from "./FilesSurface";
 import { PullRequestDetail } from "./PullRequestDetail";
 import { PullRequestsSurface } from "./PullRequestsSurface";
+import { pullRequestState } from "./pullRequestPresentation";
 import type { PullRequestKey, ThreadPrSummary } from "./pullRequests";
 import type { ReviewDraftRequest } from "./reviews";
 import {
@@ -246,7 +247,10 @@ export function RightPanel({
                         label={`Close ${title}`}
                         onClick={() => onChange(closeSurface(state, index))}
                       >
-                        <SurfaceIcon surface={surface} />
+                        <SurfaceIcon
+                          surface={surface}
+                          pullRequests={pullRequests}
+                        />
                       </PanelTabCloseButton>
                       <button
                         type="button"
@@ -347,13 +351,27 @@ export function RightPanel({
   );
 }
 
-function SurfaceIcon({ surface }: { surface: Surface }) {
+function SurfaceIcon({
+  surface,
+  pullRequests,
+}: {
+  surface: Surface;
+  pullRequests: ThreadPrSummary["links"];
+}) {
   switch (surface.kind) {
     case "diff":
       return <FileDiffIcon className="size-3 shrink-0" />;
     case "pull_requests":
-    case "pull_request":
       return <GitPullRequestIcon className="size-3 shrink-0" />;
+    case "pull_request": {
+      const lifecycle = pullRequests.find((link) => link.pr.key === surface.key)
+        ?.pr.snapshot?.lifecycle;
+      if (!lifecycle) return <GitPullRequestIcon className="size-3 shrink-0" />;
+      const state = pullRequestState(lifecycle);
+      return (
+        <state.Icon className={cn("size-3 shrink-0", state.toneClassName)} />
+      );
+    }
     case "files":
       return <FilesIcon className="size-3 shrink-0" />;
     case "file":

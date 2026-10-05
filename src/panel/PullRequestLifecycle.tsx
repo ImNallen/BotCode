@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ipc } from "../ipc";
 import { Button } from "../ui/controls";
-import { Menu, MenuItem } from "../ui/menu";
 import {
   Dialog,
   DialogDescription,
@@ -27,22 +26,18 @@ import {
   type LifecycleConfirmation,
 } from "./prLifecycle";
 
-export function PullRequestLifecycle({
+export function usePullRequestLifecycle({
   threadId,
   prKey,
   detail,
   disabled,
   refresh,
-  resolveConflicts,
-  canAskCodex,
 }: {
   threadId: string;
   prKey: PullRequestKey;
   detail: PrReviewDetail | undefined;
   disabled: boolean;
   refresh: () => void;
-  resolveConflicts: () => void;
-  canAskCodex: boolean;
 }) {
   const [confirmation, setConfirmation] = useState<LifecycleConfirmation>();
   const [continuation, setContinuation] = useState<UpdateContinuation>();
@@ -123,157 +118,140 @@ export function PullRequestLifecycle({
       refresh();
     }
   };
-  const caps = detail?.capabilities;
-  const primary =
-    caps?.actions.filter((action) => {
-      switch (caps.primary) {
-        case "merge":
-          return action.kind === "merge" || action.kind === "enqueue";
-        case "enable_auto_merge":
-          return action.kind === "enable_auto_merge";
-        case "ready":
-          return action.kind === "set_draft" && !action.draft;
-        case "auto_merge_armed":
-          return action.kind === "disable_auto_merge";
-        default:
-          return false;
-      }
-    }) ?? [];
   const allowed = (action: LifecycleAction) =>
     !disabled &&
     !pending &&
     (!operations.data?.length || action.kind === "disable_auto_merge");
+  return {
+    choose,
+    allowed,
+    pending,
+    message,
+    operations,
+    confirmation,
+    cancelConfirmation: () => setConfirmation(undefined),
+    perform,
+    reconcile,
+    continuation,
+    offerContinuation: setContinuation,
+    continueUpdate,
+  };
+}
+export type PullRequestLifecycleState = ReturnType<
+  typeof usePullRequestLifecycle
+>;
+
+export function PullRequestLifecycleNotices({
+  lifecycle,
+  detail,
+  disabled,
+}: {
+  lifecycle: PullRequestLifecycleState;
+  detail: PrReviewDetail | undefined;
+  disabled: boolean;
+}) {
+  const {
+    pending,
+    message,
+    operations,
+    confirmation,
+    continuation,
+    reconcile,
+  } = lifecycle;
+  const explanation = detail?.capabilities.explanation;
+  const notices =
+    explanation ||
+    pending ||
+    message ||
+    operations.error ||
+    operations.data?.length;
   return (
-    <div
-      className="space-y-2 border-b border-border/60 p-2 text-xs"
-      aria-label="Pull request actions"
-    >
-      <div className="flex flex-wrap gap-1">
-        {caps?.primary === "resolve_conflicts" ? (
-          <Button
-            size="sm"
-            disabled={disabled || !canAskCodex}
-            onClick={resolveConflicts}
-          >
-            Resolve conflicts
-          </Button>
-        ) : null}
-        {primary.map((action) => (
-          <Button
-            key={lifecycleLabel(action)}
-            size="sm"
-            disabled={!allowed(action)}
-            onClick={() => choose(action)}
-          >
-            {lifecycleLabel(action)}
-          </Button>
-        ))}
-        {caps?.actions.length ? (
-          <Menu
-            align="start"
-            trigger={(props) => (
-              <Button
-                {...props}
-                size="sm"
-                variant="outline"
-                disabled={disabled || pending}
-              >
-                Actions
-              </Button>
-            )}
-          >
-            {caps.actions.map((action) => (
-              <MenuItem
-                key={lifecycleLabel(action)}
-                disabled={!allowed(action)}
-                onClick={() => choose(action)}
-              >
-                {lifecycleLabel(action)}
-              </MenuItem>
-            ))}
-          </Menu>
-        ) : null}
-      </div>
-      {caps?.primary === "queued" ? (
-        <p>Queued. Waiting for GitHub to merge.</p>
-      ) : null}
-      {caps?.primary === "auto_merge_armed" ? (
-        <p>Auto-merge enabled. GitHub may merge when ready.</p>
-      ) : null}
-      {caps?.explanation ? (
-        <p className="text-muted-foreground">{caps.explanation}</p>
-      ) : null}
-      {pending ? <p role="status">Waiting for GitHub…</p> : null}
-      {message ? (
-        <p role="status" className="break-words">
-          {message}
-        </p>
-      ) : null}
-      {operations.error ? <p role="alert">{operations.error.message}</p> : null}
-      {operations.data?.map((operation) => (
+    <>
+      {notices ? (
         <div
-          key={operation.input.requestId}
-          className="rounded-md border border-border p-2"
+          className="space-y-2 border-b border-border/60 px-4 py-2 text-xs"
+          aria-label="Pull request actions"
         >
-          <p>{changeResultText(operation.result)}</p>
-          <p className="break-all text-muted-foreground">
-            Pull request {operation.input.target.key}
-          </p>
-          {operation.input.action.kind === "update_branch" ? (
-            <p>{lifecycleLabel(operation.input.action)}</p>
+          {explanation ? (
+            <p className="text-muted-foreground">{explanation}</p>
           ) : null}
-          <p className="break-all text-muted-foreground">
-            Captured account {operation.input.target.viewer}
-          </p>
-          <p className="break-all text-muted-foreground">
-            Captured head {operation.input.target.headOid}
-          </p>
-          <Button
-            size="compact"
-            variant="outline"
-            disabled={pending}
-            onClick={() => void reconcile(operation.input.requestId)}
-          >
-            Reconcile
-          </Button>
-          {!disabled && captureUpdateContinuation(operation, detail) ? (
-            <>
-              <p className="break-all">
-                Current head {detail?.observation.headOid}
+          {pending ? <p role="status">Waiting for GitHub…</p> : null}
+          {message ? (
+            <p role="status" className="break-words">
+              {message}
+            </p>
+          ) : null}
+          {operations.error ? (
+            <p role="alert">{operations.error.message}</p>
+          ) : null}
+          {operations.data?.map((operation) => (
+            <div
+              key={operation.input.requestId}
+              className="rounded-md border border-border p-2"
+            >
+              <p>{changeResultText(operation.result)}</p>
+              <p className="break-all text-muted-foreground">
+                Pull request {operation.input.target.key}
               </p>
-              <p className="break-all">
-                Current account {detail?.observation.viewer}
+              {operation.input.action.kind === "update_branch" ? (
+                <p>{lifecycleLabel(operation.input.action)}</p>
+              ) : null}
+              <p className="break-all text-muted-foreground">
+                Captured account {operation.input.target.viewer}
               </p>
-              <p>{updateContinuationWarning}</p>
+              <p className="break-all text-muted-foreground">
+                Captured head {operation.input.target.headOid}
+              </p>
               <Button
                 size="compact"
                 variant="outline"
                 disabled={pending}
-                onClick={() =>
-                  setContinuation(captureUpdateContinuation(operation, detail))
-                }
+                onClick={() => void reconcile(operation.input.requestId)}
               >
-                Continue from inspected head…
+                Reconcile
               </Button>
-            </>
-          ) : null}
+              {!disabled && captureUpdateContinuation(operation, detail) ? (
+                <>
+                  <p className="break-all">
+                    Current head {detail?.observation.headOid}
+                  </p>
+                  <p className="break-all">
+                    Current account {detail?.observation.viewer}
+                  </p>
+                  <p>{updateContinuationWarning}</p>
+                  <Button
+                    size="compact"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() =>
+                      lifecycle.offerContinuation(
+                        captureUpdateContinuation(operation, detail),
+                      )
+                    }
+                  >
+                    Continue from inspected head…
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          ))}
         </div>
-      ))}
+      ) : null}
       {continuation ? (
         <UncertainUpdateConfirmation
           confirmation={continuation}
-          onCancel={() => setContinuation(undefined)}
-          onConfirm={() => void continueUpdate(continuation)}
+          onCancel={() => lifecycle.offerContinuation(undefined)}
+          onConfirm={() => void lifecycle.continueUpdate(continuation)}
         />
       ) : null}
       {confirmation ? (
         <PullRequestConfirmation
           confirmation={confirmation}
-          onCancel={() => setConfirmation(undefined)}
-          onConfirm={() => void perform(confirmation)}
+          onCancel={lifecycle.cancelConfirmation}
+          onConfirm={() => void lifecycle.perform(confirmation)}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 

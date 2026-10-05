@@ -339,3 +339,15 @@ The native debug bundle used the temporary identifier `dev.z1.code.prverify`, an
 - With the second conversation's local checkout on PR #1's branch, the header's **View PR** linked it and opened the **#1** detail directly.
 
 The Git control's create-PR path was not run natively. It uses the same opener as **View PR**.
+
+## T3 pull request detail layout
+
+Verified on 2026-10-05. `pnpm typecheck`, `pnpm test:ui` (125 tests), Prettier, `pnpm build`, rustfmt, Clippy with warnings denied and `cargo test -p z1-core` (173 tests) passed. New frontend tests cover the header control for each lifecycle state, the armed badge beside a conflict, the menu split, the mapping of raw GitHub check states, the checks rollup and summary, and the relative time. A new core test reads a fixture whose totals differ from the sum of its files and whose reviewers include a team and a reviewer who was not requested. It checks the serialized author, labels, reviewers, totals and auto-merge method.
+
+The native debug bundle used the temporary identifier `dev.z1.code.prlayout`, an isolated `Z1_DATA_DIR`, the disposable clone of `ImNallen/z1-git-actions-verify` and `Z1_GH_BIN` set to a proxy for the real GitHub CLI. The proxy refused every mutation and REST write, and its log recorded none from the app. At 1500×1000 with an 880px panel:
+
+- PR #1 read from GitHub showed `imnallen/z1-git-actions-verify #1` in green, **Merge** and the **…** menu, the title, the author's GitHub avatar and login, "updated 1d ago", `gh pr checkout 1`, `main ← z1-verify-145738`, and "1 file +1 -0". Reviewers and Labels read None, and the row read "No checks reported".
+- The **…** menu listed All pull requests, Refresh, Explain with Codex, Fix findings, Convert to draft, Squash and merge, Rebase and merge, Close pull request and Open on GitHub. **All pull requests** opened the list. **Squash and merge** opened the confirmation with the captured head and account, and Cancel closed it.
+- With the proxy adding two labels, a requested reviewer, an approving reviewer, two running checks and an armed squash auto-merge to the real responses, the header showed the blue **Auto-merge (squash and merge)** badge. The row read "2 of 2 running". Both avatars loaded, and the approver had a green ring. The labels used their colors. The popover listed both checks as Running with Details. The expanded Checks section listed both, and the menu offered **Disable auto-merge**.
+
+The reference screenshot shows the blue **Auto-merge (squash and merge)** button that enables auto-merge while checks run. Z1 shows it when GitHub reports `enable_auto_merge` as the primary action. The disposable pull requests have no checks, so that state was not observed natively. The condensed header that T3 shows after scrolling, and T3's reviewer and label pickers, are not ported.

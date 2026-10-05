@@ -15,6 +15,11 @@ impl MergeMethod {
             Self::Rebase => "REBASE",
         }
     }
+    pub(crate) fn from_wire(wire: &str) -> Option<Self> {
+        [Self::Merge, Self::Squash, Self::Rebase]
+            .into_iter()
+            .find(|method| method.wire() == wire)
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

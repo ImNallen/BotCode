@@ -85,7 +85,10 @@ pr = {'id': state.get('nodeId', f'PR_fixture_{number}'), **row, 'state': state.g
       'headRepository': {'nameWithOwner': state.get('headRepository', repo)},
       'baseRepository': {'nameWithOwner': repo}, 'updatedAt': state.get('updatedAt', '2026-10-05T12:00:00Z'),
       'closedAt': state.get('closedAt'), 'mergedAt': state.get('mergedAt'),
-      'createdAt': state.get('createdAt', '2026-10-01T12:00:00Z'), 'author': {'login': state.get('author', 'fixture-author')}}
+      'createdAt': state.get('createdAt', '2026-10-01T12:00:00Z'), 'author': {'login': state.get('author', 'fixture-author'), 'avatarUrl': state.get('authorAvatar')},
+      'additions': state.get('additions', 1), 'deletions': state.get('deletions', 1), 'changedFiles': state.get('changedFiles', 1),
+      'labels': {'nodes': state.get('labels', [])}, 'reviewRequests': {'nodes': state.get('reviewRequests', [])},
+      'latestReviews': {'nodes': state.get('latestReviews', [])}}
 if args[:2] == ['pr', 'create']:
     state['exists'] = True
     state_path.write_text(json.dumps(state))

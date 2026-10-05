@@ -72,3 +72,21 @@ export function formatSidebarTime(at: number, now = Date.now()): string {
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
 }
+
+// Copied from pingdotgg/t3code 3e6b450 apps/web/src/timestampFormat.ts (MIT).
+export function formatRelativeTimeLabel(
+  isoDate: string,
+  now = Date.now(),
+): string {
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return "";
+  const diffMs = now - date.getTime();
+  if (diffMs < 0) return "just now";
+  const seconds = Math.floor(diffMs / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
