@@ -1,13 +1,16 @@
+mod pr_review;
 mod pull_requests;
+use crate::pr_review::*;
 use crate::pull_requests::{PrLinkSource, PullRequestKey, ThreadPrSummary};
 use crate::{
     cleanup::{self, Candidate, Sweep},
     codex::{Codex, Signal},
     domain::*,
-    repo, reviews, settings,
+    repo, settings,
     store::Store,
     vcs,
 };
+use pr_review::ReviewWork;
 use pull_requests::PrWork;
 use serde_json::{Value, json};
 use std::{
@@ -142,17 +145,11 @@ enum Command {
     RenameWorkspace(WorkspaceId, String, Reply<Workspace>),
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
-    ReviewFindings(
-        WorkspaceId,
-        Option<ThreadId>,
-        PathBuf,
-        ReviewFindings,
-        Reply<ReviewFindings>,
-    ),
+    PrRead(ThreadId, PullRequestKey, Reply<PrReviewDetail>),
+    PrChange(ThreadId, PrReviewChange, Reply<PrChangeResult>),
     SetReviewDisposition(
-        WorkspaceId,
-        Option<ThreadId>,
-        PathBuf,
+        ThreadId,
+        PullRequestKey,
         SetReviewDisposition,
         Reply<Option<SavedDisposition>>,
     ),
@@ -188,7 +185,6 @@ pub struct App {
     sweeps: Arc<Mutex<()>>,
     wake: Arc<Notify>,
     gh: PathBuf,
-    network: Duration,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
@@ -242,7 +238,7 @@ impl App {
             store.save(thread)?;
         }
         let worktrees = config.data_dir.join("worktrees");
-        let (gh, network) = (config.gh_binary.clone(), config.network_timeout);
+        let gh = config.gh_binary.clone();
         let settings = config.data_dir.join("settings.json");
         let auto_settle = settings::auto_settle(&settings);
         let (commands, rx) = mpsc::channel(128);
@@ -253,6 +249,7 @@ impl App {
         tokio::spawn(
             Owner {
                 prs,
+                review_work: ReviewWork::new(),
                 git_jobs: tokio::task::JoinSet::new(),
                 config,
                 store,
@@ -285,7 +282,6 @@ impl App {
             sweeps: Arc::new(Mutex::new(())),
             wake: Arc::new(Notify::new()),
             gh,
-            network,
         };
         tokio::spawn(Sweeper::from(&app).run(
             app.commands.downgrade(),
@@ -453,44 +449,32 @@ impl App {
         let root = self.checkout(id, thread).await?.1.repository()?;
         vcs::status(&root).await
     }
-    pub async fn review_findings(
+    pub async fn read_pull_request(
         &self,
-        id: WorkspaceId,
-        thread: Option<ThreadId>,
-    ) -> Result<ReviewFindings> {
-        let root = self
-            .checkout(id.clone(), thread.clone())
-            .await?
-            .1
-            .repository()?;
-        let findings = reviews::fetch(&self.gh, &root, self.network).await?;
-        self.call(|reply| Command::ReviewFindings(id, thread, root, findings, reply))
+        thread: ThreadId,
+        key: PullRequestKey,
+    ) -> Result<PrReviewDetail> {
+        self.call(|reply| Command::PrRead(thread, key, reply)).await
+    }
+    pub async fn change_pull_request(
+        &self,
+        thread: ThreadId,
+        input: PrReviewChange,
+    ) -> Result<PrChangeResult> {
+        self.call(|reply| Command::PrChange(thread, input, reply))
             .await
     }
     pub async fn set_review_disposition(
         &self,
-        id: WorkspaceId,
-        thread: Option<ThreadId>,
+        thread: ThreadId,
+        key: PullRequestKey,
         input: SetReviewDisposition,
     ) -> Result<Option<SavedDisposition>> {
-        input.validate()?;
-        let root = self
-            .checkout(id.clone(), thread.clone())
-            .await?
-            .1
-            .repository()?;
-        let (branch, _) = reviews::checkout_identity(&root).await?;
-        if branch != input.branch {
-            return Err(AppError::new(
-                "review_checkout_changed",
-                "The checkout branch changed. Refresh reviews before deciding.",
-            ));
-        }
-        self.call(|reply| Command::SetReviewDisposition(id, thread, root, input, reply))
+        self.call(|reply| Command::SetReviewDisposition(thread, key, input, reply))
             .await
     }
     /// The open pull request for `branch`. gh problems come back as `PrLookup::Unavailable`.
-    pub async fn pull_request(
+    pub async fn current_branch_pull_request(
         &self,
         id: WorkspaceId,
         thread: Option<ThreadId>,
@@ -501,7 +485,7 @@ impl App {
         tokio::task::spawn_blocking(move || repo::branch_name(&path, &name))
             .await
             .map_err(|e| AppError::new("repository", e))??;
-        Ok(vcs::pull_request(&self.gh, &root, &branch).await)
+        Ok(crate::pull_requests::current_branch(&self.gh, &root, &branch).await)
     }
     /// Runs a Git action on a thread's checkout, holding it against turns and other mutations.
     /// `Err` means the action never started. `progress` hears each step as it starts.
@@ -814,6 +798,7 @@ struct GitCompletion {
 }
 struct Owner {
     prs: PrWork,
+    review_work: ReviewWork,
     git_jobs: tokio::task::JoinSet<GitCompletion>,
     config: RuntimeConfig,
     store: Store,
@@ -985,24 +970,6 @@ impl Owner {
         };
         Ok((w.clone(), location))
     }
-    fn review_checkout(
-        &self,
-        id: &WorkspaceId,
-        thread: Option<ThreadId>,
-        root: &Path,
-    ) -> Result<()> {
-        let current = self.checkout(id, thread)?.1.repository()?;
-        if current != root {
-            return Err(AppError::new(
-                "review_checkout_changed",
-                "The checkout changed. Refresh reviews.",
-            ));
-        }
-        if let Some(hold) = self.held.get(root) {
-            return Err(hold.refusal());
-        }
-        Ok(())
-    }
     /// A thread with no running turn, no open approval, and no job or hold on its checkout.
     fn idle(&self, t: &ThreadSnapshot, root: &Path) -> bool {
         !matches!(
@@ -1154,6 +1121,9 @@ impl Owner {
                 Some(done)=self.git_jobs.join_next(), if !self.git_jobs.is_empty()=>{
                     if let Err(error)=self.finish_git_job(done, true) { eprintln!("Git completion failed: {}", error.message); }
                 }
+                Some(done)=self.review_work.active.join_next(), if !self.review_work.active.is_empty()=>{
+                    if let Err(error)=self.finish_review(done) { eprintln!("Review completion failed: {}",error.code); }
+                }
                 Some(done)=self.prs.active.join_next(), if !self.prs.active.is_empty()=>{
                     match done {
                         Ok(done) => { if let Err(error)=self.finish_pr_job(done) { eprintln!("Pull request state could not be saved: {}", error.message); } }
@@ -1185,12 +1155,14 @@ impl Owner {
                 git_shutdown = Err(error);
             }
         }
+        let review_shutdown = self.stop_reviews().await;
         let pr_shutdown = self.stop_pr_jobs().await;
         let store_shutdown = self.store.close();
         if let Some((reply, result)) = shutdown {
             let _ = reply.send(
                 result
                     .and(git_shutdown)
+                    .and(review_shutdown)
                     .and(pr_shutdown)
                     .and(store_shutdown),
             );
@@ -1302,23 +1274,10 @@ impl Owner {
             Command::Checkout(id, thread, reply) => {
                 let _ = reply.send(self.checkout(&id, thread));
             }
-            Command::ReviewFindings(id, thread, root, mut findings, reply) => {
-                let result = (|| {
-                    self.review_checkout(&id, thread, &root)?;
-                    if let ReviewFindings::Ready { findings, .. } = &mut findings {
-                        for finding in findings {
-                            finding.saved =
-                                self.store.review_disposition(&id, &finding.observation)?;
-                        }
-                    }
-                    Ok(findings)
-                })();
-                let _ = reply.send(result);
-            }
-            Command::SetReviewDisposition(id, thread, root, input, reply) => {
-                let result = self
-                    .review_checkout(&id, thread, &root)
-                    .and_then(|_| self.store.set_review_disposition(&id, &input));
+            Command::PrRead(thread, key, reply) => self.read_review(thread, key, reply),
+            Command::PrChange(thread, input, reply) => self.change_review(thread, input, reply),
+            Command::SetReviewDisposition(thread, key, input, reply) => {
+                let result = self.review_disposition(&thread, &key, &input);
                 let _ = reply.send(result);
             }
             Command::Claim(id, thread, hold, reply) => {

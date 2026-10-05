@@ -15,7 +15,17 @@ def option(name):
     return args[args.index(name) + 1]
 def project(pr):
     return {field: pr[field] for field in option('--json').split(',')}
-if args[:2] == ['pr', 'list']:
+if args[:2] == ['api', 'graphql']:
+    variables = dict(arg.split('=', 1) for arg in args if '=' in arg)
+    rows = []
+    for pr in prs:
+        if pr['headRefName'] == variables.get('head', pr['headRefName']) and pr['state'] == 'OPEN':
+            rows.append({**pr, 'id': f"PR_{pr['number']}", 'isDraft': False, 'headRefOid': 'a' * 40, 'headRepository': {'nameWithOwner': 'z1/fixture'}, 'baseRepository': {'nameWithOwner': 'z1/fixture'}, 'updatedAt': '2026-10-05T12:00:00Z', 'closedAt': None, 'mergedAt': None})
+    if 'Z1Discover' in variables.get('query', ''):
+        print(json.dumps({'data': {'repository': {'pullRequests': {'nodes': rows, 'pageInfo': {'hasNextPage': False}}}}}))
+    else:
+        print(json.dumps({'data': {'repository': {'pullRequest': rows[0] if rows else None}}}))
+elif args[:2] == ['pr', 'list']:
     head = option('--head')
     print(json.dumps([project(pr) for pr in prs if pr['headRefName'] == head and pr['state'] == 'OPEN']))
 elif args[:2] == ['pr', 'view']:

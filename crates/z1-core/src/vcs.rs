@@ -1,5 +1,4 @@
 use crate::{domain::*, repo};
-use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -207,8 +206,6 @@ pub(crate) fn installed_binary(name: &str, env: &str) -> PathBuf {
 const LOCAL: Duration = Duration::from_secs(30);
 /// `git commit` runs the repository's hooks, which may lint or test.
 const COMMIT: Duration = Duration::from_secs(600);
-const LOOKUP: Duration = Duration::from_secs(15);
-const PR_FIELDS: &str = "number,title,url,baseRefName,headRefName,isCrossRepository";
 
 fn git(root: &Path) -> Tool<'_> {
     Tool {
@@ -435,28 +432,6 @@ pub(crate) fn parse_numstat(out: &str) -> Vec<FileStat> {
     stats
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PrRow {
-    number: u64,
-    title: String,
-    url: String,
-    base_ref_name: String,
-    head_ref_name: String,
-    #[serde(default)]
-    is_cross_repository: bool,
-}
-impl From<PrRow> for PullRequest {
-    fn from(row: PrRow) -> Self {
-        Self {
-            number: row.number,
-            title: Some(row.title),
-            url: row.url,
-            base: row.base_ref_name,
-            head: row.head_ref_name,
-        }
-    }
-}
 async fn gh(gh: &Path, root: &Path, args: &[&str], limit: Duration) -> Result<String> {
     let out = Tool {
         program: gh,
@@ -494,65 +469,6 @@ async fn pr_repository(root: &Path) -> Result<String> {
     let (owner, name) = crate::pull_requests::repository(remote.trim())?;
     Ok(format!("github.com/{owner}/{name}"))
 }
-pub(crate) async fn pull_request(program: &Path, root: &Path, branch: &str) -> PrLookup {
-    let found = async {
-        let repository = pr_repository(root).await?;
-        let out = gh(
-            program,
-            root,
-            &[
-                "pr",
-                "list",
-                "--repo",
-                &repository,
-                "--head",
-                branch,
-                "--state",
-                "open",
-                "--limit",
-                "20",
-                "--json",
-                PR_FIELDS,
-            ],
-            LOOKUP,
-        )
-        .await?;
-        let rows: Vec<PrRow> = serde_json::from_str(&out)?;
-        let mut matches: Vec<_> = rows
-            .into_iter()
-            .filter(|row| row.head_ref_name == branch && !row.is_cross_repository)
-            .collect();
-        if matches.len() > 1 {
-            return Err(AppError::new(
-                "pr_ambiguous",
-                "Several pull requests match this branch. Link the intended PR by URL.",
-            ));
-        }
-        if let Some(row) = matches.first() {
-            let key = crate::PullRequestKey::from_url(&row.url)?;
-            if format!("github.com/{}/{}", key.repository().0, key.repository().1) != repository {
-                return Err(AppError::new(
-                    "pr_identity_mismatch",
-                    "GitHub returned a different repository.",
-                ));
-            }
-        }
-        Ok::<_, AppError>(matches.pop())
-    };
-    match found.await {
-        Ok(Some(row)) => PrLookup::Open { pr: row.into() },
-        Ok(None) => PrLookup::None,
-        Err(error) => PrLookup::Unavailable {
-            reason: match error.code.as_str() {
-                "gh_missing" => GhProblem::Missing,
-                "gh_unauthenticated" => GhProblem::Unauthenticated,
-                _ => GhProblem::Failed,
-            },
-            message: error.message,
-        },
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Plan {
     Pull {
@@ -749,7 +665,7 @@ pub(crate) async fn run(cx: &Context, action: GitAction) -> Result<GitOutcome> {
     let status = status(&cx.root).await?;
     let mut planned = plan(action.clone(), &status, None);
     if let (Ok(Plan::Stack { pr: Some(_), .. }), Some(branch)) = (&planned, &status.branch) {
-        let lookup = pull_request(&cx.gh, &cx.root, &branch.name).await;
+        let lookup = crate::pull_requests::current_branch(&cx.gh, &cx.root, &branch.name).await;
         planned = plan(action, &status, Some(&lookup));
     }
     let mut out = GitOutcome::default();

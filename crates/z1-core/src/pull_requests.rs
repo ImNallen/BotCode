@@ -282,10 +282,10 @@ pub(crate) fn repository(remote: &str) -> Result<(String, String)> {
     let (owner, name) = key.repository();
     Ok((owner.into(), name.into()))
 }
-const FIELDS: &str = "id number url title state isDraft baseRefName headRefName headRefOid headRepository { nameWithOwner } baseRepository { nameWithOwner } updatedAt closedAt mergedAt";
+pub(crate) const FIELDS: &str = "id number url title state isDraft baseRefName headRefName headRefOid headRepository { nameWithOwner } baseRepository { nameWithOwner } updatedAt closedAt mergedAt";
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Row {
+pub(crate) struct Row {
     id: String,
     number: u64,
     url: String,
@@ -307,7 +307,7 @@ struct Repository {
     name_with_owner: String,
 }
 impl Row {
-    fn parsed(self, key: &PullRequestKey) -> Result<PrSnapshot> {
+    pub(crate) fn parsed(self, key: &PullRequestKey) -> Result<PrSnapshot> {
         let (owner, name) = key.repository();
         if PullRequestKey::from_url(&self.url)? != *key
             || self.number.to_string() != key.number()
@@ -382,7 +382,14 @@ async fn query(
     .run_cancellable(&args, timeout, 2 * 1024 * 1024, cancel)
     .await?;
     if out.code != Some(0) {
-        return Err(AppError::new("pr_fetch", out.stderr.trim()));
+        return Err(AppError::new(
+            if out.code == Some(4) {
+                "gh_unauthenticated"
+            } else {
+                "pr_fetch"
+            },
+            out.stderr.trim(),
+        ));
     }
     let value: serde_json::Value = serde_json::from_str(&out.stdout)?;
     if value.get("errors").is_some() {
@@ -447,4 +454,65 @@ pub(crate) async fn discover(
         ));
     }
     Ok(matches.pop())
+}
+
+pub(crate) async fn current_branch(program: &Path, root: &Path, branch: &str) -> PrLookup {
+    let (lifetime, mut cancel) = watch::channel(false);
+    let found = async {
+        let mut context = checkout(root, &mut cancel).await?;
+        if context.branch != branch {
+            return Err(AppError::new(
+                "pr_checkout_changed",
+                "The checkout changed. Refresh Git actions.",
+            ));
+        }
+        let origin = Tool {
+            program: Path::new("git"),
+            cwd: root,
+        }
+        .ok(
+            &["config", "--get", "remote.origin.url"],
+            Duration::from_secs(10),
+            "pr_repository",
+        )
+        .await?;
+        context.remote = origin.trim().into();
+        context.head_remote = context.remote.clone();
+        let result = discover(program, &context, Duration::from_secs(15), &mut cancel).await?;
+        if checkout(root, &mut cancel).await?.branch != branch {
+            return Err(AppError::new(
+                "pr_checkout_changed",
+                "The checkout changed. Refresh Git actions.",
+            ));
+        }
+        Ok(result)
+    }
+    .await;
+    drop(lifetime);
+    match found {
+        Ok(Some((key, snapshot))) => PrLookup::Open {
+            pr: PullRequest {
+                number: key.number().parse().unwrap(),
+                title: Some(snapshot.title),
+                url: key.url(),
+                base: snapshot.base,
+                head: snapshot.head,
+            },
+        },
+        Ok(None) => PrLookup::None,
+        Err(error) => PrLookup::Unavailable {
+            reason: match error.code.as_str() {
+                "tool_missing" | "gh_missing" => GhProblem::Missing,
+                "gh_unauthenticated" => GhProblem::Unauthenticated,
+                _ => GhProblem::Failed,
+            },
+            message: match error.code.as_str() {
+                "tool_missing" | "gh_missing" => {
+                    "Install GitHub CLI (gh) to create pull requests.".into()
+                }
+                "gh_unauthenticated" => "Run `gh auth login` to create pull requests.".into(),
+                _ => error.message,
+            },
+        },
+    }
 }

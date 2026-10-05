@@ -1,9 +1,10 @@
 mod cleanup;
 mod codex;
 mod domain;
+mod pr_review;
 mod pull_requests;
 pub mod repo;
-mod reviews;
+pub use pr_review::*;
 pub use pull_requests::{
     CachedPr, LinkedPrSummary, PrFreshness, PrLifecycle, PrLinkSource, PrSnapshot, PullRequestKey,
     ThreadPrSummary,

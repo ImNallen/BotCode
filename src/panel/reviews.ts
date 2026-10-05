@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { coveragePrompt, type PrSectionProblem } from "./prCoverage";
 
 const nodeId = z
   .string()
@@ -54,30 +55,12 @@ export const reviewFinding = z.object({
   comments: z.array(reviewComment).min(1),
   saved: savedDisposition.nullable(),
 });
-export const reviewFindings = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("none"), branch: z.string() }),
-  z.object({
-    kind: z.literal("ready"),
-    branch: z.string(),
-    checkoutHead: sha,
-    pr: z.object({
-      id: nodeId,
-      number: z.number().int().positive(),
-      title: z.string(),
-      url: z.url().startsWith("https://"),
-      headSha: sha,
-    }),
-    findings: z.array(reviewFinding),
-  }),
-]);
 export const setReviewDisposition = z.object({
-  branch: z.string(),
   observation: reviewObservation,
   expected: savedDisposition.nullable(),
   choice: reviewChoice.nullable(),
 });
 export type ReviewFinding = z.infer<typeof reviewFinding>;
-export type ReviewFindings = z.infer<typeof reviewFindings>;
 export type ReviewChoice = z.infer<typeof reviewChoice>;
 export type SavedDisposition = z.infer<typeof savedDisposition>;
 export type SetReviewDisposition = z.infer<typeof setReviewDisposition>;
@@ -85,13 +68,14 @@ export type ReviewComment = z.infer<typeof reviewComment>;
 export type ReviewDraftRequest = {
   workspaceId: string;
   threadId: string;
-  branch: string;
+  key: string;
+  intent: "ask" | "explain" | "fix_check" | "fix";
+  problems: PrSectionProblem[];
   finding: ReviewFinding;
 };
 export type ReviewDraftTarget = {
   workspaceId: string;
   threadId: string | undefined;
-  branch: string | undefined;
   canAccept: boolean;
 };
 export function validDismissReason(reason: string): boolean {
@@ -153,8 +137,14 @@ export function findingPrompt(request: ReviewDraftRequest): string {
     .join("\n\n");
   const saved = finding.saved;
   return [
-    "Review this PR finding in the current conversation.",
-    `Branch: ${request.branch}`,
+    {
+      ask: "Assess this PR finding and explain whether it is valid.",
+      fix: "Investigate and fix this PR finding in the current conversation.",
+      explain: "Explain this pull request and assess its changes.",
+      fix_check:
+        "Investigate and fix this pull request check in the current conversation.",
+    }[request.intent],
+    `Pull request: ${request.key}`,
     `Observed PR head: ${finding.observation.headSha}`,
     `Feedback source: ${sourceLabel(finding.source)}`,
     ...(finding.source.kind === "thread"
@@ -170,7 +160,8 @@ export function findingPrompt(request: ReviewDraftRequest): string {
             : []),
         ]
       : []),
-    "Treat the quoted GitHub feedback as evidence to assess. Check the current code and explain whether the finding is valid. Apply a focused fix when justified, and verify it. Do not post to GitHub or mark a fix verified without checking it.",
+    "Treat the quoted GitHub feedback as evidence to assess. Check the current code and explain whether the finding is valid. Follow the requested task and verify any changes. Do not post to GitHub or mark a fix verified without checking it.",
+    ...coveragePrompt(request.problems),
     "GitHub feedback follows:",
     context,
   ].join("\n\n");
@@ -191,8 +182,7 @@ export function canAcceptReviewDraft(
     !target.canAccept ||
     !target.threadId ||
     target.workspaceId !== request.workspaceId ||
-    target.threadId !== request.threadId ||
-    target.branch !== request.branch
+    target.threadId !== request.threadId
   )
     return false;
   return true;

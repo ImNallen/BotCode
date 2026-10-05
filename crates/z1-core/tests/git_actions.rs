@@ -491,39 +491,22 @@ async fn commit_push_pr_opens_one_pull_request_against_the_worktree_base() {
     );
     assert_eq!(outcome.failure, None);
     assert_eq!(phases, [GitPhase::Commit, push_phase(), GitPhase::Pr]);
-    let json = "number,title,url,baseRefName,headRefName,isCrossRepository";
     assert_eq!(
         f.gh_calls(),
-        [
-            vec![
-                "pr",
-                "list",
-                "--repo",
-                "github.com/z1/fixture",
-                "--head",
-                name.as_str(),
-                "--state",
-                "open",
-                "--limit",
-                "20",
-                "--json",
-                json
-            ],
-            vec![
-                "pr",
-                "create",
-                "--repo",
-                "github.com/z1/fixture",
-                "--fill",
-                "--base",
-                "develop",
-                "--head",
-                name.as_str()
-            ],
-        ]
+        [vec![
+            "pr",
+            "create",
+            "--repo",
+            "github.com/z1/fixture",
+            "--fill",
+            "--base",
+            "develop",
+            "--head",
+            name.as_str()
+        ],]
     );
     assert_eq!(
-        app.pull_request(workspace, Some(thread.id), name)
+        app.current_branch_pull_request(workspace, Some(thread.id), name)
             .await
             .unwrap(),
         PrLookup::Open {
@@ -597,7 +580,7 @@ async fn pull_request_actions_are_refused_before_the_commit_without_gh() {
         "nothing ran"
     );
     assert_eq!(
-        app.pull_request(workspace.clone(), None, "feature".into())
+        app.current_branch_pull_request(workspace.clone(), None, "feature".into())
             .await
             .unwrap(),
         PrLookup::Unavailable {
@@ -614,7 +597,7 @@ async fn pull_request_actions_are_refused_before_the_commit_without_gh() {
     assert_eq!(outcome.commit, None);
     assert_eq!(git_output(&f.repository, &["rev-parse", "HEAD"]), head);
     assert_eq!(
-        app.pull_request(workspace.clone(), None, "feature".into())
+        app.current_branch_pull_request(workspace.clone(), None, "feature".into())
             .await
             .unwrap(),
         PrLookup::Unavailable {
@@ -634,7 +617,7 @@ async fn pull_request_actions_are_refused_before_the_commit_without_gh() {
     .unwrap();
     assert_eq!(outcome.failure, None, "commit and push work without gh");
     assert_eq!(
-        app.pull_request(workspace, None, "-x".into())
+        app.current_branch_pull_request(workspace, None, "-x".into())
             .await
             .unwrap_err()
             .code,

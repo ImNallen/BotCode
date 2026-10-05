@@ -83,31 +83,39 @@ pub async fn git_status(
     app.git_status(workspace_id, thread_id).await
 }
 #[tauri::command]
-pub async fn pull_request(
+pub async fn current_branch_pull_request(
     app: State<'_, App>,
     workspace_id: WorkspaceId,
     thread_id: Option<ThreadId>,
     branch: String,
 ) -> Result<PrLookup> {
-    app.pull_request(workspace_id, thread_id, branch).await
+    app.current_branch_pull_request(workspace_id, thread_id, branch)
+        .await
 }
 #[tauri::command]
-pub async fn review_findings(
+pub async fn read_pull_request(
     app: State<'_, App>,
-    workspace_id: WorkspaceId,
-    thread_id: Option<ThreadId>,
-) -> Result<ReviewFindings> {
-    app.review_findings(workspace_id, thread_id).await
+    thread_id: ThreadId,
+    key: PullRequestKey,
+) -> Result<PrReviewDetail> {
+    app.read_pull_request(thread_id, key).await
+}
+#[tauri::command]
+pub async fn change_pull_request(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    input: PrReviewChange,
+) -> Result<PrChangeResult> {
+    app.change_pull_request(thread_id, input).await
 }
 #[tauri::command]
 pub async fn set_review_disposition(
     app: State<'_, App>,
-    workspace_id: WorkspaceId,
-    thread_id: Option<ThreadId>,
+    thread_id: ThreadId,
+    key: PullRequestKey,
     input: SetReviewDisposition,
 ) -> Result<Option<SavedDisposition>> {
-    app.set_review_disposition(workspace_id, thread_id, input)
-        .await
+    app.set_review_disposition(thread_id, key, input).await
 }
 #[tauri::command]
 pub async fn run_git_action(

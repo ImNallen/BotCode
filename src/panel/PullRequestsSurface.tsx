@@ -1,3 +1,6 @@
+import { PullRequestDetail } from "./PullRequestDetail";
+import type { ReviewHandoff } from "./PullRequestTimeline";
+import type { PullRequestKey } from "./pullRequests";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLinkIcon, RefreshCwIcon } from "lucide-react";
@@ -6,7 +9,8 @@ import { Button } from "../ui/controls";
 import { prLabel, prUrl } from "./pullRequests";
 import type { ThreadPrSummary } from "./pullRequests";
 
-export function PullRequestsSurface({ threadId }: { threadId: string }) {
+export function PullRequestsSurface({ threadId, ...handoff }: ReviewHandoff) {
+  const [selected, setSelected] = useState<PullRequestKey>();
   const client = useQueryClient();
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string>();
@@ -27,6 +31,15 @@ export function PullRequestsSurface({ threadId }: { threadId: string }) {
       setBusy(false);
     }
   };
+  if (selected)
+    return (
+      <PullRequestDetail
+        prKey={selected}
+        threadId={threadId}
+        onBack={() => setSelected(undefined)}
+        {...handoff}
+      />
+    );
   return (
     <section
       className="flex min-h-0 flex-1 flex-col text-sm"
@@ -129,6 +142,13 @@ export function PullRequestsSurface({ threadId }: { threadId: string }) {
               </p>
             ) : null}
             <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setSelected(pr.key)}
+              >
+                Open
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"

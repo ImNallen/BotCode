@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import fcntl
 import os
 from pathlib import Path
 import subprocess
@@ -10,9 +11,38 @@ state_path = Path(os.environ.get('Z1_PR_FIXTURE_STATE', str(Path(__file__).with_
 state = json.loads(state_path.read_text())
 args = sys.argv[1:]
 log = state_path.with_suffix('.log')
+payload = None
+if '--input' in args:
+    input_path = Path(args[args.index('--input') + 1])
+    payload = json.loads(input_path.read_text())
+query = payload['query'] if payload else ' '.join(args)
+variables = payload.get('variables', {}) if payload else dict(arg.split('=', 1) for arg in args if '=' in arg)
+number = int(variables.get('number', state.get('number', 41))) if state.get('matchNumber') else state.get('number', 41)
+
+def update_state(update):
+    with state_path.with_suffix('.lock').open('w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = json.loads(state_path.read_text())
+        update(current)
+        temporary = state_path.with_suffix(f'.{os.getpid()}.next')
+        temporary.write_text(json.dumps(current))
+        temporary.replace(state_path)
+        return current
+
+entry = {'args': args, 'pid': os.getpid(), 'cwd': os.getcwd()}
+if payload is not None:
+    entry.update(payload=payload, inputMode=oct(input_path.stat().st_mode & 0o777))
 with log.open('a') as file:
-    file.write(json.dumps({'args': args, 'pid': os.getpid(), 'cwd': os.getcwd()}) + '\n')
+    file.write(json.dumps(entry) + '\n')
+for operation, release in state.get('waitFor', {}).items():
+    name, _, target = operation.partition(':')
+    if name in query and (not target or target == str(number)):
+        while not Path(release).exists() and state_path.exists():
+            time.sleep(0.01)
 mode = state.get('mode', 'ok')
+for operation, operation_mode in state.get('sectionModes', {}).items():
+    if operation in ' '.join(args):
+        mode = operation_mode
 if args[:2] == ['pr', 'create']:
     time.sleep(state.get('createDelay', 0))
 if args[:2] == ['api', 'graphql'] and state.get('exists') and state.get('failReadAfterCreate'):
@@ -23,6 +53,8 @@ if mode == 'hang':
     child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)'])
     time.sleep(0.05)
     state_path.with_suffix('.pid').write_text(str(child.pid))
+    with state_path.with_suffix('.children').open('a') as file:
+        file.write(str(child.pid) + '\n')
     time.sleep(300)
 if mode == 'error':
     print('Fixture GitHub unavailable', file=sys.stderr)
@@ -30,7 +62,6 @@ if mode == 'error':
 repo = state.get('repository', 'fixture/project')
 branch = state.get('branch', 'feature')
 sha = state.get('head', 'a' * 40)
-number = state.get('number', 41)
 url = f'https://github.com/{repo}/pull/{number}'
 row = {'number': number, 'title': state.get('title', 'Durable fixture pull request'), 'url': url,
        'baseRefName': 'main', 'headRefName': branch, 'isCrossRepository': False}
@@ -38,7 +69,8 @@ pr = {'id': f'PR_fixture_{number}', **row, 'state': state.get('lifecycle', 'OPEN
       'isDraft': state.get('draft', False), 'headRefOid': sha,
       'headRepository': {'nameWithOwner': state.get('headRepository', repo)},
       'baseRepository': {'nameWithOwner': repo}, 'updatedAt': state.get('updatedAt', '2026-10-05T12:00:00Z'),
-      'closedAt': state.get('closedAt'), 'mergedAt': state.get('mergedAt')}
+      'closedAt': state.get('closedAt'), 'mergedAt': state.get('mergedAt'),
+      'createdAt': state.get('createdAt', '2026-10-01T12:00:00Z'), 'author': {'login': state.get('author', 'fixture-author')}}
 if args[:2] == ['pr', 'create']:
     state['exists'] = True
     state_path.write_text(json.dumps(state))
@@ -48,8 +80,61 @@ elif args[:2] == ['pr', 'view']:
 elif args[:2] == ['pr', 'list']:
     print(json.dumps([row] if state.get('exists', True) else []))
 elif args[:2] == ['api', 'graphql']:
-    query = ' '.join(args)
-    if 'Z1Discover' in query:
+    operation = query.split('query ')[-1].split('(')[0]
+    if operation in state.get('failSections', []):
+        print(json.dumps({'errors': [{'message': 'Fixture section unavailable'}]}))
+        sys.exit(0)
+    if operation in state.get('wrongIdentitySections', []):
+        pr['id'] = 'PR_other'
+    page = int(variables.get('cursor') or '0')
+    def connection(nodes):
+        pages = state.get('pages', 1)
+        return {'nodes': nodes, 'pageInfo': {'hasNextPage': page + 1 < pages, 'endCursor': str(page + 1)}}
+    comment = {'id': 'COMMENT_' + str(page), 'body': 'Validate negative inputs.', 'url': url + '#discussion_r1', 'author': {'login': 'reviewer'}, 'createdAt': state.get('threadAt', '2026-10-05T12:00:00Z'), 'updatedAt': '2026-10-05T12:00:00Z', 'originalCommit': {'oid': 'b' * 40}, 'diffHunk': '@@ -1 +1 @@\n-old\n+new', 'path': 'calculate.ts', 'originalLine': 1}
+    thread = {'id': 'THREAD_' + str(page), 'isResolved': state.get('resolved', False), 'isOutdated': state.get('outdated', True), 'viewerCanReply': state.get('canReply', True), 'viewerCanResolve': state.get('canResolve', True), 'viewerCanUnresolve': state.get('canUnresolve', True), 'comments': {'nodes': [comment], 'pageInfo': {'hasNextPage': state.get('replyPages', False), 'endCursor': '1'}}}
+    if 'mutation Z1' in query:
+        time.sleep(state.get('mutationDelay', 0))
+        if state.get('mutation') == 'refuse':
+            print(json.dumps({'errors': [{'message': 'Fixture refused mutation'}]}))
+            sys.exit(0)
+        if state.get('mutation') == 'uncertain':
+            time.sleep(300)
+        field = 'addPullRequestReview' if 'Z1SubmitReview' in query else 'addPullRequestReviewThreadReply' if 'Z1Reply' in query else 'unresolveReviewThread' if 'Z1Unresolve' in query else 'resolveReviewThread'
+        def save_mutation(current):
+            current['submitted'] = current.get('submitted', []) + [payload]
+            if field in ['resolveReviewThread', 'unresolveReviewThread']:
+                current['resolved'] = field == 'resolveReviewThread'
+            if current.get('failReadAfterReview'):
+                current['mode'] = 'error'
+        state = update_state(save_mutation)
+        child = 'pullRequestReview' if field == 'addPullRequestReview' else 'comment' if field == 'addPullRequestReviewThreadReply' else 'thread'
+        print(json.dumps({'data': {field: {child: {'id': 'REVIEW_saved' if child == 'pullRequestReview' else 'COMMENT_saved' if child == 'comment' else variables['input']['threadId']}}}}))
+    elif 'Z1ReviewMeta' in query:
+        time.sleep(state.get('metaDelay', 0))
+        def count_meta(current):
+            current['metaCalls'] = current.get('metaCalls', 0) + 1
+        state = update_state(count_meta)
+        if state.get('failCore') or (state.get('failFinal') and state['metaCalls'] > 1):
+            print(json.dumps({'errors': [{'message': 'Fixture core unavailable'}]}))
+            sys.exit(0)
+        if state['metaCalls'] > 1:
+            pr.update(state.get('finalMeta', {}))
+        print(json.dumps({'data': {'viewer': {'login': state.get('finalViewer', state.get('viewer', 'fixture-viewer')) if state['metaCalls'] > 1 else state.get('viewer', 'fixture-viewer')}, 'repository': {'pullRequest': {**pr, 'body': 'Review the calculation update.', 'reviewDecision': 'CHANGES_REQUESTED', 'locked': pr.get('locked', state.get('locked', False)), 'viewerDidAuthor': pr.get('viewerDidAuthor', state.get('didAuthor', False))}}}}))
+    elif 'Z1ReviewThreads' in query:
+        print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, 'reviewThreads': connection([thread])}}}}))
+    elif 'Z1ReviewReplies' in query:
+        print(json.dumps({'data': {'node': {'id': variables['id'], 'pullRequest': {'id': 'PR_other' if state.get('crossPrReply') else pr['id']}, 'comments': {'nodes': [{**comment, 'id': 'REPLY_' + str(page)}], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}}))
+    elif 'Z1ReviewConversation' in query or 'Z1ReviewSummaries' in query:
+        field = 'reviews' if 'Z1ReviewSummaries' in query else 'comments'
+        print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, field: connection([{**comment, 'id': field.upper() + '_' + str(page), 'state': 'CHANGES_REQUESTED', 'createdAt': state.get('reviewAt' if field == 'reviews' else 'commentAt', comment['createdAt'])}])}}}}))
+    elif 'Z1ReviewCommits' in query:
+        commits = state.get('commits', [{'oid': 'c' * 40, 'messageHeadline': 'Validate input', 'committedDate': '2026-10-03T12:00:00Z', 'author': {'name': 'Contributor', 'user': {'login': 'contributor'}}}])
+        print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, 'commits': connection([{'commit': commit} for commit in commits])}}}}))
+    elif 'Z1ReviewChecks' in query:
+        print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, 'statusCheckRollup': {'contexts': connection([{'__typename': 'CheckRun', 'name': 'unit tests', 'status': 'COMPLETED', 'conclusion': 'FAILURE', 'detailsUrl': url + '/checks'}])}}}}}))
+    elif 'Z1ReviewThread' in query:
+        print(json.dumps({'data': {'node': {**thread, 'id': variables['id'], 'pullRequest': {'id': 'PR_other' if state.get('crossPrThread') else pr['id']}}}}))
+    elif 'Z1Discover' in query:
         found = [pr] if state.get('exists', True) else []
         if mode == 'ambiguous':
             found.append({**pr, 'number': number + 1, 'url': f'https://github.com/{repo}/pull/{number + 1}'})
@@ -59,6 +144,18 @@ elif args[:2] == ['api', 'graphql']:
     else:
         print('Unsupported fixture GraphQL operation', file=sys.stderr)
         sys.exit(2)
+elif args[:1] == ['api'] and '/files?' in args[1]:
+    if 'files' in state.get('failSections', []):
+        print('Fixture files unavailable', file=sys.stderr)
+        sys.exit(1)
+    page = int(args[1].split('page=')[-1])
+    files = [{'filename': 'calculate.ts', 'status': 'modified', 'additions': 1, 'deletions': 1, 'patch': '@@ -1 +1 @@\n-export const value = 1;\n+export const value = 2;'}]
+    files = state.get('files', files)
+    if state.get('missingPatch'):
+        files[0].pop('patch')
+    if state.get('filePages'):
+        files = [{**files[0], 'filename': f'file-{page}-{index}.ts'} for index in range(100)]
+    print(json.dumps(files))
 else:
     print('Unsupported fixture request ' + repr(args), file=sys.stderr)
     sys.exit(2)

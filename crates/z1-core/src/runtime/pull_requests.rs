@@ -249,6 +249,67 @@ impl Owner {
         self.start_pr_jobs();
         Ok(self.pr_summary(id))
     }
+    pub(super) fn mark_pr_stale(&mut self, key: &PullRequestKey, message: &str) -> Result<()> {
+        let Some(mut record) = self.prs.records.get(key).cloned() else {
+            return Ok(());
+        };
+        let last_success = match record.freshness {
+            PrFreshness::Current { fetched_at } => Some(fetched_at),
+            PrFreshness::Stale { last_success, .. } => last_success,
+            PrFreshness::NeverLoaded => None,
+        };
+        record.freshness = PrFreshness::Stale {
+            last_success,
+            message: message.into(),
+        };
+        self.store.save_pull_request(&record, None)?;
+        self.prs.records.insert(key.clone(), record);
+        let failures = self.prs.failures.entry(key.clone()).or_default();
+        *failures = (*failures + 1).min(5);
+        self.prs.due.insert(
+            key.clone(),
+            now_ms().saturating_add((60_000_u64 << (*failures - 1)).min(900_000)),
+        );
+        if let Some(threads) = self.prs.threads_by_pr.get(key) {
+            for id in threads {
+                self.pr_hint(id);
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn accept_review_snapshot(
+        &mut self,
+        key: &PullRequestKey,
+        snapshot: &PrSnapshot,
+    ) -> Result<()> {
+        if let Some(mut record) = self.prs.records.get(key).cloned() {
+            if record
+                .snapshot
+                .as_ref()
+                .is_some_and(|old| old.host_updated_at > snapshot.host_updated_at)
+            {
+                return Err(AppError::new(
+                    "pr_review_stale",
+                    "A newer PR observation arrived. Refresh detail.",
+                ));
+            }
+            if record.snapshot.as_ref() != Some(snapshot) {
+                record.revision += 1;
+            }
+            record.snapshot = Some(snapshot.clone());
+            record.freshness = PrFreshness::Current {
+                fetched_at: now_ms(),
+            };
+            self.store.save_pull_request(&record, None)?;
+            self.prs.records.insert(key.clone(), record);
+            if let Some(threads) = self.prs.threads_by_pr.get(key) {
+                for id in threads {
+                    self.pr_hint(id);
+                }
+            }
+        }
+        Ok(())
+    }
     pub(super) fn checkout_changed(&mut self, root: &Path) {
         *self
             .prs
@@ -390,14 +451,15 @@ impl Owner {
                             }
                         }
                         Err(error) => {
-                            let last_success = match record.freshness {
-                                PrFreshness::Current { fetched_at } => Some(fetched_at),
-                                PrFreshness::Stale { last_success, .. } => last_success,
-                                PrFreshness::NeverLoaded => None,
-                            };
-                            record.freshness = PrFreshness::Stale {
-                                last_success,
-                                message: error.message,
+                            self.mark_pr_stale(&key, &error.message)?;
+                            if let Some(job) = rerun {
+                                self.prs.enqueue(job)?;
+                            }
+                            self.start_pr_jobs();
+                            return if error.code == "process_cleanup" {
+                                Err(error)
+                            } else {
+                                Ok(())
                             };
                         }
                         Ok(None) => unreachable!(),
@@ -412,10 +474,7 @@ impl Owner {
                         })
                     });
                     let failures = self.prs.failures.entry(key.clone()).or_default();
-                    let delay = if matches!(record.freshness, PrFreshness::Stale { .. }) {
-                        *failures = (*failures + 1).min(5);
-                        (60_000_u64 << (*failures - 1)).min(900_000)
-                    } else {
+                    let delay = {
                         *failures = 0;
                         match record.snapshot.as_ref().map(|s| &s.lifecycle) {
                             Some(PrLifecycle::Merged { .. }) => u64::MAX,

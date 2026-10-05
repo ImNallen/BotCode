@@ -1,9 +1,16 @@
+use crate::pr_review::{PrChangeResult, PrReviewChange};
 use crate::{
     domain::*,
     pull_requests::{CachedPr, Membership},
 };
 use rusqlite::{Connection, OptionalExtension, params};
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path};
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PrOperation {
+    input: PrReviewChange,
+    result: PrChangeResult,
+}
 pub struct Store {
     db: Connection,
     _lock: std::fs::File,
@@ -46,6 +53,10 @@ impl Store {
                 CREATE TABLE pull_request_operations(request_id TEXT PRIMARY KEY, pr_key TEXT NOT NULL REFERENCES pull_requests(key), action_digest TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
                 PRAGMA user_version=3; COMMIT;")?;
         }
+        db.execute(
+            "UPDATE pull_request_operations SET state='uncertain' WHERE state='started'",
+            [],
+        )?;
         Ok(Self { db, _lock: lock })
     }
     pub fn close(self) -> Result<()> {
@@ -91,6 +102,60 @@ impl Store {
             )?;
         }
         tx.commit()?;
+        Ok(())
+    }
+    pub fn pr_operation(&self, input: &PrReviewChange) -> Result<Option<PrChangeResult>> {
+        let row: Option<(String, String)> = self
+            .db
+            .query_row(
+                "SELECT action_digest,data FROM pull_request_operations WHERE request_id=?1",
+                [&input.request_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((digest, data)) = row else {
+            return Ok(None);
+        };
+        if digest != format!("{:x}", Sha256::digest(serde_json::to_vec(input)?)) {
+            return Err(AppError::new(
+                "pr_request_conflict",
+                "This request ID was used for a different pull request command.",
+            ));
+        }
+        let receipt: PrOperation = serde_json::from_str(&data)?;
+        if receipt.input != *input {
+            return Err(AppError::new(
+                "pr_request_conflict",
+                "This request ID was used for a different pull request command.",
+            ));
+        }
+        Ok(Some(receipt.result))
+    }
+    pub fn start_pr_operation(&self, input: &PrReviewChange) -> Result<()> {
+        let result=PrChangeResult::Uncertain{message:"This operation started without a confirmed result. Check GitHub before submitting again.".into()};
+        self.db.execute("INSERT INTO pull_request_operations(request_id,pr_key,action_digest,state,data) VALUES(?1,?2,?3,'started',?4)",params![input.request_id,input.target.key.as_str(),format!("{:x}",Sha256::digest(serde_json::to_vec(input)?)),serde_json::to_string(&PrOperation{input:input.clone(),result})?])?;
+        Ok(())
+    }
+    pub fn finish_pr_operation(
+        &self,
+        input: &PrReviewChange,
+        result: &PrChangeResult,
+    ) -> Result<()> {
+        self.db.execute(
+            "UPDATE pull_request_operations SET state=?2,data=?3 WHERE request_id=?1",
+            params![
+                input.request_id,
+                match result {
+                    PrChangeResult::Applied { .. } => "applied",
+                    PrChangeResult::Refused { .. } => "refused",
+                    PrChangeResult::Uncertain { .. } => "uncertain",
+                },
+                serde_json::to_string(&PrOperation {
+                    input: input.clone(),
+                    result: result.clone()
+                })?
+            ],
+        )?;
         Ok(())
     }
     pub fn workspaces(&self) -> Result<Vec<Workspace>> {
@@ -295,7 +360,6 @@ mod tests {
         let workspace = workspace();
         store.workspace(&workspace).unwrap();
         let input = SetReviewDisposition {
-            branch: "fixture".into(),
             observation: ReviewObservation {
                 pr_id: "PR_test".into(),
                 finding_id: "THREAD_test".into(),
