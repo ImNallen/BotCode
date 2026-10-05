@@ -33,6 +33,7 @@ import { SidebarFooter } from "./SidebarFooter";
 import { SettingsSidebar } from "./settings/SettingsPage";
 import type { SettingsSection } from "./settings/settingsCatalog";
 import { ChatView } from "./chat/ChatView";
+import type { Surface } from "./panel/RightPanel";
 import { Button } from "./ui/controls";
 import { storage } from "./lib/storage";
 
@@ -88,6 +89,7 @@ export function Workbench() {
   const [error, setError] = useState<string>();
   const [prPanelRequest, setPrPanelRequest] = useState<{
     threadId: string;
+    surface: Surface;
     nonce: number;
   }>();
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -274,9 +276,11 @@ export function Workbench() {
     }
   };
   const selectThread = useCallback(
-    (workspace: string, thread: string, pullRequests = false) => {
+    (workspace: string, thread: string, panel?: Surface) => {
       setPrPanelRequest(
-        pullRequests ? { threadId: thread, nonce: Date.now() } : undefined,
+        panel
+          ? { threadId: thread, surface: panel, nonce: Date.now() }
+          : undefined,
       );
       void navigate({
         to: "/",

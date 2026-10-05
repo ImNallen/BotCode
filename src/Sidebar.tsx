@@ -1,4 +1,6 @@
+import { pullRequestSurface } from "./panel/panelState";
 import { prLabel } from "./panel/pullRequests";
+import type { Surface } from "./panel/RightPanel";
 // Layout and classes follow pingdotgg/t3code v0.0.45 components/Sidebar.tsx,
 // sidebar/SidebarChrome.tsx, sidebar/SidebarThreadHeader.tsx and ThreadStatusIndicators.tsx (MIT).
 // The Pinned section, Snoozed shelf and Settled shelf follow Sidebar.tsx classification,
@@ -173,7 +175,7 @@ export function Sidebar({
   onSelectThread: (
     workspaceId: string,
     threadId: string,
-    pullRequests?: boolean,
+    panel?: Surface,
   ) => void;
   onNewThread: (workspaceId?: string) => void;
   onOpenRepository: () => void;
@@ -426,7 +428,11 @@ export function Sidebar({
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
                     onPullRequests={() =>
-                      onSelectThread(row.workspace.id, row.thread.id, true)
+                      onSelectThread(
+                        row.workspace.id,
+                        row.thread.id,
+                        pullRequestSurface(row.thread.pullRequests.links),
+                      )
                     }
                     onContextMenu={openMenu(row)}
                     onSettle={() => void park(row, { kind: "settle" })}
@@ -466,7 +472,11 @@ export function Sidebar({
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
                     onPullRequests={() =>
-                      onSelectThread(row.workspace.id, row.thread.id, true)
+                      onSelectThread(
+                        row.workspace.id,
+                        row.thread.id,
+                        pullRequestSurface(row.thread.pullRequests.links),
+                      )
                     }
                     onContextMenu={openMenu(row)}
                     onAction={() =>
@@ -503,7 +513,11 @@ export function Sidebar({
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
                     onPullRequests={() =>
-                      onSelectThread(row.workspace.id, row.thread.id, true)
+                      onSelectThread(
+                        row.workspace.id,
+                        row.thread.id,
+                        pullRequestSurface(row.thread.pullRequests.links),
+                      )
                     }
                     onContextMenu={openMenu(row)}
                     onAction={() =>

@@ -1,5 +1,3 @@
-import { PullRequestDetail } from "./PullRequestDetail";
-import type { ReviewHandoff } from "./PullRequestTimeline";
 import type { PullRequestKey } from "./pullRequests";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -9,8 +7,13 @@ import { Button } from "../ui/controls";
 import { prLabel, prUrl } from "./pullRequests";
 import type { ThreadPrSummary } from "./pullRequests";
 
-export function PullRequestsSurface({ threadId, ...handoff }: ReviewHandoff) {
-  const [selected, setSelected] = useState<PullRequestKey>();
+export function PullRequestsSurface({
+  threadId,
+  onOpen,
+}: {
+  threadId: string;
+  onOpen: (key: PullRequestKey) => void;
+}) {
   const client = useQueryClient();
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string>();
@@ -31,15 +34,6 @@ export function PullRequestsSurface({ threadId, ...handoff }: ReviewHandoff) {
       setBusy(false);
     }
   };
-  if (selected)
-    return (
-      <PullRequestDetail
-        prKey={selected}
-        threadId={threadId}
-        onBack={() => setSelected(undefined)}
-        {...handoff}
-      />
-    );
   return (
     <section
       className="flex min-h-0 flex-1 flex-col text-sm"
@@ -145,7 +139,7 @@ export function PullRequestsSurface({ threadId, ...handoff }: ReviewHandoff) {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => setSelected(pr.key)}
+                onClick={() => onOpen(pr.key)}
               >
                 Open
               </Button>

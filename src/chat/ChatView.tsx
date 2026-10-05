@@ -1,4 +1,3 @@
-import { openSurface } from "../panel/panelState";
 // Column, header and composer overlay follow pingdotgg/t3code v0.0.45
 // components/ChatView.tsx, chat/ChatHeader.tsx and chat/PanelLayoutControls.tsx,
 // and chat/DraftHeroHeadline.tsx at 6b286ae8a (MIT).
@@ -42,8 +41,19 @@ import {
 } from "../WorkspaceBreadcrumb";
 import { Toggle } from "../ui/controls";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
-import { RightPanel, emptyPanel, type PanelState } from "../panel/RightPanel";
-import { closeFiles, openFile } from "../panel/panelState";
+import {
+  RightPanel,
+  emptyPanel,
+  type PanelState,
+  type Surface,
+} from "../panel/RightPanel";
+import {
+  closeFiles,
+  openFile,
+  openSurface,
+  pullRequestSurface,
+} from "../panel/panelState";
+import type { ThreadPrSummary } from "../panel/pullRequests";
 import {
   appendReviewDraft,
   canAcceptReviewDraft,
@@ -76,7 +86,7 @@ export function ChatView({
 }: {
   workspaceId: string;
   threadId: string | undefined;
-  prPanelRequest?: { threadId: string; nonce: number };
+  prPanelRequest?: { threadId: string; surface: Surface; nonce: number };
   workspaces: Workspace[];
   scratch: Workspace | undefined;
   scratchAvailable: boolean;
@@ -92,7 +102,7 @@ export function ChatView({
   const [panel, setPanel] = useState<PanelState>(emptyPanel);
   useEffect(() => {
     if (prPanelRequest && prPanelRequest.threadId === threadId) {
-      setPanel((current) => openSurface(current, { kind: "pull_requests" }));
+      setPanel((current) => openSurface(current, prPanelRequest.surface));
       setPanelOpen(true);
     }
   }, [prPanelRequest, threadId]);
@@ -167,6 +177,8 @@ export function ChatView({
     queryKey: checkoutKey("workspace", checkout),
     queryFn: () => ipc.workspace(checkout),
   });
+  const pullRequests =
+    view?.threads.find((row) => row.id === threadId)?.pullRequests.links ?? [];
   const { data: branches } = useQuery({
     queryKey: checkoutKey("branches", checkout),
     queryFn: () => ipc.branches(checkout),
@@ -554,8 +566,13 @@ export function ChatView({
                   threads={view?.threads ?? []}
                   onError={setError}
                   onOpenPullRequests={() => {
+                    const links =
+                      client.getQueryData<ThreadPrSummary>([
+                        "thread-prs",
+                        thread.id,
+                      ])?.links ?? pullRequests;
                     setPanel((current) =>
-                      openSurface(current, { kind: "pull_requests" }),
+                      openSurface(current, pullRequestSurface(links)),
                     );
                     setPanelOpen(true);
                   }}
@@ -721,6 +738,7 @@ export function ChatView({
           onChange={setPanel}
           maximized={maximized}
           conversationId={threadId}
+          pullRequests={pullRequests}
           canAskCodex={reviewDraftTarget.current.canAccept}
           onAskCodex={askCodex}
         />

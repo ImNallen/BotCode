@@ -324,3 +324,17 @@ The native debug bundle used the temporary identifier `dev.z1.code.reviewverify`
 - A draft without a project offered only Files in the panel launcher. Resizing the panel and scrolling source details preserved the sidebar, centered conversation and bottom composer.
 
 This native run did not contact GitHub or run a real Codex fix. Read-only queries against a public GitHub PR separately confirmed the nonempty original commit, diff hunk, resolved/outdated, summary and conversation schema. Fix records planned work; this slice does not verify remediation or post to GitHub. GraphQL requests explicitly select `github.com`, including when `GH_HOST` names another host.
+
+## Direct pull request tabs
+
+Verified on 2026-10-05. `pnpm typecheck`, Prettier and `pnpm test:ui` (112 tests) passed. New tests cover the resolver and titles, one tab per pull request, and hiding a pull request tab that the current conversation does not link. Each test failed against a deliberately broken resolver, tab identity or eligibility rule.
+
+The native debug bundle used the temporary identifier `dev.z1.code.prverify`, an isolated `Z1_DATA_DIR`, a clone of `ImNallen/z1-git-actions-verify`, real Codex and real GitHub reads of its open PRs #1 and #2. At 1100×780:
+
+- A **New worktree** thread with no links offered **Pull requests** in the launcher. After PR #1 was linked by URL, the launcher and the **+** menu read **#1**. Pressing it opened the detail directly in a tab titled **#1**. **Back** opened the list beside it.
+- With the panel closed, the sidebar's **#1 Open** badge opened the **#1** detail directly.
+- After PR #2 was linked, the **+** menu read **Pull requests**. **Open** on the #2 row added a **#2** tab. Unlinking #2 removed that tab.
+- A second conversation hid the first conversation's **#1** tab and showed its own empty list. Returning restored the **#1** tab.
+- With the second conversation's local checkout on PR #1's branch, the header's **View PR** linked it and opened the **#1** detail directly.
+
+The Git control's create-PR path was not run natively. It uses the same opener as **View PR**.
