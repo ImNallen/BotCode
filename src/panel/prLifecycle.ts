@@ -1,5 +1,6 @@
 import type {
   LifecycleAction,
+  MergeMethod,
   PrChangeResult,
   PrObservation,
   PrReviewChange,
@@ -7,14 +8,20 @@ import type {
   PrReviewDetail,
   AcknowledgeUncertainUpdate,
 } from "./prReview";
+// Labels copied from pingdotgg/t3code 3e6b450 apps/web/src/components/pullRequest/pullRequestDetail.logic.ts (MIT).
+export const MERGE_METHOD_LABELS: Record<MergeMethod, string> = {
+  merge: "Merge",
+  squash: "Squash and merge",
+  rebase: "Rebase and merge",
+};
 export function lifecycleLabel(action: LifecycleAction): string {
   switch (action.kind) {
     case "merge":
-      return `${action.method.charAt(0).toUpperCase()}${action.method.slice(1)} merge`;
+      return MERGE_METHOD_LABELS[action.method];
     case "enqueue":
       return "Add to merge queue";
     case "enable_auto_merge":
-      return `Enable auto-merge (${action.method})`;
+      return `Enable auto-merge (${MERGE_METHOD_LABELS[action.method].toLowerCase()})`;
     case "disable_auto_merge":
       return "Disable auto-merge";
     case "set_draft":
