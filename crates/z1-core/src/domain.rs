@@ -796,3 +796,153 @@ pub struct GitFailure {
     pub phase: GitPhase,
     pub error: AppError,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewObservation {
+    pub pr_id: String,
+    pub finding_id: String,
+    pub head_sha: String,
+    pub content_digest: String,
+}
+impl ReviewObservation {
+    pub fn validate(&self) -> Result<()> {
+        let id = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 256
+                && s.bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_=-:".contains(&c))
+        };
+        let hex = |s: &str, len| s.len() == len && s.bytes().all(|c| c.is_ascii_hexdigit());
+        if !id(&self.pr_id)
+            || !id(&self.finding_id)
+            || !hex(&self.head_sha, 40)
+            || !hex(&self.content_digest, 64)
+        {
+            return Err(AppError::new(
+                "invalid_review",
+                "Invalid review observation.",
+            ));
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReviewChoice {
+    Fix,
+    Dismiss { reason: String },
+    NeedsDecision,
+}
+impl ReviewChoice {
+    pub fn validate(&self) -> Result<()> {
+        if let Self::Dismiss { reason } = self
+            && (reason.trim().is_empty() || reason.len() > 4000)
+        {
+            return Err(AppError::new(
+                "invalid_review",
+                "Dismiss needs a reason of at most 4000 bytes.",
+            ));
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedDisposition {
+    pub observation: ReviewObservation,
+    pub choice: ReviewChoice,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewComment {
+    pub id: String,
+    pub body: String,
+    pub url: String,
+    pub author: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub context: Option<ReviewContext>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewContext {
+    pub original_commit: Option<String>,
+    pub path: Option<String>,
+    pub original_line: Option<u64>,
+    pub diff_hunk: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ReviewSource {
+    Thread { resolved: bool, outdated: bool },
+    Review,
+    Conversation,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewFinding {
+    pub observation: ReviewObservation,
+    pub source: ReviewSource,
+    pub comments: Vec<ReviewComment>,
+    pub saved: Option<SavedDisposition>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPullRequest {
+    pub id: String,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub head_sha: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ReviewFindings {
+    None {
+        branch: String,
+    },
+    Ready {
+        branch: String,
+        checkout_head: String,
+        pr: ReviewPullRequest,
+        findings: Vec<ReviewFinding>,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetReviewDisposition {
+    pub branch: String,
+    pub observation: ReviewObservation,
+    pub expected: Option<SavedDisposition>,
+    pub choice: Option<ReviewChoice>,
+}
+impl SetReviewDisposition {
+    pub fn validate(&self) -> Result<()> {
+        self.observation.validate()?;
+        if let Some(choice) = &self.choice {
+            choice.validate()?;
+        }
+        if let Some(expected) = &self.expected {
+            expected.observation.validate()?;
+            expected.choice.validate()?;
+            if expected.observation.pr_id != self.observation.pr_id
+                || expected.observation.finding_id != self.observation.finding_id
+            {
+                return Err(AppError::new(
+                    "invalid_review",
+                    "The saved decision belongs to another finding.",
+                ));
+            }
+        }
+        Ok(())
+    }
+}

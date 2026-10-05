@@ -2,6 +2,12 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { QueryClient } from "@tanstack/react-query";
 import { z } from "zod";
+import {
+  reviewFindings,
+  savedDisposition,
+  setReviewDisposition,
+} from "./panel/reviews";
+import type { SetReviewDisposition } from "./panel/reviews";
 export const native = isTauri();
 const id = z.uuid();
 const reason = z.object({ kind: z.literal("unavailable"), reason: z.string() });
@@ -288,6 +294,7 @@ export type CheckoutScope =
   | "diff"
   | "branches"
   | "git"
+  | "reviews"
   | "pr";
 export const checkoutKey = (
   scope: CheckoutScope,
@@ -300,6 +307,7 @@ export function invalidateCheckouts(client: QueryClient, workspaceId: string) {
     "diff",
     "branches",
     "git",
+    "reviews",
     "pr",
   ];
   for (const scope of scopes)
@@ -377,6 +385,25 @@ export const ipc = {
     ),
   gitStatus: ({ workspaceId, threadId }: CheckoutRef) =>
     call("git_status", { workspaceId, threadId: threadId ?? null }, gitStatus),
+  reviewFindings: ({ workspaceId, threadId }: CheckoutRef) =>
+    call(
+      "review_findings",
+      { workspaceId, threadId: threadId ?? null },
+      reviewFindings,
+    ),
+  setReviewDisposition: (
+    { workspaceId, threadId }: CheckoutRef,
+    input: SetReviewDisposition,
+  ) =>
+    call(
+      "set_review_disposition",
+      {
+        workspaceId,
+        threadId: threadId ?? null,
+        input: setReviewDisposition.parse(input),
+      },
+      savedDisposition.nullable(),
+    ),
   pullRequest: ({ workspaceId, threadId }: CheckoutRef, branch: string) =>
     call(
       "pull_request",
@@ -436,6 +463,7 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
         void client.invalidateQueries({ queryKey: ["file", workspaceId] });
         void client.invalidateQueries({ queryKey: ["diff", workspaceId] });
         void client.invalidateQueries({ queryKey: ["git", workspaceId] });
+        void client.invalidateQueries({ queryKey: ["reviews", workspaceId] });
       }
       workspaces.clear();
     }, 160);
@@ -474,7 +502,9 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
     void client.invalidateQueries();
   });
   const focus = () => {
-    void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== "pr" });
+    void client.invalidateQueries({
+      predicate: (q) => q.queryKey[0] !== "pr" && q.queryKey[0] !== "reviews",
+    });
   };
   window.addEventListener("focus", focus);
   return () => {

@@ -41,6 +41,7 @@ export function Composer({
   disabled,
   context,
   autoFocus,
+  focusRequest,
   settings,
   models,
   modelsLoading,
@@ -72,6 +73,7 @@ export function Composer({
     branch: ReactNode;
   };
   autoFocus?: boolean;
+  focusRequest?: number;
   settings: SessionSettings;
   models: ModelOption[];
   modelsLoading: boolean;
@@ -81,6 +83,9 @@ export function Composer({
   settingsDisabled: boolean;
 }) {
   const editor = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    if (focusRequest) editor.current?.focus();
+  }, [focusRequest]);
   useLayoutEffect(() => {
     const element = editor.current;
     if (!element) return;

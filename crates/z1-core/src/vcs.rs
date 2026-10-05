@@ -30,6 +30,9 @@ pub(crate) struct Output {
 }
 impl Tool<'_> {
     pub async fn run(&self, args: &[&str], limit: Duration) -> Result<Output> {
+        self.run_bounded(args, limit, u64::MAX - 1).await
+    }
+    pub async fn run_bounded(&self, args: &[&str], limit: Duration, bytes: u64) -> Result<Output> {
         let mut command = tokio::process::Command::new(self.program);
         command
             .args(args)
@@ -50,29 +53,58 @@ impl Tool<'_> {
         let (mut stdout, mut stderr) = (child.stdout.take(), child.stderr.take());
         let finished = tokio::time::timeout(limit, async {
             let (mut out, mut err) = (Vec::new(), Vec::new());
-            let (status, read_out, read_err) = tokio::join!(
-                child.wait(),
-                async {
-                    match &mut stdout {
-                        Some(pipe) => pipe.read_to_end(&mut out).await.map(drop),
-                        None => Ok(()),
-                    }
-                },
-                async {
-                    match &mut stderr {
-                        Some(pipe) => pipe.read_to_end(&mut err).await.map(drop),
-                        None => Ok(()),
-                    }
-                },
-            );
-            read_out?;
-            read_err?;
-            Ok::<_, std::io::Error>((status?, out, err))
+            let (status, _, _) =
+                tokio::try_join!(
+                    child.wait(),
+                    async {
+                        match &mut stdout {
+                            Some(pipe) => pipe
+                                .take(bytes + 1)
+                                .read_to_end(&mut out)
+                                .await
+                                .and_then(|_| {
+                                    if out.len() as u64 > bytes {
+                                        Err(std::io::Error::other(
+                                            "Review response exceeded the byte limit.",
+                                        ))
+                                    } else {
+                                        Ok(())
+                                    }
+                                }),
+                            None => Ok(()),
+                        }
+                    },
+                    async {
+                        match &mut stderr {
+                            Some(pipe) => pipe
+                                .take(bytes + 1)
+                                .read_to_end(&mut err)
+                                .await
+                                .and_then(|_| {
+                                    if err.len() as u64 > bytes {
+                                        Err(std::io::Error::other(
+                                            "Tool error exceeded the byte limit.",
+                                        ))
+                                    } else {
+                                        Ok(())
+                                    }
+                                }),
+                            None => Ok(()),
+                        }
+                    },
+                )?;
+            Ok::<_, std::io::Error>((status, out, err))
         })
         .await;
         match finished {
             Ok(result) => {
-                let (status, out, err) = result?;
+                let (status, out, err) = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        stop(&mut child, pid).await;
+                        return Err(error.into());
+                    }
+                };
                 Ok(Output {
                     stdout: String::from_utf8_lossy(&out).into_owned(),
                     stderr: String::from_utf8_lossy(&err).into_owned(),
@@ -957,6 +989,37 @@ mod tests {
             !alive,
             "the backgrounded sleep in the same group was killed"
         );
+    }
+
+    #[tokio::test]
+    async fn oversized_tool_output_stops_the_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("child.pid");
+        let script = format!("sleep 30 & echo $! > {}; yes x", pidfile.display());
+        let sh = Tool {
+            program: Path::new("/bin/sh"),
+            cwd: dir.path(),
+        };
+        let started = Instant::now();
+        let error = sh
+            .run_bounded(&["-c", &script], Duration::from_secs(15), 1024)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.message.contains("byte limit"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let child: i32 = std::fs::read_to_string(pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        for _ in 0..100 {
+            if unsafe { libc::kill(child, 0) } != 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("bounded output left the tool's background child alive");
     }
 
     #[tokio::test]

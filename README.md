@@ -11,7 +11,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-Open a Git repository and start a conversation. To work outside a repository, choose **Start without a project** or press Command+Option+N, and Z1 runs that conversation in its own folder under `scratch` in the data directory. Send with Enter. Shift+Enter adds a line. The right-panel toggle in the header opens Files and Diff tabs for the working copy. Approvals offer Approve, Decline, or Cancel turn. Stop is available after Codex acknowledges the running turn.
+Open a Git repository and start a conversation. To work outside a repository, choose **Start without a project** or press Command+Option+N, and Z1 runs that conversation in its own folder under `scratch` in the data directory. Send with Enter. Shift+Enter adds a line. The right-panel toggle in the header opens Files, Diff, and Reviews tabs. Approvals offer Approve, Decline, or Cancel turn. Stop is available after Codex acknowledges the running turn.
 
 The folder button beside the sidebar search filters threads by project. Its gear buttons open that project's Project settings page, where you can rename a repository, choose where its new threads start, or remove it. Removing a project deletes it and its threads from Z1 and clears its overrides. The repository, Z1 worktrees, and scratch folders stay on disk. Stop a project's running conversations before you remove it.
 
@@ -23,11 +23,15 @@ In a repository thread, the Git actions control at the right of the header commi
 
 The browser build explains that the native runtime is required. It does not simulate repositories or conversations.
 
+Open **Reviews** in a repository conversation to load its branch's open PR from github.com through `gh`. Reviews includes inline threads and replies, review summaries, and PR conversation comments. It shows author and source links, GitHub resolved/outdated status, original reviewed commits and diff hunks when GitHub supplies them, plus separately labeled checkout HEAD and PR head. Use **Fix** for planned work, **Dismiss** with a reason, **Needs decision**, or **Clear decision**. These choices save locally and become stale when the PR head or finding changes. Fix does not mean verified. **Ask Codex** appends the selected finding to the existing conversation draft and focuses the composer. You send it. Z1 does not post comments or resolve threads on GitHub. Reviews is absent for threads without a project and removed worktrees. Enterprise GitHub hosts are not supported in this slice.
+
 ## State and recovery
 
 Z1 keeps its data in `~/.z1`. That directory holds preferences in `settings.json`, the SQLite database, worktrees under `worktrees`, and threads without a project under `scratch`. Settings > Storage can remove worktrees of inactive or unchanged threads to save space, and the thread's next message recreates its worktree. You can edit `settings.json` by hand or symlink it to sync preferences between machines. The database holds machine-local UI state, such as panel widths. Set `Z1_DATA_DIR` to use another directory. Only one runtime can own a directory at a time. Set `Z1_CODEX_BIN` to choose an explicit Codex executable, and `Z1_GH_BIN` to choose an explicit `gh`.
 
 Conversation history and native thread IDs survive restart. Reconnect resumes that saved native conversation. A lost prompt acknowledgement remains uncertain. Z1 never automatically sends that prompt a second time. Old approval callbacks expire when the provider process ends.
+
+Review decisions survive restart and belong to the project and immutable GitHub PR/finding IDs. Removing a project removes its review decisions. Remote feedback is fetched on demand and is not stored as an offline cache. The database migration preserves older data and refuses a schema version newer than this app supports.
 
 One conversation may run in each canonical checkout at a time. Other checkouts can run concurrently through the shared Codex process. A provider failure affects every live conversation on that process.
 
@@ -42,7 +46,7 @@ pnpm smoke
 pnpm tauri build --debug --bundles app
 ```
 
-The core tests use temporary Git repositories and a scripted JSONL provider. They cover real staged, unstaged, untracked, and rename diffs, path containment, operation deduplication, uncertain delivery, approval routing, storage failures, interruption, stalled provider input, and subprocess cleanup. Git actions run against temporary repositories with a bare origin and a scripted `gh`. `pnpm test:ui` runs the Git action rules ported from T3 with `node --test`.
+The core tests use temporary Git repositories and a scripted JSONL provider. They cover real staged, unstaged, untracked, and rename diffs, path containment, operation deduplication, uncertain delivery, approval routing, storage failures, interruption, stalled provider input, and subprocess cleanup. Git actions and review triage use scripted `gh` fixtures. Review checks cover complete nested pagination, failed pages, moving heads, source identity, restart, stale decisions, conflicting writes, migration, and bounded process cleanup. `pnpm test:ui` uses `node --test` for the Git action rules, review prompt/decision behavior, and React panel rendering. [The review fixture protocol](docs/review-fixtures.md) supports isolated native checks.
 
 The real smoke uses the installed Codex account in a disposable checkout and an isolated state directory. It observes streaming, completion, durable history, and same-native-thread continuation after reopening. It asserts the checkout remains unchanged.
 
@@ -52,7 +56,7 @@ Pierre helper packages currently report a theme peer-version warning. Tree, file
 
 ## Roadmap
 
-AI review triage for pull requests is the intended differentiator. Review findings, reviewed commit identity, explicit dispositions, and verified fixes belong in the next slice. This version opens pull requests but does not triage their reviews. It does not include a terminal, browser preview, worktree management, Cursor, or a provider plugin system.
+PR review triage now records local intent and prepares scoped Codex drafts. Automatic verified-fix tracking remains future work. This version does not include a terminal, browser preview, manual worktree management, Cursor, or a provider plugin system.
 
 The implementation and recovery decisions are in [docs/architecture.md](docs/architecture.md).
 

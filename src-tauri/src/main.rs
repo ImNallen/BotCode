@@ -39,6 +39,8 @@ fn main() {
             ipc::switch_branch,
             ipc::git_status,
             ipc::pull_request,
+            ipc::review_findings,
+            ipc::set_review_disposition,
             ipc::run_git_action,
             ipc::open_url,
             ipc::create_thread,

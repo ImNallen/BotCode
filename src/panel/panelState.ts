@@ -53,12 +53,36 @@ export function closeSurface(state: PanelState, index: number): PanelState {
 
 export const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
+export function eligibleSurfaces(
+  state: PanelState,
+  repository: boolean,
+): PanelState {
+  if (
+    repository ||
+    state.surfaces.every(
+      (surface) => surface.kind === "files" || surface.kind === "file",
+    )
+  )
+    return state;
+  const active =
+    state.active === null ? undefined : state.surfaces[state.active];
+  const surfaces = state.surfaces.filter(
+    (surface) => surface.kind === "files" || surface.kind === "file",
+  );
+  const index = active
+    ? surfaces.findIndex((surface) => surface === active)
+    : -1;
+  return { surfaces, active: index < 0 ? null : index };
+}
+
 export function surfaceTitle(surface: Surface): string {
   switch (surface.kind) {
     case "files":
       return "Files";
     case "diff":
       return "Diff";
+    case "reviews":
+      return "Reviews";
     case "file":
       return basename(surface.path);
   }

@@ -43,6 +43,12 @@ import { Toggle } from "../ui/controls";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import { RightPanel, emptyPanel, type PanelState } from "../panel/RightPanel";
 import { closeFiles, openFile } from "../panel/panelState";
+import {
+  appendReviewDraft,
+  canAcceptReviewDraft,
+  type ReviewDraftRequest,
+  type ReviewDraftTarget,
+} from "../panel/reviews";
 import { FileLinkProvider, type FileLinks } from "./ChatMarkdown";
 import { GitActionsControl } from "./GitActionsControl";
 import { ApprovalDrawer } from "./ApprovalDrawer";
@@ -82,6 +88,7 @@ export function ChatView({
   const [maximized, setMaximized] = useState(false);
   const [panel, setPanel] = useState<PanelState>(emptyPanel);
   const [draft, setDraft] = useState("");
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [createdDraft, setCreatedDraft] = useState<Thread>();
   const [draftSettings, setDraftSettings] = useState<SessionSettings>({
     model: null,
@@ -303,6 +310,36 @@ export function ChatView({
   const busy = thread ? workingSessions.has(thread.session.kind) : false;
   const pending = thread?.approvals.filter((a) => a.state === "pending") ?? [];
   const approval = pending[0];
+  const reviewDraftTarget = useRef<ReviewDraftTarget>({
+    workspaceId,
+    threadId,
+    branch: view?.branch,
+    canAccept: false,
+  });
+  reviewDraftTarget.current = {
+    workspaceId,
+    threadId,
+    branch: view?.branch,
+    canAccept: Boolean(
+      threadId &&
+      thread &&
+      !isScratch &&
+      !view?.unavailable &&
+      !busy &&
+      !send.isPending &&
+      !saveSettings.isPending &&
+      !approval,
+    ),
+  };
+  const askCodex = (request: ReviewDraftRequest) => {
+    const target = reviewDraftTarget.current;
+    if (!canAcceptReviewDraft(request, target)) return;
+    setDraft(
+      (current) => appendReviewDraft(current, request, target) ?? current,
+    );
+    setMaximized(false);
+    setComposerFocusRequest((current) => current + 1);
+  };
   const canStop = Boolean(
     thread?.turns.some(
       (t) => t.execution.kind === "running" && t.nativeTurnId !== null,
@@ -607,6 +644,7 @@ export function ChatView({
                     <Composer
                       key={threadId ?? "draft"}
                       value={draft}
+                      focusRequest={composerFocusRequest}
                       onChange={setDraft}
                       onSubmit={submit}
                       onStop={() => stop.mutate()}
@@ -665,11 +703,14 @@ export function ChatView({
       {panelOpen ? (
         <RightPanel
           checkout={checkout}
-          git={!isScratch}
+          git={!isScratch && !view?.unavailable}
           view={view}
           state={panel}
           onChange={setPanel}
           maximized={maximized}
+          conversationId={threadId}
+          canAskCodex={reviewDraftTarget.current.canAccept}
+          onAskCodex={askCodex}
         />
       ) : null}
     </div>
