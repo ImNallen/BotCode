@@ -1,6 +1,6 @@
 // Structure, labels and classes follow pingdotgg/t3code v0.0.45 components/GitActionsControl.tsx (MIT).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ChevronDownIcon,
   CloudDownloadIcon,
@@ -81,13 +81,23 @@ export function GitActionsControl({
   thread,
   threads,
   onError,
+  onOpenPullRequests,
 }: {
   checkout: CheckoutRef;
   thread: Pick<ThreadSummary, "id" | "checkout" | "session">;
   threads: ThreadSummary[];
   onError: (message: string | undefined) => void;
+  onOpenPullRequests: () => void;
 }) {
   const client = useQueryClient();
+  const currentThread = useRef<string | null>(thread.id);
+  currentThread.current = thread.id;
+  useEffect(() => {
+    currentThread.current = thread.id;
+    return () => {
+      currentThread.current = null;
+    };
+  }, [thread.id]);
   const status = useQuery({
     queryKey: checkoutKey("git", checkout),
     queryFn: () => ipc.gitStatus(checkout),
@@ -128,14 +138,24 @@ export function GitActionsControl({
     startGitRun({
       client,
       checkout,
+      originThreadId: thread.id,
       action: following.action,
       before: vcs,
       pr: pr.data,
+      onPullRequest: () => {
+        if (currentThread.current === thread.id) onOpenPullRequests();
+      },
     });
   };
   const start = (target: GitTarget) => advance({ target });
-  const openUrl = (url: string) =>
-    void ipc.openUrl(url).catch((error: Error) => onError(error.message));
+  const openUrl = (url: string) => {
+    void ipc
+      .linkPullRequest(thread.id, url)
+      .then(() => {
+        if (currentThread.current === thread.id) onOpenPullRequests();
+      })
+      .catch((error: Error) => onError(error.message));
+  };
   const openPr = () => {
     if (vcs.pr) openUrl(vcs.pr.url);
   };

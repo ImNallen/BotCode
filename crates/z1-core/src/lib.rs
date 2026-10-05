@@ -1,8 +1,13 @@
 mod cleanup;
 mod codex;
 mod domain;
+mod pull_requests;
 pub mod repo;
 mod reviews;
+pub use pull_requests::{
+    CachedPr, LinkedPrSummary, PrFreshness, PrLifecycle, PrLinkSource, PrSnapshot, PullRequestKey,
+    ThreadPrSummary,
+};
 mod runtime;
 mod settings;
 mod store;

@@ -19,7 +19,7 @@ export interface VcsStatus {
   aheadOfDefaultCount?: number;
   pr: {
     number: number;
-    title: string;
+    title: string | null;
     url: string;
     baseRef: string;
     headRef: string;

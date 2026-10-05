@@ -1,3 +1,4 @@
+import { prLabel } from "./panel/pullRequests";
 // Layout and classes follow pingdotgg/t3code v0.0.45 components/Sidebar.tsx,
 // sidebar/SidebarChrome.tsx, sidebar/SidebarThreadHeader.tsx and ThreadStatusIndicators.tsx (MIT).
 // The Pinned section, Snoozed shelf and Settled shelf follow Sidebar.tsx classification,
@@ -169,7 +170,11 @@ export function Sidebar({
   views: (WorkspaceView | undefined)[];
   workspaceId: string | undefined;
   threadId: string | undefined;
-  onSelectThread: (workspaceId: string, threadId: string) => void;
+  onSelectThread: (
+    workspaceId: string,
+    threadId: string,
+    pullRequests?: boolean,
+  ) => void;
   onNewThread: (workspaceId?: string) => void;
   onOpenRepository: () => void;
   onOpenProjectSettings: (workspaceId: string) => void;
@@ -420,6 +425,9 @@ export function Sidebar({
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
+                    onPullRequests={() =>
+                      onSelectThread(row.workspace.id, row.thread.id, true)
+                    }
                     onContextMenu={openMenu(row)}
                     onSettle={() => void park(row, { kind: "settle" })}
                     onSnooze={(untilMs) =>
@@ -457,6 +465,9 @@ export function Sidebar({
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
+                    onPullRequests={() =>
+                      onSelectThread(row.workspace.id, row.thread.id, true)
+                    }
                     onContextMenu={openMenu(row)}
                     onAction={() =>
                       void onArrange(row.thread.id, { kind: "wake" })
@@ -490,6 +501,9 @@ export function Sidebar({
                     active={row.thread.id === threadId}
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
+                    }
+                    onPullRequests={() =>
+                      onSelectThread(row.workspace.id, row.thread.id, true)
                     }
                     onContextMenu={openMenu(row)}
                     onAction={() =>
@@ -767,6 +781,7 @@ function ThreadRow({
   row,
   active,
   onSelect,
+  onPullRequests,
   onSettle,
   onSnooze,
   onUnpin,
@@ -775,6 +790,7 @@ function ThreadRow({
   row: Row;
   active: boolean;
   onSelect: () => void;
+  onPullRequests: () => void;
   onContextMenu: (event: React.MouseEvent<HTMLElement>) => void;
   onSettle: () => void;
   onSnooze: (untilMs: number) => void;
@@ -899,6 +915,7 @@ function ThreadRow({
             </span>
           </div>
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
+            <PrBadge row={row} onOpen={onPullRequests} />
             {row.branch ? (
               <>
                 {row.thread.checkout.kind === "worktree" ? (
@@ -934,6 +951,7 @@ function SlimRow({
   label,
   active,
   onSelect,
+  onPullRequests,
   onAction,
   onUnpin,
   onContextMenu,
@@ -943,6 +961,7 @@ function SlimRow({
   label: string;
   active: boolean;
   onSelect: () => void;
+  onPullRequests: () => void;
   onContextMenu: (event: React.MouseEvent<HTMLElement>) => void;
   onAction: () => void;
   onUnpin: () => void;
@@ -992,6 +1011,7 @@ function SlimRow({
         >
           {row.thread.title}
         </span>
+        <PrBadge row={row} onOpen={onPullRequests} />
         {row.thread.pinnedAtMs !== null ? (
           <PinIndicator onUnpin={onUnpin} />
         ) : null}
@@ -1054,5 +1074,29 @@ export function SidebarBrand() {
         </span>
       </span>
     </div>
+  );
+}
+
+function PrBadge({ row, onOpen }: { row: Row; onOpen: () => void }) {
+  const links = row.thread.pullRequests.links;
+  const first = links[0]?.pr;
+  if (!first) return null;
+  const label =
+    links.length === 1
+      ? `#${first.key.split("/").at(-1)} ${prLabel(first)}`
+      : `${links.length} PRs`;
+  const stale = links.some((link) => link.pr.freshness.kind !== "current");
+  return (
+    <button
+      type="button"
+      title={stale ? `${label}. Status may be out of date` : label}
+      aria-label={`Open pull requests: ${label}`}
+      onClick={rowAction(onOpen)}
+      onKeyDown={(event) => event.stopPropagation()}
+      className="shrink-0 rounded border border-border px-1 text-[10px] text-muted-foreground hover:text-foreground"
+    >
+      {label}
+      {stale ? " ·" : ""}
+    </button>
   );
 }

@@ -39,15 +39,19 @@ export function useGitRun(checkout: CheckoutRef): GitRun | undefined {
 export function startGitRun({
   client,
   checkout,
+  originThreadId,
   action,
   before,
   pr,
+  onPullRequest,
 }: {
   client: QueryClient;
   checkout: CheckoutRef;
+  originThreadId: string;
   action: GitAction;
   before: VcsStatus;
   pr: PrLookup | undefined;
+  onPullRequest?: () => void;
 }): boolean {
   const key = runKey(checkout);
   if (runs.get(key)?.state === "running") return false;
@@ -58,7 +62,7 @@ export function startGitRun({
     phaseStartedAtMs: Date.now(),
   });
   ipc
-    .runGitAction(checkout, action, (phase) =>
+    .runGitAction(checkout, originThreadId, action, (phase) =>
       set(key, {
         state: "running",
         action,
@@ -67,7 +71,10 @@ export function startGitRun({
       }),
     )
     .then(
-      (outcome) => set(key, { state: "done", outcome, before, pr }),
+      (outcome) => {
+        set(key, { state: "done", outcome, before, pr });
+        if (outcome.pr && !outcome.failure) onPullRequest?.();
+      },
       (error: unknown) =>
         set(key, {
           state: "refused",

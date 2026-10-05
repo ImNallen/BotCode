@@ -1,3 +1,5 @@
+mod pull_requests;
+use crate::pull_requests::{PrLinkSource, PullRequestKey, ThreadPrSummary};
 use crate::{
     cleanup::{self, Candidate, Sweep},
     codex::{Codex, Signal},
@@ -6,6 +8,7 @@ use crate::{
     store::Store,
     vcs,
 };
+use pull_requests::PrWork;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -124,6 +127,16 @@ fn not_repository() -> AppError {
 }
 enum Command {
     List(Reply<Vec<Workspace>>),
+    PrList(ThreadId, bool, Reply<ThreadPrSummary>),
+    PrLink(ThreadId, PullRequestKey, Reply<ThreadPrSummary>),
+    PrUnlink(ThreadId, PullRequestKey, Reply<ThreadPrSummary>),
+    RunGit(
+        WorkspaceId,
+        Option<ThreadId>,
+        GitAction,
+        Box<dyn Fn(GitPhase) + Send + Sync>,
+        Reply<GitOutcome>,
+    ),
     OpenWorkspace(PathBuf, Reply<Workspace>),
     EnsureScratch(PathBuf, Reply<Workspace>),
     RenameWorkspace(WorkspaceId, String, Reply<Workspace>),
@@ -236,8 +249,11 @@ impl App {
         let (changes, _) = broadcast::channel(256);
         let (provider_events, signals) = mpsc::channel(512);
         let (done, completions) = mpsc::channel(128);
+        let prs = PrWork::load(&mut store)?;
         tokio::spawn(
             Owner {
+                prs,
+                git_jobs: tokio::task::JoinSet::new(),
                 config,
                 store,
                 workspaces,
@@ -496,25 +512,27 @@ impl App {
         action: GitAction,
         progress: impl Fn(GitPhase) + Send + Sync + 'static,
     ) -> Result<GitOutcome> {
-        let root = self
-            .call(|r| Command::Claim(id, thread, Hold::Git, r))
-            .await?;
-        let cx = vcs::Context {
-            root: root.clone(),
-            gh: self.gh.clone(),
-            network: self.network,
-            progress: Box::new(progress),
-        };
-        let commands = self.commands.clone();
-        // Spawned twice: the outer task releases the hold even when the caller drops this
-        // future, and the inner one keeps a panic in a step from skipping the release.
-        tokio::spawn(async move {
-            let ran = tokio::spawn(async move { vcs::run(&cx, action).await }).await;
-            call(&commands, |r| Command::Release(root, None, r)).await?;
-            ran.map_err(|e| AppError::new("repository", e))?
-        })
-        .await
-        .map_err(|e| AppError::new("repository", e))?
+        self.call(|reply| Command::RunGit(id, thread, action, Box::new(progress), reply))
+            .await
+    }
+
+    pub async fn list_thread_pull_requests(
+        &self,
+        id: ThreadId,
+        refresh: bool,
+    ) -> Result<ThreadPrSummary> {
+        self.call(|r| Command::PrList(id, refresh, r)).await
+    }
+    pub async fn link_pull_request(&self, id: ThreadId, url: String) -> Result<ThreadPrSummary> {
+        let key = PullRequestKey::from_url(&url)?;
+        self.call(|r| Command::PrLink(id, key, r)).await
+    }
+    pub async fn unlink_pull_request(
+        &self,
+        id: ThreadId,
+        key: PullRequestKey,
+    ) -> Result<ThreadPrSummary> {
+        self.call(|r| Command::PrUnlink(id, key, r)).await
     }
     pub async fn create_thread(
         &self,
@@ -788,7 +806,15 @@ struct Route {
     item_id: String,
     epoch: u64,
 }
+struct GitCompletion {
+    root: PathBuf,
+    origin: Option<(ThreadId, u64)>,
+    result: Result<GitOutcome>,
+    reply: Reply<GitOutcome>,
+}
 struct Owner {
+    prs: PrWork,
+    git_jobs: tokio::task::JoinSet<GitCompletion>,
     config: RuntimeConfig,
     store: Store,
     workspaces: HashMap<WorkspaceId, Workspace>,
@@ -810,6 +836,62 @@ struct Owner {
     done: mpsc::Sender<Completion>,
 }
 impl Owner {
+    fn finish_git_job(
+        &mut self,
+        completion: std::result::Result<GitCompletion, tokio::task::JoinError>,
+        refresh: bool,
+    ) -> Result<()> {
+        let GitCompletion {
+            root,
+            origin,
+            mut result,
+            reply,
+        } = completion.map_err(|error| AppError::new("git_worker", error))?;
+        let mut saved = Ok(());
+        if let (Some((id, generation)), Ok(outcome)) = (&origin, &mut result)
+            && self.pr_generation(id) == *generation
+            && let Some(opened) = &outcome.pr
+        {
+            let source = if opened.created {
+                PrLinkSource::GitCreated
+            } else {
+                PrLinkSource::GitReused
+            };
+            if let Err(error) = PullRequestKey::from_url(&opened.pr.url)
+                .and_then(|key| self.pr_membership(id, key, Some(source)))
+            {
+                saved = Err(error.clone());
+                outcome.failure = Some(GitFailure {
+                    phase: GitPhase::Pr,
+                    error,
+                });
+            }
+        }
+        self.held.remove(&root);
+        if refresh && let Some((id, _)) = origin {
+            let _ = self.refresh_prs(&id, true, PrLinkSource::BranchDiscovery);
+        }
+        let _ = reply.send(result);
+        saved
+    }
+    fn claim_checkout(
+        &mut self,
+        id: &WorkspaceId,
+        thread: Option<ThreadId>,
+        hold: Hold,
+    ) -> Result<PathBuf> {
+        self.checkout(id, thread).and_then(|(_, location)| {
+            let root = location.repository()?;
+            if let Some(held) = self.held.get(&root) {
+                return Err(held.refusal());
+            }
+            if self.leases.contains_key(&root) {
+                return Err(hold.lease_refusal());
+            }
+            self.held.insert(root.clone(), hold);
+            Ok(root)
+        })
+    }
     fn workspace(&self, id: &WorkspaceId) -> Result<&Workspace> {
         self.workspaces
             .get(id)
@@ -859,6 +941,7 @@ impl Owner {
         }
         let removed: HashSet<ThreadId> = threads.iter().map(|t| t.id.clone()).collect();
         self.store.remove_workspace(id)?;
+        self.forget_pr_threads(&removed);
         self.threads.retain(|id, _| !removed.contains(id));
         self.dirty.retain(|id| !removed.contains(id));
         self.routes
@@ -974,7 +1057,7 @@ impl Owner {
         if removed && let Ok(t) = self.thread(&candidate.thread) {
             let _ = self.changes.send(ChangeHint {
                 refresh_workspace: true,
-                ..ChangeHint::new(t, self.auto_settle.after_ms(&t.workspace_id))
+                ..self.thread_hint(t)
             });
         }
     }
@@ -1016,7 +1099,7 @@ impl Owner {
         t.revision += 1;
         self.store.save(t)?;
         self.dirty.remove(id);
-        let hint = ChangeHint::new(t, self.auto_settle.after_ms(&t.workspace_id));
+        let hint = self.thread_hint(&self.threads[id]);
         let _ = self.changes.send(hint);
         Ok(())
     }
@@ -1024,7 +1107,7 @@ impl Owner {
         next.stamp_completions();
         next.revision += 1;
         self.store.save(&next)?;
-        let hint = ChangeHint::new(&next, self.auto_settle.after_ms(&next.workspace_id));
+        let hint = self.thread_hint(&next);
         self.dirty.remove(&next.id);
         self.threads.insert(next.id.clone(), next);
         let _ = self.changes.send(hint);
@@ -1036,6 +1119,11 @@ impl Owner {
         mut signals: mpsc::Receiver<Signal>,
         mut completions: mpsc::Receiver<Completion>,
     ) {
+        let ids: Vec<_> = self.threads.keys().cloned().collect();
+        for id in ids {
+            self.schedule_discovery(&id, PrLinkSource::BranchDiscovery);
+        }
+        self.poll_prs();
         let mut tick = tokio::time::interval(Duration::from_millis(90));
         let mut shutdown = None;
         loop {
@@ -1046,6 +1134,7 @@ impl Owner {
                         break;
                     };
                     if let Command::Shutdown(reply)=command {
+                        commands.close();
                         let result=if let Some(provider)=self.provider.take(){provider.terminate().await}else{Ok(())};
                         self.lose("Z1 Code closed. Native execution stopped.").await;
                         shutdown=Some((reply,result));
@@ -1062,10 +1151,20 @@ impl Owner {
                         _=>{}
                     }
                 }
+                Some(done)=self.git_jobs.join_next(), if !self.git_jobs.is_empty()=>{
+                    if let Err(error)=self.finish_git_job(done, true) { eprintln!("Git completion failed: {}", error.message); }
+                }
+                Some(done)=self.prs.active.join_next(), if !self.prs.active.is_empty()=>{
+                    match done {
+                        Ok(done) => { if let Err(error)=self.finish_pr_job(done) { eprintln!("Pull request state could not be saved: {}", error.message); } }
+                        Err(error) => { eprintln!("Pull request worker stopped: {error}"); }
+                    }
+                }
                 Some(done)=completions.recv()=>{
                     if let Err(error)=self.complete(done).await {self.lose(&error.message).await;}
                 }
                 _=tick.tick()=>{
+                    self.poll_prs();
                     for id in self.dirty.clone(){
                         if let Err(error)=self.commit(&id){
                             self.lose(&format!("Could not save progress: {}",error.message)).await;
@@ -1079,13 +1178,74 @@ impl Owner {
         if let Some(provider) = self.provider.take() {
             let _ = provider.terminate().await;
         }
-        drop(self);
+        commands.close();
+        let mut git_shutdown = Ok(());
+        while let Some(completion) = self.git_jobs.join_next().await {
+            if let Err(error) = self.finish_git_job(completion, false) {
+                git_shutdown = Err(error);
+            }
+        }
+        let pr_shutdown = self.stop_pr_jobs().await;
+        let store_shutdown = self.store.close();
         if let Some((reply, result)) = shutdown {
-            let _ = reply.send(result);
+            let _ = reply.send(
+                result
+                    .and(git_shutdown)
+                    .and(pr_shutdown)
+                    .and(store_shutdown),
+            );
         }
     }
     async fn command(&mut self, command: Command) {
         match command {
+            Command::PrList(id, refresh, reply) => {
+                let result = if refresh {
+                    self.refresh_prs(&id, true, PrLinkSource::BranchDiscovery)
+                } else {
+                    self.thread(&id).map(|_| self.pr_summary(&id))
+                };
+                let _ = reply.send(result);
+            }
+            Command::PrLink(id, key, reply) => {
+                let result = self.pr_membership(&id, key, Some(PrLinkSource::Manual));
+                self.poll_prs();
+                let _ = reply.send(result);
+            }
+            Command::PrUnlink(id, key, reply) => {
+                let result = self.pr_membership(&id, key, None);
+                let _ = reply.send(result);
+            }
+            Command::RunGit(id, thread, action, progress, reply) => {
+                match self.claim_checkout(&id, thread.clone(), Hold::Git) {
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                    Ok(root) => {
+                        let origin = thread.map(|id| {
+                            let generation = self.pr_generation(&id);
+                            (id, generation)
+                        });
+                        let cx = vcs::Context {
+                            root: root.clone(),
+                            gh: self.config.gh_binary.clone(),
+                            network: self.config.network_timeout,
+                            progress,
+                        };
+                        self.git_jobs.spawn(async move {
+                            let result = tokio::spawn(async move { vcs::run(&cx, action).await })
+                                .await
+                                .map_err(|error| AppError::new("repository", error))
+                                .and_then(|result| result);
+                            GitCompletion {
+                                root,
+                                origin,
+                                result,
+                                reply,
+                            }
+                        });
+                    }
+                }
+            }
             Command::List(reply) => {
                 let mut rows: Vec<_> = self.workspaces.values().cloned().collect();
                 rows.sort_by(|a, b| a.label.cmp(&b.label));
@@ -1162,21 +1322,12 @@ impl Owner {
                 let _ = reply.send(result);
             }
             Command::Claim(id, thread, hold, reply) => {
-                let result = self.checkout(&id, thread).and_then(|(_, location)| {
-                    let root = location.repository()?;
-                    if let Some(held) = self.held.get(&root) {
-                        return Err(held.refusal());
-                    }
-                    if self.leases.contains_key(&root) {
-                        return Err(hold.lease_refusal());
-                    }
-                    self.held.insert(root.clone(), hold);
-                    Ok(root)
-                });
+                let result = self.claim_checkout(&id, thread, hold);
                 let _ = reply.send(result);
             }
             Command::Release(root, switched, reply) => {
                 self.held.remove(&root);
+                self.checkout_changed(&root);
                 let result = match switched {
                     Some((id, current)) => match self.threads.get_mut(&id) {
                         Some(ThreadSnapshot {
@@ -1197,7 +1348,7 @@ impl Owner {
                     .threads
                     .values()
                     .filter(|t| t.workspace_id == id)
-                    .map(|t| t.summary(self.auto_settle.after_ms(&id)))
+                    .map(|t| self.thread_summary(t))
                     .collect();
                 let _ = reply.send(Ok(rows));
             }
@@ -1221,6 +1372,7 @@ impl Owner {
                     };
                     self.store.save(&t)?;
                     self.threads.insert(t.id.clone(), t.clone());
+                    self.schedule_discovery(&t.id, PrLinkSource::BranchDiscovery);
                     Ok(t)
                 })();
                 let _ = reply.send(result);
@@ -1421,14 +1573,14 @@ impl Owner {
             }
             Command::AutoSettle(rules, reply) => {
                 let now = now_ms();
+                let previous = std::mem::replace(&mut self.auto_settle, rules);
                 for t in self.threads.values() {
-                    let before = self.auto_settle.after_ms(&t.workspace_id);
-                    let after = rules.after_ms(&t.workspace_id);
+                    let before = previous.after_ms(&t.workspace_id);
+                    let after = self.auto_settle.after_ms(&t.workspace_id);
                     if t.settled_at(now, before) != t.settled_at(now, after) {
-                        let _ = self.changes.send(ChangeHint::new(t, after));
+                        let _ = self.changes.send(self.thread_hint(t));
                     }
                 }
-                self.auto_settle = rules;
                 let _ = reply.send(Ok(()));
             }
             Command::UiState(reply) => {
@@ -1549,7 +1701,7 @@ impl Owner {
         t.revision += 1;
         self.store.accept(&t, request_id, &input, &receipt)?;
         self.leases.insert(root, t.id.clone());
-        let hint = ChangeHint::new(&t, self.auto_settle.after_ms(&t.workspace_id));
+        let hint = self.thread_hint(&t);
         let _ = self.changes.send(hint);
         self.threads.insert(t.id.clone(), t);
         Ok((receipt, true))
@@ -2126,6 +2278,7 @@ impl Owner {
                 self.leases
                     .remove(t.root(&self.workspaces[&t.workspace_id]));
                 self.commit(&id)?;
+                let _ = self.refresh_prs(&id, true, PrLinkSource::AgentDiscovered);
                 return Ok(());
             }
             "error" => {

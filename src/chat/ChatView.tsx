@@ -1,3 +1,4 @@
+import { openSurface } from "../panel/panelState";
 // Column, header and composer overlay follow pingdotgg/t3code v0.0.45
 // components/ChatView.tsx, chat/ChatHeader.tsx and chat/PanelLayoutControls.tsx,
 // and chat/DraftHeroHeadline.tsx at 6b286ae8a (MIT).
@@ -65,6 +66,7 @@ type DraftCheckout = {
 export function ChatView({
   workspaceId,
   threadId,
+  prPanelRequest,
   workspaces,
   scratch,
   scratchAvailable,
@@ -74,6 +76,7 @@ export function ChatView({
 }: {
   workspaceId: string;
   threadId: string | undefined;
+  prPanelRequest?: { threadId: string; nonce: number };
   workspaces: Workspace[];
   scratch: Workspace | undefined;
   scratchAvailable: boolean;
@@ -87,6 +90,12 @@ export function ChatView({
   const [panelOpen, setPanelOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [panel, setPanel] = useState<PanelState>(emptyPanel);
+  useEffect(() => {
+    if (prPanelRequest && prPanelRequest.threadId === threadId) {
+      setPanel((current) => openSurface(current, { kind: "pull_requests" }));
+      setPanelOpen(true);
+    }
+  }, [prPanelRequest, threadId]);
   const [draft, setDraft] = useState("");
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [createdDraft, setCreatedDraft] = useState<Thread>();
@@ -547,6 +556,12 @@ export function ChatView({
                   thread={thread}
                   threads={view?.threads ?? []}
                   onError={setError}
+                  onOpenPullRequests={() => {
+                    setPanel((current) =>
+                      openSurface(current, { kind: "pull_requests" }),
+                    );
+                    setPanelOpen(true);
+                  }}
                 />
               </div>
             ) : null}

@@ -33,6 +33,23 @@ impl Fixture {
             &repository,
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
+        git_output(
+            &repository,
+            &[
+                "config",
+                &format!("url.{}.insteadOf", origin.display()),
+                "https://github.com/z1/fixture.git",
+            ],
+        );
+        git_output(
+            &repository,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/z1/fixture.git",
+            ],
+        );
         git_output(&repository, &["fetch", "-q", "origin"]);
         git_output(&repository, &["remote", "set-head", "origin", "main"]);
         git_output(&repository, &["branch", "-q", "-u", "origin/main", "main"]);
@@ -61,7 +78,8 @@ impl Fixture {
             .unwrap_or_default()
             .lines()
             .filter(|line| line.starts_with('['))
-            .map(|line| serde_json::from_str(line).unwrap())
+            .map(|line| serde_json::from_str::<Vec<String>>(line).unwrap())
+            .filter(|args| args.first().is_some_and(|arg| arg == "pr"))
             .collect()
     }
     fn hook(&self, git_dir: &Path, name: &str, script: &str) {
@@ -459,7 +477,7 @@ async fn commit_push_pr_opens_one_pull_request_against_the_worktree_base() {
     .unwrap();
     let pr = PullRequest {
         number: 1,
-        title: "Add the feature".into(),
+        title: None,
         url: "https://github.com/z1/fixture/pull/1".into(),
         base: "develop".into(),
         head: name.clone(),
@@ -480,6 +498,8 @@ async fn commit_push_pr_opens_one_pull_request_against_the_worktree_base() {
             vec![
                 "pr",
                 "list",
+                "--repo",
+                "github.com/z1/fixture",
                 "--head",
                 name.as_str(),
                 "--state",
@@ -492,18 +512,13 @@ async fn commit_push_pr_opens_one_pull_request_against_the_worktree_base() {
             vec![
                 "pr",
                 "create",
+                "--repo",
+                "github.com/z1/fixture",
                 "--fill",
                 "--base",
                 "develop",
                 "--head",
                 name.as_str()
-            ],
-            vec![
-                "pr",
-                "view",
-                "https://github.com/z1/fixture/pull/1",
-                "--json",
-                json
             ],
         ]
     );
@@ -511,7 +526,12 @@ async fn commit_push_pr_opens_one_pull_request_against_the_worktree_base() {
         app.pull_request(workspace, Some(thread.id), name)
             .await
             .unwrap(),
-        PrLookup::Open { pr }
+        PrLookup::Open {
+            pr: PullRequest {
+                title: Some("Add the feature".into()),
+                ..pr
+            }
+        }
     );
     app.shutdown().await.unwrap();
 }
@@ -524,7 +544,7 @@ async fn create_pr_returns_the_open_pull_request_instead_of_creating_one() {
     git_output(&f.repository, &["push", "-q", "-u", "origin", "feature"]);
     let pr = PullRequest {
         number: 7,
-        title: "Existing".into(),
+        title: Some("Existing".into()),
         url: "https://github.com/z1/fixture/pull/7".into(),
         base: "main".into(),
         head: "feature".into(),
