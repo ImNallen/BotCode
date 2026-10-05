@@ -549,12 +549,15 @@ impl ThreadSnapshot {
             },
             snoozed_until_ms: self.snoozed_until(),
             settled_at_ms,
+            pull_requests: Default::default(),
         }
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSummary {
+    #[serde(default)]
+    pub pull_requests: crate::ThreadPrSummary,
     pub id: ThreadId,
     pub title: String,
     pub session: SessionState,
@@ -683,7 +686,7 @@ pub struct FileStat {
 #[serde(rename_all = "camelCase")]
 pub struct PullRequest {
     pub number: u64,
-    pub title: String,
+    pub title: Option<String>,
     pub url: String,
     pub base: String,
     pub head: String,

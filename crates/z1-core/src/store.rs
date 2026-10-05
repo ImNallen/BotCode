@@ -1,4 +1,7 @@
-use crate::domain::*;
+use crate::{
+    domain::*,
+    pull_requests::{CachedPr, Membership},
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{collections::BTreeMap, path::Path};
 pub struct Store {
@@ -22,7 +25,7 @@ impl Store {
         })?;
         let db = Connection::open(dir.join("z1.sqlite"))?;
         let version: u32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version > 2 {
+        if version > 3 {
             return Err(AppError::new(
                 "unsupported_schema",
                 "This data directory was saved by a newer Z1 Code. Open it with that version.",
@@ -34,7 +37,61 @@ impl Store {
         if version < 2 {
             db.execute_batch("BEGIN; CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS threads(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS receipts(request_id TEXT PRIMARY KEY, input TEXT NOT NULL, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS ui_state(key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE review_dispositions(workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, pr_id TEXT NOT NULL, finding_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(workspace_id,pr_id,finding_id)); PRAGMA user_version=2; COMMIT;")?;
         }
+        if version < 3 {
+            db.execute_batch("BEGIN;
+                ALTER TABLE threads ADD COLUMN pr_generation INTEGER NOT NULL DEFAULT 0;
+                CREATE TABLE pull_requests(key TEXT PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL);
+                CREATE TABLE thread_pull_requests(thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, pr_key TEXT NOT NULL REFERENCES pull_requests(key), generation INTEGER NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(thread_id,pr_key));
+                CREATE INDEX pr_membership ON thread_pull_requests(pr_key,state);
+                CREATE TABLE pull_request_operations(request_id TEXT PRIMARY KEY, pr_key TEXT NOT NULL REFERENCES pull_requests(key), action_digest TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
+                PRAGMA user_version=3; COMMIT;")?;
+        }
         Ok(Self { db, _lock: lock })
+    }
+    pub fn close(self) -> Result<()> {
+        drop(self.db);
+        self._lock.unlock()?;
+        Ok(())
+    }
+    pub fn pull_requests(&self) -> Result<Vec<CachedPr>> {
+        let mut statement = self.db.prepare("SELECT data FROM pull_requests")?;
+        let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
+        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+    pub fn pr_memberships(&self) -> Result<Vec<Membership>> {
+        let mut statement = self.db.prepare("SELECT data FROM thread_pull_requests")?;
+        let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
+        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+    pub fn pr_generations(&self) -> Result<Vec<(ThreadId, u64)>> {
+        let mut statement = self.db.prepare("SELECT id,pr_generation FROM threads")?;
+        let rows =
+            statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        rows.map(|r| {
+            let (id, generation) = r?;
+            Ok((
+                serde_json::from_value(serde_json::Value::String(id))?,
+                generation as u64,
+            ))
+        })
+        .collect()
+    }
+    pub fn save_pull_request(
+        &mut self,
+        record: &CachedPr,
+        membership: Option<&Membership>,
+    ) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute("INSERT INTO pull_requests(key,revision,data) VALUES(?1,?2,?3) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision,data=excluded.data", params![record.key.as_str(), record.revision as i64, serde_json::to_string(record)?])?;
+        if let Some(member) = membership {
+            tx.execute("INSERT INTO thread_pull_requests(thread_id,pr_key,generation,state,data) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(thread_id,pr_key) DO UPDATE SET generation=excluded.generation,state=excluded.state,data=excluded.data", params![member.thread.to_string(), member.key.as_str(), member.generation as i64, if member.source.is_some() { "linked" } else { "dismissed" }, serde_json::to_string(member)?])?;
+            tx.execute(
+                "UPDATE threads SET pr_generation=?2 WHERE id=?1",
+                params![member.thread.to_string(), member.generation as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
     pub fn workspaces(&self) -> Result<Vec<Workspace>> {
         let mut s = self
@@ -176,6 +233,29 @@ mod tests {
         }
     }
     #[test]
+    fn shutdown_releases_lock_even_when_a_child_inherits_its_file_description() {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let inherited_fd = unsafe { libc::dup(store._lock.as_raw_fd()) };
+        assert!(inherited_fd >= 0);
+        let inherited = unsafe { std::fs::File::from_raw_fd(inherited_fd) };
+        drop(store);
+        assert_eq!(
+            Store::open(dir.path()).err().unwrap().code,
+            "already_running"
+        );
+        inherited.unlock().unwrap();
+        drop(inherited);
+        let store = Store::open(dir.path()).unwrap();
+        let inherited = store._lock.try_clone().unwrap();
+        store.close().unwrap();
+        let reopened = Store::open(dir.path()).unwrap();
+        drop(inherited);
+        assert!(Store::open(dir.path()).is_err());
+        reopened.close().unwrap();
+    }
+    #[test]
     fn migration_preserves_older_data_and_refuses_future_schema() {
         let dir = tempfile::tempdir().unwrap();
         let db = Connection::open(dir.path().join("z1.sqlite")).unwrap();
@@ -191,7 +271,7 @@ mod tests {
                 .db
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
                 .unwrap(),
-            2
+            3
         );
         drop(store);
         let db = Connection::open(dir.path().join("z1.sqlite")).unwrap();

@@ -33,6 +33,19 @@ impl Tool<'_> {
         self.run_bounded(args, limit, u64::MAX - 1).await
     }
     pub async fn run_bounded(&self, args: &[&str], limit: Duration, bytes: u64) -> Result<Output> {
+        let (_send, mut cancel) = tokio::sync::watch::channel(false);
+        self.run_cancellable(args, limit, bytes, &mut cancel).await
+    }
+    pub async fn run_cancellable(
+        &self,
+        args: &[&str],
+        limit: Duration,
+        bytes: u64,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<Output> {
+        if *cancel.borrow() {
+            return Err(AppError::new("cancelled", "Pull request work cancelled."));
+        }
         let mut command = tokio::process::Command::new(self.program);
         command
             .args(args)
@@ -51,7 +64,9 @@ impl Tool<'_> {
         })?;
         let pid = child.id();
         let (mut stdout, mut stderr) = (child.stdout.take(), child.stderr.take());
-        let finished = tokio::time::timeout(limit, async {
+        let finished = tokio::select! {
+            _ = cancel.changed() => None,
+            result = tokio::time::timeout(limit, async {
             let (mut out, mut err) = (Vec::new(), Vec::new());
             let (status, _, _) =
                 tokio::try_join!(
@@ -94,14 +109,18 @@ impl Tool<'_> {
                     },
                 )?;
             Ok::<_, std::io::Error>((status, out, err))
-        })
-        .await;
+        }) => Some(result),
+        };
+        let Some(finished) = finished else {
+            stop(&mut child, pid).await?;
+            return Err(AppError::new("cancelled", "Pull request work cancelled."));
+        };
         match finished {
             Ok(result) => {
                 let (status, out, err) = match result {
                     Ok(result) => result,
                     Err(error) => {
-                        stop(&mut child, pid).await;
+                        stop(&mut child, pid).await?;
                         return Err(error.into());
                     }
                 };
@@ -112,7 +131,7 @@ impl Tool<'_> {
                 })
             }
             Err(_) => {
-                stop(&mut child, pid).await;
+                stop(&mut child, pid).await?;
                 Err(AppError::new(
                     "timeout",
                     format!("{} {} timed out.", self.name(), args.first().unwrap_or(&"")),
@@ -138,7 +157,7 @@ impl Tool<'_> {
             .unwrap_or_default()
     }
 }
-async fn stop(child: &mut Child, pid: Option<u32>) {
+async fn stop(child: &mut Child, pid: Option<u32>) -> Result<()> {
     let group = |signal| {
         if let Some(pid) = pid {
             unsafe {
@@ -151,6 +170,21 @@ async fn stop(child: &mut Child, pid: Option<u32>) {
         let _ = child.kill().await;
     }
     group(libc::SIGKILL);
+    let Some(pid) = pid else {
+        return Ok(());
+    };
+    let reaped = tokio::time::timeout(GRACE, async {
+        while unsafe { libc::kill(-(pid as i32), 0) } == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    reaped.map_err(|_| {
+        AppError::new(
+            "process_cleanup",
+            "A tool process group did not exit after cancellation.",
+        )
+    })
 }
 
 /// Resolves a CLI for an app launched from Finder, whose PATH lacks the usual install
@@ -416,7 +450,7 @@ impl From<PrRow> for PullRequest {
     fn from(row: PrRow) -> Self {
         Self {
             number: row.number,
-            title: row.title,
+            title: Some(row.title),
             url: row.url,
             base: row.base_ref_name,
             head: row.head_ref_name,
@@ -428,7 +462,7 @@ async fn gh(gh: &Path, root: &Path, args: &[&str], limit: Duration) -> Result<St
         program: gh,
         cwd: root,
     }
-    .run(args, limit)
+    .run_bounded(args, limit, 2 * 1024 * 1024)
     .await
     .map_err(|e| match e.code.as_str() {
         "tool_missing" => AppError::new(
@@ -453,23 +487,57 @@ async fn gh(gh: &Path, root: &Path, args: &[&str], limit: Duration) -> Result<St
         )),
     }
 }
+async fn pr_repository(root: &Path) -> Result<String> {
+    let remote = git(root)
+        .ok(&["config", "--get", "remote.origin.url"], LOCAL, "git")
+        .await?;
+    let (owner, name) = crate::pull_requests::repository(remote.trim())?;
+    Ok(format!("github.com/{owner}/{name}"))
+}
 pub(crate) async fn pull_request(program: &Path, root: &Path, branch: &str) -> PrLookup {
     let found = async {
+        let repository = pr_repository(root).await?;
         let out = gh(
             program,
             root,
             &[
-                "pr", "list", "--head", branch, "--state", "open", "--limit", "20", "--json",
+                "pr",
+                "list",
+                "--repo",
+                &repository,
+                "--head",
+                branch,
+                "--state",
+                "open",
+                "--limit",
+                "20",
+                "--json",
                 PR_FIELDS,
             ],
             LOOKUP,
         )
         .await?;
         let rows: Vec<PrRow> = serde_json::from_str(&out)?;
-        Ok::<_, AppError>(
-            rows.into_iter()
-                .find(|row| row.head_ref_name == branch && !row.is_cross_repository),
-        )
+        let mut matches: Vec<_> = rows
+            .into_iter()
+            .filter(|row| row.head_ref_name == branch && !row.is_cross_repository)
+            .collect();
+        if matches.len() > 1 {
+            return Err(AppError::new(
+                "pr_ambiguous",
+                "Several pull requests match this branch. Link the intended PR by URL.",
+            ));
+        }
+        if let Some(row) = matches.first() {
+            let key = crate::PullRequestKey::from_url(&row.url)?;
+            if format!("github.com/{}/{}", key.repository().0, key.repository().1) != repository {
+                return Err(AppError::new(
+                    "pr_identity_mismatch",
+                    "GitHub returned a different repository.",
+                ));
+            }
+        }
+        Ok::<_, AppError>(matches.pop())
     };
     match found.await {
         Ok(Some(row)) => PrLookup::Open { pr: row.into() },
@@ -781,24 +849,44 @@ async fn open_pr(cx: &Context, step: PrStep) -> Result<PrOpened> {
         PrStep::Existing(pr) => return Ok(PrOpened { pr, created: false }),
         PrStep::Create { base, head } => (base, head),
     };
+    let repository = pr_repository(&cx.root).await?;
     let created = gh(
         &cx.gh,
         &cx.root,
-        &["pr", "create", "--fill", "--base", &base, "--head", &head],
+        &[
+            "pr",
+            "create",
+            "--repo",
+            &repository,
+            "--fill",
+            "--base",
+            &base,
+            "--head",
+            &head,
+        ],
         cx.network,
     )
-    .await?;
+    .await.map_err(|error| {
+        if error.code == "timeout" || error.code == "process_cleanup" || error.code == "io" {
+            AppError::new("pr_creation_uncertain", "GitHub may have created this pull request. Refresh pull requests to confirm before starting another create action.")
+        } else { error }
+    })?;
     let url = created.lines().last().unwrap_or_default().trim();
-    let view = gh(
-        &cx.gh,
-        &cx.root,
-        &["pr", "view", url, "--json", PR_FIELDS],
-        LOOKUP,
-    )
-    .await?;
-    let row: PrRow = serde_json::from_str(&view)?;
+    let key = crate::PullRequestKey::from_url(url)?;
+    if format!("github.com/{}/{}", key.repository().0, key.repository().1) != repository {
+        return Err(AppError::new(
+            "pr_identity_mismatch",
+            "GitHub returned a different repository.",
+        ));
+    }
     Ok(PrOpened {
-        pr: row.into(),
+        pr: PullRequest {
+            number: key.number().parse().unwrap(),
+            title: None,
+            url: key.url(),
+            base,
+            head,
+        },
         created: true,
     })
 }

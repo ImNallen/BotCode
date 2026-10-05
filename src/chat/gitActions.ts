@@ -349,7 +349,7 @@ function summarize(
     const verb = outcome.pr.created ? "Created" : "Opened";
     return withDescription(
       `${verb} PR #${outcome.pr.pr.number}`,
-      truncateText(outcome.pr.pr.title),
+      outcome.pr.pr.title ? truncateText(outcome.pr.pr.title) : undefined,
     );
   }
   if (outcome.push) {

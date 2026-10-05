@@ -86,6 +86,10 @@ export function Workbench() {
   }, [navigate, selection]);
   const client = useQueryClient();
   const [error, setError] = useState<string>();
+  const [prPanelRequest, setPrPanelRequest] = useState<{
+    threadId: string;
+    nonce: number;
+  }>();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     clampSidebar(Number(storage.getItem(SIDEBAR_KEY)) || SIDEBAR_DEFAULT),
@@ -270,7 +274,10 @@ export function Workbench() {
     }
   };
   const selectThread = useCallback(
-    (workspace: string, thread: string) => {
+    (workspace: string, thread: string, pullRequests = false) => {
+      setPrPanelRequest(
+        pullRequests ? { threadId: thread, nonce: Date.now() } : undefined,
+      );
       void navigate({
         to: "/",
         search: (previous) => ({
@@ -411,6 +418,7 @@ export function Workbench() {
               key={workspaceId}
               workspaceId={workspaceId}
               threadId={selection.thread}
+              prPanelRequest={prPanelRequest}
               onSelectWorkspace={selectWorkspace}
               workspaces={repositories}
               scratch={scratch}

@@ -284,6 +284,12 @@ describe("codexBusy", () => {
     return {
       id,
       title: id,
+      pullRequests: {
+        sequence: 0,
+        links: [],
+        discovering: false,
+        discoveryError: null,
+      },
       session:
         session === "unavailable"
           ? { kind: session, reason: "gone" }
@@ -480,6 +486,17 @@ describe("outcomeToast", () => {
         },
       },
     );
+  });
+
+  it("omits an unknown title after successful creation", () => {
+    const toast = outcomeToast(
+      outcome({ pr: { pr: { ...pr, title: null }, created: true } }),
+      feature,
+      undefined,
+    );
+    assert.equal(toast.title, "Created PR #7");
+    assert.equal(toast.description, undefined);
+    assert.equal(toast.cta.kind, "open_pr");
   });
 
   it("says Opened for a PR the lookup found", () => {

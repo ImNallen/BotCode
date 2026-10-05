@@ -113,11 +113,11 @@ pub async fn set_review_disposition(
 pub async fn run_git_action(
     app: State<'_, App>,
     workspace_id: WorkspaceId,
-    thread_id: Option<ThreadId>,
+    origin_thread_id: ThreadId,
     action: GitAction,
     on_progress: Channel<GitPhase>,
 ) -> Result<GitOutcome> {
-    app.run_git_action(workspace_id, thread_id, action, move |phase| {
+    app.run_git_action(workspace_id, Some(origin_thread_id), action, move |phase| {
         let _ = on_progress.send(phase);
     })
     .await
@@ -213,4 +213,29 @@ pub async fn settings(app: State<'_, App>) -> Result<Option<String>> {
 #[tauri::command]
 pub async fn save_settings(app: State<'_, App>, text: String) -> Result<()> {
     app.save_settings(&text).await
+}
+
+#[tauri::command]
+pub async fn list_thread_pull_requests(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    refresh: bool,
+) -> Result<ThreadPrSummary> {
+    app.list_thread_pull_requests(thread_id, refresh).await
+}
+#[tauri::command]
+pub async fn link_pull_request(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    url: String,
+) -> Result<ThreadPrSummary> {
+    app.link_pull_request(thread_id, url).await
+}
+#[tauri::command]
+pub async fn unlink_pull_request(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    key: PullRequestKey,
+) -> Result<ThreadPrSummary> {
+    app.unlink_pull_request(thread_id, key).await
 }

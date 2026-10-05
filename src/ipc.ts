@@ -1,3 +1,4 @@
+import { threadPrSummary, type PullRequestKey } from "./panel/pullRequests";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { QueryClient } from "@tanstack/react-query";
@@ -155,6 +156,12 @@ const thread = z.object({
   diagnostic: z.string().nullable(),
 });
 const threadSummary = z.object({
+  pullRequests: threadPrSummary.default({
+    sequence: 0,
+    links: [],
+    discovering: false,
+    discoveryError: null,
+  }),
   id,
   title: z.string(),
   session,
@@ -222,7 +229,7 @@ const gitStatus = z.object({
 });
 const pullRequest = z.object({
   number: z.number().int(),
-  title: z.string(),
+  title: z.string().nullable(),
   url: z.string(),
   base: z.string(),
   head: z.string(),
@@ -341,6 +348,12 @@ async function call<S extends z.ZodType>(
   }
 }
 export const ipc = {
+  threadPullRequests: (threadId: string, refresh = false) =>
+    call("list_thread_pull_requests", { threadId, refresh }, threadPrSummary),
+  linkPullRequest: (threadId: string, url: string) =>
+    call("link_pull_request", { threadId, url }, threadPrSummary),
+  unlinkPullRequest: (threadId: string, key: PullRequestKey) =>
+    call("unlink_pull_request", { threadId, key }, threadPrSummary),
   workspaces: () => call("list_workspaces", {}, z.array(workspace)),
   openWorkspace: (path: string) => call("open_workspace", { path }, workspace),
   renameWorkspace: (workspaceId: string, label: string) =>
@@ -411,7 +424,8 @@ export const ipc = {
       prLookup,
     ),
   runGitAction: (
-    { workspaceId, threadId }: CheckoutRef,
+    { workspaceId }: CheckoutRef,
+    originThreadId: string,
     action: GitAction,
     onPhase: (phase: GitPhase) => void,
   ) => {
@@ -421,7 +435,7 @@ export const ipc = {
     });
     return call(
       "run_git_action",
-      { workspaceId, threadId: threadId ?? null, action, onProgress },
+      { workspaceId, originThreadId, action, onProgress },
       gitOutcome,
     );
   },
@@ -480,6 +494,10 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       .safeParse(event.payload);
     if (hint.success) {
       const { summary } = hint.data;
+      client.setQueryData(
+        ["thread-prs", hint.data.threadId],
+        summary.pullRequests,
+      );
       if (summary.session.kind === "unavailable")
         void client.resetQueries({ queryKey: ["models"] });
       client.setQueriesData<WorkspaceView>(
@@ -519,4 +537,39 @@ export function setThreadSnapshot(client: QueryClient, incoming: Thread): void {
   client.setQueryData<Thread>(["thread", incoming.id], (current) =>
     current && current.revision > incoming.revision ? current : incoming,
   );
+}
+
+export function configurePullRequestQueries(client: QueryClient): void {
+  const newest = (incoming: unknown, prior: unknown) => {
+    const next = threadPrSummary.parse(incoming);
+    const previous = threadPrSummary.safeParse(prior);
+    return previous.success && previous.data.sequence > next.sequence
+      ? previous.data
+      : next;
+  };
+  client.setQueryDefaults(["thread-prs"], {
+    structuralSharing: (prior, incoming) => newest(incoming, prior),
+  });
+  client.setQueryDefaults(["workspace"], {
+    structuralSharing: (prior, incoming) => {
+      const next = workspaceView.parse(incoming);
+      const previous = workspaceView.safeParse(prior);
+      return {
+        ...next,
+        threads: next.threads.map((thread) => ({
+          ...thread,
+          pullRequests: newest(
+            newest(
+              thread.pullRequests,
+              previous.success
+                ? previous.data.threads.find((row) => row.id === thread.id)
+                    ?.pullRequests
+                : undefined,
+            ),
+            client.getQueryData(["thread-prs", thread.id]),
+          ),
+        })),
+      };
+    },
+  });
 }

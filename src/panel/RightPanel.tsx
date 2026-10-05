@@ -2,6 +2,7 @@
 // preview/PreviewPanelShell.tsx and preview/RightPanelResizeHandle.tsx (MIT).
 import {
   FileDiffIcon,
+  GitPullRequestIcon,
   FilesIcon,
   PlusIcon,
   MessageSquareTextIcon,
@@ -22,6 +23,7 @@ import { Kbd, MenuShortcut, PanelTabCloseButton, ScrollRow } from "./chrome";
 import { DiffSurface } from "./DiffSurface";
 import { FileEntryIcon } from "./FileEntryIcon";
 import { FilesSurface } from "./FilesSurface";
+import { PullRequestsSurface } from "./PullRequestsSurface";
 import { ReviewsSurface } from "./ReviewsSurface";
 import type { ReviewDraftRequest } from "./reviews";
 import {
@@ -38,6 +40,7 @@ export type Surface =
   | { kind: "files" }
   | { kind: "diff" }
   | { kind: "reviews" }
+  | { kind: "pull_requests" }
   | { kind: "file"; path: string };
 
 export type PanelState = { surfaces: Surface[]; active: number | null };
@@ -51,7 +54,14 @@ type SurfaceAction = {
   surface: Surface;
 };
 
+const PR_ACTION: SurfaceAction = {
+  label: "Pull requests",
+  icon: GitPullRequestIcon,
+  shortcut: "P",
+  surface: { kind: "pull_requests" },
+};
 const SURFACE_ACTIONS: readonly SurfaceAction[] = [
+  PR_ACTION,
   {
     label: "Files",
     icon: FilesIcon,
@@ -117,15 +127,27 @@ export function RightPanel({
   canAskCodex: boolean;
   onAskCodex: (request: ReviewDraftRequest) => void;
 }) {
-  const state = eligibleSurfaces(savedState, git);
+  const state = eligibleSurfaces(savedState, git, Boolean(conversationId));
   const host = useRef<HTMLDivElement>(null);
   const { width, handlers } = usePanelWidth(host, !maximized);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const tabList = useRef<HTMLDivElement>(null);
   const active =
     state.active === null ? undefined : state.surfaces[state.active];
-  const available = view !== undefined && view.unavailable === null;
-  const actions = git ? SURFACE_ACTIONS : FOLDER_ACTIONS;
+  const available =
+    Boolean(conversationId) ||
+    (view !== undefined && view.unavailable === null);
+  const localAvailable = view !== undefined && view.unavailable === null;
+  const actions = (
+    !localAvailable ? [] : git ? SURFACE_ACTIONS : FOLDER_ACTIONS
+  ).filter(
+    (action) => action.surface.kind !== "pull_requests" || conversationId,
+  );
+  if (
+    conversationId &&
+    !actions.some((action) => action.surface.kind === "pull_requests")
+  )
+    actions.unshift(PR_ACTION);
   const open = (surface: Surface) => onChange(openSurface(state, surface));
   const handleOpenFile = (path: string) => onChange(openFile(state, path));
 
@@ -284,7 +306,12 @@ export function RightPanel({
             className="flex min-h-0 flex-1 flex-col"
             data-right-panel-surface-content
           >
-            {view?.unavailable ? (
+            {active?.kind === "pull_requests" && conversationId ? (
+              <PullRequestsSurface
+                key={conversationId}
+                threadId={conversationId}
+              />
+            ) : view?.unavailable && active ? (
               <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
                 <p className="text-center">{view.unavailable}</p>
               </div>
@@ -325,6 +352,8 @@ function SurfaceIcon({ surface }: { surface: Surface }) {
   switch (surface.kind) {
     case "diff":
       return <FileDiffIcon className="size-3 shrink-0" />;
+    case "pull_requests":
+      return <GitPullRequestIcon className="size-3 shrink-0" />;
     case "reviews":
       return <MessageSquareTextIcon className="size-3 shrink-0" />;
     case "files":

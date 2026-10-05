@@ -56,19 +56,16 @@ export const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 export function eligibleSurfaces(
   state: PanelState,
   repository: boolean,
+  conversation = false,
 ): PanelState {
-  if (
-    repository ||
-    state.surfaces.every(
-      (surface) => surface.kind === "files" || surface.kind === "file",
-    )
-  )
-    return state;
+  const allowed = (surface: Surface) =>
+    surface.kind === "pull_requests"
+      ? conversation
+      : repository || surface.kind === "files" || surface.kind === "file";
+  if (state.surfaces.every(allowed)) return state;
   const active =
     state.active === null ? undefined : state.surfaces[state.active];
-  const surfaces = state.surfaces.filter(
-    (surface) => surface.kind === "files" || surface.kind === "file",
-  );
+  const surfaces = state.surfaces.filter(allowed);
   const index = active
     ? surfaces.findIndex((surface) => surface === active)
     : -1;
@@ -81,6 +78,8 @@ export function surfaceTitle(surface: Surface): string {
       return "Files";
     case "diff":
       return "Diff";
+    case "pull_requests":
+      return "Pull requests";
     case "reviews":
       return "Reviews";
     case "file":
