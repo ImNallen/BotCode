@@ -18,7 +18,6 @@ import { Badge } from "../ui/badge";
 import { Button, Toggle } from "../ui/controls";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import { RefreshIcon, SegmentedGroup } from "./chrome";
-import { draftKey, reviewDrafts } from "./reviewDrafts";
 import { prUrl, type PullRequestKey } from "./pullRequests";
 import { PullRequestReviewComposer } from "./PullRequestReviewComposer";
 import { PullRequestTimeline, type ReviewHandoff } from "./PullRequestTimeline";
@@ -46,6 +45,7 @@ import {
 import { PullRequestChecksPopover } from "./PullRequestChecksPopover";
 import { PullRequestCopyableCode } from "./PullRequestCopyableCode";
 import { PullRequestSummary } from "./PullRequestSummary";
+import { PullRequestCodeTab } from "./PullRequestCodeTab";
 
 const TABS = [
   { value: "summary", label: "Summary" },
@@ -468,7 +468,14 @@ export function PullRequestDetail({
       ) : null}
       {detail ? (
         <>
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div
+            className={cn(
+              "min-h-0 flex-1",
+              tab === "code"
+                ? "flex flex-col overflow-hidden"
+                : "overflow-y-auto",
+            )}
+          >
             {detail.problems.map((problem) => (
               <p
                 key={problem.section}
@@ -509,66 +516,11 @@ export function PullRequestDetail({
               />
             ) : null}
             {tab === "code" ? (
-              <div className="space-y-3 p-2">
-                {detail.files.map((file) => (
-                  <article
-                    key={file.path}
-                    className="min-w-0 rounded border border-border"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-1 border-b border-border p-2 text-xs">
-                      <span className="break-all font-medium">{file.path}</span>
-                      <span>
-                        +{file.additions} −{file.deletions}
-                      </span>
-                    </div>
-                    {file.unavailable ? (
-                      <p className="p-3 text-xs text-muted-foreground">
-                        {file.unavailable}{" "}
-                        <button
-                          className="underline"
-                          onClick={() => openSource(`${prUrl(prKey)}/files`)}
-                        >
-                          View on GitHub
-                        </button>
-                      </p>
-                    ) : (
-                      <div className="overflow-x-auto bg-code-background py-1 text-code-foreground">
-                        <pre className="w-max min-w-full text-[11px]">
-                          <code>
-                            {file.anchors.map((line, index) => (
-                              <div
-                                key={index}
-                                className="flex min-w-full items-start gap-2 px-1 hover:bg-accent/50"
-                              >
-                                <button
-                                  type="button"
-                                  className="w-12 shrink-0 cursor-pointer text-right text-muted-foreground disabled:cursor-default"
-                                  aria-label={`Comment on ${file.path} ${line.side.toLowerCase()} line ${line.line}`}
-                                  title="Add line comment to review"
-                                  disabled={disabled || !detail.verdicts.length}
-                                  onClick={() =>
-                                    reviewDrafts.add(
-                                      draftKey(detail.observation),
-                                      {
-                                        path: file.path,
-                                        side: line.side,
-                                        line: line.line,
-                                      },
-                                    )
-                                  }
-                                >
-                                  {line.line} +
-                                </button>
-                                <span>{line.text}</span>
-                              </div>
-                            ))}
-                          </code>
-                        </pre>
-                      </div>
-                    )}
-                  </article>
-                ))}
-              </div>
+              <PullRequestCodeTab
+                detail={detail}
+                disabled={disabled}
+                onViewFiles={() => openSource(`${prUrl(prKey)}/files`)}
+              />
             ) : null}
           </div>
           <PullRequestReviewComposer

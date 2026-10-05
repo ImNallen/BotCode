@@ -11,19 +11,7 @@ import {
   useQueries,
   useQueryClient,
 } from "@tanstack/react-query";
-import {
-  CheckIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
-  ChevronsDownUpIcon,
-  ChevronsUpDownIcon,
-  Columns2Icon,
-  CopyIcon,
-  FolderTreeIcon,
-  PilcrowIcon,
-  Rows3Icon,
-  TextWrapIcon,
-} from "lucide-react";
+import { CheckIcon, ChevronDownIcon, CopyIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { checkoutKey, ipc, type CheckoutRef, type WorkspaceView } from "../ipc";
 import { cn } from "../lib/cn";
@@ -33,16 +21,23 @@ import {
   DiffStatLabel,
   MenuRadioItem,
   RefreshIcon,
-  SegmentedGroup,
-  storedFlag,
   useStoredState,
 } from "./chrome";
-import { DiffFileTree, type DiffFileTreeEntry } from "./DiffFileTree";
-import { WORD_WRAP_KEY } from "./FilesSurface";
+import { DiffFileTree } from "./DiffFileTree";
+import {
+  CollapseAllButton,
+  DiffFileChevron,
+  DiffLayoutToggle,
+  FileTreeToggle,
+  WhitespaceToggle,
+  WordWrapToggle,
+  diffViewOptions,
+  hash,
+  treeStatus,
+  useDiffViewPreferences,
+} from "./diffView";
 import { hideWhitespaceChanges } from "./hideWhitespace";
-import { DIFF_VIEW_UNSAFE_CSS } from "./surfaceCss";
 import { useResolvedTheme } from "./useResolvedTheme";
-import { storage } from "../lib/storage";
 
 type Change = WorkspaceView["changes"][number];
 type Basis = "staged" | "unstaged";
@@ -99,15 +94,6 @@ function sides(
   };
 }
 
-function hash(input: string): number {
-  let value = 0x811c9dc5;
-  for (let index = 0; index < input.length; index += 1) {
-    value ^= input.charCodeAt(index);
-    value = Math.imul(value, 0x01000193) >>> 0;
-  }
-  return value;
-}
-
 function lineStat(files: readonly DiffFile[]) {
   let additions = 0;
   let deletions = 0;
@@ -117,35 +103,6 @@ function lineStat(files: readonly DiffFile[]) {
       deletions += hunk.deletionLines;
     }
   return { additions, deletions };
-}
-
-function collapseIconClass(fileDiff: FileDiffMetadata): string {
-  switch (fileDiff.type) {
-    case "new":
-      return "text-[var(--diffs-addition-base)]";
-    case "deleted":
-      return "text-[var(--diffs-deletion-base)]";
-    case "change":
-    case "rename-pure":
-    case "rename-changed":
-      return "text-[var(--diffs-modified-base)]";
-    default:
-      return "text-muted-foreground/80";
-  }
-}
-
-function treeStatus(fileDiff: FileDiffMetadata): DiffFileTreeEntry["status"] {
-  switch (fileDiff.type) {
-    case "new":
-      return "added";
-    case "deleted":
-      return "deleted";
-    case "rename-pure":
-    case "rename-changed":
-      return "renamed";
-    case "change":
-      return "modified";
-  }
 }
 
 function useDiffFiles(
@@ -225,18 +182,16 @@ export function DiffSurface({
   const theme = useResolvedTheme();
   const client = useQueryClient();
   const [scope, setScope] = useStoredState<Scope>("z1.diffScope", parseScope);
-  const [split, setSplit] = useStoredState("z1.diffSplit", storedFlag(false));
-  const [wordWrap, setWordWrap] = useState(() =>
-    storedFlag(true)(storage.getItem(WORD_WRAP_KEY)),
-  );
-  const [ignoreWhitespace, setIgnoreWhitespace] = useStoredState(
-    "z1.diffIgnoreWhitespace",
-    storedFlag(true),
-  );
-  const [fileTreeOpen, setFileTreeOpen] = useStoredState(
-    "z1.diffFileTreeOpen",
-    storedFlag(false),
-  );
+  const {
+    split,
+    setSplit,
+    wordWrap,
+    setWordWrap,
+    ignoreWhitespace,
+    setIgnoreWhitespace,
+    fileTreeOpen,
+    setFileTreeOpen,
+  } = useDiffViewPreferences();
   const [expanded, setExpanded] = useState<{
     scope: Scope;
     paths: ReadonlySet<string>;
@@ -363,91 +318,16 @@ export function DiffSurface({
           <RefreshIcon refreshing={refreshing} className="size-3.5" />
         </Button>
         {files.length > 0 ? (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label={
-              allCollapsed ? "Expand all files" : "Collapse all files"
-            }
-            title={allCollapsed ? "Expand all files" : "Collapse all files"}
-            onClick={toggleAll}
-          >
-            {allCollapsed ? (
-              <ChevronsUpDownIcon className="size-3.5" />
-            ) : (
-              <ChevronsDownUpIcon className="size-3.5" />
-            )}
-          </Button>
+          <CollapseAllButton allCollapsed={allCollapsed} onToggle={toggleAll} />
         ) : null}
-        <SegmentedGroup label="Diff layout">
-          <Toggle
-            variant="segmented"
-            size="segmented"
-            data-size="segmented"
-            data-variant="segmented"
-            pressed={!split}
-            aria-label="Stacked diff view"
-            title="Stacked diff view"
-            onClick={() => setSplit(false)}
-          >
-            <Rows3Icon className="size-3.5" />
-          </Toggle>
-          <Toggle
-            variant="segmented"
-            size="segmented"
-            data-size="segmented"
-            data-variant="segmented"
-            pressed={split}
-            aria-label="Split diff view"
-            title="Split diff view"
-            onClick={() => setSplit(true)}
-          >
-            <Columns2Icon className="size-3.5" />
-          </Toggle>
-        </SegmentedGroup>
-        <Toggle
-          variant="ghost"
-          size="sm"
-          pressed={wordWrap}
-          aria-label={
-            wordWrap
-              ? "Disable diff line wrapping"
-              : "Enable diff line wrapping"
-          }
-          title={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}
-          onClick={() => setWordWrap(!wordWrap)}
-        >
-          <TextWrapIcon className="size-3.5" />
-        </Toggle>
-        <Toggle
-          variant="ghost"
-          size="sm"
-          pressed={ignoreWhitespace}
-          aria-label={
-            ignoreWhitespace
-              ? "Show whitespace changes"
-              : "Hide whitespace changes"
-          }
-          title={
-            ignoreWhitespace
-              ? "Show whitespace changes"
-              : "Hide whitespace changes"
-          }
-          onClick={() => setIgnoreWhitespace(!ignoreWhitespace)}
-        >
-          <PilcrowIcon className="size-3.5" />
-        </Toggle>
+        <DiffLayoutToggle split={split} onChange={setSplit} />
+        <WordWrapToggle wordWrap={wordWrap} onChange={setWordWrap} />
+        <WhitespaceToggle
+          ignoreWhitespace={ignoreWhitespace}
+          onChange={setIgnoreWhitespace}
+        />
         {files.length > 0 ? (
-          <Toggle
-            variant="ghost"
-            size="sm"
-            pressed={fileTreeOpen}
-            aria-label={fileTreeOpen ? "Hide file tree" : "Show file tree"}
-            title={fileTreeOpen ? "Hide file tree" : "Show file tree"}
-            onClick={() => setFileTreeOpen(!fileTreeOpen)}
-          >
-            <FolderTreeIcon className="size-3.5" />
-          </Toggle>
+          <FileTreeToggle open={fileTreeOpen} onChange={setFileTreeOpen} />
         ) : null}
       </div>
     </>
@@ -521,52 +401,19 @@ export function DiffSurface({
                 className="diff-render-surface [--code-background:var(--background)] outline-none h-full min-h-0 overflow-auto"
                 items={items}
                 disableWorkerPool
-                options={{
-                  diffStyle: split ? "split" : "unified",
-                  overflow: wordWrap ? "wrap" : "scroll",
-                  theme: theme === "dark" ? "pierre-dark" : "pierre-light",
-                  themeType: theme,
-                  stickyHeaders: true,
-                  unsafeCSS: DIFF_VIEW_UNSAFE_CSS,
-                  itemMetrics: {
-                    diffHeaderHeight: 32,
-                    hunkSeparatorHeight: 24,
-                    spacing: 0,
-                    paddingTop: 0,
-                    paddingBottom: 8,
-                  },
-                  layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
-                }}
-                renderHeaderPrefix={(item) => {
-                  if (item.type !== "diff") return null;
-                  const collapsed = !expandedPaths.has(item.id);
-                  const Chevron = collapsed
-                    ? ChevronRightIcon
-                    : ChevronDownIcon;
-                  return (
-                    <Button
-                      size="icon-micro"
-                      variant="ghost"
-                      className="-ms-0.5"
-                      aria-label={
-                        collapsed ? `Expand ${item.id}` : `Collapse ${item.id}`
+                options={diffViewOptions({ split, wordWrap, theme })}
+                renderHeaderPrefix={(item) =>
+                  item.type === "diff" ? (
+                    <DiffFileChevron
+                      path={item.id}
+                      fileDiff={item.fileDiff}
+                      collapsed={!expandedPaths.has(item.id)}
+                      onToggle={() =>
+                        setPathExpanded(item.id, !expandedPaths.has(item.id))
                       }
-                      aria-expanded={!collapsed}
-                      title={collapsed ? "Expand diff" : "Collapse diff"}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setPathExpanded(item.id, collapsed);
-                      }}
-                    >
-                      <Chevron
-                        className={cn(
-                          "size-4",
-                          collapseIconClass(item.fileDiff),
-                        )}
-                      />
-                    </Button>
-                  );
-                }}
+                    />
+                  ) : null
+                }
                 renderHeaderFilenameSuffix={(item) => (
                   <CopyPathButton path={item.id} />
                 )}
