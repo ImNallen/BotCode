@@ -1,4 +1,5 @@
 // Header, tabs and checks status follow pingdotgg/t3code 3e6b450 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx (MIT).
+// Title editing follows pingdotgg/t3code v0.0.45 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx (MIT).
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -16,6 +17,7 @@ import { cn } from "../lib/cn";
 import { formatRelativeTimeLabel } from "../lib/time";
 import { Badge } from "../ui/badge";
 import { Button, Toggle } from "../ui/controls";
+import { Input } from "../ui/input";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import { RefreshIcon, SegmentedGroup } from "./chrome";
 import { prUrl, type PullRequestKey } from "./pullRequests";
@@ -28,12 +30,13 @@ import {
   usePullRequestLifecycle,
 } from "./PullRequestLifecycle";
 import {
+  changeResultText,
   lifecycleLabel,
   menuActions,
   primaryControl,
   type HeaderControls,
 } from "./prLifecycle";
-import type { LifecycleAction } from "./prReview";
+import type { LifecycleAction, PrReviewAction } from "./prReview";
 import { checksRollup, prChecks, summarizeChecks } from "./prChecks";
 import {
   PullRequestActorLabel,
@@ -46,6 +49,7 @@ import { PullRequestChecksPopover } from "./PullRequestChecksPopover";
 import { PullRequestCopyableCode } from "./PullRequestCopyableCode";
 import { PullRequestSummary } from "./PullRequestSummary";
 import { PullRequestCodeTab } from "./PullRequestCodeTab";
+import { PullRequestEditButton } from "./PullRequestEditButton";
 
 const TABS = [
   { value: "summary", label: "Summary" },
@@ -97,6 +101,46 @@ export function PullRequestDetail({
     disabled,
     refresh,
   });
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  const [titleSaving, setTitleSaving] = useState(false);
+  const [titleError, setTitleError] = useState<string>();
+  // Setting a title or body is idempotent on GitHub, so a failed save keeps
+  // the editor open and retrying is safe without an acknowledgment step.
+  const edit = async (
+    action: Extract<PrReviewAction, { kind: "edit_title" | "edit_body" }>,
+  ): Promise<string | undefined> => {
+    if (!detail) return "The pull request is not loaded.";
+    try {
+      const result = await ipc.changePullRequest(handoff.threadId, {
+        requestId: crypto.randomUUID(),
+        target: detail.observation,
+        action,
+      });
+      if (result.kind !== "applied") return changeResultText(result);
+      await query.refetch();
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  };
+  const closeTitle = () => {
+    setTitleDraft(null);
+    setTitleError(undefined);
+  };
+  const saveTitle = async (next: string) => {
+    const title = next.trim();
+    if (!detail || titleSaving || disabled) return;
+    if (title.length === 0 || title === detail.snapshot.title) {
+      closeTitle();
+      return;
+    }
+    setTitleSaving(true);
+    setTitleError(undefined);
+    const error = await edit({ kind: "edit_title", title });
+    setTitleSaving(false);
+    if (error === undefined) closeTitle();
+    else setTitleError(error);
+  };
   const openSource = (url: string) =>
     void ipc.openUrl(url).catch((error) => setError(String(error)));
   const explain = (
@@ -350,14 +394,69 @@ export function PullRequestDetail({
           </Menu>
         </div>
         <div className="col-span-2 mt-1 min-w-0 px-4 pb-4">
-          <div className="group flex min-h-7 min-w-0 items-center gap-1 sm:min-h-6">
-            <h1
-              className="min-w-0 flex-1 truncate text-base font-semibold leading-snug"
-              title={detail?.snapshot.title}
-            >
-              {detail?.snapshot.title ?? "Loading pull request…"}
-            </h1>
-          </div>
+          {detail && titleDraft !== null ? (
+            <div className="space-y-2">
+              <Input
+                autoFocus
+                size="sm"
+                disabled={titleSaving}
+                value={titleDraft}
+                aria-label="Pull request title"
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing) return;
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void saveTitle(titleDraft);
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeTitle();
+                  }
+                }}
+              />
+              <div className="flex justify-end gap-2">
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={titleSaving}
+                  onClick={closeTitle}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={
+                    titleSaving || disabled || titleDraft.trim().length === 0
+                  }
+                  onClick={() => void saveTitle(titleDraft)}
+                >
+                  {titleSaving ? "Saving..." : "Save"}
+                </Button>
+              </div>
+              {titleError ? (
+                <p role="alert" className="text-xs text-destructive">
+                  {titleError}
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <div className="group flex min-h-7 min-w-0 items-center gap-1 sm:min-h-6">
+              <h1
+                className="min-w-0 flex-1 truncate text-base font-semibold leading-snug"
+                title={detail?.snapshot.title}
+              >
+                {detail?.snapshot.title ?? "Loading pull request…"}
+              </h1>
+              {detail?.capabilities.edit ? (
+                <PullRequestEditButton
+                  aria-label="Edit title"
+                  disabled={disabled}
+                  onClick={() => setTitleDraft(detail.snapshot.title)}
+                />
+              ) : null}
+            </div>
+          )}
           {detail ? (
             <>
               <div className="mt-2 flex min-h-5 min-w-0 items-center gap-2 text-xs text-muted-foreground">
@@ -497,6 +596,8 @@ export function PullRequestDetail({
                 checks={checks}
                 checksIncomplete={checksIncomplete}
                 canFix={canAsk}
+                disabled={disabled}
+                saveBody={(body) => edit({ kind: "edit_body", body })}
                 openSource={openSource}
                 fixCheck={(check) =>
                   explain(

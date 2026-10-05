@@ -95,6 +95,9 @@ pub(crate) async fn change(
                     PrReviewAction::SetResolved {
                         resolved: false, ..
                     } => ("unresolveReviewThread", "thread"),
+                    PrReviewAction::EditTitle { .. } | PrReviewAction::EditBody { .. } => {
+                        ("updatePullRequest", "pullRequest")
+                    }
                 };
                 if let Some(id) = value["data"][field][child]["id"]
                     .as_str()
@@ -114,6 +117,17 @@ pub(crate) async fn change(
         },
     })
 }
+/// Edits do not depend on the head commit, and the agent pushes commits
+/// constantly, so only the pull request and the account must still match.
+fn still_target(action: &PrReviewAction, observed: &PrObservation, target: &PrObservation) -> bool {
+    if action.is_edit() {
+        observed.key == target.key
+            && observed.node_id == target.node_id
+            && observed.viewer == target.viewer
+    } else {
+        observed == target
+    }
+}
 async fn prepare(
     program: &Path,
     input: &PrReviewChange,
@@ -129,7 +143,7 @@ async fn prepare(
         cancel,
     };
     let meta = fetch.meta(&input.target.key).await?;
-    if meta.observation != input.target {
+    if !still_target(&input.action, &meta.observation, &input.target) {
         return Err(unavailable(
             "The PR head or signed-in account changed. Refresh. Your draft is retained.",
         ));
@@ -137,6 +151,11 @@ async fn prepare(
     if input.action.is_lifecycle() && !meta.capabilities.actions.contains(&input.action) {
         return Err(unavailable(
             "GitHub does not permit this lifecycle action or method. Refresh.",
+        ));
+    }
+    if input.action.is_edit() && !meta.capabilities.edit {
+        return Err(unavailable(
+            "GitHub does not permit editing this pull request.",
         ));
     }
     let (operation, field, typ, body, child) = match &input.action {
@@ -201,6 +220,20 @@ async fn prepare(
             "updatePullRequestBranch",
             "UpdatePullRequestBranchInput",
             json!({"pullRequestId":input.target.node_id,"expectedHeadOid":input.target.head_oid,"updateMethod":match method { BranchUpdateMethod::Merge => "MERGE", BranchUpdateMethod::Rebase => "REBASE" }}),
+            "pullRequest",
+        ),
+        PrReviewAction::EditTitle { title } => (
+            "Z1EditTitle",
+            "updatePullRequest",
+            "UpdatePullRequestInput",
+            json!({"pullRequestId":input.target.node_id,"title":title}),
+            "pullRequest",
+        ),
+        PrReviewAction::EditBody { body } => (
+            "Z1EditBody",
+            "updatePullRequest",
+            "UpdatePullRequestInput",
+            json!({"pullRequestId":input.target.node_id,"body":body}),
             "pullRequest",
         ),
         PrReviewAction::SubmitReview {
@@ -284,7 +317,7 @@ async fn prepare(
         }
     };
     let final_meta = fetch.meta(&input.target.key).await?;
-    if final_meta.observation != input.target {
+    if !still_target(&input.action, &final_meta.observation, &input.target) {
         return Err(unavailable(
             "The PR head or signed-in account changed during validation. Refresh.",
         ));
@@ -292,6 +325,11 @@ async fn prepare(
     if input.action.is_lifecycle() && !final_meta.capabilities.actions.contains(&input.action) {
         return Err(unavailable(
             "Lifecycle permissions changed during validation. Refresh.",
+        ));
+    }
+    if input.action.is_edit() && !final_meta.capabilities.edit {
+        return Err(unavailable(
+            "Edit permissions changed during validation. Refresh.",
         ));
     }
     if let PrReviewAction::SubmitReview { verdict, .. } = &input.action

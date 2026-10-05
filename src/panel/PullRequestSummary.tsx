@@ -6,6 +6,8 @@ import { cn } from "../lib/cn";
 import { Button } from "../ui/controls";
 import { isFailingCheck, type PrCheck } from "./prChecks";
 import type { PrReviewDetail } from "./prReview";
+import { PullRequestEditButton } from "./PullRequestEditButton";
+import { PullRequestMarkdownEditor } from "./PullRequestMarkdownEditor";
 import {
   PullRequestActorAvatar,
   PullRequestCheckStatusIcon,
@@ -74,16 +76,33 @@ export function PullRequestSummary({
   checks,
   checksIncomplete,
   canFix,
+  disabled,
   openSource,
   fixCheck,
+  saveBody,
 }: {
   detail: PrReviewDetail;
   checks: ReadonlyArray<PrCheck>;
   checksIncomplete: boolean;
   canFix: boolean;
+  disabled: boolean;
   openSource: (url: string) => void;
   fixCheck: (check: PrCheck) => void;
+  /** Resolves to the failure text, or undefined once GitHub applied it. */
+  saveBody: (body: string) => Promise<string | undefined>;
 }) {
+  const [editingBody, setEditingBody] = useState(false);
+  const [bodySaving, setBodySaving] = useState(false);
+  const [bodyError, setBodyError] = useState<string>();
+  const save = async (body: string) => {
+    if (bodySaving) return;
+    setBodySaving(true);
+    setBodyError(undefined);
+    const error = await saveBody(body);
+    setBodySaving(false);
+    if (error === undefined) setEditingBody(false);
+    else setBodyError(error);
+  };
   return (
     <>
       <section className="px-4 pt-2.5 pb-1">
@@ -144,13 +163,48 @@ export function PullRequestSummary({
         </div>
       </section>
       <Section title="Description">
-        <ChatMarkdown
-          text={
-            detail.body.trim().length > 0
-              ? detail.body
-              : "_No description provided._"
-          }
-        />
+        <div className="group">
+          {editingBody ? (
+            <>
+              <PullRequestMarkdownEditor
+                allowEmpty
+                value={detail.body}
+                label="Pull request description"
+                placeholder="Describe this pull request"
+                saving={bodySaving}
+                disabled={disabled}
+                onSave={(body) => void save(body)}
+                onCancel={() => {
+                  setEditingBody(false);
+                  setBodyError(undefined);
+                }}
+              />
+              {bodyError ? (
+                <p role="alert" className="mt-2 text-xs text-destructive">
+                  {bodyError}
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <div className="flex items-start gap-1">
+              <ChatMarkdown
+                className="min-w-0 flex-1"
+                text={
+                  detail.body.trim().length > 0
+                    ? detail.body
+                    : "_No description provided._"
+                }
+              />
+              {detail.capabilities.edit ? (
+                <PullRequestEditButton
+                  aria-label="Edit description"
+                  disabled={disabled}
+                  onClick={() => setEditingBody(true)}
+                />
+              ) : null}
+            </div>
+          )}
+        </div>
       </Section>
       <Section title="Checks" defaultOpen={false}>
         {checks.length === 0 ? (

@@ -62,6 +62,8 @@ export const prReviewAction = z.discriminatedUnion("kind", [
     threadId: z.string(),
     resolved: z.boolean(),
   }),
+  z.object({ kind: z.literal("edit_title"), title: z.string() }),
+  z.object({ kind: z.literal("edit_body"), body: z.string() }),
 ]);
 export const acknowledgeUncertainUpdate = z.object({
   key: pullRequestKey,
@@ -132,6 +134,7 @@ export const prReviewDetail = z.object({
     ]),
     actions: z.array(lifecycleAction),
     explanation: z.string().nullable(),
+    edit: z.boolean(),
   }),
   operations: z.array(prOperation),
   observation: prObservation,

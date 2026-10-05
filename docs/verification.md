@@ -364,3 +364,16 @@ The native debug bundle used the temporary identifier `dev.z1.code.prlayout`, an
 - The local Diff tab still rendered a working-tree change in the clone with its own toolbar order, and the change was then reverted.
 
 Screenshots are in `/tmp/z1-prverify-code`. Z1 leaves out T3's commit picker and Viewed checkboxes, which need per-commit diffs and saved viewed state. It also leaves out multi-line comments, existing conversations under their lines and expanding unchanged context, which needs the full file contents.
+
+## Editable pull request title and description
+
+Verified on 2026-10-05. `pnpm typecheck`, `pnpm test:ui` (133 tests), Prettier, `pnpm build`, rustfmt, Clippy with warnings denied and `cargo test -p z1-core` (177 tests) passed. New core tests use the scripted GitHub CLI. A title edit sends `updatePullRequest` with only the pull request ID and the title, and a re-read returns the new title. An empty description is applied, while blank and 257-character titles are refused before any mutation. Without `viewerCanUpdate`, at the first or the final permission read, no mutation is sent. An edit applies after the head moves and is refused after the account changes, while a reply against the old head is still refused. Each test failed against a deliberately broken head or permission check.
+
+The native debug bundle used the temporary identifier `dev.z1.code.preditverify`, an isolated `Z1_DATA_DIR`, a disposable clone of `ImNallen/z1-git-actions-verify` and `Z1_GH_BIN` set to a proxy for the real GitHub CLI. The proxy passed reads and `updatePullRequest`, refused every other mutation and REST write, and logged every call. The conversation was linked to PR #1 through the core API before launch. At 1500×1000:
+
+- Hovering the title of PR #1 showed the pencil. Editing the title and pressing Enter showed **Saving...** until the refreshed detail arrived, then the new title and "updated just now". `gh pr view` returned the new title, and the proxy log held one `Z1EditTitle` mutation with no body field.
+- Hovering the description showed its pencil. The editor kept the existing text, Preview rendered a bold list item, and Cmd+Enter saved. `gh pr view` returned the new body, and the log held one `Z1EditBody` mutation with no title field.
+- With the proxy refusing one marker title, the save kept the typed title in the field and showed GitHub's refusal below it. Escape then closed the editor without a request, and GitHub kept the previous title.
+- The Pull requests list showed the edited title.
+
+PR #1 was restored to its original title and description afterwards.

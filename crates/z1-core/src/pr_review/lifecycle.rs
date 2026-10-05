@@ -64,6 +64,7 @@ pub struct PrCapabilities {
     pub primary: PrPrimary,
     pub actions: Vec<PrReviewAction>,
     pub explanation: Option<String>,
+    pub edit: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrOperation {
@@ -74,8 +75,15 @@ impl PrReviewAction {
     pub fn is_lifecycle(&self) -> bool {
         !matches!(
             self,
-            Self::SubmitReview { .. } | Self::Reply { .. } | Self::SetResolved { .. }
+            Self::SubmitReview { .. }
+                | Self::Reply { .. }
+                | Self::SetResolved { .. }
+                | Self::EditTitle { .. }
+                | Self::EditBody { .. }
         )
+    }
+    pub(crate) fn is_edit(&self) -> bool {
+        matches!(self, Self::EditTitle { .. } | Self::EditBody { .. })
     }
     pub(crate) fn holds_checkout(&self) -> bool {
         matches!(
