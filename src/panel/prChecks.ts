@@ -10,10 +10,8 @@ export type CheckStatus =
   | "skipped"
   | "neutral";
 export type ChecksRollup = "passing" | "failing" | "pending";
-export type PrCheck = {
-  name: string;
+export type PrCheck = PrReviewDetail["checks"][number] & {
   status: CheckStatus;
-  url: string | null;
 };
 
 const STATUS_BY_GITHUB_STATE = new Map<string, CheckStatus>([
@@ -42,9 +40,8 @@ export function checkStatus(state: string): CheckStatus {
 
 export function prChecks(checks: PrReviewDetail["checks"]): PrCheck[] {
   return checks.map((check) => ({
-    name: check.name,
+    ...check,
     status: checkStatus(check.state),
-    url: check.url,
   }));
 }
 
