@@ -1,6 +1,24 @@
 #!/usr/bin/env python3
 import json, os, pathlib, sys, time, subprocess
 root = pathlib.Path(__file__).parent
+if len(sys.argv) > 1 and sys.argv[1] == 'exec':
+    prompt = sys.stdin.read()
+    with (root / 'naming.jsonl').open('a') as log:
+        log.write(json.dumps({'args': sys.argv[1:], 'prompt': prompt, 'cwd': os.getcwd()}) + '\n')
+    (root / 'naming.pid').write_text(str(os.getpid()))
+    if (root / 'naming_descendant').exists():
+        child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(90)'])
+        (root / 'naming_child.pid').write_text(str(child.pid))
+    if (root / 'naming_stall').exists():
+        while True:
+            time.sleep(1)
+    if (root / 'naming_delay').exists():
+        time.sleep(float((root / 'naming_delay').read_text()))
+    output = root / 'naming_output'
+    if not output.exists():
+        sys.exit(1)
+    pathlib.Path(sys.argv[sys.argv.index('--output-last-message') + 1]).write_text(output.read_text())
+    sys.exit(0)
 log = root / 'calls.jsonl'
 (root / 'pid').write_text(str(os.getpid()))
 active = None

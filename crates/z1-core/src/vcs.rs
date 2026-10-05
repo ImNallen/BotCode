@@ -5,7 +5,10 @@ use std::{
     process::Stdio,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, process::Child};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Child,
+};
 
 pub(crate) const NON_INTERACTIVE: [(&str, &str); 6] = [
     ("GIT_TERMINAL_PROMPT", "0"),
@@ -42,6 +45,16 @@ impl Tool<'_> {
         bytes: u64,
         cancel: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<Output> {
+        self.run_with_input(args, limit, bytes, cancel, None).await
+    }
+    pub async fn run_with_input(
+        &self,
+        args: &[&str],
+        limit: Duration,
+        bytes: u64,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+        input: Option<&[u8]>,
+    ) -> Result<Output> {
         if *cancel.borrow() {
             return Err(AppError::new("cancelled", "Pull request work cancelled."));
         }
@@ -50,7 +63,11 @@ impl Tool<'_> {
             .args(args)
             .current_dir(self.cwd)
             .envs(NON_INTERACTIVE)
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
@@ -63,13 +80,21 @@ impl Tool<'_> {
         })?;
         let pid = child.id();
         let (mut stdout, mut stderr) = (child.stdout.take(), child.stderr.take());
+        let mut stdin = child.stdin.take();
         let finished = tokio::select! {
             _ = cancel.changed() => None,
             result = tokio::time::timeout(limit, async {
             let (mut out, mut err) = (Vec::new(), Vec::new());
-            let (status, _, _) =
+            let (status, _, _, _) =
                 tokio::try_join!(
                     child.wait(),
+                    async {
+                        if let (Some(mut pipe), Some(input)) = (stdin.take(), input) {
+                            pipe.write_all(input).await?;
+                            pipe.shutdown().await?;
+                        }
+                        Ok::<_, std::io::Error>(())
+                    },
                     async {
                         match &mut stdout {
                             Some(pipe) => pipe

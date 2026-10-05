@@ -19,6 +19,8 @@ The sidebar's bottom Settings button opens General, Appearance, Keyboard shortcu
 
 The composer has model, reasoning effort, and access menus. Model and effort choices come from the installed Codex. Settings save per conversation and apply to the next turn. Supervised is the default access mode. The other modes are Auto-accept edits, Auto, and Full access.
 
+A new worktree starts on a temporary `z1code/<random>` branch. Its first message generates a short branch name in the background. Z1 applies the name after the first Codex turn ends and keeps the same folder. A branch switch, Git action, cleanup, or later message cancels pending naming. A generation failure keeps the temporary branch and does not interrupt the conversation. Local checkouts and branches you name yourself keep their names.
+
 In a repository thread, the Git actions control at the right of the header commits, pushes, pulls, and opens GitHub pull requests for that thread's checkout. Its button runs the next step for the branch. Its menu lists Commit, Push, and Create PR or View PR. Every commit needs a message. Pull requests go through the GitHub CLI, so install `gh` and run `gh auth login`. Z1 opens a pull request with `gh pr create --fill` against the branch the worktree started from, or else the default branch. Z1 refuses a Git action while Codex works in the same checkout, and refuses a prompt or a branch switch there while a Git action runs.
 
 The browser build explains that the native runtime is required. It does not simulate repositories or conversations.
