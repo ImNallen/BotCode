@@ -29,6 +29,13 @@ pub struct PrReviewDetail {
     pub observation: PrObservation,
     pub snapshot: PrSnapshot,
     pub body: String,
+    pub author: Option<PrActor>,
+    pub labels: Vec<PrLabel>,
+    pub reviewers: Vec<PrReviewer>,
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+    pub auto_merge_method: Option<MergeMethod>,
     pub review_decision: Option<String>,
     pub verdicts: Vec<ReviewVerdict>,
     pub findings: Vec<PrFinding>,
@@ -38,6 +45,25 @@ pub struct PrReviewDetail {
     pub timeline: Vec<PrTimelineEntry>,
     pub capabilities: PrCapabilities,
     pub operations: Vec<PrOperation>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrActor {
+    pub login: String,
+    pub avatar_url: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrLabel {
+    pub name: String,
+    pub color: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrReviewer {
+    pub login: String,
+    pub avatar_url: Option<String>,
+    pub outcome: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

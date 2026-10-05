@@ -106,6 +106,13 @@ const detail = prReviewDetail.parse({
     hostUpdatedAt: "2026-10-05T12:00:00Z",
   },
   body: "The remote description.",
+  author: { login: "author", avatarUrl: null },
+  labels: [],
+  reviewers: [],
+  additions: 3,
+  deletions: 1,
+  changedFiles: 2,
+  autoMergeMethod: null,
   reviewDecision: "CHANGES_REQUESTED",
   verdicts: ["comment", "approve", "request_changes"],
   findings: [

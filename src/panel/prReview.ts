@@ -8,6 +8,13 @@ export const prObservation = z.object({
   headOid: z.string().regex(/^[a-fA-F0-9]{40}$/),
   viewer: z.string().min(1),
 });
+export const mergeMethod = z.enum(["merge", "squash", "rebase"]);
+export type MergeMethod = z.infer<typeof mergeMethod>;
+const prActor = z.object({
+  login: z.string().min(1),
+  avatarUrl: z.string().nullable(),
+});
+export type PrActor = z.infer<typeof prActor>;
 export const reviewVerdict = z.enum(["comment", "approve", "request_changes"]);
 export const prSide = z.enum(["LEFT", "RIGHT"]);
 export const draftComment = z.object({
@@ -21,12 +28,12 @@ export const draftComment = z.object({
 export const lifecycleAction = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("merge"),
-    method: z.enum(["merge", "squash", "rebase"]),
+    method: mergeMethod,
   }),
   z.object({ kind: z.literal("enqueue") }),
   z.object({
     kind: z.literal("enable_auto_merge"),
-    method: z.enum(["merge", "squash", "rebase"]),
+    method: mergeMethod,
   }),
   z.object({ kind: z.literal("disable_auto_merge") }),
   z.object({ kind: z.literal("set_draft"), draft: z.boolean() }),
@@ -130,6 +137,13 @@ export const prReviewDetail = z.object({
   observation: prObservation,
   snapshot: cachedPr.shape.snapshot.unwrap(),
   body: z.string(),
+  author: prActor.nullable(),
+  labels: z.array(z.object({ name: z.string(), color: z.string() })),
+  reviewers: z.array(prActor.extend({ outcome: z.string().nullable() })),
+  additions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+  changedFiles: z.number().int().nonnegative(),
+  autoMergeMethod: mergeMethod.nullable(),
   reviewDecision: z.string().nullable(),
   verdicts: z.array(reviewVerdict),
   findings: z.array(

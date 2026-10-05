@@ -727,6 +727,55 @@ async fn timeline_combines_lifecycle_commits_and_feedback_newest_first() {
 }
 
 #[tokio::test]
+async fn detail_header_reads_author_labels_reviewers_totals_and_auto_merge_method() {
+    let f = Fixture::new();
+    f.state(json!({
+        "authorAvatar": "https://avatars.example/author",
+        "labels": [{"name": "bug", "color": "d73a4a"}],
+        "reviewRequests": [
+            {"requestedReviewer": {"__typename": "User", "login": "Alice", "avatarUrl": "https://avatars.example/alice"}},
+            {"requestedReviewer": {"__typename": "Team", "combinedSlug": "fixture/core", "avatarUrl": "https://avatars.example/core"}}
+        ],
+        "latestReviews": [
+            {"state": "APPROVED", "author": {"login": "alice", "avatarUrl": "https://avatars.example/alice"}},
+            {"state": "COMMENTED", "author": {"login": "bob", "avatarUrl": "https://avatars.example/bob"}},
+            {"state": "DISMISSED", "author": null}
+        ],
+        "additions": 120,
+        "deletions": 7,
+        "changedFiles": 9,
+        "autoMerge": true,
+        "autoMethod": "SQUASH"
+    }));
+    let (app, t) = f.open().await;
+    let detail = serde_json::to_value(app.read_pull_request(t, f.key()).await.unwrap()).unwrap();
+    assert_eq!(detail["files"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["files"][0]["additions"], 1);
+    assert_eq!(
+        detail["author"],
+        json!({"login": "fixture-author", "avatarUrl": "https://avatars.example/author"})
+    );
+    assert_eq!(
+        detail["labels"],
+        json!([{"name": "bug", "color": "d73a4a"}])
+    );
+    assert_eq!(
+        detail["reviewers"],
+        json!([
+            {"login": "Alice", "avatarUrl": "https://avatars.example/alice", "outcome": "APPROVED"},
+            {"login": "fixture/core", "avatarUrl": "https://avatars.example/core", "outcome": null},
+            {"login": "bob", "avatarUrl": "https://avatars.example/bob", "outcome": "COMMENTED"},
+            {"login": "ghost", "avatarUrl": null, "outcome": "DISMISSED"}
+        ])
+    );
+    assert_eq!(detail["additions"], 120);
+    assert_eq!(detail["deletions"], 7);
+    assert_eq!(detail["changedFiles"], 9);
+    assert_eq!(detail["autoMergeMethod"], "squash");
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn admission_denials_are_refused_without_dispatching_a_mutation() {
     let f = Fixture::new();
     let (app, t) = f.open().await;

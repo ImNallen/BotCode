@@ -134,7 +134,7 @@ impl Fetch<'_> {
     async fn meta(&mut self, key: &PullRequestKey) -> Result<Meta> {
         let (owner, name) = key.repository();
         let query = format!(
-            "query Z1ReviewMeta($owner:String!,$name:String!,$number:Int!){{viewer{{login}} repository(owner:$owner,name:$name){{mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed viewerPermission pullRequest(number:$number){{{FIELDS} mergeable mergeStateStatus isMergeQueueEnabled mergeQueueEntry {{ id }} autoMergeRequest {{ mergeMethod }} viewerCanClose viewerCanReopen viewerCanUpdate viewerCanUpdateBranch viewerCanEnableAutoMerge viewerCanDisableAutoMerge body reviewDecision locked viewerDidAuthor createdAt author {{ login }}}}}}}}"
+            "query Z1ReviewMeta($owner:String!,$name:String!,$number:Int!){{viewer{{login}} repository(owner:$owner,name:$name){{mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed viewerPermission pullRequest(number:$number){{{FIELDS} mergeable mergeStateStatus isMergeQueueEnabled mergeQueueEntry {{ id }} autoMergeRequest {{ mergeMethod }} viewerCanClose viewerCanReopen viewerCanUpdate viewerCanUpdateBranch viewerCanEnableAutoMerge viewerCanDisableAutoMerge body reviewDecision locked viewerDidAuthor createdAt additions deletions changedFiles author {{ login avatarUrl }} labels(first:100) {{ nodes {{ name color }} }} reviewRequests(first:100) {{ nodes {{ requestedReviewer {{ __typename ... on Actor {{ login avatarUrl }} ... on Team {{ combinedSlug avatarUrl }} }} }} }} latestReviews(first:100) {{ nodes {{ state author {{ login avatarUrl }} }} }}}}}}}}"
         );
         let value = self
             .query(
@@ -185,7 +185,22 @@ impl Fetch<'_> {
             merged_at: pr["mergedAt"].as_str().map(str::to_owned),
             closed_at: pr["closedAt"].as_str().map(str::to_owned),
             created_at: pr["createdAt"].as_str().map(str::to_owned),
-            author: pr["author"]["login"].as_str().map(str::to_owned),
+            author: actor(&pr["author"]),
+            labels: pr["labels"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|label| {
+                    Some(PrLabel {
+                        name: label["name"].as_str()?.into(),
+                        color: label["color"].as_str()?.into(),
+                    })
+                })
+                .collect(),
+            reviewers: reviewers(pr),
+            additions: total(pr, "additions")?,
+            deletions: total(pr, "deletions")?,
+            changed_files: total(pr, "changedFiles")?,
         })
     }
     async fn connection(
@@ -328,7 +343,12 @@ struct Meta {
     merged_at: Option<String>,
     closed_at: Option<String>,
     created_at: Option<String>,
-    author: Option<String>,
+    author: Option<PrActor>,
+    labels: Vec<PrLabel>,
+    reviewers: Vec<PrReviewer>,
+    additions: u64,
+    deletions: u64,
+    changed_files: u64,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -358,6 +378,59 @@ fn required(value: &Value, key: &str) -> Result<String> {
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| unavailable(format!("GitHub omitted {key}.")))
+}
+fn total(value: &Value, key: &str) -> Result<u64> {
+    value[key]
+        .as_u64()
+        .ok_or_else(|| unavailable(format!("GitHub omitted {key}.")))
+}
+fn actor(value: &Value) -> Option<PrActor> {
+    Some(PrActor {
+        login: value["login"].as_str()?.into(),
+        avatar_url: value["avatarUrl"].as_str().map(str::to_owned),
+    })
+}
+fn reviewers(pr: &Value) -> Vec<PrReviewer> {
+    let nodes = |field: &str| pr[field]["nodes"].as_array().cloned().unwrap_or_default();
+    let reviews: Vec<_> = nodes("latestReviews")
+        .iter()
+        .map(|review| {
+            let author = actor(&review["author"]).unwrap_or(PrActor {
+                login: "ghost".into(),
+                avatar_url: None,
+            });
+            (author, review["state"].as_str().map(str::to_owned))
+        })
+        .collect();
+    let mut reviewers: Vec<PrReviewer> = vec![];
+    let requested = nodes("reviewRequests").into_iter().filter_map(|request| {
+        let reviewer = &request["requestedReviewer"];
+        Some(PrActor {
+            login: reviewer["login"]
+                .as_str()
+                .or(reviewer["combinedSlug"].as_str())?
+                .into(),
+            avatar_url: reviewer["avatarUrl"].as_str().map(str::to_owned),
+        })
+    });
+    for actor in requested.chain(reviews.iter().map(|(author, _)| author.clone())) {
+        if reviewers
+            .iter()
+            .any(|reviewer| reviewer.login.eq_ignore_ascii_case(&actor.login))
+        {
+            continue;
+        }
+        let outcome = reviews
+            .iter()
+            .find(|(author, _)| author.login.eq_ignore_ascii_case(&actor.login))
+            .and_then(|(_, state)| state.clone());
+        reviewers.push(PrReviewer {
+            login: actor.login,
+            avatar_url: actor.avatar_url,
+            outcome,
+        });
+    }
+    reviewers
 }
 fn ensure_target(value: &Value, target: &PrObservation) -> Result<()> {
     if value["id"].as_str() != Some(&target.node_id)
@@ -681,7 +754,10 @@ pub(crate) async fn read(
     timeline.push(timeline_entry(
         final_meta.created_at.as_deref(),
         PrTimelineEvent::Opened {
-            author: final_meta.author,
+            author: final_meta
+                .author
+                .as_ref()
+                .map(|author| author.login.clone()),
         },
     ));
     for entry in &findings {
@@ -732,6 +808,16 @@ pub(crate) async fn read(
         observation: final_meta.observation,
         snapshot: final_meta.snapshot,
         body: final_meta.body,
+        author: final_meta.author,
+        labels: final_meta.labels,
+        reviewers: final_meta.reviewers,
+        additions: final_meta.additions,
+        deletions: final_meta.deletions,
+        changed_files: final_meta.changed_files,
+        auto_merge_method: final_meta
+            .auto_merge
+            .as_deref()
+            .and_then(MergeMethod::from_wire),
         review_decision: final_meta.review_decision,
         verdicts: final_meta.verdicts,
         findings,
