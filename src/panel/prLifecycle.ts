@@ -32,6 +32,99 @@ export function lifecycleLabel(action: LifecycleAction): string {
       return `Update branch (${action.method})`;
   }
 }
+export function autoMergeLabel(method: MergeMethod | null): string {
+  return method
+    ? `Auto-merge (${MERGE_METHOD_LABELS[method].toLowerCase()})`
+    : "Auto-merge";
+}
+
+// Ported from resolvePullRequestPrimaryControl in pingdotgg/t3code 3e6b450 apps/web/src/components/pullRequest/pullRequestDetail.logic.ts (MIT).
+export type PrimaryControl =
+  | { kind: "resolve_conflicts" }
+  | { kind: "action"; action: LifecycleAction; label: string }
+  | { kind: "auto_merge_armed"; label: string }
+  | { kind: "queued" }
+  | { kind: "state"; state: "merged" | "closed" }
+  | { kind: "none" };
+export type HeaderControls = {
+  primary: PrimaryControl;
+  // Conflicts take the slot while they need a person; the armed badge stays beside them.
+  armedBadge: string | null;
+};
+export function primaryControl(
+  detail: Pick<PrReviewDetail, "capabilities" | "autoMergeMethod" | "snapshot">,
+): HeaderControls {
+  const { primary: kind, actions } = detail.capabilities;
+  const armedLabel = autoMergeLabel(detail.autoMergeMethod);
+  const primary = ((): PrimaryControl => {
+    switch (kind) {
+      case "resolve_conflicts":
+        return { kind };
+      case "ready": {
+        const action = actions.find(
+          (item) => item.kind === "set_draft" && !item.draft,
+        );
+        return action
+          ? { kind: "action", action, label: "Ready for review" }
+          : { kind: "none" };
+      }
+      case "enable_auto_merge": {
+        const action = actions.find(
+          (item) => item.kind === "enable_auto_merge",
+        );
+        return action?.kind === "enable_auto_merge"
+          ? { kind: "action", action, label: autoMergeLabel(action.method) }
+          : { kind: "none" };
+      }
+      case "merge": {
+        const action = actions.find(
+          (item) => item.kind === "merge" || item.kind === "enqueue",
+        );
+        return action
+          ? { kind: "action", action, label: lifecycleLabel(action) }
+          : { kind: "none" };
+      }
+      case "auto_merge_armed":
+        return { kind, label: armedLabel };
+      case "queued":
+        return { kind };
+      case "merged":
+      case "closed":
+        return { kind: "state", state: kind };
+      case "unavailable":
+        return { kind: "none" };
+      default: {
+        const _exhaustive: never = kind;
+        return _exhaustive;
+      }
+    }
+  })();
+  const armed =
+    detail.snapshot.lifecycle.kind === "open" &&
+    (detail.autoMergeMethod !== null ||
+      actions.some((action) => action.kind === "disable_auto_merge"));
+  return {
+    primary,
+    armedBadge:
+      armed && primary.kind !== "auto_merge_armed" ? armedLabel : null,
+  };
+}
+
+// Every lifecycle action the header button does not already offer, with
+// close and reopen held back for the menu's last group.
+export function menuActions(
+  actions: ReadonlyArray<LifecycleAction>,
+  primary: PrimaryControl,
+): { lifecycle: LifecycleAction[]; closing: LifecycleAction[] } {
+  const rest = actions.filter(
+    (action) => primary.kind !== "action" || action !== primary.action,
+  );
+  return {
+    lifecycle: rest.filter((action) => action.kind !== "set_closed"),
+    closing: rest.filter((action) => action.kind === "set_closed"),
+  };
+}
+
 export function changeResultText(result: PrChangeResult): string {
   switch (result.kind) {
     case "applied":
