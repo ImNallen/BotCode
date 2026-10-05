@@ -43,13 +43,12 @@ export class ReviewDrafts {
   }
   add(key: string, comment: Omit<DraftComment, "id" | "revision" | "body">) {
     const draft = this.get(key);
+    const id = crypto.randomUUID();
     this.put(key, {
       ...draft,
-      comments: [
-        ...draft.comments,
-        { ...comment, id: crypto.randomUUID(), revision: 0, body: "" },
-      ],
+      comments: [...draft.comments, { ...comment, id, revision: 0, body: "" }],
     });
+    return id;
   }
   edit(key: string, id: string, body: string) {
     const draft = this.get(key);
