@@ -132,15 +132,14 @@ export function RightPanel({
     Boolean(conversationId) ||
     (view !== undefined && view.unavailable === null);
   const localAvailable = view !== undefined && view.unavailable === null;
-  const prSurface = pullRequestSurface(pullRequests);
   const actions: SurfaceAction[] = [
-    ...(conversationId
+    ...(conversationId && pullRequests.length > 0
       ? [
           {
-            label: surfaceTitle(prSurface),
+            label: "Pull requests",
             icon: GitPullRequestIcon,
             shortcut: "P",
-            surface: prSurface,
+            surface: pullRequestSurface(pullRequests),
           },
         ]
       : []),
