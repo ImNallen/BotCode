@@ -63,4 +63,18 @@ Native Git creation and reuse save the resulting GitHub PR on the originating co
 
 Saved links remain available after a branch switch, restart, or worktree removal. After restart, saved status appears as last known until GitHub confirms it. A failed refresh retains that status and shows the failure. Native reads are shared across conversations and continue with the panel closed. Open PRs on active conversations refresh about once a minute. Closed PRs and PRs linked only to settled conversations refresh about every fifteen minutes. Confirmed merged PRs stop routine polling. Failed reads back off to fifteen minutes. **Refresh** requests a new read and checks the checkout for an unambiguous PR.
 
-Discovery checks the base repository and actual head repository and branch, including a configured upstream base with an origin fork. Native creation and reuse target the origin repository. A PR created against a different base repository can be linked by URL. The former branch-bound Reviews entry has been replaced by linked review detail. Merge and lifecycle controls are not exposed yet.
+Discovery checks the base repository and actual head repository and branch, including a configured upstream base with an origin fork. Native creation and reuse target the origin repository. A PR created against a different base repository can be linked by URL. The former branch-bound Reviews entry has been replaced by linked review detail.
+
+## PR lifecycle
+
+Saved PR detail exposes working lifecycle controls from GitHub permissions and repository policy. The primary action follows the observed state. It offers Resolve conflicts, Mark ready for review, an allowed merge method, required merge queue or auto-merge. The Actions menu includes supported draft, ready, close, reopen, branch update and auto-merge controls. Conflicts keep permitted auto-merge available as a secondary action. GitHub's required queue chooses its merge method.
+
+Every lifecycle mutation opens a confirmation with the captured PR identity, head and account. Auto-merge warns that GitHub may merge immediately. A changed head or account refuses the captured request. Checkout-changing actions also refuse while a linked conversation uses that checkout. Disable auto-merge remains available during agent work.
+
+Accepted queue, armed auto-merge and unavailable confirmation reads stay pending. The conversation stays active until a fresh host observation confirms the outcome. Reconcile reads GitHub without replaying the original mutation. Pending receipts and links survive restart.
+
+An interrupted branch update keeps its outcome unknown. When the same PR is open at another head, Continue from inspected head shows the original method, head and account beside the current head and account. Its explicit confirmation warns that GitHub may still apply the earlier update and continuation does not cancel it. Successful continuation saves the inspected identity while preserving the original request. A fresh same-node merged observation also clears obsolete lifecycle blockers without claiming the earlier uncertain operation succeeded.
+
+Resolve conflicts and Fix findings append captured identity, current unresolved findings, failed checks and coverage warnings to the conversation draft. They include startup failures. They preserve existing text and require the user to Send.
+
+General settings adds Auto-settle merged pull requests independently from Auto-settle inactive threads. Its project override, inheritance indicator and reset follow the existing settings structure. Eligible conversations settle after all linked PRs merge and a merge is recent enough for their trusted activity. New work, kept placement, snooze, approvals and running work protect active conversations. The settled age remains the conversation's activity age.

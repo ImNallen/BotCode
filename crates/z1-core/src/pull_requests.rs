@@ -282,6 +282,16 @@ pub(crate) fn repository(remote: &str) -> Result<(String, String)> {
     let (owner, name) = key.repository();
     Ok((owner.into(), name.into()))
 }
+pub(crate) fn snapshot_is_older(incoming: &PrSnapshot, existing: &PrSnapshot) -> bool {
+    match (
+        chrono::DateTime::parse_from_rfc3339(&incoming.host_updated_at),
+        chrono::DateTime::parse_from_rfc3339(&existing.host_updated_at),
+    ) {
+        (Ok(incoming), Ok(existing)) => incoming < existing,
+        (Err(_), _) => true,
+        (_, Err(_)) => false,
+    }
+}
 pub(crate) const FIELDS: &str = "id number url title state isDraft baseRefName headRefName headRefOid headRepository { nameWithOwner } baseRepository { nameWithOwner } updatedAt closedAt mergedAt";
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -324,6 +334,12 @@ impl Row {
                 "GitHub returned a different pull request identity or an invalid head.",
             ));
         }
+        chrono::DateTime::parse_from_rfc3339(&self.updated_at).map_err(|_| {
+            AppError::new(
+                "pr_response",
+                "GitHub returned an invalid pull request update timestamp.",
+            )
+        })?;
         let lifecycle = match self.state.as_str() {
             "OPEN" => PrLifecycle::Open {
                 draft: self.is_draft,

@@ -1,3 +1,4 @@
+import { changeResultText } from "./prLifecycle";
 import { conversationDrafts, draftKey } from "./reviewDrafts";
 import { useState, useSyncExternalStore } from "react";
 import { ipc } from "../ipc";
@@ -157,7 +158,7 @@ function Finding({
         saveError={
           error ??
           (draft.operation?.result && draft.operation.result.kind !== "applied"
-            ? draft.operation.result.message
+            ? changeResultText(draft.operation.result)
             : undefined)
         }
         onSave={(choice) => {

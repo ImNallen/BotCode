@@ -8,7 +8,8 @@ import { prUrl, type PullRequestKey } from "./pullRequests";
 import { PullRequestReviewComposer } from "./PullRequestReviewComposer";
 import { PullRequestTimeline, type ReviewHandoff } from "./PullRequestTimeline";
 import { sectionProblemText } from "./prCoverage";
-import type { ReviewFinding } from "./reviews";
+import { captureRepairDraft, type ReviewFinding } from "./reviews";
+import { PullRequestLifecycle } from "./PullRequestLifecycle";
 
 export function PullRequestDetail({
   prKey,
@@ -65,6 +66,18 @@ export function PullRequestDetail({
       problems: detail.problems,
       finding,
     });
+  };
+  const repair = (intent: "resolve_conflicts" | "fix_findings") => {
+    if (!detail) return;
+    handoff.onAskCodex(
+      captureRepairDraft({
+        workspaceId: handoff.workspaceId,
+        threadId: handoff.threadId,
+        key: prKey,
+        intent,
+        detail,
+      }),
+    );
   };
   return (
     <section
@@ -127,6 +140,16 @@ export function PullRequestDetail({
           ))}
         </nav>
       </div>
+      <PullRequestLifecycle
+        key={`${handoff.threadId}/${prKey}`}
+        threadId={handoff.threadId}
+        prKey={prKey}
+        detail={detail}
+        disabled={disabled}
+        refresh={refresh}
+        resolveConflicts={() => repair("resolve_conflicts")}
+        canAskCodex={handoff.canAskCodex}
+      />
       {error || query.error ? (
         <p role="alert" className="p-2 text-xs text-destructive">
           {error ?? query.error?.message}{" "}
@@ -176,6 +199,14 @@ export function PullRequestDetail({
                   }
                 >
                   Explain with Codex
+                </Button>
+                <Button
+                  size="compact"
+                  variant="outline"
+                  disabled={!handoff.canAskCodex || disabled}
+                  onClick={() => repair("fix_findings")}
+                >
+                  Fix findings
                 </Button>
                 <div className="space-y-2">
                   <h3 className="text-xs font-medium">Checks</h3>

@@ -62,6 +62,29 @@ pub(crate) async fn change(
                 && let Ok(value) = serde_json::from_str::<Value>(&out.stdout)
             {
                 let (field, child) = match input.action {
+                    PrReviewAction::Merge { .. } => ("mergePullRequest", "pullRequest"),
+                    PrReviewAction::Enqueue => ("enqueuePullRequest", "mergeQueueEntry"),
+                    PrReviewAction::EnableAutoMerge { .. } => {
+                        ("enablePullRequestAutoMerge", "pullRequest")
+                    }
+                    PrReviewAction::DisableAutoMerge => {
+                        ("disablePullRequestAutoMerge", "pullRequest")
+                    }
+                    PrReviewAction::SetDraft { draft: true } => {
+                        ("convertPullRequestToDraft", "pullRequest")
+                    }
+                    PrReviewAction::SetDraft { draft: false } => {
+                        ("markPullRequestReadyForReview", "pullRequest")
+                    }
+                    PrReviewAction::SetClosed { closed: true } => {
+                        ("closePullRequest", "pullRequest")
+                    }
+                    PrReviewAction::SetClosed { closed: false } => {
+                        ("reopenPullRequest", "pullRequest")
+                    }
+                    PrReviewAction::UpdateBranch { .. } => {
+                        ("updatePullRequestBranch", "pullRequest")
+                    }
                     PrReviewAction::SubmitReview { .. } => {
                         ("addPullRequestReview", "pullRequestReview")
                     }
@@ -80,7 +103,7 @@ pub(crate) async fn change(
                     return Ok(PrChangeResult::Applied { host_id: id.into() });
                 }
                 if value.get("errors").is_some() {
-                    return Ok(PrChangeResult::Refused{message:"GitHub refused this operation. Refresh permissions and review the draft.".into()});
+                    return Ok(PrChangeResult::Refused{message:"GitHub refused this operation. The head or permissions may have changed. Refresh before retrying.".into()});
                 }
             }
             PrChangeResult::Uncertain{message:"GitHub acceptance is uncertain. Check GitHub before submitting again. The draft is retained.".into()}
@@ -111,7 +134,75 @@ async fn prepare(
             "The PR head or signed-in account changed. Refresh. Your draft is retained.",
         ));
     }
+    if input.action.is_lifecycle() && !meta.capabilities.actions.contains(&input.action) {
+        return Err(unavailable(
+            "GitHub does not permit this lifecycle action or method. Refresh.",
+        ));
+    }
     let (operation, field, typ, body, child) = match &input.action {
+        PrReviewAction::Merge { method } => (
+            "Z1Merge",
+            "mergePullRequest",
+            "MergePullRequestInput",
+            json!({"pullRequestId":input.target.node_id,"expectedHeadOid":input.target.head_oid,"mergeMethod":method.wire()}),
+            "pullRequest",
+        ),
+        PrReviewAction::Enqueue => (
+            "Z1Enqueue",
+            "enqueuePullRequest",
+            "EnqueuePullRequestInput",
+            json!({"pullRequestId":input.target.node_id,"expectedHeadOid":input.target.head_oid}),
+            "mergeQueueEntry",
+        ),
+        PrReviewAction::EnableAutoMerge { method } => (
+            "Z1EnableAutoMerge",
+            "enablePullRequestAutoMerge",
+            "EnablePullRequestAutoMergeInput",
+            json!({"pullRequestId":input.target.node_id,"expectedHeadOid":input.target.head_oid,"mergeMethod":method.wire()}),
+            "pullRequest",
+        ),
+        PrReviewAction::DisableAutoMerge => (
+            "Z1DisableAutoMerge",
+            "disablePullRequestAutoMerge",
+            "DisablePullRequestAutoMergeInput",
+            json!({"pullRequestId":input.target.node_id}),
+            "pullRequest",
+        ),
+        PrReviewAction::SetDraft { draft: true } => (
+            "Z1Draft",
+            "convertPullRequestToDraft",
+            "ConvertPullRequestToDraftInput",
+            json!({"pullRequestId":input.target.node_id}),
+            "pullRequest",
+        ),
+        PrReviewAction::SetDraft { draft: false } => (
+            "Z1Ready",
+            "markPullRequestReadyForReview",
+            "MarkPullRequestReadyForReviewInput",
+            json!({"pullRequestId":input.target.node_id}),
+            "pullRequest",
+        ),
+        PrReviewAction::SetClosed { closed: true } => (
+            "Z1Close",
+            "closePullRequest",
+            "ClosePullRequestInput",
+            json!({"pullRequestId":input.target.node_id}),
+            "pullRequest",
+        ),
+        PrReviewAction::SetClosed { closed: false } => (
+            "Z1Reopen",
+            "reopenPullRequest",
+            "ReopenPullRequestInput",
+            json!({"pullRequestId":input.target.node_id}),
+            "pullRequest",
+        ),
+        PrReviewAction::UpdateBranch { method } => (
+            "Z1UpdateBranch",
+            "updatePullRequestBranch",
+            "UpdatePullRequestBranchInput",
+            json!({"pullRequestId":input.target.node_id,"expectedHeadOid":input.target.head_oid,"updateMethod":match method { BranchUpdateMethod::Merge => "MERGE", BranchUpdateMethod::Rebase => "REBASE" }}),
+            "pullRequest",
+        ),
         PrReviewAction::SubmitReview {
             verdict,
             body,
@@ -196,6 +287,11 @@ async fn prepare(
     if final_meta.observation != input.target {
         return Err(unavailable(
             "The PR head or signed-in account changed during validation. Refresh.",
+        ));
+    }
+    if input.action.is_lifecycle() && !final_meta.capabilities.actions.contains(&input.action) {
+        return Err(unavailable(
+            "Lifecycle permissions changed during validation. Refresh.",
         ));
     }
     if let PrReviewAction::SubmitReview { verdict, .. } = &input.action

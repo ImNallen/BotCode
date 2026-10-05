@@ -109,6 +109,23 @@ pub async fn change_pull_request(
     app.change_pull_request(thread_id, input).await
 }
 #[tauri::command]
+pub async fn pull_request_operations(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    key: PullRequestKey,
+) -> Result<Vec<PrOperation>> {
+    app.pull_request_operations(thread_id, key).await
+}
+#[tauri::command]
+pub async fn reconcile_pull_request(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    key: PullRequestKey,
+    request_id: String,
+) -> Result<PrChangeResult> {
+    app.reconcile_pull_request(thread_id, key, request_id).await
+}
+#[tauri::command]
 pub async fn set_review_disposition(
     app: State<'_, App>,
     thread_id: ThreadId,
@@ -246,4 +263,13 @@ pub async fn unlink_pull_request(
     key: PullRequestKey,
 ) -> Result<ThreadPrSummary> {
     app.unlink_pull_request(thread_id, key).await
+}
+
+#[tauri::command]
+pub async fn acknowledge_uncertain_update(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    input: AcknowledgeUncertainUpdate,
+) -> Result<PrChangeResult> {
+    app.acknowledge_uncertain_update(thread_id, input).await
 }

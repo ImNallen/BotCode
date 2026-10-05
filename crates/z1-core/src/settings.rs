@@ -1,3 +1,4 @@
+use crate::SettlementRules;
 use crate::domain::{AUTO_SETTLE_AFTER_MS, Result, WorkspaceId};
 use serde_json::Value;
 use std::{
@@ -7,14 +8,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Idle time before a thread auto-settles, by project. `None` turns auto-settling off.
+/// Independent inactivity and merge settlement rules, inherited by project.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AutoSettle {
-    default: Option<u64>,
-    projects: HashMap<WorkspaceId, Option<u64>>,
+    default: SettlementRules,
+    projects: HashMap<WorkspaceId, SettlementRules>,
 }
 impl AutoSettle {
-    pub fn after_ms(&self, workspace: &WorkspaceId) -> Option<u64> {
+    pub fn rules(&self, workspace: &WorkspaceId) -> SettlementRules {
         self.projects
             .get(workspace)
             .copied()
@@ -35,11 +36,15 @@ pub fn auto_settle(path: &Path) -> AutoSettle {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
-    AutoSettle {
-        default: settings
+    let default = SettlementRules {
+        after_ms: settings
             .get("sidebarAutoSettleAfterDays")
             .and_then(days)
             .unwrap_or(Some(AUTO_SETTLE_AFTER_MS)),
+        on_merge: settings["autoSettleOnMerge"].as_bool().unwrap_or(true),
+    };
+    AutoSettle {
+        default,
         projects: settings["projectOverrides"]
             .as_object()
             .into_iter()
@@ -47,7 +52,15 @@ pub fn auto_settle(path: &Path) -> AutoSettle {
             .filter_map(|(id, project)| {
                 Some((
                     id.parse().ok()?,
-                    days(project.get("sidebarAutoSettleAfterDays")?)?,
+                    SettlementRules {
+                        after_ms: project
+                            .get("sidebarAutoSettleAfterDays")
+                            .and_then(days)
+                            .unwrap_or(default.after_ms),
+                        on_merge: project["autoSettleOnMerge"]
+                            .as_bool()
+                            .unwrap_or(default.on_merge),
+                    },
                 ))
             })
             .collect(),

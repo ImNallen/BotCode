@@ -73,12 +73,16 @@ enum Hold {
     Cleanup,
     Restore,
     Git,
+    PullRequest,
 }
 impl Hold {
     fn refusal(self) -> AppError {
         AppError::new(
             "checkout_busy",
             match self {
+                Self::PullRequest => {
+                    "A pull request operation is using this checkout. Wait for its result."
+                }
                 Self::Switch => "Z1 is switching this checkout's branch. Try again in a moment.",
                 Self::Cleanup => "Z1 is removing this inactive worktree. Try again in a moment.",
                 Self::Restore => "Z1 is restoring this thread's worktree. Try again in a moment.",
@@ -94,7 +98,7 @@ impl Hold {
                 "checkout_busy",
                 "Codex is working in this checkout. Git actions return when the turn finishes.",
             ),
-            Self::Switch | Self::Cleanup | Self::Restore => turn_running(),
+            Self::Switch | Self::Cleanup | Self::Restore | Self::PullRequest => turn_running(),
         }
     }
 }
@@ -147,6 +151,9 @@ enum Command {
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
     PrRead(ThreadId, PullRequestKey, Reply<PrReviewDetail>),
     PrChange(ThreadId, PrReviewChange, Reply<PrChangeResult>),
+    PrReconcile(ThreadId, PullRequestKey, String, Reply<PrChangeResult>),
+    PrAcknowledgeUpdate(ThreadId, AcknowledgeUncertainUpdate, Reply<PrChangeResult>),
+    PrOperations(ThreadId, PullRequestKey, Reply<Vec<PrOperation>>),
     SetReviewDisposition(
         ThreadId,
         PullRequestKey,
@@ -249,7 +256,15 @@ impl App {
         tokio::spawn(
             Owner {
                 prs,
-                review_work: ReviewWork::new(),
+                review_work: {
+                    let mut work = ReviewWork::new();
+                    work.pending = store
+                        .pending_lifecycle_operations()?
+                        .into_iter()
+                        .map(|operation| (operation.input.request_id.clone(), operation))
+                        .collect();
+                    work
+                },
                 git_jobs: tokio::task::JoinSet::new(),
                 config,
                 store,
@@ -462,6 +477,31 @@ impl App {
         input: PrReviewChange,
     ) -> Result<PrChangeResult> {
         self.call(|reply| Command::PrChange(thread, input, reply))
+            .await
+    }
+    pub async fn pull_request_operations(
+        &self,
+        thread: ThreadId,
+        key: PullRequestKey,
+    ) -> Result<Vec<PrOperation>> {
+        self.call(|reply| Command::PrOperations(thread, key, reply))
+            .await
+    }
+    pub async fn acknowledge_uncertain_update(
+        &self,
+        thread: ThreadId,
+        input: AcknowledgeUncertainUpdate,
+    ) -> Result<PrChangeResult> {
+        self.call(|reply| Command::PrAcknowledgeUpdate(thread, input, reply))
+            .await
+    }
+    pub async fn reconcile_pull_request(
+        &self,
+        thread: ThreadId,
+        key: PullRequestKey,
+        request_id: String,
+    ) -> Result<PrChangeResult> {
+        self.call(|reply| Command::PrReconcile(thread, key, request_id, reply))
             .await
     }
     pub async fn set_review_disposition(
@@ -1275,7 +1315,17 @@ impl Owner {
                 let _ = reply.send(self.checkout(&id, thread));
             }
             Command::PrRead(thread, key, reply) => self.read_review(thread, key, reply),
+            Command::PrOperations(thread, key, reply) => {
+                let result = self.pending_pr_operations(&thread, &key);
+                let _ = reply.send(result);
+            }
+            Command::PrReconcile(thread, key, request_id, reply) => {
+                self.reconcile_pr(thread, key, request_id, reply)
+            }
             Command::PrChange(thread, input, reply) => self.change_review(thread, input, reply),
+            Command::PrAcknowledgeUpdate(thread, input, reply) => {
+                self.acknowledge_update(thread, input, reply)
+            }
             Command::SetReviewDisposition(thread, key, input, reply) => {
                 let result = self.review_disposition(&thread, &key, &input);
                 let _ = reply.send(result);
@@ -1315,6 +1365,8 @@ impl Owner {
                 let result = (|| {
                     self.workspace(&workspace_id)?;
                     let t = ThreadSnapshot {
+                        created_at_ms: Some(now_ms()),
+                        latest_user_activity_at_ms: None,
                         id: ThreadId::default(),
                         workspace_id,
                         title: "New conversation".into(),
@@ -1519,10 +1571,15 @@ impl Owner {
             Command::Arrange(id, action, reply) => {
                 let result = (|| -> Result<()> {
                     self.thread(&id)?;
+                    let current = self.thread(&id)?;
+                    let settled = self.settlement(
+                        current,
+                        self.auto_settle.rules(&current.workspace_id),
+                        now_ms(),
+                    );
                     let thread = self.threads.get_mut(&id).unwrap();
                     let before = (thread.placement, thread.snooze);
-                    let after_ms = self.auto_settle.after_ms(&thread.workspace_id);
-                    let arranged = thread.arrange(action, now_ms(), after_ms);
+                    let arranged = thread.arrange(action, now_ms(), settled);
                     if (thread.placement, thread.snooze) != before {
                         self.commit(&id)?;
                     }
@@ -1534,9 +1591,9 @@ impl Owner {
                 let now = now_ms();
                 let previous = std::mem::replace(&mut self.auto_settle, rules);
                 for t in self.threads.values() {
-                    let before = previous.after_ms(&t.workspace_id);
-                    let after = self.auto_settle.after_ms(&t.workspace_id);
-                    if t.settled_at(now, before) != t.settled_at(now, after) {
+                    let before = previous.rules(&t.workspace_id);
+                    let after = self.auto_settle.rules(&t.workspace_id);
+                    if self.settlement(t, before, now) != self.settlement(t, after, now) {
                         let _ = self.changes.send(self.thread_hint(t));
                     }
                 }
@@ -1635,7 +1692,8 @@ impl Owner {
             return Err(turn_running());
         }
         let mut t = thread.clone();
-        t.record_activity(now_ms(), self.auto_settle.after_ms(&t.workspace_id));
+        t.record_activity(self.settlement(&t, self.auto_settle.rules(&t.workspace_id), now_ms()));
+        t.latest_user_activity_at_ms = Some(now_ms());
         let turn = Turn {
             id: TurnId::default(),
             prompt: text.into(),
@@ -2071,6 +2129,10 @@ impl Owner {
                 .find(|t| t.native_thread_id.as_deref() == Some(native))
                 .map(|t| t.id.clone())
         });
+        let settled_before_approval = id
+            .as_ref()
+            .and_then(|id| self.threads.get(id))
+            .and_then(|t| self.settlement(t, self.auto_settle.rules(&t.workspace_id), now_ms()));
         if let Some(request) = value.get("id") {
             let Some(id) = id else {
                 if let Some(provider) = &self.provider {
@@ -2126,7 +2188,7 @@ impl Owner {
                         epoch: self.epoch,
                     },
                 );
-                t.record_activity(now_ms(), self.auto_settle.after_ms(&t.workspace_id));
+                t.record_activity(settled_before_approval);
                 t.approvals.push(approval);
                 self.commit(&id)?;
             } else {

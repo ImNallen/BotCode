@@ -1,9 +1,11 @@
 mod host;
+mod lifecycle;
 use crate::{
     domain::*,
     pull_requests::{PrSnapshot, PullRequestKey},
 };
-pub(crate) use host::{change, read};
+pub(crate) use host::{Confirmation, acknowledge_update, change, confirm, read};
+pub use lifecycle::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +36,8 @@ pub struct PrReviewDetail {
     pub files: Vec<PrFile>,
     pub problems: Vec<PrSectionProblem>,
     pub timeline: Vec<PrTimelineEntry>,
+    pub capabilities: PrCapabilities,
+    pub operations: Vec<PrOperation>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -138,6 +142,23 @@ pub struct DraftReviewComment {
     rename_all_fields = "camelCase"
 )]
 pub enum PrReviewAction {
+    Merge {
+        method: MergeMethod,
+    },
+    Enqueue,
+    EnableAutoMerge {
+        method: MergeMethod,
+    },
+    DisableAutoMerge,
+    SetDraft {
+        draft: bool,
+    },
+    SetClosed {
+        closed: bool,
+    },
+    UpdateBranch {
+        method: BranchUpdateMethod,
+    },
     SubmitReview {
         verdict: ReviewVerdict,
         body: String,
@@ -166,9 +187,25 @@ pub struct PrReviewChange {
     rename_all_fields = "camelCase"
 )]
 pub enum PrChangeResult {
-    Applied { host_id: String },
-    Refused { message: String },
-    Uncertain { message: String },
+    Applied {
+        host_id: String,
+    },
+    Confirmed {
+        state: PrConfirmedState,
+    },
+    Accepted {
+        progress: PrProgress,
+    },
+    Refused {
+        message: String,
+    },
+    Uncertain {
+        message: String,
+    },
+    Superseded {
+        evidence: PrSupersession,
+        message: String,
+    },
 }
 impl PrReviewChange {
     pub(crate) fn validate(&self) -> Result<()> {
@@ -214,6 +251,13 @@ impl PrReviewChange {
                 body: text,
             } => valid_id(thread_id) && body(text) && !text.trim().is_empty(),
             PrReviewAction::SetResolved { thread_id, .. } => valid_id(thread_id),
+            PrReviewAction::Merge { .. }
+            | PrReviewAction::Enqueue
+            | PrReviewAction::EnableAutoMerge { .. }
+            | PrReviewAction::DisableAutoMerge
+            | PrReviewAction::SetDraft { .. }
+            | PrReviewAction::SetClosed { .. }
+            | PrReviewAction::UpdateBranch { .. } => true,
         };
         if !valid || serde_json::to_vec(self)?.len() > 1024 * 1024 {
             return Err(AppError::new(

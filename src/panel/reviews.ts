@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { PrReviewDetail } from "./prReview";
 import { coveragePrompt, type PrSectionProblem } from "./prCoverage";
 
 const nodeId = z
@@ -65,19 +66,71 @@ export type ReviewChoice = z.infer<typeof reviewChoice>;
 export type SavedDisposition = z.infer<typeof savedDisposition>;
 export type SetReviewDisposition = z.infer<typeof setReviewDisposition>;
 export type ReviewComment = z.infer<typeof reviewComment>;
-export type ReviewDraftRequest = {
+type DraftDestination = {
   workspaceId: string;
   threadId: string;
   key: string;
-  intent: "ask" | "explain" | "fix_check" | "fix";
   problems: PrSectionProblem[];
-  finding: ReviewFinding;
 };
+export type ReviewDraftRequest = DraftDestination &
+  (
+    | {
+        intent: "ask" | "explain" | "fix_check" | "fix";
+        finding: ReviewFinding;
+      }
+    | {
+        intent: "resolve_conflicts" | "fix_findings";
+        observation: { nodeId: string; headOid: string; viewer: string };
+        base: string;
+        head: string;
+        findings: ReviewFinding[];
+        checks: { name: string; state: string; url: string | null }[];
+      }
+  );
 export type ReviewDraftTarget = {
   workspaceId: string;
   threadId: string | undefined;
   canAccept: boolean;
 };
+export function captureRepairDraft({
+  detail,
+  ...destination
+}: Pick<DraftDestination, "workspaceId" | "threadId" | "key"> & {
+  intent: "resolve_conflicts" | "fix_findings";
+  detail: PrReviewDetail;
+}): Extract<
+  ReviewDraftRequest,
+  { intent: "resolve_conflicts" | "fix_findings" }
+> {
+  return {
+    ...destination,
+    problems: detail.problems,
+    observation: detail.observation,
+    base: detail.snapshot.base,
+    head: detail.snapshot.head,
+    findings: detail.findings
+      .map((entry) => entry.finding)
+      .filter(
+        (finding) =>
+          (finding.source.kind !== "thread" ||
+            (!finding.source.resolved && !finding.source.outdated)) &&
+          !(
+            dispositionState(finding) === "current" &&
+            finding.saved?.choice.kind === "dismiss"
+          ),
+      ),
+    checks: detail.checks.filter((check) =>
+      [
+        "FAILURE",
+        "STARTUP_FAILURE",
+        "ERROR",
+        "TIMED_OUT",
+        "CANCELLED",
+        "ACTION_REQUIRED",
+      ].includes(check.state),
+    ),
+  };
+}
 export function validDismissReason(reason: string): boolean {
   return (
     reason.trim().length > 0 && new TextEncoder().encode(reason).length <= 4000
@@ -117,6 +170,50 @@ export function sourceLabel(source: ReviewFinding["source"]): string {
   }
 }
 export function findingPrompt(request: ReviewDraftRequest): string {
+  if (!("finding" in request)) {
+    const findings = request.findings.slice(0, 20);
+    const checks = request.checks.slice(0, 30);
+    const evidence = findings
+      .map((finding) => findingPrompt({ ...request, intent: "fix", finding }))
+      .join("\n\n");
+    const checkEvidence = checks
+      .map(
+        (check) =>
+          `Check: ${check.name}; state ${check.state}; source ${check.url ?? "Unavailable"}`,
+      )
+      .join("\n\n");
+    const limited =
+      checkEvidence.length > 12000 ||
+      evidence.length > 48000 ||
+      request.findings.length > findings.length ||
+      request.checks.length > checks.length;
+    return [
+      request.intent === "resolve_conflicts"
+        ? "Resolve this pull request's host-confirmed merge conflicts in the current conversation."
+        : "Assess and fix the loaded current unresolved findings and failed checks in this pull request.",
+      `Pull request: https://${request.key.replace(/\/(\d+)$/, "/pull/$1")}`,
+      `Canonical PR: ${request.key}; node ${request.observation.nodeId}`,
+      `Captured head: ${request.head} at ${request.observation.headOid}`,
+      `Base branch: ${request.base}; signed-in viewer ${request.observation.viewer}`,
+      "Inspect the current checkout before changing it. This draft does not switch or create a checkout. Keep the captured pull request identity and verify any changes before reporting success.",
+      ...coveragePrompt(request.problems),
+      ...(limited
+        ? coveragePrompt([
+            {
+              kind: "limited",
+              section: "threads",
+              message:
+                "The repair draft includes only bounded excerpts of loaded evidence.",
+            },
+          ])
+        : []),
+      "Only loaded evidence is included. Do not claim complete pull request coverage.",
+      checkEvidence.slice(0, 12000),
+      evidence.slice(0, 48000),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
   const finding = request.finding;
   const context = finding.comments
     .map((comment) => {

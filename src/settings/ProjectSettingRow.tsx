@@ -147,6 +147,18 @@ const controls: {
       />
     ),
   },
+  autoSettleOnMerge: {
+    scratch: true,
+    format: (on) => (on ? "On" : "Off"),
+    control: (value, set, disabled) => (
+      <Switch
+        checked={value}
+        disabled={disabled}
+        onCheckedChange={set}
+        aria-label="Auto-settle merged pull requests"
+      />
+    ),
+  },
   sidebarAutoSettleAfterDays: {
     scratch: true,
     format: (days) =>

@@ -1,6 +1,9 @@
 import {
+  acknowledgeUncertainUpdate,
+  type AcknowledgeUncertainUpdate,
   prReviewDetail,
   prChangeResult,
+  prOperation,
   type PrReviewChange,
 } from "./panel/prReview";
 import { threadPrSummary, type PullRequestKey } from "./panel/pullRequests";
@@ -399,6 +402,27 @@ export const ipc = {
     call("git_status", { workspaceId, threadId: threadId ?? null }, gitStatus),
   readPullRequest: (threadId: string, key: PullRequestKey) =>
     call("read_pull_request", { threadId, key }, prReviewDetail),
+  pullRequestOperations: (threadId: string, key: PullRequestKey) =>
+    call("pull_request_operations", { threadId, key }, z.array(prOperation)),
+  reconcilePullRequest: (
+    threadId: string,
+    key: PullRequestKey,
+    requestId: string,
+  ) =>
+    call(
+      "reconcile_pull_request",
+      { threadId, key, requestId },
+      prChangeResult,
+    ),
+  acknowledgeUncertainUpdate: (
+    threadId: string,
+    input: AcknowledgeUncertainUpdate,
+  ) =>
+    call(
+      "acknowledge_uncertain_update",
+      { threadId, input: acknowledgeUncertainUpdate.parse(input) },
+      prChangeResult,
+    ),
   changePullRequest: (threadId: string, input: PrReviewChange) =>
     call("change_pull_request", { threadId, input }, prChangeResult),
   setReviewDisposition: (
