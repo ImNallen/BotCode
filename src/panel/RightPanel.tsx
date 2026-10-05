@@ -5,7 +5,6 @@ import {
   GitPullRequestIcon,
   FilesIcon,
   PlusIcon,
-  MessageSquareTextIcon,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -24,7 +23,6 @@ import { DiffSurface } from "./DiffSurface";
 import { FileEntryIcon } from "./FileEntryIcon";
 import { FilesSurface } from "./FilesSurface";
 import { PullRequestsSurface } from "./PullRequestsSurface";
-import { ReviewsSurface } from "./ReviewsSurface";
 import type { ReviewDraftRequest } from "./reviews";
 import {
   closeSurface,
@@ -39,7 +37,6 @@ import { usePanelWidth } from "./usePanelWidth";
 export type Surface =
   | { kind: "files" }
   | { kind: "diff" }
-  | { kind: "reviews" }
   | { kind: "pull_requests" }
   | { kind: "file"; path: string };
 
@@ -73,12 +70,6 @@ const SURFACE_ACTIONS: readonly SurfaceAction[] = [
     icon: FileDiffIcon,
     shortcut: "D",
     surface: { kind: "diff" },
-  },
-  {
-    label: "Reviews",
-    icon: MessageSquareTextIcon,
-    shortcut: "R",
-    surface: { kind: "reviews" },
   },
 ];
 
@@ -310,6 +301,9 @@ export function RightPanel({
               <PullRequestsSurface
                 key={conversationId}
                 threadId={conversationId}
+                workspaceId={checkout.workspaceId}
+                canAskCodex={canAskCodex}
+                onAskCodex={onAskCodex}
               />
             ) : view?.unavailable && active ? (
               <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
@@ -322,15 +316,6 @@ export function RightPanel({
                 checkout={checkout}
                 view={view}
                 onOpenFile={handleOpenFile}
-              />
-            ) : active.kind === "reviews" ? (
-              <ReviewsSurface
-                key={`${checkout.workspaceId}:${checkout.threadId ?? "local"}:${conversationId ?? "draft"}:${view?.branch ?? ""}`}
-                checkout={checkout}
-                branch={view?.branch}
-                conversationId={conversationId}
-                canAskCodex={canAskCodex}
-                onAskCodex={onAskCodex}
               />
             ) : (
               <FilesSurface
@@ -354,8 +339,6 @@ function SurfaceIcon({ surface }: { surface: Surface }) {
       return <FileDiffIcon className="size-3 shrink-0" />;
     case "pull_requests":
       return <GitPullRequestIcon className="size-3 shrink-0" />;
-    case "reviews":
-      return <MessageSquareTextIcon className="size-3 shrink-0" />;
     case "files":
       return <FilesIcon className="size-3 shrink-0" />;
     case "file":

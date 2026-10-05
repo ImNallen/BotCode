@@ -80,8 +80,6 @@ export function surfaceTitle(surface: Surface): string {
       return "Diff";
     case "pull_requests":
       return "Pull requests";
-    case "reviews":
-      return "Reviews";
     case "file":
       return basename(surface.path);
   }

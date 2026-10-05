@@ -9,7 +9,7 @@ const lifecycle = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("closed"), closedAt: z.string().nullable() }),
   z.object({ kind: z.literal("merged"), mergedAt: z.string().nullable() }),
 ]);
-const cachedPr = z.object({
+export const cachedPr = z.object({
   key: pullRequestKey,
   revision: z.number(),
   snapshot: z

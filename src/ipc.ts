@@ -1,13 +1,14 @@
+import {
+  prReviewDetail,
+  prChangeResult,
+  type PrReviewChange,
+} from "./panel/prReview";
 import { threadPrSummary, type PullRequestKey } from "./panel/pullRequests";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { QueryClient } from "@tanstack/react-query";
 import { z } from "zod";
-import {
-  reviewFindings,
-  savedDisposition,
-  setReviewDisposition,
-} from "./panel/reviews";
+import { savedDisposition, setReviewDisposition } from "./panel/reviews";
 import type { SetReviewDisposition } from "./panel/reviews";
 export const native = isTauri();
 const id = z.uuid();
@@ -301,7 +302,6 @@ export type CheckoutScope =
   | "diff"
   | "branches"
   | "git"
-  | "reviews"
   | "pr";
 export const checkoutKey = (
   scope: CheckoutScope,
@@ -314,7 +314,6 @@ export function invalidateCheckouts(client: QueryClient, workspaceId: string) {
     "diff",
     "branches",
     "git",
-    "reviews",
     "pr",
   ];
   for (const scope of scopes)
@@ -398,28 +397,23 @@ export const ipc = {
     ),
   gitStatus: ({ workspaceId, threadId }: CheckoutRef) =>
     call("git_status", { workspaceId, threadId: threadId ?? null }, gitStatus),
-  reviewFindings: ({ workspaceId, threadId }: CheckoutRef) =>
-    call(
-      "review_findings",
-      { workspaceId, threadId: threadId ?? null },
-      reviewFindings,
-    ),
+  readPullRequest: (threadId: string, key: PullRequestKey) =>
+    call("read_pull_request", { threadId, key }, prReviewDetail),
+  changePullRequest: (threadId: string, input: PrReviewChange) =>
+    call("change_pull_request", { threadId, input }, prChangeResult),
   setReviewDisposition: (
-    { workspaceId, threadId }: CheckoutRef,
+    threadId: string,
+    key: PullRequestKey,
     input: SetReviewDisposition,
   ) =>
     call(
       "set_review_disposition",
-      {
-        workspaceId,
-        threadId: threadId ?? null,
-        input: setReviewDisposition.parse(input),
-      },
+      { threadId, key, input: setReviewDisposition.parse(input) },
       savedDisposition.nullable(),
     ),
   pullRequest: ({ workspaceId, threadId }: CheckoutRef, branch: string) =>
     call(
-      "pull_request",
+      "current_branch_pull_request",
       { workspaceId, threadId: threadId ?? null, branch },
       prLookup,
     ),
@@ -477,7 +471,6 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
         void client.invalidateQueries({ queryKey: ["file", workspaceId] });
         void client.invalidateQueries({ queryKey: ["diff", workspaceId] });
         void client.invalidateQueries({ queryKey: ["git", workspaceId] });
-        void client.invalidateQueries({ queryKey: ["reviews", workspaceId] });
       }
       workspaces.clear();
     }, 160);
@@ -521,7 +514,7 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
   });
   const focus = () => {
     void client.invalidateQueries({
-      predicate: (q) => q.queryKey[0] !== "pr" && q.queryKey[0] !== "reviews",
+      predicate: (q) => q.queryKey[0] !== "pr" && q.queryKey[0] !== "pr-detail",
     });
   };
   window.addEventListener("focus", focus);

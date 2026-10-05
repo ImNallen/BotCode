@@ -896,34 +896,7 @@ pub struct ReviewFinding {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReviewPullRequest {
-    pub id: String,
-    pub number: u64,
-    pub title: String,
-    pub url: String,
-    pub head_sha: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase"
-)]
-pub enum ReviewFindings {
-    None {
-        branch: String,
-    },
-    Ready {
-        branch: String,
-        checkout_head: String,
-        pr: ReviewPullRequest,
-        findings: Vec<ReviewFinding>,
-    },
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SetReviewDisposition {
-    pub branch: String,
     pub observation: ReviewObservation,
     pub expected: Option<SavedDisposition>,
     pub choice: Option<ReviewChoice>,

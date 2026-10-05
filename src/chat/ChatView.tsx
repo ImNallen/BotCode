@@ -322,18 +322,15 @@ export function ChatView({
   const reviewDraftTarget = useRef<ReviewDraftTarget>({
     workspaceId,
     threadId,
-    branch: view?.branch,
     canAccept: false,
   });
   reviewDraftTarget.current = {
     workspaceId,
     threadId,
-    branch: view?.branch,
     canAccept: Boolean(
       threadId &&
       thread &&
       !isScratch &&
-      !view?.unavailable &&
       !busy &&
       !send.isPending &&
       !saveSettings.isPending &&
