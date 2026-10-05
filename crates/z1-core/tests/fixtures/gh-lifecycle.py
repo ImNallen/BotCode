@@ -121,7 +121,7 @@ elif args[:2] == ['api', 'graphql']:
         if lifecycle and variables['input'].get('expectedHeadOid', sha) != state.get('atomicHead', sha):
             print(json.dumps({'errors':[{'message':'Head moved. Refresh before retrying.'}]}))
             sys.exit(0)
-        field = lifecycle or ('addPullRequestReview' if 'Z1SubmitReview' in query else 'addPullRequestReviewThreadReply' if 'Z1Reply' in query else 'unresolveReviewThread' if 'Z1Unresolve' in query else 'resolveReviewThread')
+        field = lifecycle or ('updatePullRequest' if 'Z1Edit' in query else 'addPullRequestReview' if 'Z1SubmitReview' in query else 'addPullRequestReviewThreadReply' if 'Z1Reply' in query else 'unresolveReviewThread' if 'Z1Unresolve' in query else 'resolveReviewThread')
         def save_mutation(current):
             current['submitted'] = current.get('submitted', []) + [payload]
             if field in ['resolveReviewThread', 'unresolveReviewThread']:
@@ -135,11 +135,12 @@ elif args[:2] == ['api', 'graphql']:
             elif field == 'closePullRequest': current.update(lifecycle='CLOSED', closedAt=current.get('terminalAt','2099-10-05T13:00:00Z'))
             elif field == 'reopenPullRequest': current.update(lifecycle='OPEN', closedAt=None)
             elif field == 'updatePullRequestBranch': current.update(head='d'*40, viewerCanUpdateBranch=False)
+            elif field == 'updatePullRequest': current.update({key: variables['input'][key] for key in ['title', 'body'] if key in variables['input']})
             if current.get('failReadAfterReview') or (lifecycle and current.get('failConfirmation')):
                 current['mode'] = 'error'
         state = update_state(save_mutation)
-        child = 'mergeQueueEntry' if field == 'enqueuePullRequest' else 'pullRequest' if lifecycle else 'pullRequestReview' if field == 'addPullRequestReview' else 'comment' if field == 'addPullRequestReviewThreadReply' else 'thread'
-        print(json.dumps({'data': {field: {child: {'id': 'REVIEW_saved' if child == 'pullRequestReview' else 'COMMENT_saved' if child == 'comment' else pr['id'] if lifecycle else variables['input']['threadId']}}}}))
+        child = 'mergeQueueEntry' if field == 'enqueuePullRequest' else 'pullRequest' if lifecycle or field == 'updatePullRequest' else 'pullRequestReview' if field == 'addPullRequestReview' else 'comment' if field == 'addPullRequestReviewThreadReply' else 'thread'
+        print(json.dumps({'data': {field: {child: {'id': 'REVIEW_saved' if child == 'pullRequestReview' else 'COMMENT_saved' if child == 'comment' else pr['id'] if lifecycle or field == 'updatePullRequest' else variables['input']['threadId']}}}}))
     elif 'Z1ReviewMeta' in query:
         time.sleep(state.get('metaDelay', 0))
         def count_meta(current):
@@ -150,7 +151,7 @@ elif args[:2] == ['api', 'graphql']:
             sys.exit(0)
         if state['metaCalls'] > 1:
             pr.update(state.get('finalMeta', {}))
-        print(json.dumps({'data': {'viewer': {'login': state.get('finalViewer', state.get('viewer', 'fixture-viewer')) if state['metaCalls'] > 1 else state.get('viewer', 'fixture-viewer')}, 'repository': {**{key: state.get(key, True) for key in ['mergeCommitAllowed','squashMergeAllowed','rebaseMergeAllowed','autoMergeAllowed']}, 'viewerPermission': state.get('viewerPermission','WRITE'), 'pullRequest': {**pr, 'body': 'Review the calculation update.', 'reviewDecision': 'CHANGES_REQUESTED', 'locked': pr.get('locked', state.get('locked', False)), 'viewerDidAuthor': pr.get('viewerDidAuthor', state.get('didAuthor', False))}}}}))
+        print(json.dumps({'data': {'viewer': {'login': state.get('finalViewer', state.get('viewer', 'fixture-viewer')) if state['metaCalls'] > 1 else state.get('viewer', 'fixture-viewer')}, 'repository': {**{key: state.get(key, True) for key in ['mergeCommitAllowed','squashMergeAllowed','rebaseMergeAllowed','autoMergeAllowed']}, 'viewerPermission': state.get('viewerPermission','WRITE'), 'pullRequest': {**pr, 'body': state.get('body', 'Review the calculation update.'), 'reviewDecision': 'CHANGES_REQUESTED', 'locked': pr.get('locked', state.get('locked', False)), 'viewerDidAuthor': pr.get('viewerDidAuthor', state.get('didAuthor', False))}}}}))
     elif 'Z1ReviewThreads' in query:
         print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, 'reviewThreads': connection([thread])}}}}))
     elif 'Z1ReviewReplies' in query:

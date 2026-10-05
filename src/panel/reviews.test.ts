@@ -88,6 +88,7 @@ const detail = prReviewDetail.parse({
     primary: "merge",
     actions: [{ kind: "merge", method: "squash" }],
     explanation: null,
+    edit: true,
   },
   operations: [],
   observation: {
@@ -604,6 +605,58 @@ it("renders queued and uncertain durable receipts with reconciliation and no mer
         result.kind === "accepted" ? "Queued. Waiting" : "Outcome uncertain",
       ),
     );
+    client.clear();
+  }
+});
+
+it("parses title and description edits and the edit capability from native detail", () => {
+  const actions = [
+    { kind: "edit_title", title: "Retitled" },
+    { kind: "edit_body", body: "" },
+  ] as const;
+  const loaded = prReviewDetail.parse({
+    ...detail,
+    capabilities: { ...detail.capabilities, edit: false },
+    operations: actions.map((action) => ({
+      input: { requestId: action.kind, target: detail.observation, action },
+      result: { kind: "applied", hostId: "PR_fixture" },
+    })),
+  });
+  assert.equal(loaded.capabilities.edit, false);
+  assert.deepEqual(
+    loaded.operations.map((operation) => operation.input.action),
+    [...actions],
+  );
+  assert.isFalse(
+    prReviewDetail.safeParse({
+      ...detail,
+      capabilities: { ...detail.capabilities, edit: undefined },
+    }).success,
+  );
+});
+
+it("offers title and description editing only when GitHub permits the viewer to update", () => {
+  for (const edit of [true, false]) {
+    const client = new QueryClient();
+    client.setQueryData(["pr-detail", "thread", detail.observation.key], {
+      ...detail,
+      capabilities: { ...detail.capabilities, edit },
+    });
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(PullRequestDetail, {
+          prKey: detail.observation.key,
+          onBack() {},
+          ...target,
+          onAskCodex() {},
+          canAskCodex: true,
+        }),
+      ),
+    );
+    assert.equal(html.includes('aria-label="Edit title"'), edit);
+    assert.equal(html.includes('aria-label="Edit description"'), edit);
     client.clear();
   }
 });

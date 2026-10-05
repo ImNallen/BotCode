@@ -24,7 +24,7 @@ function header({
   lifecycle?: PrReviewDetail["snapshot"]["lifecycle"];
 }): Header {
   return {
-    capabilities: { primary, actions, explanation: null },
+    capabilities: { primary, actions, explanation: null, edit: false },
     autoMergeMethod,
     snapshot: {
       nodeId: "PR_fixture",

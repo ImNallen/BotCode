@@ -94,7 +94,7 @@ pub(super) fn capabilities(repo: &Value, pr: &Value, snapshot: &PrSnapshot) -> P
         }
         _ => PrPrimary::Unavailable,
     };
-    PrCapabilities { primary, actions, explanation: (primary == PrPrimary::Unavailable).then(|| "GitHub does not currently permit merging this pull request. Refresh after requirements change.".into()) }
+    PrCapabilities { primary, actions, explanation: (primary == PrPrimary::Unavailable).then(|| "GitHub does not currently permit merging this pull request. Refresh after requirements change.".into()), edit: yes("viewerCanUpdate") }
 }
 
 pub(crate) struct Confirmation {

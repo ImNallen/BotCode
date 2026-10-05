@@ -198,6 +198,12 @@ pub enum PrReviewAction {
         thread_id: String,
         resolved: bool,
     },
+    EditTitle {
+        title: String,
+    },
+    EditBody {
+        body: String,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -277,6 +283,10 @@ impl PrReviewChange {
                 body: text,
             } => valid_id(thread_id) && body(text) && !text.trim().is_empty(),
             PrReviewAction::SetResolved { thread_id, .. } => valid_id(thread_id),
+            PrReviewAction::EditTitle { title } => {
+                !title.trim().is_empty() && title.chars().count() <= 256
+            }
+            PrReviewAction::EditBody { body: text } => body(text),
             PrReviewAction::Merge { .. }
             | PrReviewAction::Enqueue
             | PrReviewAction::EnableAutoMerge { .. }
