@@ -118,6 +118,22 @@ const contextUsage = z.object({
   maxTokens: z.number().nullable(),
   totalProcessedTokens: z.number().nullable(),
 });
+const limitWindow = z.object({
+  slot: z.enum(["primary", "secondary"]),
+  kind: z.enum(["session", "weekly", "monthly"]),
+  usedPercent: z.number(),
+  durationMins: z.number(),
+  resetsAtMs: z.number().nullable(),
+});
+const usageLimits = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("reported"),
+    plan: z.string().nullable(),
+    windows: z.array(limitWindow),
+  }),
+  z.object({ kind: z.literal("unsupported") }),
+  z.object({ kind: z.literal("failed"), message: z.string() }),
+]);
 const checkout = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("local") }),
   z.object({
@@ -313,6 +329,8 @@ export type Thread = z.infer<typeof thread>;
 export type SessionSettings = z.infer<typeof settings>;
 export type ModelOption = z.infer<typeof modelOption>;
 export type ContextUsage = z.infer<typeof contextUsage>;
+export type LimitWindow = z.infer<typeof limitWindow>;
+export type UsageLimits = z.infer<typeof usageLimits>;
 export type Approval = z.infer<typeof approval>;
 export type Item = z.infer<typeof item>;
 export type ApprovalDecision = "accept" | "decline" | "cancel";
@@ -559,6 +577,8 @@ export const ipc = {
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),
   resume: (threadId: string) => call("open_thread", { threadId }, thread),
   models: () => call("list_models", {}, z.array(modelOption)),
+  usageLimits: (refresh = false) =>
+    call("usage_limits", { refresh }, usageLimits),
   settings: (threadId: string, value: SessionSettings) =>
     call("update_thread_settings", { threadId, settings: value }, thread),
   submit: (threadId: string, text: string, requestId: string) =>
@@ -625,17 +645,25 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       schedule(hint.data.threadId);
     }
   });
+  const offLimits = await listen<unknown>("z1:usage-limits", (event) => {
+    const limits = usageLimits.safeParse(event.payload);
+    if (limits.success) client.setQueryData(["usage-limits"], limits.data);
+  });
   const offRefresh = await listen("z1:refresh", () => {
     void client.invalidateQueries();
   });
   const focus = () => {
     void client.invalidateQueries({
-      predicate: (q) => q.queryKey[0] !== "pr" && q.queryKey[0] !== "pr-detail",
+      predicate: (q) =>
+        q.queryKey[0] !== "pr" &&
+        q.queryKey[0] !== "pr-detail" &&
+        q.queryKey[0] !== "usage-limits",
     });
   };
   window.addEventListener("focus", focus);
   return () => {
     offChanged();
+    offLimits();
     offRefresh();
     window.removeEventListener("focus", focus);
     if (timer) clearTimeout(timer);

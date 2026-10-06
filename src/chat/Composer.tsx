@@ -44,6 +44,7 @@ export function Composer({
   stopping,
   placeholder,
   approval,
+  notice,
   contextUsage,
   disabled,
   context,
@@ -67,6 +68,7 @@ export function Composer({
   stopping: boolean;
   placeholder: string;
   approval: ReactNode;
+  notice: ReactNode;
   contextUsage: ContextUsage | null;
   disabled: boolean;
   context?: {
@@ -157,6 +159,7 @@ export function Composer({
               onSubmit();
             }}
           >
+            {notice}
             {approval}
             <div className="relative">
               <ComposerSurface.Main>

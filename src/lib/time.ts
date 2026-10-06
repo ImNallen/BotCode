@@ -63,6 +63,30 @@ export function formatDayAwareTimestamp(at: number, now = Date.now()): string {
   return `${formatter.format(date)} ${time}`;
 }
 
+export function formatUpcomingTimestamp(at: number, now = Date.now()): string {
+  const date = new Date(at);
+  const time = timeFormatter.format(date);
+  const today = new Date(now);
+  const startOfToday = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+  ).getTime();
+  const startOfDay = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+  ).getTime();
+  const dayDiff = Math.round((startOfDay - startOfToday) / 86_400_000);
+  if (dayDiff <= 0) return time;
+  if (dayDiff === 1) return `tomorrow at ${time}`;
+  const formatter =
+    date.getFullYear() === today.getFullYear()
+      ? dateFormatter
+      : dateWithYearFormatter;
+  return `${formatter.format(date)} ${time}`;
+}
+
 export function formatSidebarTime(at: number, now = Date.now()): string {
   const seconds = Math.floor((now - at) / 1000);
   if (seconds < 60) return "now";
