@@ -1,3 +1,4 @@
+// Ported from pingdotgg/t3code v0.0.45 components/Sidebar.tsx and threadActionMenu.logic.ts (MIT).
 import { pullRequestSurface } from "./panel/panelState";
 import { prLabel } from "./panel/pullRequests";
 import type { Surface } from "./panel/RightPanel";
@@ -7,6 +8,8 @@ import type { Surface } from "./panel/RightPanel";
 // SidebarSectionHeader, SnoozeMenuButton, slim rows, settled paging, the snooze wake timer and
 // planForwardNavigation, and Sidebar.logic.ts shouldNavigateAfterThreadPark.
 import {
+  createContext,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -15,6 +18,11 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  ArchiveIcon,
+  CopyIcon,
+  Trash2Icon,
+  GitBranchIcon,
+  HashIcon,
   AlarmClockOffIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -33,7 +41,7 @@ import {
   Undo2Icon,
   XIcon,
 } from "lucide-react";
-import { type Arrange, type Workspace, type WorkspaceView } from "./ipc";
+import { ipc, type Arrange, type Workspace, type WorkspaceView } from "./ipc";
 import { cn } from "./lib/cn";
 import { workingSessions } from "./lib/sessions";
 import { formatSidebarTime } from "./lib/time";
@@ -43,7 +51,14 @@ import { OpenAI } from "./ui/icons";
 import { Button } from "./ui/controls";
 import { ProjectScopeMenu } from "./ProjectScopeMenu";
 import { storage } from "./lib/storage";
-import { Menu, MenuItem, MenuShortcut, MenuSub } from "./ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuShortcut,
+  MenuSub,
+  MenuSeparator,
+} from "./ui/menu";
+import { confirmAndDeleteThread } from "./threadActions";
 import { resolveSnoozePresets, snoozeWakeLabel } from "./lib/snooze";
 
 type Row = {
@@ -68,9 +83,7 @@ type SidebarSections = {
   hiddenCount: number;
 };
 
-// A thread is Snoozed, then Settled, then Pinned, then Active, in T3's order.
-// Search shows every matching shelf row, so a query never hides a result.
-function partitionSidebarRows({
+export function partitionSidebarRows({
   rows,
   query,
   scopeId,
@@ -95,6 +108,7 @@ function partitionSidebarRows({
   const snoozed: Row[] = [];
   const settled: Row[] = [];
   for (const row of rows) {
+    if (row.thread.archivedAtMs != null) continue;
     if (scopeId && row.workspace.id !== scopeId) continue;
     if (needle && !row.thread.title.toLowerCase().includes(needle)) continue;
     const { snoozedUntilMs, settledAtMs, pinnedAtMs } = row.thread;
@@ -182,6 +196,31 @@ export function Sidebar({
   onOpenProjectSettings: (workspaceId: string) => void;
   onArrange: (threadId: string, action: Arrange) => Promise<boolean>;
 }) {
+  const client = useQueryClient();
+  const [actionError, setActionError] = useState<string>();
+  const [actionStatus, setActionStatus] = useState<string>();
+  const [renaming, setRenaming] = useState<{ id: string; title: string }>();
+  const [savingRename, setSavingRename] = useState(false);
+  const saving = useRef(false);
+  const editRename = (value: { id: string; title: string } | undefined) => {
+    if (!saving.current) setRenaming(value);
+  };
+  const saveRename = async () => {
+    if (!renaming || !renaming.title.trim() || saving.current) return;
+    saving.current = true;
+    setSavingRename(true);
+    try {
+      await ipc.renameThread(renaming.id, renaming.title.trim());
+      setRenaming(undefined);
+      setActionError(undefined);
+      await client.invalidateQueries({ queryKey: ["workspace"] });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      saving.current = false;
+      setSavingRename(false);
+    }
+  };
   const [query, setQuery] = useState("");
   const [scopeId, setScopeId] = useState(() => storage.getItem(SCOPE_KEY));
   const scope = workspaces.find((workspace) => workspace.id === scopeId);
@@ -248,7 +287,6 @@ export function Sidebar({
         : [],
     ),
   );
-  const client = useQueryClient();
   useEffect(() => {
     if (nextWakeMs === Infinity) return;
     // setTimeout delays are signed 32-bit, so a far wake waits in clamped
@@ -300,10 +338,7 @@ export function Sidebar({
       row: element,
     });
   };
-  // Settling or snoozing the open thread moves forward to the next card,
-  // wrapping, or to a new draft in its project. The plan is taken before the
-  // list changes.
-  const park = async (row: Row, action: Arrange) => {
+  const park = async (row: Row, action: Arrange | "delete") => {
     const index = cards.findIndex((card) => card.thread.id === row.thread.id);
     const next =
       index !== -1 && cards.length > 1
@@ -315,11 +350,41 @@ export function Sidebar({
         : next
           ? () => onSelectThread(next.workspace.id, next.thread.id)
           : () => onNewThread(row.workspace.id);
-    if (!(await onArrange(row.thread.id, action))) return;
+    if (action === "delete") {
+      try {
+        const outcome = await confirmAndDeleteThread(row.thread, client);
+        if (!outcome) return;
+        setActionError(undefined);
+        setActionStatus(
+          outcome.kind === "retained"
+            ? `Thread deleted. Worktree kept. ${outcome.reason}`
+            : undefined,
+        );
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    } else {
+      if (!(await onArrange(row.thread.id, action))) return;
+      setActionError(undefined);
+      setActionStatus(undefined);
+    }
     if (openThread.current === row.thread.id) forward?.();
   };
   return (
-    <>
+    <RenameContext.Provider
+      value={{ renaming, setRenaming: editRename, saveRename, savingRename }}
+    >
+      {actionStatus ? (
+        <p role="status" className="px-3 py-2 text-xs text-muted-foreground">
+          {actionStatus}
+        </p>
+      ) : null}
+      {actionError ? (
+        <p role="alert" className="px-3 py-2 text-xs text-error-foreground">
+          {actionError}
+        </p>
+      ) : null}
       <div className="w-full shrink-0">
         <div className="relative flex w-full min-w-0 flex-col p-[var(--sidebar-content-inset)] z-[1]">
           <div className="flex items-center gap-1">
@@ -582,22 +647,42 @@ export function Sidebar({
           onClose={() => setMenu(undefined)}
           onArrange={(action) => void onArrange(menuRow.thread.id, action)}
           onPark={(action) => void park(menuRow, action)}
+          onRename={() =>
+            editRename({ id: menuRow.thread.id, title: menuRow.thread.title })
+          }
+          savingRename={savingRename}
+          onDelete={() => void park(menuRow, "delete")}
+          onCopy={(value) => {
+            void navigator.clipboard
+              .writeText(value)
+              .then(() => {
+                setActionError(undefined);
+                setActionStatus(undefined);
+              })
+              .catch((error: unknown) =>
+                setActionError(
+                  error instanceof Error ? error.message : String(error),
+                ),
+              );
+          }}
         />
       ) : null}
-    </>
+    </RenameContext.Provider>
   );
 }
 
-// Items and order follow T3's threadActionMenu.logic.ts, limited to the
-// actions Bot Code backs.
 function ThreadContextMenu({
-  row: { thread },
+  row: { thread, workspace, branch },
   point,
   returnFocus,
   now,
   onClose,
   onArrange,
   onPark,
+  onRename,
+  savingRename,
+  onDelete,
+  onCopy,
 }: {
   row: Row;
   point: { x: number; y: number };
@@ -606,6 +691,10 @@ function ThreadContextMenu({
   onClose: () => void;
   onArrange: (action: Arrange) => void;
   onPark: (action: Arrange) => void;
+  onRename: () => void;
+  savingRename: boolean;
+  onDelete: () => void;
+  onCopy: (value: string) => void;
 }) {
   const pinned = thread.pinnedAtMs !== null;
   const settled = thread.settledAtMs !== null;
@@ -656,6 +745,56 @@ function ThreadContextMenu({
           ))}
         </MenuSub>
       )}
+      <MenuSeparator />
+      <MenuItem onClick={onRename} disabled={savingRename}>
+        <SquarePenIcon />
+        Rename thread
+      </MenuItem>
+      <MenuSeparator />
+      <MenuSub label="Copy" icon={<CopyIcon />}>
+        <MenuItem
+          onClick={() =>
+            onCopy(
+              thread.checkout.kind === "local"
+                ? workspace.root
+                : thread.checkout.path,
+            )
+          }
+        >
+          <FolderIcon />
+          Path
+        </MenuItem>
+        {workspace.kind === "repository" && branch ? (
+          <MenuItem onClick={() => onCopy(branch)}>
+            <GitBranchIcon />
+            Branch
+          </MenuItem>
+        ) : null}
+        <MenuItem onClick={() => onCopy(thread.id)}>
+          <HashIcon />
+          Thread ID
+        </MenuItem>
+      </MenuSub>
+      <MenuSeparator />
+      <MenuItem
+        disabled={
+          workingSessions.has(thread.session.kind) || thread.awaitingApproval
+        }
+        onClick={() => onPark({ kind: "archive" })}
+      >
+        <ArchiveIcon />
+        Archive thread
+      </MenuItem>
+      <MenuItem
+        variant="destructive"
+        disabled={
+          workingSessions.has(thread.session.kind) || thread.awaitingApproval
+        }
+        onClick={onDelete}
+      >
+        <Trash2Icon />
+        Delete
+      </MenuItem>
     </Menu>
   );
 }
@@ -916,17 +1055,15 @@ function ThreadRow({
             </span>
           </div>
           <div className="mt-1 flex min-w-0">
-            <span
-              aria-hidden
+            <ThreadTitle
+              thread={row.thread}
               className={cn(
                 "min-w-0 flex-1 text-sm transition-opacity motion-reduce:transition-none truncate",
                 recede
                   ? "font-normal text-secondary-label"
                   : "font-medium text-foreground/90",
               )}
-            >
-              {row.thread.title}
-            </span>
+            />
           </div>
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
             <PrBadge row={row} onOpen={onPullRequests} />
@@ -1014,17 +1151,15 @@ function SlimRow({
         >
           <WorkspaceBadge workspace={row.workspace} className="size-4" />
         </span>
-        <span
-          aria-hidden
+        <ThreadTitle
+          thread={row.thread}
           className={cn(
             "min-w-0 flex-1 text-sm transition-opacity motion-reduce:transition-none",
             recede ? "font-normal" : "font-medium",
             "truncate group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
             recede ? "text-secondary-label/70" : "text-foreground",
           )}
-        >
-          {row.thread.title}
-        </span>
+        />
         <PrBadge row={row} onOpen={onPullRequests} />
         {row.thread.pinnedAtMs !== null ? (
           <PinIndicator onUnpin={onUnpin} />
@@ -1117,5 +1252,58 @@ function PrBadge({ row, onOpen }: { row: Row; onOpen: () => void }) {
       {label}
       {stale ? " ·" : ""}
     </button>
+  );
+}
+
+const RenameContext = createContext<
+  | {
+      renaming: { id: string; title: string } | undefined;
+      setRenaming: (value: { id: string; title: string } | undefined) => void;
+      saveRename: () => Promise<void>;
+      savingRename: boolean;
+    }
+  | undefined
+>(undefined);
+
+function ThreadTitle({
+  thread,
+  className,
+}: {
+  thread: Row["thread"];
+  className: string;
+}) {
+  const editor = useContext(RenameContext);
+  if (!editor || editor.renaming?.id !== thread.id)
+    return (
+      <span aria-hidden className={className}>
+        {thread.title}
+      </span>
+    );
+  return (
+    <input
+      autoFocus
+      disabled={editor.savingRename}
+      value={editor.renaming.title}
+      aria-label="Thread title"
+      onFocus={(event) => event.currentTarget.select()}
+      onChange={(event) =>
+        editor.setRenaming({ id: thread.id, title: event.target.value })
+      }
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") {
+          event.preventDefault();
+          void editor.saveRename();
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          editor.setRenaming(undefined);
+        }
+      }}
+      onBlur={() => void editor.saveRename()}
+      className="min-w-0 flex-1 rounded-sm border border-input bg-card px-1 text-sm font-medium text-card-foreground outline-none focus:border-foreground"
+    />
   );
 }

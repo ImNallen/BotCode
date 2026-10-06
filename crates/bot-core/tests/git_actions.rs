@@ -845,6 +845,23 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
         tokio::spawn(async move { run(&app, &workspace, None, commit()).await })
     };
     wait_until(|| started.exists()).await;
+    let sibling = app
+        .create_thread(workspace.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.delete_thread(sibling.id.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "busy"
+    );
+    assert!(app.thread(sibling.id).await.is_ok());
+    assert_eq!(
+        app.delete_thread(local.id.clone()).await.unwrap_err().code,
+        "busy"
+    );
+    assert!(app.thread(local.id.clone()).await.is_ok());
     let busy = "A Git action is running in this checkout. Try again when it finishes.";
     let refused = app
         .submit(local.id.clone(), "second".into(), "second".into(), vec![])
@@ -1152,6 +1169,60 @@ async fn worktree_cleanup_cancels_a_running_commit_preview() {
     let cancelled = tokio::time::timeout(Duration::from_secs(1), app.await_commit_message(job))
         .await
         .expect("cleanup must cancel generation before its timeout")
+        .unwrap_err();
+    assert_eq!(cancelled.code, "cancelled");
+    wait_until(|| pids.iter().all(|pid| unsafe { libc::kill(*pid, 0) } != 0)).await;
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_deletion_cancels_a_running_commit_preview() {
+    let f = Fixture::new();
+    generation_file(&f, "commit_stall", "");
+    generation_file(&f, "commit_descendant", "");
+    let (app, workspace) = f.open().await;
+    let thread = app
+        .create_thread(
+            workspace,
+            NewCheckout::Worktree {
+                base: "main".into(),
+                from_origin: false,
+            },
+        )
+        .await
+        .unwrap();
+    let Checkout::Worktree { path, .. } = thread.checkout else {
+        panic!("expected a worktree");
+    };
+    let changed = path.join("preview.txt");
+    std::fs::write(&changed, "preview content\n").unwrap();
+    let job = app.begin_commit_message(thread.id.clone()).await.unwrap();
+    wait_until(|| f.dir.path().join("peers/commit_child.pid").exists()).await;
+    let pids: Vec<i32> = ["commit.pid", "commit_child.pid"]
+        .into_iter()
+        .map(|name| {
+            std::fs::read_to_string(f.dir.path().join("peers").join(name))
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    std::fs::remove_file(changed).unwrap();
+    app.save_settings(r#"{"storageCleanup":{"worktreeOnDelete":true}}"#)
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.delete_thread(thread.id.clone()).await.unwrap(),
+        DeletedWorktree::Removed
+    ));
+    assert!(!path.exists());
+    assert_eq!(
+        app.thread(thread.id).await.unwrap_err().code,
+        "missing_thread"
+    );
+    let cancelled = tokio::time::timeout(Duration::from_secs(1), app.await_commit_message(job))
+        .await
+        .expect("deletion must cancel generation before its timeout")
         .unwrap_err();
     assert_eq!(cancelled.code, "cancelled");
     wait_until(|| pids.iter().all(|pid| unsafe { libc::kill(*pid, 0) } != 0)).await;

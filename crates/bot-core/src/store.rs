@@ -301,6 +301,46 @@ impl Store {
         };
         Ok(())
     }
+    pub fn delete_thread(&mut self, thread: &ThreadSnapshot) -> Result<()> {
+        let tx = self.db.transaction()?;
+        let turn_ids: Vec<String> = thread
+            .turns
+            .iter()
+            .map(|turn| turn.id.to_string())
+            .collect();
+        let receipts: Vec<(String, String)> = {
+            let mut query = tx.prepare("SELECT request_id, data FROM receipts")?;
+            query
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<std::result::Result<_, _>>()?
+        };
+        for (id, data) in receipts {
+            let receipt: Receipt = serde_json::from_str(&data)?;
+            if turn_ids.contains(&receipt.turn_id.to_string()) {
+                tx.execute("DELETE FROM receipts WHERE request_id=?1", [id])?;
+            }
+        }
+        let terminal_state: Option<String> = tx
+            .query_row(
+                "SELECT value FROM ui_state WHERE key='z1:terminal-state'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(value) = terminal_state
+            && let Ok(mut state) = serde_json::from_str::<serde_json::Value>(&value)
+            && let Some(states) = state.as_object_mut()
+            && states.remove(&thread.id.to_string()).is_some()
+        {
+            tx.execute(
+                "UPDATE ui_state SET value=?1 WHERE key='z1:terminal-state'",
+                [serde_json::to_string(&state)?],
+            )?;
+        }
+        tx.execute("DELETE FROM threads WHERE id=?1", [thread.id.to_string()])?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn receipt(&self, id: &str, input: &str) -> Result<Option<Receipt>> {
         let row: Option<(String, String)> = self
             .db

@@ -295,6 +295,8 @@ describe("codexBusy", () => {
           ? { kind: session, reason: "gone" }
           : { kind: session },
       checkout,
+      createdAtMs: null,
+      archivedAtMs: null,
       updatedAtMs: null,
       awaitingApproval: false,
       pinnedAtMs: null,

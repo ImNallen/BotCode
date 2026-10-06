@@ -16,7 +16,9 @@ pub fn settlement_at(input: SettlementInput<'_>) -> Option<u64> {
     let thread = input.thread;
     match thread.placement {
         Placement::Settled { at_ms } => return Some(at_ms),
-        Placement::Kept | Placement::Pinned { kept: true, .. } => return None,
+        Placement::Archived { .. } | Placement::Kept | Placement::Pinned { kept: true, .. } => {
+            return None;
+        }
         _ => {}
     }
     if input.blocked

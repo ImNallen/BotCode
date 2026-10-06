@@ -1,5 +1,6 @@
 // Section order and labels follow pingdotgg/t3code v0.0.45 settings/settingsSearch.ts (MIT).
 import {
+  ArchiveIcon,
   HardDriveIcon,
   KeyboardIcon,
   PaletteIcon,
@@ -16,6 +17,7 @@ export const settingsSection = z.enum([
   "appearance",
   "keybindings",
   "storage",
+  "archived",
 ]);
 export type SettingsSection = z.infer<typeof settingsSection>;
 
@@ -355,6 +357,25 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
       },
     ],
   },
+  archived: {
+    title: "Archived",
+    icon: ArchiveIcon,
+    scoped: true,
+    groups: [
+      {
+        id: "archived",
+        title: "Archived threads",
+        rows: [
+          {
+            id: "archive",
+            title: "Archived threads",
+            description: "View and restore archived threads.",
+            keywords: "unarchive restore delete history",
+          },
+        ],
+      },
+    ],
+  },
   storage: {
     title: "Storage",
     icon: HardDriveIcon,
@@ -364,6 +385,13 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         id: "storage-worktrees",
         title: "Worktrees",
         rows: [
+          {
+            id: "worktree-on-delete",
+            title: "Delete worktrees with deleted threads",
+            description:
+              "Remove unused worktrees when active or archived threads are deleted. Worktrees with local changes are kept.",
+            keywords: worktreeCleanupKeywords,
+          },
           {
             id: "worktree-after-days",
             title: "Delete inactive worktrees",

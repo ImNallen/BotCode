@@ -130,7 +130,7 @@ The native debug bundle used a disposable one-commit repository, an isolated `Z1
 - Settings › General › New threads › Workspace changed the default to **New worktree**. The open draft followed it. Search for "worktree" found the row.
 - After Command+Q and an explicit relaunch with the same data directory, the default stayed **New worktree**. The thread reopened as **Worktree**, and a follow-up replied `Z1_RESUME_OK`. All six cwd records in its Codex session named the worktree.
 
-Worktrees are not removed, because Z1 does not delete threads yet. No new pixel-difference measurement was made.
+Thread deletion was unavailable in this 2026-10-03 run. Delete-time worktree removal is now verified under [Thread actions and Archived settings](#thread-actions-and-archived-settings). No new pixel-difference measurement was made.
 
 ## Branch picker
 
@@ -475,3 +475,34 @@ Verified on macOS on 2026-10-06 with `pnpm tauri dev`, an isolated `BOT_CODE_DAT
 | Drop outside the composer | Dropping the PNG on the timeline added nothing, and the page stayed in place. |
 
 A retried submit after a lost response had no native observation, because the window cannot drop a response. The runtime test covers it. An image-only message, unsupported image types, and the 10 MiB limit had no native observation. Tests cover each.
+
+## Thread actions and Archived settings
+
+Initial feature verification passed on macOS on 2026-10-06 against T3 Code v0.0.45. `pnpm typecheck`, `pnpm test:ui` (197 tests), and `cargo test -p bot-core` (241 tests) passed. The debug Tauri app bundle built successfully. Prettier, rustfmt, and the whitespace check passed.
+
+The native bundle used the temporary identifier `dev.bot.code.threadverify`, the disposable repository `/tmp/bot-thread-actions/native/repository`, and `BOT_CODE_DATA_DIR=/tmp/bot-thread-actions/native/data`. Five persisted conversation fixtures supplied history and local, clean-worktree, and dirty-worktree checkouts. Three additional fixtures exercised automatic, kept, and settled placement. `BOT_CODE_CODEX_BIN` pointed to the core tests' scripted app-server peer, so running-turn checks used no live Codex account. Git, SQLite, the native warning sheets, clipboard, and terminal processes were real. The window was 1100×780.
+
+Each successful rename, copy, pin, archive, restore, storage change, and deletion was followed by a full quit and explicit relaunch with the same isolated data directory. The following checks combined native observations with clipboard, SQLite, Git, file, and process assertions:
+
+| Workflow | Observed result |
+| --- | --- |
+| Thread menu | T3's Rename thread, Copy, Archive thread, and destructive Delete appeared after the existing arrangement actions. Copy offered Path, Branch, and Thread ID. |
+| Rename | The inline input selected the title. Enter updated the card and breadcrumb, and the title persisted after restart. Escape cancelled a replacement, an empty Enter left the editor open, and a valid title saved on blur and survived restart. |
+| Copy | Thread ID matched SQLite. Local Path and Branch matched the repository and `main`; worktree Path and Branch matched the actual checkout and `botcode/fixture-3`. The clipboard was checked after each action. |
+| Archive and restore | Archiving the open pinned thread hid it and selected the next card. Settings > Archived listed its project, title, ages, and Unarchive button after restart. Restore preserved the exact pin timestamp and conversation history. Separate archive/restore cycles preserved automatic, kept, and settled placements, including the settled timestamp, across restart. |
+| Delete with cleanup off | Cancel retained the open thread. Confirm removed its history and selected the next thread. The worktree and branch remained after restart. |
+| Storage | Delete worktrees with deleted threads started off. Enabling it persisted after restart; the existing inactive and unchanged switches stayed off. |
+| Clean worktree deletion | A native terminal recorded its shell PID. Confirming deletion stopped that PID before app quit, removed the checkout, kept the branch, and selected the next thread. The history and checkout stayed absent after restart. |
+| Dirty worktree deletion | The thread disappeared and the sidebar reported "Thread deleted. Worktree kept. working tree has changes" in neutral text. Its untracked `draft.txt`, checkout, and branch survived restart. |
+| Running checkout refusal | Archive and Delete were disabled on the running thread. Confirming Delete on another thread sharing its local checkout returned the busy error; both histories and the target's live terminal remained. Stop completed the scripted turn before restart. |
+| Git checkout refusal | A native Commit ran inside a held disposable pre-commit hook. Deleting another thread sharing the checkout returned the busy error without removing its history or terminal. Releasing the hook completed the commit; both threads remained after restart. |
+| Archived deletion | The Archived row's context menu offered Unarchive and Delete. Cancel preserved the archive across restart. After temporarily moving the repository away, the page still listed it and Delete succeeded. The empty archive and retained project were checked after restart. |
+
+Core regressions additionally cover running and pending admission, shared checkout ownership, deletion surviving caller cancellation, stale terminal attachment, PR membership and submission-receipt removal, shared PR/review data retention, ignored and locked worktrees, default-off cleanup, and database failure after worktree removal. That last case leaves the conversation available through the existing missing-worktree restoration path. No force removal or delayed cleanup queue was added.
+
+Screenshots, fixture manifests, timestamped assertions, suite logs, and the independent review are under `/tmp/bot-thread-actions`. Review found and rechecked a pending-rename race: the editor and rename switching now stay disabled until the save finishes. Native focus and normal save paths passed. No new pixel-difference measurement was made; live GitHub PR mutations and a real Codex turn were outside this run.
+
+After composer image attachments merged in PR #46, this change was rebased onto `8db0584`. Type checking, all 226 UI tests, the production web build, formatting, all 261 existing core tests, and workspace Clippy passed. An additional core integration test passed for a renamed image-only first message, image history retained by an archived thread across restart, and the attachment sweep removing an old shared image after its last referencing thread is deleted. Rebase and integration evidence is under `/tmp/bot-thread-actions/shipping`.
+
+
+Before opening the PR, the branch was rebased onto the updated `main`, which adds generated commit messages and pull request text. Typecheck, all 205 UI tests, all 252 core tests, the production and Tauri builds, formatting, and Clippy with warnings denied passed. The new `thread_deletion_cancels_a_running_commit_preview` test passed without a production fix. It deletes a clean worktree during a stalled preview, requires a cancelled result, and checks that the generator and its descendant stop before app shutdown. The existing maintenance loop provides that cancellation after the thread disappears. The rebuilt native app repeated rename, archive, restore, and clean worktree deletion, with a restart after each action. Deletion stopped its live terminal before app quit, kept the branch, selected the next thread, and remained absent after restart. These integration checks used the same isolated data directory and an additional disposable worktree. An independent integration review found no remaining blocker.

@@ -96,6 +96,18 @@ impl Sweep<'_> {
             Err(e) => Err(e.message.trim().to_owned()),
         }
     }
+    pub fn remove_deleted(&self, candidate: &Candidate) -> Checked<()> {
+        if !candidate.path.exists() {
+            return Ok(());
+        }
+        self.inspect(candidate)?;
+        git(
+            &candidate.workspace_root,
+            &["worktree", "remove", &candidate.path.to_string_lossy()],
+        )
+        .map(drop)
+        .map_err(|e| e.message.trim().to_owned())
+    }
     fn eligible(
         &self,
         candidate: &Candidate,

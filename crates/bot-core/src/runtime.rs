@@ -1,4 +1,6 @@
 mod naming;
+mod thread_actions;
+use thread_actions::DeleteCompletion;
 mod pr_review;
 mod pull_requests;
 mod writing;
@@ -80,6 +82,7 @@ impl Location {
 /// Why a checkout path is temporarily closed to new turns and switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Hold {
+    Delete,
     Switch,
     Cleanup,
     Restore,
@@ -92,6 +95,7 @@ impl Hold {
         AppError::new(
             "checkout_busy",
             match self {
+                Self::Delete => "Bot Code is deleting a thread in this checkout.",
                 Self::Naming => "Bot Code is naming this worktree branch. Try again in a moment.",
                 Self::PullRequest => {
                     "A pull request operation is using this checkout. Wait for its result."
@@ -117,9 +121,12 @@ impl Hold {
                 "checkout_busy",
                 "Codex is working in this checkout. Git actions return when the turn finishes.",
             ),
-            Self::Switch | Self::Cleanup | Self::Restore | Self::PullRequest | Self::Naming => {
-                turn_running()
-            }
+            Self::Delete
+            | Self::Switch
+            | Self::Cleanup
+            | Self::Restore
+            | Self::PullRequest
+            | Self::Naming => turn_running(),
         }
     }
 }
@@ -206,6 +213,8 @@ enum Command {
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
     Arrange(ThreadId, Arrange, Reply<()>),
+    Rename(ThreadId, String, Reply<ThreadSnapshot>),
+    Delete(ThreadId, Reply<DeletedWorktree>),
     AutoSettle(settings::AutoSettle, Reply<()>),
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
@@ -319,6 +328,9 @@ impl App {
                 writing: writing::Writing::default(),
                 git_jobs: tokio::task::JoinSet::new(),
                 attachments: attachments.clone(),
+                delete_jobs: tokio::task::JoinSet::new(),
+                deleting: HashSet::new(),
+                terminals: terminals.clone(),
                 config,
                 store,
                 workspaces,
@@ -401,6 +413,12 @@ impl App {
         thread: Option<ThreadId>,
     ) -> Result<(Workspace, Location)> {
         self.call(|r| Command::Checkout(id, thread, r)).await
+    }
+    pub async fn list_thread_summaries(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Result<Vec<ThreadSummary>> {
+        self.call(|r| Command::Threads(workspace, r)).await
     }
     pub async fn workspace_view(
         &self,
@@ -727,6 +745,12 @@ impl App {
     }
     pub async fn interrupt(&self, id: ThreadId) -> Result<()> {
         self.call(|r| Command::Interrupt(id, r)).await
+    }
+    pub async fn rename_thread(&self, id: ThreadId, title: String) -> Result<ThreadSnapshot> {
+        self.call(|r| Command::Rename(id, title, r)).await
+    }
+    pub async fn delete_thread(&self, id: ThreadId) -> Result<DeletedWorktree> {
+        self.call(|r| Command::Delete(id, r)).await
     }
     pub async fn arrange(&self, id: ThreadId, action: Arrange) -> Result<()> {
         self.call(|r| Command::Arrange(id, action, r)).await
@@ -1057,6 +1081,9 @@ struct Owner {
     review_work: ReviewWork,
     git_jobs: tokio::task::JoinSet<GitCompletion>,
     attachments: Attachments,
+    delete_jobs: tokio::task::JoinSet<DeleteCompletion>,
+    deleting: HashSet<ThreadId>,
+    terminals: Terminals,
     config: RuntimeConfig,
     store: Store,
     workspaces: HashMap<WorkspaceId, Workspace>,
@@ -1201,6 +1228,9 @@ impl Owner {
         Ok(())
     }
     fn thread(&self, id: &ThreadId) -> Result<&ThreadSnapshot> {
+        if self.deleting.contains(id) {
+            return Err(AppError::new("busy", "This thread is being deleted."));
+        }
         self.threads
             .get(id)
             .ok_or_else(|| AppError::new("missing_thread", "Conversation not found."))
@@ -1393,6 +1423,9 @@ impl Owner {
                 Some(done)=self.naming.active.join_next(), if !self.naming.active.is_empty()=>{
                     self.finish_name(done);
                 }
+                Some(Ok(done))=self.delete_jobs.join_next(), if !self.delete_jobs.is_empty()=>{
+                    self.finish_delete(done);
+                }
                 Some(done)=self.git_jobs.join_next(), if !self.git_jobs.is_empty()=>{
                     if let Err(error)=self.finish_git_job(done, true) { eprintln!("Git completion failed: {}", error.message); }
                 }
@@ -1426,6 +1459,9 @@ impl Owner {
             let _ = provider.terminate().await;
         }
         commands.close();
+        while let Some(Ok(done)) = self.delete_jobs.join_next().await {
+            self.finish_delete(done);
+        }
         let mut git_shutdown = Ok(());
         while let Some(completion) = self.git_jobs.join_next().await {
             if let Err(error) = self.finish_git_job(completion, false) {
@@ -1645,6 +1681,14 @@ impl Owner {
                 let _ = reply.send(result);
             }
             Command::Snapshot(id, resume, reply) => {
+                if resume && self.thread(&id).is_ok_and(|thread| thread.archived()) {
+                    let _ = reply.send(Err(AppError::new(
+                        "thread_archived",
+                        "Unarchive this thread first.",
+                    )));
+                    return;
+                }
+
                 // A removed worktree is restored by the next submit, which resumes as usual.
                 let should_resume = resume && self.thread(&id).is_ok_and(|t| {
                     t.native_thread_id.is_some()
@@ -1837,22 +1881,34 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
+            Command::Delete(id, reply) => self.begin_delete(id, reply),
+            Command::Rename(id, title, reply) => {
+                let result = (|| {
+                    let mut thread = self.thread(&id)?.clone();
+                    thread.rename(&title)?;
+                    self.install(thread)?;
+                    self.thread(&id).cloned()
+                })();
+                let _ = reply.send(result);
+            }
             Command::Arrange(id, action, reply) => {
                 let result = (|| -> Result<()> {
-                    self.thread(&id)?;
-                    let current = self.thread(&id)?;
+                    let mut thread = self.thread(&id)?.clone();
+                    if matches!(action, Arrange::Archive)
+                        && !self.idle(&thread, thread.root(self.workspace(&thread.workspace_id)?))
+                    {
+                        return Err(AppError::new(
+                            "busy",
+                            "Stop this thread and wait for checkout operations before archiving it.",
+                        ));
+                    }
                     let settled = self.settlement(
-                        current,
-                        self.auto_settle.rules(&current.workspace_id),
+                        &thread,
+                        self.auto_settle.rules(&thread.workspace_id),
                         now_ms(),
                     );
-                    let thread = self.threads.get_mut(&id).unwrap();
-                    let before = (thread.placement, thread.snooze);
-                    let arranged = thread.arrange(action, now_ms(), settled);
-                    if (thread.placement, thread.snooze) != before {
-                        self.commit(&id)?;
-                    }
-                    arranged
+                    thread.arrange(action, now_ms(), settled)?;
+                    self.install(thread)
                 })();
                 let _ = reply.send(result);
             }
@@ -1891,6 +1947,14 @@ impl Owner {
                 let _ = reply.send(Ok(()));
             }
             Command::ClaimRestore(id, reply) => {
+                if self.thread(&id).is_ok_and(|thread| thread.archived()) {
+                    let _ = reply.send(Err(AppError::new(
+                        "thread_archived",
+                        "Unarchive this thread first.",
+                    )));
+                    return;
+                }
+
                 let _ = reply.send(self.claim_restore(&id));
             }
             Command::ReleaseRestore(path, reply) => {
@@ -1931,6 +1995,12 @@ impl Owner {
             return Ok((receipt, false));
         }
         let thread = self.thread(id)?;
+        if thread.archived() {
+            return Err(AppError::new(
+                "thread_archived",
+                "Unarchive this thread first.",
+            ));
+        }
         if matches!(
             thread.session,
             SessionState::Connecting | SessionState::Running | SessionState::Interrupting
@@ -2006,7 +2076,7 @@ impl Owner {
         t.session = SessionState::Connecting;
         t.diagnostic = None;
         t.snooze = None;
-        if t.turns.len() == 1 {
+        if t.turns.len() == 1 && t.title == "New conversation" {
             let first = &t.turns[0];
             t.title = match first.attachments.first() {
                 Some(image) if text.is_empty() => format!("Image: {}", image.name),

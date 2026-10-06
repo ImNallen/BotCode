@@ -39,6 +39,8 @@ it("refreshes the active branch picker after a worktree naming event without ref
       discovering: false,
       discoveryError: null,
     },
+    createdAtMs: null,
+    archivedAtMs: null,
     updatedAtMs: 1,
     awaitingApproval: false,
     pinnedAtMs: null,

@@ -578,3 +578,141 @@ fn events_serialize_with_a_type_tag_and_camel_case_fields() {
         serde_json::json!({"type":"exited","exitCode":null})
     );
 }
+
+#[tokio::test]
+async fn deleting_a_thread_reaps_all_its_shells_and_preserves_other_terminals() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let thread = app
+        .create_thread(workspace.id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    let draft = Events::default();
+    app.terminal_attach(
+        workspace.id.clone(),
+        None,
+        term("term-1"),
+        80,
+        24,
+        draft.sink(),
+    )
+    .await
+    .unwrap();
+    write(&app, &workspace.id, None, "echo pid=$$\n").await;
+    let draft_pid = draft.pid().await;
+    let mut pids = vec![];
+    for name in ["term-1", "term-2"] {
+        let events = Events::default();
+        app.terminal_attach(
+            workspace.id.clone(),
+            Some(thread.id.clone()),
+            term(name),
+            80,
+            24,
+            events.sink(),
+        )
+        .await
+        .unwrap();
+        app.terminal_write(
+            workspace.id.clone(),
+            Some(thread.id.clone()),
+            term(name),
+            "echo pid=$$\n".into(),
+        )
+        .await
+        .unwrap();
+        pids.push(events.pid().await);
+    }
+    app.delete_thread(thread.id.clone()).await.unwrap();
+    for pid in pids {
+        assert!(!alive(pid), "Deletion returns after every shell is reaped");
+    }
+    assert!(alive(draft_pid));
+    assert!(
+        app.terminal_attach(
+            workspace.id.clone(),
+            Some(thread.id),
+            term("term-3"),
+            80,
+            24,
+            |_| {}
+        )
+        .await
+        .is_err()
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn canceled_delete_caller_does_not_release_the_actor_job_or_checkout_hold() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let thread = app
+        .create_thread(workspace.id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    let sibling = app
+        .create_thread(workspace.id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    let events = Events::default();
+    app.terminal_attach(
+        workspace.id.clone(),
+        Some(thread.id.clone()),
+        term("term-1"),
+        80,
+        24,
+        events.sink(),
+    )
+    .await
+    .unwrap();
+    write(
+        &app,
+        &workspace.id,
+        Some(&thread.id),
+        "trap '' HUP; echo pid=$$\n",
+    )
+    .await;
+    let pid = events.pid().await;
+    let deletion = tokio::spawn({
+        let app = app.clone();
+        let id = thread.id.clone();
+        async move { app.delete_thread(id).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !deletion.is_finished(),
+        "The shell ignores HUP, so the actor job is still stopping it"
+    );
+    deletion.abort();
+    assert_eq!(
+        app.delete_thread(sibling.id.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "busy"
+    );
+    gone(
+        pid,
+        "Deletion must reap the shell even after caller cancellation",
+    )
+    .await;
+    for _ in 0..300 {
+        if app
+            .thread(thread.id.clone())
+            .await
+            .is_err_and(|error| error.code == "missing_thread")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        app.thread(thread.id).await.unwrap_err().code,
+        "missing_thread"
+    );
+    app.delete_thread(sibling.id).await.unwrap();
+    app.shutdown().await.unwrap();
+}
