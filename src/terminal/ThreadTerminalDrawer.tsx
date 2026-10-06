@@ -60,7 +60,7 @@ import {
   closeTerminal,
   getTerminalLabel,
   newTerminal,
-  nextTerminalId,
+  allocateTerminalId,
   setActiveTerminal,
   setTerminalHeight,
   splitTerminal,
@@ -1234,12 +1234,12 @@ export function PersistentThreadTerminalDrawer({
 
   const splitTerminalIn = (direction: "horizontal" | "vertical") => {
     update((state) =>
-      splitTerminal(state, nextTerminalId(state.terminalIds), direction),
+      splitTerminal(state, allocateTerminalId(state), direction),
     );
     bumpFocusRequestId();
   };
   const createNewTerminal = () => {
-    update((state) => newTerminal(state, nextTerminalId(state.terminalIds)));
+    update((state) => newTerminal(state, allocateTerminalId(state)));
     bumpFocusRequestId();
   };
   const activateTerminal = (terminalId: string) => {

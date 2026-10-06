@@ -4,16 +4,23 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   DEFAULT_THREAD_TERMINAL_UI_STATE,
+  activatePanelTerminal,
+  allocateTerminalId,
+  closePanelSurface,
+  closePanelTerminal,
   closeTerminal,
   ensureTerminal,
   getTerminalLabel,
   newTerminal,
   nextTerminalId,
+  openPanelTerminal,
+  panelTerminalIds,
   parseTerminalStates,
   selectTerminalState,
   setActiveTerminal,
   setTerminalHeight,
   setTerminalOpen,
+  splitPanelTerminal,
   splitTerminal,
   terminalScopeKey,
   toggleTerminalOpen,
@@ -38,6 +45,7 @@ describe("terminal transitions", () => {
       activeTerminalId: "",
       terminalGroups: [],
       activeTerminalGroupId: "",
+      panelSurfaces: [],
     });
   });
 
@@ -49,6 +57,7 @@ describe("terminal transitions", () => {
       activeTerminalId: "term-1",
       terminalGroups: [{ id: "group-term-1", terminalIds: ["term-1"] }],
       activeTerminalGroupId: "group-term-1",
+      panelSurfaces: [],
     });
   });
 
@@ -245,7 +254,7 @@ describe("terminal states by scope", () => {
     );
   });
 
-  it("reads stored states and drops invalid and default entries", () => {
+  it("reads entries saved before panel terminals existed", () => {
     const stored = JSON.stringify({
       "thread-1": {
         terminalOpen: true,
@@ -266,10 +275,150 @@ describe("terminal states by scope", () => {
         activeTerminalId: "term-1",
         terminalGroups: [{ id: "group-term-1", terminalIds: ["term-1"] }],
         activeTerminalGroupId: "group-term-1",
+        panelSurfaces: [],
       },
     });
     assert.deepEqual(parseTerminalStates("not json"), {});
     assert.deepEqual(parseTerminalStates(null), {});
+  });
+});
+
+describe("panel terminals", () => {
+  const withPanel = (
+    ...steps: Array<(state: ThreadTerminalUiState) => ThreadTerminalUiState>
+  ) => apply((s) => openPanelTerminal(s, "term-1"), ...steps);
+
+  it("opens a panel surface named after its first terminal", () => {
+    assert.deepEqual(withPanel().panelSurfaces, [
+      {
+        id: "terminal:term-1",
+        terminalIds: ["term-1"],
+        activeTerminalId: "term-1",
+      },
+    ]);
+  });
+
+  it("allocates the lowest free id across the drawer and the panel", () => {
+    const state = withPanel(
+      (s) => setTerminalOpen(s, true),
+      (s) => openPanelTerminal(s, allocateTerminalId(s)),
+      (s) => newTerminal(s, allocateTerminalId(s)),
+    );
+    assert.deepEqual(state.terminalIds, ["term-2", "term-4"]);
+    assert.deepEqual(panelTerminalIds(state), ["term-1", "term-3"]);
+    assert.equal(
+      allocateTerminalId(closePanelTerminal(state, "term-3")),
+      "term-3",
+    );
+  });
+
+  it("never gives the drawer a panel terminal", () => {
+    const state = withPanel();
+    assert.deepEqual(newTerminal(state, "term-1").terminalIds, []);
+    assert.deepEqual(splitTerminal(state, "term-1").terminalIds, []);
+    const parsed = parseTerminalStates(
+      JSON.stringify({
+        "thread-1": {
+          ...state,
+          terminalOpen: true,
+          terminalIds: ["term-1", "term-2"],
+          activeTerminalId: "term-1",
+          terminalGroups: [
+            { id: "group-term-1", terminalIds: ["term-1", "term-2"] },
+          ],
+          activeTerminalGroupId: "group-term-1",
+        },
+      }),
+    )["thread-1"];
+    assert.deepEqual(parsed?.terminalIds, ["term-2"]);
+    assert.deepEqual(parsed?.activeTerminalId, "term-2");
+    assert.deepEqual(parsed?.terminalGroups, [
+      { id: "group-term-1", terminalIds: ["term-2"] },
+    ]);
+  });
+
+  it("splits a panel surface up to the group limit", () => {
+    const state = withPanel(
+      (s) => splitPanelTerminal(s, "terminal:term-1", "term-2"),
+      (s) => splitPanelTerminal(s, "terminal:term-1", "term-3", "vertical"),
+      (s) => splitPanelTerminal(s, "terminal:term-1", "term-4", "vertical"),
+    );
+    assert.deepEqual(state.panelSurfaces, [
+      {
+        id: "terminal:term-1",
+        terminalIds: ["term-1", "term-2", "term-3", "term-4"],
+        activeTerminalId: "term-4",
+        splitDirection: "vertical",
+      },
+    ]);
+    assert.equal(splitPanelTerminal(state, "terminal:term-1", "term-5"), state);
+  });
+
+  it("activates a terminal only within its own surface", () => {
+    const state = withPanel(
+      (s) => splitPanelTerminal(s, "terminal:term-1", "term-2"),
+      (s) => openPanelTerminal(s, "term-3"),
+      (s) => activatePanelTerminal(s, "terminal:term-1", "term-1"),
+      (s) => activatePanelTerminal(s, "terminal:term-1", "term-3"),
+    );
+    assert.deepEqual(
+      state.panelSurfaces.map((surface) => surface.activeTerminalId),
+      ["term-1", "term-3"],
+    );
+  });
+
+  it("activates the last remaining terminal after closing the active one", () => {
+    const state = withPanel(
+      (s) => splitPanelTerminal(s, "terminal:term-1", "term-2"),
+      (s) => splitPanelTerminal(s, "terminal:term-1", "term-3"),
+      (s) => activatePanelTerminal(s, "terminal:term-1", "term-1"),
+      (s) => closePanelTerminal(s, "term-1"),
+    );
+    assert.deepEqual(state.panelSurfaces, [
+      {
+        id: "terminal:term-1",
+        terminalIds: ["term-2", "term-3"],
+        activeTerminalId: "term-3",
+      },
+    ]);
+  });
+
+  it("removes the surface with its last terminal", () => {
+    const state = withPanel(
+      (s) => openPanelTerminal(s, "term-2"),
+      (s) => closePanelTerminal(s, "term-1"),
+    );
+    assert.deepEqual(
+      state.panelSurfaces.map((surface) => surface.id),
+      ["terminal:term-2"],
+    );
+    assert.deepEqual(
+      closePanelSurface(state, "terminal:term-2").panelSurfaces,
+      [],
+    );
+  });
+
+  it("keeps panel terminals when the drawer's last terminal closes", () => {
+    const state = withPanel(
+      (s) => setTerminalOpen(s, true),
+      (s) => closeTerminal(s, "term-2"),
+    );
+    assert.deepEqual(state.terminalIds, []);
+    assert.deepEqual(panelTerminalIds(state), ["term-1"]);
+  });
+
+  it("stores a scope while it has panel terminals", () => {
+    const opened = updateTerminalStates({}, "thread-1", (s) =>
+      openPanelTerminal(s, "term-1"),
+    );
+    assert.deepEqual(Object.keys(opened), ["thread-1"]);
+    assert.deepEqual(parseTerminalStates(JSON.stringify(opened)), opened);
+    assert.deepEqual(
+      updateTerminalStates(opened, "thread-1", (s) =>
+        closePanelTerminal(s, "term-1"),
+      ),
+      {},
+    );
   });
 });
 
