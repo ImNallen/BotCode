@@ -796,3 +796,47 @@ async fn unrelated_mutation_preserves_in_flight_checkout_discovery() {
         ));
     }
 }
+
+#[tokio::test]
+async fn thread_deletion_forgets_its_pr_membership_and_preserves_shared_membership() {
+    let f = Fixture::new();
+    let (app, workspace, first) = f.open().await;
+    let second = app
+        .create_thread(workspace.clone(), NewCheckout::Local)
+        .await
+        .unwrap()
+        .id;
+    app.link_pull_request(first.clone(), key(41).url())
+        .await
+        .unwrap();
+    app.link_pull_request(second.clone(), key(41).url())
+        .await
+        .unwrap();
+    app.delete_thread(first.clone()).await.unwrap();
+    assert_eq!(
+        app.list_thread_pull_requests(first, false)
+            .await
+            .unwrap_err()
+            .code,
+        "missing_thread"
+    );
+    assert!(
+        app.list_thread_pull_requests(second.clone(), false)
+            .await
+            .unwrap()
+            .links
+            .iter()
+            .any(|link| link.pr.key == key(41))
+    );
+    app.shutdown().await.unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    assert!(
+        app.list_thread_pull_requests(second, false)
+            .await
+            .unwrap()
+            .links
+            .iter()
+            .any(|link| link.pr.key == key(41))
+    );
+    app.shutdown().await.unwrap();
+}

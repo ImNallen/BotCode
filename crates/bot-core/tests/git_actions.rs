@@ -845,6 +845,23 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
         tokio::spawn(async move { run(&app, &workspace, None, commit()).await })
     };
     wait_until(|| started.exists()).await;
+    let sibling = app
+        .create_thread(workspace.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.delete_thread(sibling.id.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "busy"
+    );
+    assert!(app.thread(sibling.id).await.is_ok());
+    assert_eq!(
+        app.delete_thread(local.id.clone()).await.unwrap_err().code,
+        "busy"
+    );
+    assert!(app.thread(local.id.clone()).await.is_ok());
     let busy = "A Git action is running in this checkout. Try again when it finishes.";
     let refused = app
         .submit(local.id.clone(), "second".into(), "second".into(), vec![])

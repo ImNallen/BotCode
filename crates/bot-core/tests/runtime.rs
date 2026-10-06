@@ -3485,3 +3485,407 @@ async fn turn_images_survive_reopen_and_the_sweep_keeps_only_referenced_old_file
     assert_eq!(files, [format!("{SHOT_ID}.png")]);
     app.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn archived_placements_and_rename_survive_restart_and_reject_live_actions() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let first = conversation(&app, &f).await;
+    let workspace = first.workspace_id.clone();
+    let mut expected = vec![];
+    for actions in [
+        vec![],
+        vec![Arrange::Pin],
+        vec![Arrange::Settle],
+        vec![Arrange::Settle, Arrange::Unsettle],
+    ] {
+        let thread = app
+            .create_thread(workspace.clone(), NewCheckout::Local)
+            .await
+            .unwrap();
+        for action in actions {
+            app.arrange(thread.id.clone(), action).await.unwrap();
+        }
+        let before = app.thread(thread.id.clone()).await.unwrap().placement;
+        app.arrange(
+            thread.id.clone(),
+            Arrange::Snooze {
+                until_ms: now_ms() + 60_000,
+            },
+        )
+        .await
+        .unwrap();
+        app.rename_thread(thread.id.clone(), "  My saved title  ".into())
+            .await
+            .unwrap();
+        app.arrange(thread.id.clone(), Arrange::Archive)
+            .await
+            .unwrap();
+        let archived = app.thread(thread.id.clone()).await.unwrap();
+        assert!(archived.archived());
+        assert!(archived.snooze.is_none());
+        assert_eq!(archived.title, "My saved title");
+        assert_eq!(
+            app.arrange(thread.id.clone(), Arrange::Pin)
+                .await
+                .unwrap_err()
+                .code,
+            "thread_archived"
+        );
+        assert_eq!(
+            app.submit(thread.id.clone(), "hidden".into(), "hello".into(), vec![])
+                .await
+                .unwrap_err()
+                .code,
+            "thread_archived"
+        );
+        assert_eq!(
+            app.open_thread(thread.id.clone()).await.unwrap_err().code,
+            "thread_archived"
+        );
+        expected.push((thread.id, before));
+    }
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    let view = app.workspace_view(workspace, None).await.unwrap();
+    for (id, before) in expected {
+        let summary = view.threads.iter().find(|thread| thread.id == id).unwrap();
+        assert!(summary.archived_at_ms.is_some());
+        assert!(summary.created_at_ms.is_some());
+        assert!(
+            summary.pinned_at_ms.is_none()
+                && summary.settled_at_ms.is_none()
+                && summary.snoozed_until_ms.is_none()
+        );
+        app.arrange(id.clone(), Arrange::Unarchive).await.unwrap();
+        assert_eq!(app.thread(id.clone()).await.unwrap().placement, before);
+        assert_eq!(app.thread(id).await.unwrap().title, "My saved title");
+    }
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn manual_draft_rename_survives_first_prompt_and_empty_name_refuses() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.rename_thread(thread.id.clone(), "Custom title".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        app.rename_thread(thread.id.clone(), "  ".into())
+            .await
+            .unwrap_err()
+            .code,
+        "invalid_title"
+    );
+    app.submit(thread.id.clone(), "rename-first".into(), "hello".into(), vec![])
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(
+        app.thread(thread.id.clone()).await.unwrap().title,
+        "Custom title"
+    );
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(app.thread(thread.id).await.unwrap().title, "Custom title");
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn delete_refuses_running_and_same_checkout_then_removes_receipts_durably() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let other = app
+        .create_thread(thread.workspace_id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    app.submit(thread.id.clone(), "deleted-receipt".into(), "hold".into(), vec![])
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Running)
+    })
+    .await;
+    assert_eq!(
+        app.delete_thread(thread.id.clone()).await.unwrap_err().code,
+        "busy"
+    );
+    assert_eq!(
+        app.delete_thread(other.id.clone()).await.unwrap_err().code,
+        "busy"
+    );
+    app.interrupt(thread.id.clone()).await.unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Interrupted)
+    })
+    .await;
+    app.delete_thread(thread.id.clone()).await.unwrap();
+    assert!(f.repository.exists());
+    assert_eq!(
+        app.thread(thread.id.clone()).await.unwrap_err().code,
+        "missing_thread"
+    );
+    app.delete_thread(thread.id.clone()).await.unwrap();
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    let receipts: i64 = db
+        .query_row(
+            "SELECT count(*) FROM receipts WHERE request_id='deleted-receipt'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipts, 0);
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        app.thread(thread.id).await.unwrap_err().code,
+        "missing_thread"
+    );
+    assert!(app.thread(other.id).await.is_ok());
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn delete_worktree_setting_retains_dirty_locked_and_default_off_but_removes_clean() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let local = conversation(&app, &f).await;
+    let disabled = app
+        .create_thread(local.workspace_id.clone(), main_worktree())
+        .await
+        .unwrap();
+    let (path, _) = worktree(&disabled.checkout);
+    assert!(matches!(
+        app.delete_thread(disabled.id).await.unwrap(),
+        DeletedWorktree::NotRequested
+    ));
+    assert!(path.exists());
+    app.save_settings(r#"{"storageCleanup":{"worktreeOnDelete":true}}"#)
+        .await
+        .unwrap();
+    for dirty in ["dirty", "ignored", "locked", "clean"] {
+        let thread = app
+            .create_thread(local.workspace_id.clone(), main_worktree())
+            .await
+            .unwrap();
+        let (path, branch) = worktree(&thread.checkout);
+        match dirty {
+            "dirty" => std::fs::write(path.join("notes.txt"), "keep me").unwrap(),
+            "ignored" => {
+                std::fs::write(path.join(".gitignore"), "secret\n").unwrap();
+                git_output(&path, &["add", ".gitignore"]);
+                git_output(
+                    &path,
+                    &[
+                        "-c",
+                        "user.name=T",
+                        "-c",
+                        "user.email=t@e.invalid",
+                        "commit",
+                        "-qm",
+                        "ignore",
+                    ],
+                );
+                std::fs::write(path.join("secret"), "keep me").unwrap();
+            }
+            "locked" => {
+                git_output(
+                    &f.repository,
+                    &["worktree", "lock", &path.to_string_lossy()],
+                );
+            }
+            _ => {}
+        }
+        let outcome = app.delete_thread(thread.id.clone()).await.unwrap();
+        if dirty == "clean" {
+            assert!(matches!(outcome, DeletedWorktree::Removed));
+            assert!(!path.exists());
+        } else {
+            assert!(
+                matches!(outcome, DeletedWorktree::Retained { .. }),
+                "{outcome:?}"
+            );
+            assert!(path.exists());
+        }
+        assert_eq!(
+            app.thread(thread.id).await.unwrap_err().code,
+            "missing_thread"
+        );
+        git_output(
+            &f.repository,
+            &["show-ref", "--verify", &format!("refs/heads/{branch}")],
+        );
+    }
+    app.delete_thread(local.id).await.unwrap();
+    assert!(f.repository.exists());
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn delete_database_failure_keeps_thread_and_releases_checkout_and_terminal_gate() {
+    let mut f = Fixture::new();
+    f.config.shell = Some("/bin/sh".into());
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    db.execute_batch("CREATE TRIGGER refuse_thread_delete BEFORE DELETE ON threads BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
+    assert!(app.delete_thread(thread.id.clone()).await.is_err());
+    assert!(app.thread(thread.id.clone()).await.is_ok());
+    app.terminal_attach(
+        thread.workspace_id.clone(),
+        Some(thread.id.clone()),
+        "term-1".parse().unwrap(),
+        80,
+        24,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    app.rename_thread(thread.id.clone(), "Still here".into())
+        .await
+        .unwrap();
+    db.execute_batch("DROP TRIGGER refuse_thread_delete;")
+        .unwrap();
+    app.delete_thread(thread.id.clone()).await.unwrap();
+    assert_eq!(
+        app.thread(thread.id).await.unwrap_err().code,
+        "missing_thread"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[test]
+fn legacy_placement_json_remains_live_and_archive_cannot_nest() {
+    for json in [
+        r#"{"kind":"auto"}"#,
+        r#"{"kind":"kept"}"#,
+        r#"{"kind":"pinned","atMs":17}"#,
+        r#"{"kind":"settled","atMs":29}"#,
+    ] {
+        let placement: Placement = serde_json::from_str(json).unwrap();
+        let mut thread = idle_thread(None, None);
+        thread.placement = placement;
+        thread.arrange(Arrange::Archive, 30, None).unwrap();
+        let serialized = serde_json::to_string(&thread.placement).unwrap();
+        thread.placement = serde_json::from_str(&serialized).unwrap();
+        assert!(thread.arrange(Arrange::Archive, 40, None).is_err());
+        thread.arrange(Arrange::Unarchive, 50, None).unwrap();
+        assert_eq!(thread.placement, placement);
+    }
+    assert!(
+        serde_json::from_str::<Placement>(
+            r#"{"kind":"archived","atMs":1,"restore":{"kind":"archived","atMs":2}}"#
+        )
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn metadata_archive_listing_restore_and_delete_work_when_repository_is_unavailable() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.arrange(thread.id.clone(), Arrange::Archive)
+        .await
+        .unwrap();
+    let moved = f.repository.with_file_name("repository-away");
+    std::fs::rename(&f.repository, &moved).unwrap();
+    assert!(
+        app.workspace_view(thread.workspace_id.clone(), None)
+            .await
+            .is_err()
+    );
+    let summary = app
+        .list_thread_summaries(thread.workspace_id.clone())
+        .await
+        .unwrap();
+    assert!(
+        summary
+            .iter()
+            .any(|item| item.id == thread.id && item.archived_at_ms.is_some())
+    );
+    app.arrange(thread.id.clone(), Arrange::Unarchive)
+        .await
+        .unwrap();
+    assert!(!app.thread(thread.id.clone()).await.unwrap().archived());
+    app.arrange(thread.id.clone(), Arrange::Archive)
+        .await
+        .unwrap();
+    app.delete_thread(thread.id).await.unwrap();
+    assert!(
+        app.list_thread_summaries(thread.workspace_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(moved.exists());
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn deleting_shared_worktree_retains_checkout_and_surviving_history() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let local = conversation(&app, &f).await;
+    let first = app
+        .create_thread(local.workspace_id.clone(), main_worktree())
+        .await
+        .unwrap();
+    let mut second = app
+        .create_thread(local.workspace_id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    app.save_settings(r#"{"storageCleanup":{"worktreeOnDelete":true}}"#)
+        .await
+        .unwrap();
+    app.shutdown().await.unwrap();
+    second.checkout = first.checkout.clone();
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    db.execute(
+        "UPDATE threads SET data=?1 WHERE id=?2",
+        rusqlite::params![
+            serde_json::to_string(&second).unwrap(),
+            second.id.to_string()
+        ],
+    )
+    .unwrap();
+    let app = reopen(&f.config).await;
+    let (path, branch) = worktree(&first.checkout);
+    assert!(matches!(
+        app.delete_thread(first.id).await.unwrap(),
+        DeletedWorktree::Retained { .. }
+    ));
+    assert!(path.exists());
+    assert!(app.thread(second.id).await.is_ok());
+    git_output(
+        &f.repository,
+        &["show-ref", "--verify", &format!("refs/heads/{branch}")],
+    );
+    let scratch = app.ensure_scratch().await.unwrap();
+    let folder = app
+        .create_thread(
+            scratch.id,
+            NewCheckout::Folder {
+                prompt: "scratch".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let Checkout::Folder { path } = folder.checkout else {
+        panic!("folder expected")
+    };
+    assert!(matches!(
+        app.delete_thread(folder.id).await.unwrap(),
+        DeletedWorktree::NotRequested
+    ));
+    assert!(path.exists());
+    app.shutdown().await.unwrap();
+}

@@ -33,6 +33,9 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
         review_work: ReviewWork::new(),
         git_jobs: JoinSet::new(),
         attachments: Attachments::new(dir.path()),
+        delete_jobs: JoinSet::new(),
+        deleting: HashSet::new(),
+        terminals: Terminals::new(None),
         config: RuntimeConfig {
             data_dir: dir.path().into(),
             gh_binary: "/no/gh".into(),
@@ -184,6 +187,9 @@ async fn late_lifecycle_completion_preserves_supersession_and_cleanup_latch() {
         review_work: ReviewWork::new(),
         git_jobs: JoinSet::new(),
         attachments: Attachments::new(dir.path()),
+        delete_jobs: JoinSet::new(),
+        deleting: HashSet::new(),
+        terminals: Terminals::new(None),
         config: RuntimeConfig {
             data_dir: dir.path().into(),
             gh_binary: "/no/gh".into(),
