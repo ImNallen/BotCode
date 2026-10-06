@@ -9,6 +9,9 @@ use crate::{
     domain::*,
     repo, settings,
     store::Store,
+    terminal::{
+        MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey, TerminalSize, Terminals,
+    },
     vcs,
 };
 use pr_review::ReviewWork;
@@ -28,6 +31,8 @@ pub struct RuntimeConfig {
     pub codex_binary: PathBuf,
     pub gh_binary: PathBuf,
     pub network_timeout: Duration,
+    /// The terminal shell. `None` tries `$SHELL`, then zsh, bash, and sh.
+    pub shell: Option<PathBuf>,
 }
 impl RuntimeConfig {
     pub fn from_environment() -> Result<Self> {
@@ -44,6 +49,7 @@ impl RuntimeConfig {
             codex_binary: vcs::installed_binary("codex", "Z1_CODEX_BIN"),
             gh_binary: vcs::installed_binary("gh", "Z1_GH_BIN"),
             network_timeout: Duration::from_secs(180),
+            shell: std::env::var_os("Z1_SHELL").map(PathBuf::from),
         })
     }
 }
@@ -197,6 +203,7 @@ pub struct App {
     sweeps: Arc<Mutex<()>>,
     wake: Arc<Notify>,
     gh: PathBuf,
+    terminals: Terminals,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
@@ -251,6 +258,7 @@ impl App {
         }
         let worktrees = config.data_dir.join("worktrees");
         let gh = config.gh_binary.clone();
+        let terminals = Terminals::new(config.shell.clone());
         let settings = config.data_dir.join("settings.json");
         let auto_settle = settings::auto_settle(&settings);
         let (commands, rx) = mpsc::channel(128);
@@ -303,6 +311,7 @@ impl App {
             sweeps: Arc::new(Mutex::new(())),
             wake: Arc::new(Notify::new()),
             gh,
+            terminals,
         };
         tokio::spawn(Sweeper::from(&app).run(
             app.commands.downgrade(),
@@ -336,9 +345,11 @@ impl App {
     pub async fn rename_workspace(&self, id: WorkspaceId, label: String) -> Result<Workspace> {
         self.call(|r| Command::RenameWorkspace(id, label, r)).await
     }
-    /// Deletes the project entry and its threads. Files on disk are left alone.
+    /// Deletes the project entry and its threads and closes its terminals. Files on disk are left alone.
     pub async fn remove_workspace(&self, id: WorkspaceId) -> Result<()> {
-        self.call(|r| Command::RemoveWorkspace(id, r)).await
+        self.call(|r| Command::RemoveWorkspace(id.clone(), r))
+            .await?;
+        self.close_terminals(move |key| key.workspace == id).await
     }
     async fn checkout(
         &self,
@@ -659,7 +670,123 @@ impl App {
         self.call(|r| Command::AutoSettle(rules, r)).await
     }
     pub async fn shutdown(&self) -> Result<()> {
+        self.close_terminals(|_| true).await?;
         self.call(Command::Shutdown).await
+    }
+    /// Subscribes `on_event` to a terminal, starting its shell in the checkout when none runs.
+    /// The first event is a history snapshot. Returns the subscription for `terminal_detach`.
+    pub async fn terminal_attach(
+        &self,
+        workspace_id: WorkspaceId,
+        thread_id: Option<ThreadId>,
+        terminal_id: TerminalId,
+        cols: u16,
+        rows: u16,
+        on_event: impl Fn(TerminalEvent) + Send + Sync + 'static,
+    ) -> Result<u64> {
+        let size = TerminalSize::new(cols, rows)?;
+        let key = TerminalKey {
+            workspace: workspace_id.clone(),
+            thread: thread_id.clone(),
+            terminal: terminal_id,
+        };
+        let sink: Sink = Arc::new(on_event);
+        let terminals = self.terminals.clone();
+        let attach = move |cwd: Option<PathBuf>| {
+            let (terminals, key, sink) = (terminals.clone(), key.clone(), sink.clone());
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    terminals.attach(key, cwd.as_deref(), size, sink)
+                })
+                .await
+                .map_err(|e| AppError::new("terminal", e))?
+            }
+        };
+        if let Some(subscription) = attach(None).await? {
+            return Ok(subscription);
+        }
+        let cwd = match self.checkout(workspace_id, thread_id).await?.1 {
+            Location::Repository(root) | Location::Folder(root) => root,
+            Location::Removed { .. } => return Err(worktree_removed()),
+            Location::Unassigned => {
+                return Err(AppError::new(
+                    "terminal_unavailable",
+                    "Start a thread to open a terminal.",
+                ));
+            }
+        };
+        attach(Some(cwd))
+            .await?
+            .ok_or_else(|| AppError::new("terminal", "The terminal did not start."))
+    }
+    /// Stops sending events to a subscription. The shell keeps running.
+    pub fn terminal_detach(&self, subscription: u64) {
+        self.terminals.detach(subscription);
+    }
+    /// Writes input to a terminal. Writing to a terminal that is not running does nothing.
+    pub async fn terminal_write(
+        &self,
+        workspace_id: WorkspaceId,
+        thread_id: Option<ThreadId>,
+        terminal_id: TerminalId,
+        data: String,
+    ) -> Result<()> {
+        if data.is_empty() || data.len() > MAX_WRITE_BYTES {
+            return Err(AppError::new(
+                "invalid_terminal_input",
+                format!("Terminal input is 1 to {MAX_WRITE_BYTES} bytes."),
+            ));
+        }
+        let key = TerminalKey {
+            workspace: workspace_id,
+            thread: thread_id,
+            terminal: terminal_id,
+        };
+        let terminals = self.terminals.clone();
+        tokio::task::spawn_blocking(move || terminals.write(&key, data.as_bytes()))
+            .await
+            .map_err(|e| AppError::new("terminal", e))?
+    }
+    pub fn terminal_resize(
+        &self,
+        workspace_id: WorkspaceId,
+        thread_id: Option<ThreadId>,
+        terminal_id: TerminalId,
+        cols: u16,
+        rows: u16,
+    ) -> Result<()> {
+        let size = TerminalSize::new(cols, rows)?;
+        self.terminals.resize(
+            &TerminalKey {
+                workspace: workspace_id,
+                thread: thread_id,
+                terminal: terminal_id,
+            },
+            size,
+        )
+    }
+    /// Kills the terminal's shell and forgets its history. Closing a missing terminal does nothing.
+    pub async fn terminal_close(
+        &self,
+        workspace_id: WorkspaceId,
+        thread_id: Option<ThreadId>,
+        terminal_id: TerminalId,
+    ) -> Result<()> {
+        let key = TerminalKey {
+            workspace: workspace_id,
+            thread: thread_id,
+            terminal: terminal_id,
+        };
+        self.close_terminals(move |k| *k == key).await
+    }
+    async fn close_terminals(
+        &self,
+        matches: impl Fn(&TerminalKey) -> bool + Send + 'static,
+    ) -> Result<()> {
+        let terminals = self.terminals.clone();
+        tokio::task::spawn_blocking(move || terminals.close(matches))
+            .await
+            .map_err(|e| AppError::new("terminal", e))
     }
     /// Runs one worktree cleanup sweep as if the clock read `now_ms`.
     #[doc(hidden)]

@@ -67,6 +67,7 @@ impl Fixture {
                 codex_binary: install("codex", include_str!("support/codex_peer.py")),
                 gh_binary: install("gh", include_str!("support/gh_peer.py")),
                 network_timeout: Duration::from_secs(60),
+                shell: None,
             },
             dir,
             repository,

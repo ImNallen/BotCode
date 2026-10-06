@@ -29,6 +29,7 @@ impl Fixture {
                 codex_binary: peer.clone(),
                 gh_binary: dir.path().join("no-gh"),
                 network_timeout: Duration::from_secs(180),
+                shell: None,
             },
             _dir: dir,
             repository,
@@ -346,7 +347,8 @@ async fn canonical_checkout_lease_and_confirmed_interrupt() {
 }
 #[tokio::test]
 async fn exclusive_data_owner_and_dropping_app_terminates_child() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.config.shell = Some("/bin/sh".into());
     let app = App::open(f.config.clone()).await.unwrap();
     assert!(matches!(App::open(f.config.clone()).await,Err(e) if e.code=="already_running"));
     let t = conversation(&app, &f).await;
@@ -361,18 +363,58 @@ async fn exclusive_data_owner_and_dropping_app_terminates_child() {
         .unwrap()
         .parse::<i32>()
         .unwrap();
-    drop(app);
-    for _ in 0..300 {
-        if unsafe { libc::kill(pid, 0) } != 0 {
+    let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let sink = output.clone();
+    let terminal: TerminalId = "term-1".parse().unwrap();
+    app.terminal_attach(
+        t.workspace_id.clone(),
+        None,
+        terminal.clone(),
+        80,
+        24,
+        move |event| {
+            if let TerminalEvent::Output { data } = event {
+                sink.lock().unwrap().push_str(&data);
+            }
+        },
+    )
+    .await
+    .unwrap();
+    app.terminal_write(
+        t.workspace_id.clone(),
+        None,
+        terminal,
+        "echo shell=$$.\n".into(),
+    )
+    .await
+    .unwrap();
+    let mut shell = None;
+    for _ in 0..500 {
+        let text = output.lock().unwrap().clone();
+        shell = text
+            .rsplit_once("shell=")
+            .and_then(|(_, rest)| rest.split_once('.'))
+            .and_then(|(digits, _)| digits.parse::<i32>().ok());
+        if shell.is_some() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert_ne!(
-        unsafe { libc::kill(pid, 0) },
-        0,
-        "Dropping all App handles must reap Codex"
-    );
+    let shell = shell.expect("the shell printed its pid");
+    drop(app);
+    for (pid, what) in [(pid, "Codex"), (shell, "the terminal shell")] {
+        for _ in 0..300 {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "Dropping all App handles must reap {what}"
+        );
+    }
     let reopened = reopen(&f.config).await;
     reopened.shutdown().await.unwrap();
 }
