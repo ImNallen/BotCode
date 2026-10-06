@@ -106,6 +106,8 @@ struct Output {
     /// An incomplete control sequence the sanitizer carries into the next chunk.
     pending: String,
     subscribers: Vec<(u64, Sink)>,
+    /// Set once the pump has sent `Exited`, so a late attach starts a fresh shell instead.
+    exited: bool,
 }
 
 struct Session {
@@ -225,36 +227,42 @@ impl Terminals {
         size: TerminalSize,
         sink: Sink,
     ) -> Result<Option<u64>> {
-        let session = {
-            let mut sessions = lock(&self.0.sessions);
-            match (sessions.get(&key), cwd) {
-                (Some(session), _) => session.clone(),
-                (None, None) => return Ok(None),
-                (None, Some(cwd)) => {
-                    let (session, reader) = spawn(self.0.shell.as_deref(), cwd, size)?;
-                    let registry = Arc::downgrade(&self.0);
-                    let (pumped, pump_key) = (session.clone(), key.clone());
-                    // The pump touches the registry only after end of file, behind this lock.
-                    if let Err(error) = std::thread::Builder::new()
-                        .name("z1-terminal".into())
-                        .spawn(move || pump(registry, pump_key, pumped, reader))
-                    {
-                        terminate(&[session]);
-                        return Err(error.into());
+        loop {
+            let session = {
+                let mut sessions = lock(&self.0.sessions);
+                match (sessions.get(&key), cwd) {
+                    (Some(session), _) => session.clone(),
+                    (None, None) => return Ok(None),
+                    (None, Some(cwd)) => {
+                        let (session, reader) = spawn(self.0.shell.as_deref(), cwd, size)?;
+                        let registry = Arc::downgrade(&self.0);
+                        let (pumped, pump_key) = (session.clone(), key.clone());
+                        // The pump touches the registry only after end of file, behind this lock.
+                        if let Err(error) = std::thread::Builder::new()
+                            .name("z1-terminal".into())
+                            .spawn(move || pump(registry, pump_key, pumped, reader))
+                        {
+                            terminate(&[session]);
+                            return Err(error.into());
+                        }
+                        sessions.insert(key.clone(), session.clone());
+                        session
                     }
-                    sessions.insert(key, session.clone());
-                    session
                 }
+            };
+            session.resize(size)?;
+            let mut output = lock(&session.output);
+            // The shell exited after the lookup; the pump has already retired this session.
+            if output.exited {
+                continue;
             }
-        };
-        session.resize(size)?;
-        let id = self.0.subscriptions.fetch_add(1, Ordering::Relaxed);
-        let mut output = lock(&session.output);
-        sink(TerminalEvent::Snapshot {
-            history: output.history.value(),
-        });
-        output.subscribers.push((id, sink));
-        Ok(Some(id))
+            let id = self.0.subscriptions.fetch_add(1, Ordering::Relaxed);
+            sink(TerminalEvent::Snapshot {
+                history: output.history.value(),
+            });
+            output.subscribers.push((id, sink));
+            return Ok(Some(id));
+        }
     }
     pub(crate) fn detach(&self, subscription: u64) {
         for session in lock(&self.0.sessions).values() {
@@ -319,6 +327,7 @@ fn pump(
         }
     }
     let mut output = lock(&session.output);
+    output.exited = true;
     for (_, sink) in output.subscribers.drain(..) {
         sink(TerminalEvent::Exited { exit_code });
     }
@@ -366,6 +375,7 @@ fn spawn(
             history: History::default(),
             pending: String::new(),
             subscribers: Vec::new(),
+            exited: false,
         }),
     });
     Ok((session, reader))
