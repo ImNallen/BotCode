@@ -490,12 +490,8 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       for (const threadId of hints)
         void client.invalidateQueries({ queryKey: ["thread", threadId] });
       hints.clear();
-      for (const workspaceId of workspaces) {
-        void client.invalidateQueries({ queryKey: ["workspace", workspaceId] });
-        void client.invalidateQueries({ queryKey: ["file", workspaceId] });
-        void client.invalidateQueries({ queryKey: ["diff", workspaceId] });
-        void client.invalidateQueries({ queryKey: ["git", workspaceId] });
-      }
+      for (const workspaceId of workspaces)
+        invalidateCheckouts(client, workspaceId);
       workspaces.clear();
     }, 160);
   };

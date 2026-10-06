@@ -27,6 +27,7 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
     let (provider_events, signals) = mpsc::channel(1);
     let (done, completions) = mpsc::channel(1);
     let mut owner = Owner {
+        naming: naming::Naming::default(),
         prs: PrWork::load(&mut store).unwrap(),
         review_work: ReviewWork::new(),
         git_jobs: JoinSet::new(),
@@ -171,6 +172,7 @@ async fn late_lifecycle_completion_preserves_supersession_and_cleanup_latch() {
     let (provider_events, _signals) = mpsc::channel(1);
     let (done, _completions) = mpsc::channel(1);
     let mut owner = Owner {
+        naming: naming::Naming::default(),
         prs: PrWork::load(&mut store).unwrap(),
         review_work: ReviewWork::new(),
         git_jobs: JoinSet::new(),

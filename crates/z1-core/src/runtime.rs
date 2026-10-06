@@ -1,3 +1,4 @@
+mod naming;
 mod pr_review;
 mod pull_requests;
 use crate::pr_review::*;
@@ -74,12 +75,14 @@ enum Hold {
     Restore,
     Git,
     PullRequest,
+    Naming,
 }
 impl Hold {
     fn refusal(self) -> AppError {
         AppError::new(
             "checkout_busy",
             match self {
+                Self::Naming => "Z1 is naming this worktree branch. Try again in a moment.",
                 Self::PullRequest => {
                     "A pull request operation is using this checkout. Wait for its result."
                 }
@@ -98,7 +101,9 @@ impl Hold {
                 "checkout_busy",
                 "Codex is working in this checkout. Git actions return when the turn finishes.",
             ),
-            Self::Switch | Self::Cleanup | Self::Restore | Self::PullRequest => turn_running(),
+            Self::Switch | Self::Cleanup | Self::Restore | Self::PullRequest | Self::Naming => {
+                turn_running()
+            }
         }
     }
 }
@@ -265,6 +270,7 @@ impl App {
                         .collect();
                     work
                 },
+                naming: naming::Naming::default(),
                 git_jobs: tokio::task::JoinSet::new(),
                 config,
                 store,
@@ -837,6 +843,7 @@ struct GitCompletion {
     reply: Reply<GitOutcome>,
 }
 struct Owner {
+    naming: naming::Naming,
     prs: PrWork,
     review_work: ReviewWork,
     git_jobs: tokio::task::JoinSet<GitCompletion>,
@@ -913,6 +920,7 @@ impl Owner {
             if self.leases.contains_key(&root) {
                 return Err(hold.lease_refusal());
             }
+            self.invalidate_names(&root);
             self.held.insert(root.clone(), hold);
             Ok(root)
         })
@@ -966,6 +974,9 @@ impl Owner {
         }
         let removed: HashSet<ThreadId> = threads.iter().map(|t| t.id.clone()).collect();
         self.store.remove_workspace(id)?;
+        for id in &removed {
+            self.cancel_name(id);
+        }
         self.forget_pr_threads(&removed);
         self.threads.retain(|id, _| !removed.contains(id));
         self.dirty.retain(|id| !removed.contains(id));
@@ -1056,6 +1067,7 @@ impl Owner {
                 "the thread changed since the sweep began",
             ));
         }
+        self.invalidate_names(&candidate.path);
         self.held.insert(candidate.path.clone(), Hold::Cleanup);
         Ok(())
     }
@@ -1094,6 +1106,7 @@ impl Owner {
             path: path.clone(),
             branch: branch.clone(),
         };
+        self.invalidate_names(&restore.path);
         self.held.insert(restore.path.clone(), Hold::Restore);
         Ok(Some(restore))
     }
@@ -1158,6 +1171,9 @@ impl Owner {
                         _=>{}
                     }
                 }
+                Some(done)=self.naming.active.join_next(), if !self.naming.active.is_empty()=>{
+                    self.finish_name(done);
+                }
                 Some(done)=self.git_jobs.join_next(), if !self.git_jobs.is_empty()=>{
                     if let Err(error)=self.finish_git_job(done, true) { eprintln!("Git completion failed: {}", error.message); }
                 }
@@ -1174,6 +1190,7 @@ impl Owner {
                     if let Err(error)=self.complete(done).await {self.lose(&error.message).await;}
                 }
                 _=tick.tick()=>{
+                    self.apply_ready_names();
                     self.poll_prs();
                     for id in self.dirty.clone(){
                         if let Err(error)=self.commit(&id){
@@ -1195,6 +1212,7 @@ impl Owner {
                 git_shutdown = Err(error);
             }
         }
+        self.stop_names().await;
         let review_shutdown = self.stop_reviews().await;
         let pr_shutdown = self.stop_pr_jobs().await;
         let store_shutdown = self.store.close();
@@ -1721,6 +1739,7 @@ impl Owner {
         let hint = self.thread_hint(&t);
         let _ = self.changes.send(hint);
         self.threads.insert(t.id.clone(), t);
+        self.start_name(id);
         Ok((receipt, true))
     }
     fn validate_settings(&self, settings: &SessionSettings) -> Result<()> {
@@ -2059,6 +2078,7 @@ impl Owner {
         Ok(())
     }
     async fn lose(&mut self, reason: &str) {
+        self.cancel_names();
         if let Some(provider) = self.provider.take() {
             let _ = provider.terminate().await;
         }

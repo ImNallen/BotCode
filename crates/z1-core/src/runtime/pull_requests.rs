@@ -404,7 +404,15 @@ impl Owner {
         }
         Ok(())
     }
+    pub(super) fn checkout_generation(&self, root: &Path) -> u64 {
+        self.prs
+            .checkout_generations
+            .get(root)
+            .copied()
+            .unwrap_or(0)
+    }
     pub(super) fn checkout_changed(&mut self, root: &Path) {
+        self.invalidate_names(root);
         *self
             .prs
             .checkout_generations

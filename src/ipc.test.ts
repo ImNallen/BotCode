@@ -1,0 +1,175 @@
+import assert from "node:assert/strict";
+import { it } from "node:test";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import { emit } from "@tauri-apps/api/event";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import {
+  checkoutKey,
+  ipc,
+  subscribe,
+  type Branches,
+  type ThreadSummary,
+  type WorkspaceView,
+} from "./ipc.ts";
+
+it("refreshes the active branch picker after a worktree naming event without refreshing another workspace", async () => {
+  const workspaceId = "67ce24cf-70e2-44b3-99f4-53bd8d155d19";
+  const otherWorkspaceId = "ba2baf88-7534-4d53-947c-bc2e432a549d";
+  const threadId = "058478ab-2c41-40e0-83b7-dd2c71b3c368";
+  const temporaryBranch = "z1code/1234abcd";
+  const generatedBranch = "z1code/fix-login-redirect";
+  const checkout = { workspaceId, threadId };
+  const otherCheckout = { workspaceId: otherWorkspaceId, threadId };
+  const summary = {
+    id: threadId,
+    title: "Fix login redirect",
+    session: { kind: "ready" },
+    checkout: {
+      kind: "worktree",
+      path: "/fixture/z1code-1234abcd",
+      branch: temporaryBranch,
+    },
+    pullRequests: {
+      sequence: 0,
+      links: [],
+      discovering: false,
+      discoveryError: null,
+    },
+    updatedAtMs: 1,
+    awaitingApproval: false,
+    pinnedAtMs: null,
+    snoozedUntilMs: null,
+    settledAtMs: null,
+  } satisfies ThreadSummary;
+  const view = {
+    workspace: {
+      id: workspaceId,
+      root: "/fixture",
+      label: "Fixture",
+      kind: "repository",
+    },
+    branch: temporaryBranch,
+    files: [],
+    changes: [],
+    threads: [summary],
+    unavailable: null,
+  } satisfies WorkspaceView;
+  const branches = (name: string): Branches => ({
+    origin: false,
+    branches: [
+      {
+        name,
+        current: true,
+        remote: false,
+        default: false,
+        worktree: summary.checkout.path,
+      },
+    ],
+  });
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: Object.assign(new EventTarget(), { crypto: globalThis.crypto }),
+  });
+  let matchingCalls = 0;
+  let unrelatedCalls = 0;
+  mockIPC(
+    (command, payload) => {
+      assert.equal(command, "list_branches");
+      assert.ok(payload && "workspaceId" in payload);
+      assert.equal(payload.threadId, threadId);
+      if (payload.workspaceId === workspaceId) {
+        matchingCalls++;
+        return branches(generatedBranch);
+      }
+      assert.equal(payload.workspaceId, otherWorkspaceId);
+      unrelatedCalls++;
+      return branches("other-branch");
+    },
+    { shouldMockEvents: true },
+  );
+  const client = new QueryClient({
+    defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+  });
+  client.setQueryData(checkoutKey("workspace", checkout), view);
+  client.setQueryData(
+    checkoutKey("branches", checkout),
+    branches(temporaryBranch),
+  );
+  client.setQueryData(
+    checkoutKey("branches", otherCheckout),
+    branches("other-branch"),
+  );
+  const matching = new QueryObserver(client, {
+    queryKey: checkoutKey("branches", checkout),
+    queryFn: () => ipc.branches(checkout),
+  });
+  const unrelated = new QueryObserver(client, {
+    queryKey: checkoutKey("branches", otherCheckout),
+    queryFn: () => ipc.branches(otherCheckout),
+  });
+  let resolveRefreshed = () => {};
+  const refreshed = new Promise<void>((resolve) => {
+    resolveRefreshed = resolve;
+  });
+  const offMatching = matching.subscribe((result) => {
+    if (result.data?.branches[0]?.name === generatedBranch) resolveRefreshed();
+  });
+  const offUnrelated = unrelated.subscribe(() => {});
+  let offEvents: (() => void) | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    offEvents = await subscribe(client);
+    assert.equal(
+      matching.getCurrentResult().data?.branches[0]?.name,
+      temporaryBranch,
+    );
+    await emit("z1:changed", {
+      threadId,
+      workspaceId,
+      revision: 2,
+      refreshWorkspace: true,
+      summary: {
+        ...summary,
+        checkout: { ...summary.checkout, branch: generatedBranch },
+      },
+    });
+    await Promise.race([
+      refreshed,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(
+              new Error("Branch picker retained its cached temporary branch"),
+            ),
+          2000,
+        );
+      }),
+    ]);
+    assert.equal(
+      matching.getCurrentResult().data?.branches[0]?.name,
+      generatedBranch,
+    );
+    assert.equal(matchingCalls, 1);
+    assert.equal(unrelatedCalls, 0);
+    assert.equal(
+      unrelated.getCurrentResult().data?.branches[0]?.name,
+      "other-branch",
+    );
+    assert.deepEqual(
+      client.getQueryData<WorkspaceView>(checkoutKey("workspace", checkout))
+        ?.threads[0]?.checkout,
+      { ...summary.checkout, branch: generatedBranch },
+    );
+  } finally {
+    clearTimeout(timeout);
+    offEvents?.();
+    offMatching();
+    offUnrelated();
+    client.clear();
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
