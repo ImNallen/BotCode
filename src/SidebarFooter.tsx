@@ -1,5 +1,9 @@
 // Classes copied from pingdotgg/t3code v0.0.45 components/ui/sidebar.tsx and sidebar/SidebarChrome.tsx (MIT).
-import { ArrowLeftIcon, SettingsIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ChartNoAxesColumnIcon,
+  SettingsIcon,
+} from "lucide-react";
 import type { ComponentProps } from "react";
 import { cn } from "./lib/cn";
 
@@ -29,12 +33,14 @@ export function SidebarMenuButton({
 }
 
 export function SidebarFooter({
-  settingsOpen,
-  onOpen,
+  pageOpen,
+  onOpenSettings,
+  onOpenUsage,
   onBack,
 }: {
-  settingsOpen: boolean;
-  onOpen: () => void;
+  pageOpen: boolean;
+  onOpenSettings: () => void;
+  onOpenUsage: () => void;
   onBack: () => void;
 }) {
   return (
@@ -50,30 +56,40 @@ export function SidebarFooter({
           "flex-row items-center",
         )}
       >
-        <li
-          className={cn(
-            "group/menu-item relative",
-            settingsOpen && "min-w-0 flex-1",
-          )}
-        >
-          {settingsOpen ? (
+        {pageOpen ? (
+          <li className="group/menu-item relative min-w-0 flex-1">
             <SidebarMenuButton key="back" onClick={onBack}>
               <ArrowLeftIcon />
               <span>Back</span>
             </SidebarMenuButton>
-          ) : (
-            <SidebarMenuButton
-              key="settings"
-              icon
-              aria-label="Settings"
-              title="Settings"
-              data-settings-trigger
-              onClick={onOpen}
-            >
-              <SettingsIcon />
-            </SidebarMenuButton>
-          )}
-        </li>
+          </li>
+        ) : (
+          <>
+            <li className="group/menu-item relative shrink-0">
+              <SidebarMenuButton
+                key="settings"
+                icon
+                aria-label="Settings"
+                title="Settings"
+                data-settings-trigger
+                onClick={onOpenSettings}
+              >
+                <SettingsIcon />
+              </SidebarMenuButton>
+            </li>
+            <li className="group/menu-item relative shrink-0">
+              <SidebarMenuButton
+                key="usage"
+                icon
+                aria-label="Usage"
+                title="Usage"
+                onClick={onOpenUsage}
+              >
+                <ChartNoAxesColumnIcon />
+              </SidebarMenuButton>
+            </li>
+          </>
+        )}
       </ul>
     </div>
   );

@@ -52,19 +52,30 @@ function clampSidebar(width: number) {
 export function Workbench() {
   const selection = useSearch({ from: "__root__" });
   const navigate = useNavigate();
-  const settingsOpen = useLocation({
-    select: (location) => location.pathname.startsWith("/settings"),
+  const page = useLocation({
+    select: (location): "settings" | "usage" | null =>
+      location.pathname.startsWith("/settings")
+        ? "settings"
+        : location.pathname === "/usage"
+          ? "usage"
+          : null,
   });
+  const pageOpen = page !== null;
+  const settingsOpen = page === "settings";
   const previousFocus = useRef<HTMLElement | null>(null);
-  const wasSettingsOpen = useRef(false);
+  const wasPageOpen = useRef(false);
   const sidebarToggle = useRef<HTMLButtonElement>(null);
+  const rememberFocus = useCallback(() => {
+    if (pageOpen) return;
+    previousFocus.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+  }, [pageOpen]);
   const openSettingsAt = useCallback(
     (section: SettingsSection, project?: string) => {
       if (settingsOpen) return;
-      previousFocus.current =
-        document.activeElement instanceof HTMLElement
-          ? document.activeElement
-          : null;
+      rememberFocus();
       void navigate({
         to: "/settings/$section",
         params: { section },
@@ -73,13 +84,23 @@ export function Workbench() {
         resetScroll: false,
       });
     },
-    [navigate, selection, settingsOpen],
+    [navigate, selection, settingsOpen, rememberFocus],
   );
   const openSettings = useCallback(
     () => openSettingsAt("general"),
     [openSettingsAt],
   );
-  const closeSettings = useCallback(() => {
+  const openUsage = useCallback(() => {
+    if (page === "usage") return;
+    rememberFocus();
+    void navigate({
+      to: "/usage",
+      search: { ...selection, project: undefined },
+      hash: "",
+      resetScroll: false,
+    });
+  }, [navigate, selection, page, rememberFocus]);
+  const closePage = useCallback(() => {
     void navigate({
       to: "/",
       search: { ...selection, project: undefined },
@@ -152,13 +173,13 @@ export function Workbench() {
     if (autoStartScratch) void startScratch();
   }, [autoStartScratch, startScratch]);
   useLayoutEffect(() => {
-    if (settingsOpen && !wasSettingsOpen.current && !previousFocus.current)
+    if (pageOpen && !wasPageOpen.current && !previousFocus.current)
       previousFocus.current =
         document.activeElement instanceof HTMLElement
           ? document.activeElement
           : null;
-    const leaving = !settingsOpen && wasSettingsOpen.current;
-    wasSettingsOpen.current = settingsOpen;
+    const leaving = !pageOpen && wasPageOpen.current;
+    wasPageOpen.current = pageOpen;
     if (!leaving) return;
     const frame = requestAnimationFrame(() => {
       const previous = previousFocus.current;
@@ -180,7 +201,7 @@ export function Workbench() {
       previousFocus.current = null;
     });
     return () => cancelAnimationFrame(frame);
-  }, [settingsOpen, sidebarOpen]);
+  }, [pageOpen, sidebarOpen]);
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if (event.isComposing || event.defaultPrevented) return;
@@ -214,7 +235,7 @@ export function Workbench() {
         mod &&
         event.shiftKey &&
         event.key.toLowerCase() === "s" &&
-        !settingsOpen &&
+        !pageOpen &&
         !terminalFocus &&
         openSummary
       ) {
@@ -227,7 +248,7 @@ export function Workbench() {
         mod &&
         event.shiftKey &&
         event.key.toLowerCase() === "p" &&
-        !settingsOpen &&
+        !pageOpen &&
         !terminalFocus &&
         openSummary
       ) {
@@ -239,7 +260,7 @@ export function Workbench() {
     };
     const escape = (event: KeyboardEvent) => {
       if (
-        !settingsOpen ||
+        !pageOpen ||
         event.key !== "Escape" ||
         event.defaultPrevented ||
         event.isComposing
@@ -253,7 +274,7 @@ export function Workbench() {
       )
         return;
       event.preventDefault();
-      closeSettings();
+      closePage();
     };
     window.addEventListener("keydown", shortcut, true);
     window.addEventListener("keydown", escape);
@@ -263,8 +284,8 @@ export function Workbench() {
     };
   }, [
     openSettings,
-    closeSettings,
-    settingsOpen,
+    closePage,
+    pageOpen,
     scratchAvailable,
     startScratch,
     openSummary,
@@ -398,9 +419,10 @@ export function Workbench() {
               ) : null}
             </div>
             <SidebarFooter
-              settingsOpen={settingsOpen}
-              onOpen={openSettings}
-              onBack={closeSettings}
+              pageOpen={pageOpen}
+              onOpenSettings={openSettings}
+              onOpenUsage={openUsage}
+              onBack={closePage}
             />
           </div>
           <SidebarRail
@@ -419,11 +441,11 @@ export function Workbench() {
       >
         <div
           className="absolute inset-0 flex min-h-0 min-w-0 flex-col"
-          inert={settingsOpen}
-          aria-hidden={settingsOpen || undefined}
+          inert={pageOpen}
+          aria-hidden={pageOpen || undefined}
           style={{
-            visibility: settingsOpen ? "hidden" : "visible",
-            opacity: settingsOpen ? 0 : 1,
+            visibility: pageOpen ? "hidden" : "visible",
+            opacity: pageOpen ? 0 : 1,
           }}
         >
           {workspaces.isPending ||
@@ -513,7 +535,7 @@ export function Workbench() {
             </div>
           ) : null}
         </div>
-        {settingsOpen ? (
+        {pageOpen ? (
           <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col">
             <Outlet />
           </div>

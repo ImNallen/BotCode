@@ -2,18 +2,20 @@
 // usage/UsageLimitsPooled.tsx and usage/usageProviders.ts (MIT).
 import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { Fragment } from "react";
-import type { LimitWindow } from "../ipc";
+import type { LimitWindow, UsageLimits } from "../ipc";
 import { formatUpcomingTimestamp } from "../lib/time";
+import { OpenAI } from "../ui/icons";
 import {
-  elapsedShare,
+  accountLabel,
+  timeLeftPercent,
   formatResetsIn,
   type LimitPace,
+  limitsNotice,
   paceOf,
   remainingPercent,
   windowLabel,
 } from "./limits";
 
-// T3's Codex series colour, so the limits read as the same provider everywhere.
 const barColor = "var(--contrast-foreground)";
 
 const PACE: Record<LimitPace, { label: string; icon: typeof GaugeIcon }> = {
@@ -28,7 +30,6 @@ const PACE: Record<LimitPace, { label: string; icon: typeof GaugeIcon }> = {
   },
 };
 
-/** Pace as a glyph with the words on hover. */
 export function PaceIcon({ pace }: { pace: LimitPace }) {
   const Icon = PACE[pace].icon;
   return (
@@ -43,17 +44,9 @@ export function PaceIcon({ pace }: { pace: LimitPace }) {
   );
 }
 
-/**
- * One window as a full-width bar from the moment it opened to its reset.
- * The fill is the share of quota left; the hairline is how far into the
- * window the clock is, which is also where even spending would have put the
- * fill. Hover for the exact figures and reset time.
- */
 function WindowBar({ window, now }: { window: LimitWindow; now: number }) {
   const remaining = remainingPercent(window);
-  const elapsed = elapsedShare(window, now);
-  // The fill is quota left, so the even-spending mark is the time left.
-  const timeLeft = elapsed === null ? null : Math.round((1 - elapsed) * 100);
+  const timeLeft = timeLeftPercent(window, now);
   const resetsIn = formatResetsIn(window, now);
   const resetsAt =
     window.resetsAtMs === null
@@ -93,10 +86,6 @@ function WindowBar({ window, now }: { window: LimitWindow; now: number }) {
   );
 }
 
-/**
- * One account's windows as rows: label and percent, bar, pace and countdown.
- * Compact rows fit the composer panel with narrower columns.
- */
 export function LimitWindows({
   windows,
   now,
@@ -136,5 +125,34 @@ export function LimitWindows({
         );
       })}
     </div>
+  );
+}
+
+export function UsageLimitsSection({
+  limits,
+  error,
+  now,
+}: {
+  limits: UsageLimits | undefined;
+  error: string | undefined;
+  now: number;
+}) {
+  const notice = limits
+    ? limitsNotice(limits)
+    : (error ?? "Reading usage limits…");
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+        <OpenAI className="size-4 text-foreground/80" aria-hidden />
+        {accountLabel(limits)}
+      </h2>
+      <div className="rounded-lg border border-border/60 p-4">
+        {limits?.kind === "reported" && notice === null ? (
+          <LimitWindows windows={limits.windows} now={now} />
+        ) : (
+          <p className="text-sm text-muted-foreground">{notice}</p>
+        )}
+      </div>
+    </section>
   );
 }

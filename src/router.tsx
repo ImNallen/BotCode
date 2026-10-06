@@ -8,6 +8,7 @@ import { z } from "zod";
 import { Workbench } from "./Workbench";
 import { SettingsPage } from "./settings/SettingsPage";
 import { settingsSection } from "./settings/settingsCatalog";
+import { UsagePage } from "./usage/UsagePage";
 const search = z.object({
   workspace: z.uuid().optional(),
   thread: z.uuid().optional(),
@@ -50,8 +51,13 @@ const section = createRoute({
   },
   component: SettingsPage,
 });
+const usage = createRoute({
+  getParentRoute: () => route,
+  path: "/usage",
+  component: UsagePage,
+});
 export const router = createRouter({
-  routeTree: route.addChildren([index, settings, section]),
+  routeTree: route.addChildren([index, settings, section, usage]),
 });
 declare module "@tanstack/react-router" {
   interface Register {
