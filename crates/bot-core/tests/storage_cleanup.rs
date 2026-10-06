@@ -161,6 +161,7 @@ async fn complete_turn(app: &App, thread: &ThreadSnapshot, prompt: &str) {
         thread.id.clone(),
         format!("{}-{prompt}", thread.id),
         prompt.into(),
+        vec![],
     )
     .await
     .unwrap();
@@ -284,7 +285,7 @@ async fn running_threads_keep_their_worktree() {
     let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
     let thread = worktree_thread(&app, &workspace.id).await;
     let (path, _) = worktree(&thread.checkout);
-    app.submit(thread.id.clone(), "hold".into(), "hold".into())
+    app.submit(thread.id.clone(), "hold".into(), "hold".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
@@ -361,7 +362,7 @@ async fn a_restore_that_cannot_succeed_refuses_without_starting_a_turn() {
     assert!(!path.exists());
     git_output(&f.repository, &["branch", "-D", &branch]);
     let error = app
-        .submit(thread.id.clone(), "retry".into(), "again".into())
+        .submit(thread.id.clone(), "retry".into(), "again".into(), vec![])
         .await
         .unwrap_err();
     assert_eq!(error.code, "worktree_restore");

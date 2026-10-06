@@ -1,7 +1,13 @@
 // Structure and classes follow pingdotgg/t3code v0.0.45 components/chat/ChatComposer.tsx,
 // ComposerControl.tsx, ComposerPrimaryActions.tsx, BranchToolbar.tsx, BranchToolbarEnvModeSelector.tsx,
 // TraitsPicker.tsx and ui/badge.tsx (MIT).
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ChevronDownIcon,
   FolderGit2Icon,
@@ -11,6 +17,7 @@ import {
   LockOpenIcon,
   PenLineIcon,
   SparklesIcon,
+  XIcon,
 } from "lucide-react";
 import { Menu, MenuItem } from "../ui/menu";
 import type {
@@ -21,11 +28,14 @@ import type {
 } from "../ipc";
 import { cn } from "../lib/cn";
 import { checkoutModeLabels, type CheckoutMode } from "../settings/preferences";
-import { selectItem, selectTrigger } from "../ui/controls";
+import { Button, selectItem, selectTrigger } from "../ui/controls";
 import { OpenAI } from "../ui/icons";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { ModelPicker } from "./ModelPicker";
 import { ComposerSurface } from "./ComposerSurface";
+import { shouldHandleComposerAttachmentPaste } from "./composerAttachmentFiles";
+import { attachmentUrl, type ComposerImage } from "./composerImages";
+import { makeWorkspaceFileDropHandlers } from "./workspaceFileDrop";
 
 const composerControl =
   "relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap rounded-(--control-radius) border border-transparent text-base outline-none hover:bg-accent data-pressed:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 data-disabled:pointer-events-none data-disabled:opacity-64 pointer-coarse:after:absolute pointer-coarse:after:size-full pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 [&:active:not([aria-haspopup])]:scale-[0.97] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:-mx-0.5 [&_svg[data-composer-control-icon]]:mx-0 h-7 gap-1.5 px-2.5 font-medium text-secondary-label [&_svg:not([class*='text-'])]:text-muted-foreground hover:text-foreground sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 aria-pressed:bg-accent aria-pressed:text-accent-foreground aria-pressed:hover:bg-accent/80";
@@ -36,6 +46,9 @@ const contextControl =
 export function Composer({
   value,
   onChange,
+  images,
+  onAddImages,
+  onRemoveImage,
   onSubmit,
   onStop,
   canSend,
@@ -60,6 +73,9 @@ export function Composer({
 }: {
   value: string;
   onChange: (value: string) => void;
+  images: ComposerImage[];
+  onAddImages: (files: File[]) => void;
+  onRemoveImage: (key: string) => void;
   onSubmit: () => void;
   onStop: () => void;
   canSend: boolean;
@@ -103,6 +119,20 @@ export function Composer({
     element.style.height = `${element.scrollHeight}px`;
   }, [value, approval]);
   const approvalState = approval !== null;
+  const [isDragOverComposer, setIsDragOverComposer] = useState(false);
+  // A cancelled drag can end without a dragleave on the hovered target.
+  useEffect(() => {
+    if (!isDragOverComposer) return;
+    const onWindowDragEnd = () => setIsDragOverComposer(false);
+    window.addEventListener("dragend", onWindowDragEnd);
+    return () => window.removeEventListener("dragend", onWindowDragEnd);
+  }, [isDragOverComposer]);
+  const fileDrop = makeWorkspaceFileDropHandlers({
+    setDragActive: (active) => setIsDragOverComposer(active && !disabled),
+    addFiles: (files) => {
+      if (!disabled) onAddImages(files);
+    },
+  });
   const selectedModel = settings.model
     ? models.find((model) => model.model === settings.model)
     : models.find((model) => model.isDefault);
@@ -165,7 +195,16 @@ export function Composer({
               <ComposerSurface.Main>
                 <div
                   data-chat-composer-surface="true"
-                  className="rounded-3xl transition-[background-color] duration-200"
+                  className={cn(
+                    "rounded-3xl transition-[background-color] duration-200",
+                    isDragOverComposer
+                      ? "bg-accent/45 ring-1 ring-primary/70"
+                      : null,
+                  )}
+                  onDragEnter={fileDrop.onDragEnter}
+                  onDragOver={fileDrop.onDragOver}
+                  onDragLeave={fileDrop.onDragLeave}
+                  onDrop={fileDrop.onDrop}
                 >
                   <div
                     data-chat-composer-body="true"
@@ -175,6 +214,39 @@ export function Composer({
                       approvalState && "pb-3 sm:pb-4",
                     )}
                   >
+                    {!approvalState && images.length > 0 ? (
+                      <div className="mb-3 flex max-w-full gap-2 flex-wrap">
+                        {images.map((image) => (
+                          <div
+                            key={image.key}
+                            data-chat-composer-expanded-image="true"
+                            className="group/attachment shrink-0 snap-start bg-background relative h-16 w-16 overflow-hidden rounded-lg border border-border/80"
+                          >
+                            {image.status === "ready" ? (
+                              <img
+                                src={attachmentUrl(image.attachment)}
+                                alt={image.name}
+                                className="h-full w-full object-cover"
+                              />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center px-1 text-center text-3xs text-secondary-label">
+                                {image.name}
+                              </div>
+                            )}
+                            <span className="absolute right-1 top-1 flex">
+                              <Button
+                                variant="media-close"
+                                size="icon-xs"
+                                onClick={() => onRemoveImage(image.key)}
+                                aria-label={`Remove ${image.name}`}
+                              >
+                                <XIcon />
+                              </Button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                     <div className="relative">
                       <div className="relative flow-root font-(family-name:--font-composer,var(--font-sans)) text-(length:--font-size-prompt,var(--text-sm))">
                         <textarea
@@ -189,6 +261,21 @@ export function Composer({
                           value={approvalState ? "" : value}
                           placeholder={placeholder}
                           onChange={(event) => onChange(event.target.value)}
+                          onPaste={(event) => {
+                            const files = Array.from(event.clipboardData.files);
+                            if (
+                              files.length > 0 &&
+                              shouldHandleComposerAttachmentPaste({
+                                files,
+                                plainText:
+                                  event.clipboardData.getData("text/plain"),
+                              })
+                            ) {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              onAddImages(files);
+                            }
+                          }}
                           onKeyDown={(event) => {
                             if (
                               event.key === "Enter" &&

@@ -74,9 +74,13 @@ impl Owner {
     pub(super) fn start_name(&mut self, id: &ThreadId) {
         self.naming.cancel(id);
         let t = &self.threads[id];
+        // An image-only request gives the generator nothing to read, so the temporary name stays.
         let [first] = t.turns.as_slice() else {
             return;
         };
+        if first.prompt.is_empty() {
+            return;
+        }
         let Checkout::Worktree { path, branch } = &t.checkout else {
             return;
         };

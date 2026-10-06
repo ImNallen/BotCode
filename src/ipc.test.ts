@@ -343,7 +343,7 @@ it("caches pushed usage limits without reading them again", async () => {
   }
 });
 
-it("reads a thread saved before context usage as having none", async () => {
+it("reads a thread saved before context usage and images as having none", async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", {
     configurable: true,
@@ -362,7 +362,19 @@ it("reads a thread saved before context usage as having none", async () => {
       permissionMode: "approval-required",
     },
     checkout: { kind: "local" },
-    turns: [],
+    turns: [
+      {
+        id: "a4f4d7b2-9f43-4c4a-9d55-2f1f4f0b8e11",
+        prompt: "hello",
+        nativeTurnId: null,
+        delivery: { kind: "accepted" },
+        execution: { kind: "completed" },
+        items: [],
+        settings: null,
+        startedAtMs: null,
+        completedAtMs: null,
+      },
+    ],
     approvals: [],
     diagnostic: null,
   };
@@ -374,11 +386,63 @@ it("reads a thread saved before context usage as having none", async () => {
   let reply: unknown = snapshot;
   mockIPC(() => reply);
   try {
-    assert.equal((await ipc.thread(snapshot.id)).context, null);
+    const legacy = await ipc.thread(snapshot.id);
+    assert.equal(legacy.context, null);
+    assert.deepEqual(legacy.turns[0]?.attachments, []);
     reply = { ...snapshot, context };
     assert.deepEqual((await ipc.thread(snapshot.id)).context, context);
   } finally {
     clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+it("stages image bytes as a raw body and submits the staged attachments", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const attachment = {
+    id: "0c25346db1c2a63fcc299515e33ca8fb44d8d4cdb6ad376e04aa20a8928293cb",
+    mimeType: "image/png",
+    name: "skärm bild.png",
+    sizeBytes: 12,
+  } as const;
+  const calls: unknown[][] = [];
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      __TAURI_INTERNALS__: {
+        invoke: async (command: string, args: unknown, options: unknown) => {
+          calls.push([command, args, options]);
+          return command === "stage_attachment"
+            ? attachment
+            : { turnId: "058478ab-2c41-40e0-83b7-dd2c71b3c368" };
+        },
+      },
+    },
+  });
+  try {
+    const file = new File([new Uint8Array([137, 80, 78, 71])], attachment.name);
+    assert.deepEqual(await ipc.stageAttachment(file), attachment);
+    await ipc.submit("thread", "", "request", [attachment]);
+    assert.deepEqual(calls, [
+      [
+        "stage_attachment",
+        new Uint8Array([137, 80, 78, 71]),
+        { headers: { "x-attachment-name": "sk%C3%A4rm%20bild.png" } },
+      ],
+      [
+        "submit",
+        {
+          threadId: "thread",
+          text: "",
+          requestId: "request",
+          attachments: [attachment],
+        },
+        undefined,
+      ],
+    ]);
+  } finally {
     if (previousWindow)
       Object.defineProperty(globalThis, "window", previousWindow);
     else Reflect.deleteProperty(globalThis, "window");

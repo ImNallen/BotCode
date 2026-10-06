@@ -5,6 +5,7 @@ mod writing;
 use crate::pr_review::*;
 use crate::pull_requests::{PrLinkSource, PullRequestKey, ThreadPrSummary};
 use crate::{
+    attachments::{self, Attachments},
     cleanup::{self, Candidate, Sweep},
     codex::{Codex, Signal},
     domain::*,
@@ -122,6 +123,8 @@ impl Hold {
         }
     }
 }
+/// T3's PROVIDER_SEND_TURN_MAX_ATTACHMENTS.
+const MAX_ATTACHMENTS: usize = 100;
 fn turn_running() -> AppError {
     AppError::new(
         "checkout_busy",
@@ -192,7 +195,14 @@ enum Command {
     UsageLimits(bool, Reply<UsageLimits>),
     Settings(ThreadId, SessionSettings, Reply<ThreadSnapshot>),
     /// The path carries a `Hold::Restore` to release in the same step as acceptance.
-    Submit(ThreadId, String, String, Option<PathBuf>, Reply<Receipt>),
+    Submit(
+        ThreadId,
+        String,
+        String,
+        Vec<ImageAttachment>,
+        Option<PathBuf>,
+        Reply<Receipt>,
+    ),
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
     Arrange(ThreadId, Arrange, Reply<()>),
@@ -218,6 +228,7 @@ pub struct App {
     wake: Arc<Notify>,
     gh: PathBuf,
     terminals: Terminals,
+    attachments: Attachments,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
@@ -270,6 +281,17 @@ impl App {
             thread.revision += 1;
             store.save(thread)?;
         }
+        // Codex reads images by absolute path.
+        let attachments = Attachments::new(&config.data_dir.canonicalize()?);
+        let referenced = threads
+            .values()
+            .flat_map(|t| &t.turns)
+            .flat_map(|turn| &turn.attachments)
+            .map(|a| a.id.clone())
+            .collect();
+        if let Err(e) = attachments.sweep(&referenced, std::time::SystemTime::now()) {
+            eprintln!("Attachment sweep failed: {}", e.message);
+        }
         let worktrees = config.data_dir.join("worktrees");
         let gh = config.gh_binary.clone();
         let terminals = Terminals::new(config.shell.clone());
@@ -296,6 +318,7 @@ impl App {
                 naming: naming::Naming::default(),
                 writing: writing::Writing::default(),
                 git_jobs: tokio::task::JoinSet::new(),
+                attachments: attachments.clone(),
                 config,
                 store,
                 workspaces,
@@ -332,6 +355,7 @@ impl App {
             wake: Arc::new(Notify::new()),
             gh,
             terminals,
+            attachments,
         };
         tokio::spawn(Sweeper::from(&app).run(
             app.commands.downgrade(),
@@ -663,7 +687,22 @@ impl App {
     ) -> Result<ThreadSnapshot> {
         self.call(|r| Command::Settings(id, settings, r)).await
     }
-    pub async fn submit(&self, id: ThreadId, request_id: String, text: String) -> Result<Receipt> {
+    pub async fn stage_attachment(&self, name: String, bytes: Vec<u8>) -> Result<ImageAttachment> {
+        let attachments = self.attachments.clone();
+        tokio::task::spawn_blocking(move || attachments.stage(&name, &bytes))
+            .await
+            .map_err(|e| AppError::new("attachment", e))?
+    }
+    pub fn read_attachment(&self, file: &str) -> Result<(Vec<u8>, ImageMime)> {
+        self.attachments.read(file)
+    }
+    pub async fn submit(
+        &self,
+        id: ThreadId,
+        request_id: String,
+        text: String,
+        attachments: Vec<ImageAttachment>,
+    ) -> Result<Receipt> {
         let restored = match self.call(|r| Command::ClaimRestore(id.clone(), r)).await? {
             Some(Restore { root, path, branch }) => {
                 let target = path.clone();
@@ -680,7 +719,7 @@ impl App {
             }
             None => None,
         };
-        self.call(|r| Command::Submit(id, request_id, text, restored, r))
+        self.call(|r| Command::Submit(id, request_id, text, attachments, restored, r))
             .await
     }
     pub async fn answer_approval(&self, id: ApprovalId, decision: ApprovalDecision) -> Result<()> {
@@ -1017,6 +1056,7 @@ struct Owner {
     prs: PrWork,
     review_work: ReviewWork,
     git_jobs: tokio::task::JoinSet<GitCompletion>,
+    attachments: Attachments,
     config: RuntimeConfig,
     store: Store,
     workspaces: HashMap<WorkspaceId, Workspace>,
@@ -1688,11 +1728,11 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
-            Command::Submit(id, request_id, text, restored, reply) => {
+            Command::Submit(id, request_id, text, attachments, restored, reply) => {
                 if let Some(path) = restored {
                     self.held.remove(&path);
                 }
-                let result = self.accept_submit(&id, &request_id, &text);
+                let result = self.accept_submit(&id, &request_id, &text, attachments);
                 if let Ok((receipt, true)) = &result {
                     self.prepare(Prepare::Submit(id, receipt.turn_id.clone()));
                 }
@@ -1865,6 +1905,7 @@ impl Owner {
         id: &ThreadId,
         request_id: &str,
         text: &str,
+        attachments: Vec<ImageAttachment>,
     ) -> Result<(Receipt, bool)> {
         if request_id.is_empty() || request_id.len() > 200 {
             return Err(AppError::new(
@@ -1873,13 +1914,19 @@ impl Owner {
             ));
         }
         let text = text.trim();
-        if text.is_empty() || text.len() > 100_000 {
+        if (text.is_empty() && attachments.is_empty()) || text.len() > 100_000 {
             return Err(AppError::new(
                 "invalid_prompt",
                 "Enter a prompt up to 100,000 bytes.",
             ));
         }
-        let input = serde_json::to_string(&(id, text))?;
+        if attachments.len() > MAX_ATTACHMENTS {
+            return Err(AppError::new(
+                "invalid_attachments",
+                format!("You can attach up to {MAX_ATTACHMENTS} images per message."),
+            ));
+        }
+        let input = serde_json::to_string(&(id, text, &attachments))?;
         if let Some(receipt) = self.store.receipt(request_id, &input)? {
             return Ok((receipt, false));
         }
@@ -1920,6 +1967,23 @@ impl Owner {
         if self.leases.contains_key(&root) {
             return Err(turn_running());
         }
+        for attachment in &attachments {
+            let name = attachment.name.trim();
+            if name.is_empty() || name.chars().count() > attachments::MAX_NAME_CHARS {
+                return Err(AppError::new(
+                    "invalid_attachments",
+                    "Image names must be 1 to 255 characters.",
+                ));
+            }
+            let staged = std::fs::metadata(self.attachments.path(attachment))
+                .is_ok_and(|m| m.is_file() && m.len() == attachment.size_bytes);
+            if !staged {
+                return Err(AppError::new(
+                    "missing_attachment",
+                    format!("'{name}' is no longer available. Attach the image again."),
+                ));
+            }
+        }
         let mut t = thread.clone();
         t.record_activity(self.settlement(&t, self.auto_settle.rules(&t.workspace_id), now_ms()));
         t.latest_user_activity_at_ms = Some(now_ms());
@@ -1933,6 +1997,7 @@ impl Owner {
             settings: Some(t.settings.clone()),
             started_at_ms: Some(now_ms()),
             completed_at_ms: None,
+            attachments,
         };
         let receipt = Receipt {
             turn_id: turn.id.clone(),
@@ -1942,7 +2007,14 @@ impl Owner {
         t.diagnostic = None;
         t.snooze = None;
         if t.turns.len() == 1 {
-            t.title = text.chars().take(54).collect()
+            let first = &t.turns[0];
+            t.title = match first.attachments.first() {
+                Some(image) if text.is_empty() => format!("Image: {}", image.name),
+                _ => text.into(),
+            }
+            .chars()
+            .take(54)
+            .collect()
         }
         t.revision += 1;
         self.store.accept(&t, request_id, &input, &receipt)?;
@@ -2198,7 +2270,15 @@ impl Owner {
                                 .find(|v| v.id == turn_id)
                                 .ok_or_else(|| AppError::new("missing_turn", "Turn not found."))?;
                             turn.delivery = Delivery::Sending;
-                            let prompt = turn.prompt.clone();
+                            let mut input = Vec::new();
+                            if !turn.prompt.is_empty() {
+                                input.push(
+                                    json!({"type":"text","text":turn.prompt,"text_elements":[]}),
+                                );
+                            }
+                            input.extend(turn.attachments.iter().map(
+                                |a| json!({"type":"localImage","path":self.attachments.path(a)}),
+                            ));
                             let settings = turn.settings.clone().unwrap_or_default();
                             let (approval_policy, approvals_reviewer, _) =
                                 settings.permission_mode.protocol();
@@ -2211,7 +2291,7 @@ impl Owner {
                             })?;
                             let done = self.done.clone();
                             tokio::spawn(async move {
-                                let result=provider.request("turn/start",json!({"threadId":native,"clientUserMessageId":turn_id.to_string(),"input":[{"type":"text","text":prompt,"text_elements":[]}],"model":model,"effort":effort,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandboxPolicy":sandbox_policy})).await;
+                                let result=provider.request("turn/start",json!({"threadId":native,"clientUserMessageId":turn_id.to_string(),"input":input,"model":model,"effort":effort,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandboxPolicy":sandbox_policy})).await;
                                 let _ = done
                                     .send(Completion::Started {
                                         epoch,

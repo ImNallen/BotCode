@@ -793,7 +793,7 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
         )
         .await
         .unwrap();
-    app.submit(local.id.clone(), "hold".into(), "hold".into())
+    app.submit(local.id.clone(), "hold".into(), "hold".into(), vec![])
         .await
         .unwrap();
     for _ in 0..500 {
@@ -847,7 +847,7 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
     wait_until(|| started.exists()).await;
     let busy = "A Git action is running in this checkout. Try again when it finishes.";
     let refused = app
-        .submit(local.id.clone(), "second".into(), "second".into())
+        .submit(local.id.clone(), "second".into(), "second".into(), vec![])
         .await
         .unwrap_err();
     assert_eq!(
@@ -862,7 +862,7 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
     std::fs::write(&go, "").unwrap();
     let (outcome, _) = action.await.unwrap().unwrap();
     assert_eq!(outcome.failure, None);
-    app.submit(local.id.clone(), "third".into(), "third".into())
+    app.submit(local.id.clone(), "third".into(), "third".into(), vec![])
         .await
         .unwrap();
     app.shutdown().await.unwrap();

@@ -100,19 +100,34 @@ async fn receipts_prevent_duplicate_prompts_and_reject_different_input() {
     let thread = conversation(&app, &f).await;
     let mut changes = app.subscribe();
     let first = app
-        .submit(thread.id.clone(), "operation".into(), "hello".into())
+        .submit(
+            thread.id.clone(),
+            "operation".into(),
+            "hello".into(),
+            vec![],
+        )
         .await
         .unwrap();
     let same = app
-        .submit(thread.id.clone(), "operation".into(), "hello".into())
+        .submit(
+            thread.id.clone(),
+            "operation".into(),
+            "hello".into(),
+            vec![],
+        )
         .await
         .unwrap();
     assert_eq!(first.turn_id, same.turn_id);
     assert_eq!(
-        app.submit(thread.id.clone(), "operation".into(), "different".into())
-            .await
-            .unwrap_err()
-            .code,
+        app.submit(
+            thread.id.clone(),
+            "operation".into(),
+            "different".into(),
+            vec![]
+        )
+        .await
+        .unwrap_err()
+        .code,
         "request_conflict"
     );
     wait(&app, &thread.id, |t| {
@@ -143,7 +158,7 @@ async fn lost_acceptance_stays_uncertain_after_restart_and_never_replays() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "lost".into(), "lose".into())
+    app.submit(thread.id.clone(), "lost".into(), "lose".into(), vec![])
         .await
         .unwrap();
     let snapshot = wait(&app, &thread.id, |t| {
@@ -156,7 +171,7 @@ async fn lost_acceptance_stays_uncertain_after_restart_and_never_replays() {
     ));
     app.shutdown().await.unwrap();
     let app = reopen(&f.config).await;
-    app.submit(thread.id.clone(), "lost".into(), "lose".into())
+    app.submit(thread.id.clone(), "lost".into(), "lose".into(), vec![])
         .await
         .unwrap();
     let restored = app.thread(thread.id).await.unwrap();
@@ -177,9 +192,14 @@ async fn routes_multiple_approvals_by_callback_and_expires_old_clicks() {
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
     let mut hints = app.subscribe();
-    app.submit(thread.id.clone(), "approvals".into(), "approval".into())
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "approvals".into(),
+        "approval".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     let snapshot = wait(&app, &thread.id, |t| t.approvals.len() == 2).await;
     let mut hinted_approval = false;
     while let Ok(hint) = hints.try_recv() {
@@ -248,6 +268,7 @@ async fn missing_command_cannot_be_approved_and_late_file_details_become_reviewa
         thread.id.clone(),
         "missing".into(),
         "missing-command".into(),
+        vec![],
     )
     .await
     .unwrap();
@@ -268,7 +289,7 @@ async fn missing_command_cannot_be_approved_and_late_file_details_become_reviewa
         matches!(t.turns[0].execution, Execution::Completed)
     })
     .await;
-    app.submit(thread.id.clone(), "file".into(), "late-file".into())
+    app.submit(thread.id.clone(), "file".into(), "late-file".into(), vec![])
         .await
         .unwrap();
     let snapshot=wait(&app,&thread.id,|t|t.approvals.iter().any(|a|matches!(&a.action,ApprovalAction::FileChange{text,..} if text.contains("fixture change")))).await;
@@ -311,7 +332,7 @@ async fn canonical_checkout_lease_and_confirmed_interrupt() {
         .create_thread(first.id, NewCheckout::Local)
         .await
         .unwrap();
-    app.submit(a.id.clone(), "hold".into(), "hold".into())
+    app.submit(a.id.clone(), "hold".into(), "hold".into(), vec![])
         .await
         .unwrap();
     let running = wait(&app, &a.id, |t| {
@@ -321,7 +342,7 @@ async fn canonical_checkout_lease_and_confirmed_interrupt() {
     let started = running.turns[0].started_at_ms.expect("started_at recorded");
     assert_eq!(running.turns[0].completed_at_ms, None);
     assert_eq!(
-        app.submit(b.id.clone(), "blocked".into(), "hello".into())
+        app.submit(b.id.clone(), "blocked".into(), "hello".into(), vec![])
             .await
             .unwrap_err()
             .code,
@@ -336,7 +357,7 @@ async fn canonical_checkout_lease_and_confirmed_interrupt() {
         .completed_at_ms
         .expect("completed_at recorded");
     assert!(completed >= started);
-    app.submit(b.id.clone(), "free".into(), "hello".into())
+    app.submit(b.id.clone(), "free".into(), "hello".into(), vec![])
         .await
         .unwrap();
     wait(&app, &b.id, |t| {
@@ -352,7 +373,7 @@ async fn exclusive_data_owner_and_dropping_app_terminates_child() {
     let app = App::open(f.config.clone()).await.unwrap();
     assert!(matches!(App::open(f.config.clone()).await,Err(e) if e.code=="already_running"));
     let t = conversation(&app, &f).await;
-    app.submit(t.id.clone(), "hold".into(), "hold".into())
+    app.submit(t.id.clone(), "hold".into(), "hold".into(), vec![])
         .await
         .unwrap();
     wait(&app, &t.id, |t| {
@@ -425,9 +446,14 @@ async fn stalled_provider_pipe_becomes_uncertain_without_blocking_runtime() {
     std::fs::write(f.peer.parent().unwrap().join("stall"), "").unwrap();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "stall".into(), "x".repeat(95_000))
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "stall".into(),
+        "x".repeat(95_000),
+        vec![],
+    )
+    .await
+    .unwrap();
     let snapshot = wait(&app, &thread.id, |t| {
         matches!(t.turns[0].delivery, Delivery::Uncertain { .. })
     })
@@ -445,14 +471,19 @@ async fn late_missing_start_response_preserves_confirmed_completion_and_new_turn
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "late".into(), "late-response".into())
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "late".into(),
+        "late-response".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &thread.id, |t| {
         matches!(t.turns[0].execution, Execution::Completed)
     })
     .await;
-    app.submit(thread.id.clone(), "newer".into(), "hold".into())
+    app.submit(thread.id.clone(), "newer".into(), "hold".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
@@ -471,9 +502,14 @@ async fn save_failures_preserve_retryable_approval_and_interrupt_state() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "approval".into(), "approval".into())
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "approval".into(),
+        "approval".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     let snapshot = wait(&app, &thread.id, |t| t.approvals.len() == 2).await;
     let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
     db.execute_batch("CREATE TRIGGER reject_save BEFORE UPDATE ON threads BEGIN SELECT RAISE(FAIL,'fixture save failure'); END;").unwrap();
@@ -514,9 +550,14 @@ async fn shutdown_terminates_same_group_tool_after_leader_exits() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "descendant".into(), "descendant".into())
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "descendant".into(),
+        "descendant".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &thread.id, |t| {
         matches!(t.turns[0].execution, Execution::Running)
     })
@@ -609,9 +650,14 @@ async fn model_catalog_settings_and_protocol_modes() {
             .unwrap();
         assert_eq!(saved.settings, settings);
         assert!(saved.revision > thread.revision);
-        app.submit(thread.id.clone(), format!("mode-{index}"), "hello".into())
-            .await
-            .unwrap();
+        app.submit(
+            thread.id.clone(),
+            format!("mode-{index}"),
+            "hello".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
         let done = wait(&app, &thread.id, |t| {
             matches!(t.turns[0].execution, Execution::Completed)
         })
@@ -680,7 +726,7 @@ async fn settings_persist_reset_defaults_and_reject_busy_or_invalid_choices() {
         .code,
         "invalid_effort"
     );
-    app.submit(id.clone(), "hold-one".into(), "hold".into())
+    app.submit(id.clone(), "hold-one".into(), "hold".into(), vec![])
         .await
         .unwrap();
     wait(&app, &id, |t| matches!(t.session, SessionState::Running)).await;
@@ -699,7 +745,7 @@ async fn settings_persist_reset_defaults_and_reject_busy_or_invalid_choices() {
     app.update_settings(id.clone(), SessionSettings::default())
         .await
         .unwrap();
-    app.submit(id.clone(), "reset".into(), "hello".into())
+    app.submit(id.clone(), "reset".into(), "hello".into(), vec![])
         .await
         .unwrap();
     wait(&app, &id, |t| {
@@ -749,16 +795,21 @@ async fn model_catalog_failure_can_retry_and_default_drafts_still_send() {
     let app = App::open(f.config.clone()).await.unwrap();
     assert_eq!(app.models().await.unwrap_err().code, "provider");
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "default".into(), "hello".into())
+    app.submit(thread.id.clone(), "default".into(), "hello".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
         matches!(t.turns[0].execution, Execution::Completed)
     })
     .await;
-    app.submit(thread.id.clone(), "default-followup".into(), "hello".into())
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "default-followup".into(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &thread.id, |t| {
         t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
     })
@@ -783,7 +834,7 @@ async fn catalog_refresh_failure_preserves_effort_reset() {
     )
     .await
     .unwrap();
-    app.submit(thread.id.clone(), "ultra".into(), "hello".into())
+    app.submit(thread.id.clone(), "ultra".into(), "hello".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
@@ -795,7 +846,7 @@ async fn catalog_refresh_failure_preserves_effort_reset() {
         .unwrap();
     std::fs::write(f.peer.parent().unwrap().join("models_error"), "").unwrap();
     assert_eq!(app.models().await.unwrap_err().code, "provider");
-    app.submit(thread.id.clone(), "reset".into(), "hello".into())
+    app.submit(thread.id.clone(), "reset".into(), "hello".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
@@ -831,7 +882,7 @@ async fn refreshed_catalog_rejects_removed_saved_model_before_acceptance() {
     std::fs::write(f.peer.parent().unwrap().join("models_removed"), "").unwrap();
     assert!(app.models().await.unwrap().is_empty());
     let error = app
-        .submit(thread.id.clone(), "removed".into(), "hello".into())
+        .submit(thread.id.clone(), "removed".into(), "hello".into(), vec![])
         .await
         .unwrap_err();
     assert_eq!(error.code, "invalid_model");
@@ -865,6 +916,7 @@ fn legacy_snapshots_default_settings() {
             settings: None,
             started_at_ms: None,
             completed_at_ms: None,
+            attachments: vec![],
         }],
         approvals: vec![],
         diagnostic: None,
@@ -892,7 +944,7 @@ async fn provider_loss_invalidates_catalog_and_reloads_on_request() {
     let app = App::open(f.config.clone()).await.unwrap();
     app.models().await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "loss".into(), "lose".into())
+    app.submit(thread.id.clone(), "loss".into(), "lose".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
@@ -957,7 +1009,7 @@ async fn usage_turn_records_context_and_merges_limits() {
     let mut watch = app.watch_usage_limits();
     watch.borrow_and_update();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "usage".into(), "usage".into())
+    app.submit(thread.id.clone(), "usage".into(), "usage".into(), vec![])
         .await
         .unwrap();
     let done = wait(&app, &thread.id, |t| {
@@ -978,9 +1030,14 @@ async fn usage_turn_records_context_and_merges_limits() {
         limits_json(watch.borrow_and_update().clone().unwrap()),
         merged
     );
-    app.submit(thread.id.clone(), "usage-again".into(), "usage".into())
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "usage-again".into(),
+        "usage".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     let again = wait(&app, &thread.id, |t| {
         t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
     })
@@ -1061,7 +1118,7 @@ async fn provider_loss_keeps_usage_limits_and_relaunch_reads_again() {
     let app = App::open(f.config.clone()).await.unwrap();
     app.usage_limits(false).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "loss".into(), "lose".into())
+    app.submit(thread.id.clone(), "loss".into(), "lose".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
@@ -1073,7 +1130,7 @@ async fn provider_loss_keeps_usage_limits_and_relaunch_reads_again() {
         weekly_44()
     );
     assert_eq!(method_count(&f, "initialize"), 1);
-    app.submit(thread.id.clone(), "relaunch".into(), "hello".into())
+    app.submit(thread.id.clone(), "relaunch".into(), "hello".into(), vec![])
         .await
         .unwrap();
     for _ in 0..500 {
@@ -1137,9 +1194,14 @@ async fn worktree_threads_start_codex_in_their_own_checkout() {
     );
     assert_eq!(git_output(&path, &["branch", "--show-current"]), branch);
     for thread in [&local, &isolated] {
-        app.submit(thread.id.clone(), thread.id.to_string(), "hello".into())
-            .await
-            .unwrap();
+        app.submit(
+            thread.id.clone(),
+            thread.id.to_string(),
+            "hello".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
         wait(&app, &thread.id, |t| {
             matches!(t.turns[0].execution, Execution::Completed)
         })
@@ -1187,7 +1249,7 @@ async fn worktree_threads_run_beside_a_busy_local_checkout() {
         .create_thread(workspace.id, main_worktree())
         .await
         .unwrap();
-    app.submit(held.id.clone(), "hold".into(), "hold".into())
+    app.submit(held.id.clone(), "hold".into(), "hold".into(), vec![])
         .await
         .unwrap();
     wait(&app, &held.id, |t| {
@@ -1195,15 +1257,20 @@ async fn worktree_threads_run_beside_a_busy_local_checkout() {
     })
     .await;
     assert_eq!(
-        app.submit(blocked.id.clone(), "blocked".into(), "hello".into())
+        app.submit(blocked.id.clone(), "blocked".into(), "hello".into(), vec![])
             .await
             .unwrap_err()
             .code,
         "checkout_busy"
     );
-    app.submit(isolated.id.clone(), "isolated".into(), "hello".into())
-        .await
-        .unwrap();
+    app.submit(
+        isolated.id.clone(),
+        "isolated".into(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &isolated.id, |t| {
         matches!(t.turns[0].execution, Execution::Completed)
     })
@@ -1500,7 +1567,7 @@ async fn switch_branch_changes_the_checkout_unless_its_lease_is_held() {
         .create_thread(workspace.id.clone(), NewCheckout::Local)
         .await
         .unwrap();
-    app.submit(held.id.clone(), "hold".into(), "hold".into())
+    app.submit(held.id.clone(), "hold".into(), "hold".into(), vec![])
         .await
         .unwrap();
     wait(&app, &held.id, |t| {
@@ -1765,7 +1832,7 @@ async fn folder_threads_browse_files_without_git() {
             .await
             .is_err()
     );
-    app.submit(thread.id.clone(), "scratch".into(), "hello".into())
+    app.submit(thread.id.clone(), "scratch".into(), "hello".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
@@ -1903,7 +1970,7 @@ async fn running_projects_cannot_be_removed_until_their_turn_ends() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "hold".into(), "hold".into())
+    app.submit(thread.id.clone(), "hold".into(), "hold".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
@@ -2062,6 +2129,7 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
             settings: None,
             started_at_ms,
             completed_at_ms,
+            attachments: vec![],
         }],
         approvals: vec![],
         diagnostic: None,
@@ -2208,7 +2276,7 @@ async fn sending_a_prompt_returns_settled_and_kept_threads_to_auto() {
     app.arrange(thread.id.clone(), Arrange::Settle)
         .await
         .unwrap();
-    app.submit(thread.id.clone(), "first".into(), "hello".into())
+    app.submit(thread.id.clone(), "first".into(), "hello".into(), vec![])
         .await
         .unwrap();
     let done = wait(&app, &thread.id, |t| {
@@ -2226,7 +2294,7 @@ async fn sending_a_prompt_returns_settled_and_kept_threads_to_auto() {
         app.thread(thread.id.clone()).await.unwrap().placement,
         Placement::Kept
     );
-    app.submit(thread.id.clone(), "second".into(), "hello".into())
+    app.submit(thread.id.clone(), "second".into(), "hello".into(), vec![])
         .await
         .unwrap();
     let done = wait(&app, &thread.id, |t| {
@@ -2241,9 +2309,14 @@ async fn settling_is_refused_while_an_approval_waits_but_allowed_while_running()
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "approvals".into(), "approval".into())
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "approvals".into(),
+        "approval".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     let waiting = wait(&app, &thread.id, |t| t.approvals.len() == 2).await;
     let refused = app
         .arrange(thread.id.clone(), Arrange::Settle)
@@ -2280,7 +2353,7 @@ async fn settling_is_refused_while_an_approval_waits_but_allowed_while_running()
         matches!(t.turns[0].execution, Execution::Completed)
     })
     .await;
-    app.submit(thread.id.clone(), "hold".into(), "hold".into())
+    app.submit(thread.id.clone(), "hold".into(), "hold".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
@@ -2302,9 +2375,14 @@ async fn a_new_approval_returns_a_settled_thread_to_auto() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "late".into(), "late-approval".into())
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "late".into(),
+        "late-approval".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &thread.id, |t| {
         matches!(t.turns[0].execution, Execution::Running)
     })
@@ -2361,7 +2439,7 @@ async fn stale_threads_read_as_settled_after_reopen_unless_kept() {
         .await
         .unwrap();
     for (n, thread) in [&stale, &kept, &fresh].into_iter().enumerate() {
-        app.submit(thread.id.clone(), format!("op-{n}"), "hello".into())
+        app.submit(thread.id.clone(), format!("op-{n}"), "hello".into(), vec![])
             .await
             .unwrap();
         wait(&app, &thread.id, |t| {
@@ -2828,7 +2906,7 @@ async fn sending_a_prompt_clears_the_snooze_and_keeps_the_pin() {
     .await
     .unwrap();
     let pinned = app.thread(thread.id.clone()).await.unwrap().placement;
-    app.submit(thread.id.clone(), "first".into(), "hello".into())
+    app.submit(thread.id.clone(), "first".into(), "hello".into(), vec![])
         .await
         .unwrap();
     let done = wait(&app, &thread.id, |t| {
@@ -2845,7 +2923,7 @@ async fn a_new_prompt_returns_an_auto_settled_pinned_thread_to_active_without_it
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.submit(thread.id.clone(), "first".into(), "hello".into())
+    app.submit(thread.id.clone(), "first".into(), "hello".into(), vec![])
         .await
         .unwrap();
     wait(&app, &thread.id, |t| {
@@ -2863,7 +2941,7 @@ async fn a_new_prompt_returns_an_auto_settled_pinned_thread_to_active_without_it
     let summary = view.threads.iter().find(|s| s.id == thread.id).unwrap();
     assert!(summary.settled_at_ms.is_some());
     assert_eq!(summary.pinned_at_ms, None);
-    app.submit(thread.id.clone(), "second".into(), "hello".into())
+    app.submit(thread.id.clone(), "second".into(), "hello".into(), vec![])
         .await
         .unwrap();
     let done = wait(&app, &thread.id, |t| {
@@ -2892,7 +2970,7 @@ async fn pinning_a_settled_thread_persists_the_keep_until_the_next_prompt() {
     else {
         panic!("pinning a settled thread keeps it")
     };
-    app.submit(thread.id.clone(), "first".into(), "hello".into())
+    app.submit(thread.id.clone(), "first".into(), "hello".into(), vec![])
         .await
         .unwrap();
     let done = wait(&app, &thread.id, |t| {
@@ -2908,9 +2986,14 @@ async fn a_new_approval_returns_kept_threads_to_auto_keeps_pins_and_raises_a_sno
         let f = Fixture::new();
         let app = App::open(f.config.clone()).await.unwrap();
         let thread = conversation(&app, &f).await;
-        app.submit(thread.id.clone(), "late".into(), "late-approval".into())
-            .await
-            .unwrap();
+        app.submit(
+            thread.id.clone(),
+            "late".into(),
+            "late-approval".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
         wait(&app, &thread.id, |t| {
             matches!(t.turns[0].execution, Execution::Running)
         })
@@ -2974,9 +3057,14 @@ async fn finished_thread(app: &App, workspace: &WorkspaceId, checkout: NewChecko
         .create_thread(workspace.clone(), checkout)
         .await
         .unwrap();
-    app.submit(thread.id.clone(), thread.id.to_string(), "hello".into())
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        thread.id.to_string(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(app, &thread.id, |t| {
         matches!(t.turns[0].execution, Execution::Completed)
     })
@@ -3167,5 +3255,233 @@ async fn saving_settings_reclassifies_threads_without_a_restart() {
         settled_by_project(&app, &projects).await,
         [false, false, false]
     );
+    app.shutdown().await.unwrap();
+}
+const SHOT: &[u8] = b"\x89PNG\r\n\x1a\nshot";
+const SHOT_ID: &str = "0c25346db1c2a63fcc299515e33ca8fb44d8d4cdb6ad376e04aa20a8928293cb";
+const CLIP: &[u8] = b"GIF89aclip";
+const CLIP_ID: &str = "f791cfdafdc956edbeb3f12bfa69771c4a594ba3fe46f3873c39fe1aa85d407f";
+fn attachment_path(f: &Fixture, file: &str) -> std::path::PathBuf {
+    f.config
+        .data_dir
+        .canonicalize()
+        .unwrap()
+        .join("attachments")
+        .join(file)
+}
+fn turn_inputs(f: &Fixture) -> Vec<serde_json::Value> {
+    f.calls()
+        .into_iter()
+        .filter(|call| call["method"] == "turn/start")
+        .map(|call| call["params"]["input"].clone())
+        .collect()
+}
+fn age(path: &std::path::Path, by: Duration) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - by)
+        .unwrap();
+}
+#[tokio::test]
+async fn turn_start_sends_the_text_then_each_image_by_its_stored_path() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let shot = app
+        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .await
+        .unwrap();
+    let clip = app
+        .stage_attachment("clip.gif".into(), CLIP.to_vec())
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&shot).unwrap(),
+        serde_json::json!({"id": SHOT_ID, "mimeType": "image/png", "name": "shot.png", "sizeBytes": 12})
+    );
+    assert_eq!(clip.id.as_str(), CLIP_ID);
+    app.submit(
+        thread.id.clone(),
+        "images".into(),
+        "  What changed?  ".into(),
+        vec![shot.clone(), clip.clone()],
+    )
+    .await
+    .unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(done.turns[0].prompt, "What changed?");
+    assert_eq!(done.turns[0].attachments, [shot, clip]);
+    assert_eq!(
+        turn_inputs(&f),
+        [serde_json::json!([
+            {"type": "text", "text": "What changed?", "text_elements": []},
+            {"type": "localImage", "path": attachment_path(&f, &format!("{SHOT_ID}.png"))},
+            {"type": "localImage", "path": attachment_path(&f, &format!("{CLIP_ID}.gif"))},
+        ])]
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn a_retried_submit_returns_its_turn_and_different_images_conflict() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let shot = app
+        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .await
+        .unwrap();
+    let clip = app
+        .stage_attachment("clip.gif".into(), CLIP.to_vec())
+        .await
+        .unwrap();
+    let submit = |attachments: Vec<ImageAttachment>| {
+        app.submit(
+            thread.id.clone(),
+            "retry".into(),
+            "Look".into(),
+            attachments,
+        )
+    };
+    let first = submit(vec![shot.clone()]).await.unwrap();
+    let retry = submit(vec![shot.clone()]).await.unwrap();
+    assert_eq!(retry.turn_id, first.turn_id);
+    let conflict = submit(vec![shot.clone(), clip]).await.unwrap_err();
+    assert_eq!(conflict.code, "request_conflict");
+    let renamed = ImageAttachment {
+        name: "other.png".into(),
+        ..shot
+    };
+    assert_eq!(
+        submit(vec![renamed]).await.unwrap_err().code,
+        "request_conflict"
+    );
+    assert_eq!(submit(vec![]).await.unwrap_err().code, "request_conflict");
+    let done = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(done.turns.len(), 1);
+    assert_eq!(turn_inputs(&f).len(), 1);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn an_image_without_text_starts_a_turn_titled_by_the_image() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    assert_eq!(
+        app.submit(thread.id.clone(), "empty".into(), "  ".into(), vec![])
+            .await
+            .unwrap_err()
+            .code,
+        "invalid_prompt"
+    );
+    let shot = app
+        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .await
+        .unwrap();
+    app.submit(thread.id.clone(), "image".into(), " ".into(), vec![shot])
+        .await
+        .unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(done.title, "Image: shot.png");
+    assert_eq!(done.turns[0].prompt, "");
+    assert_eq!(
+        turn_inputs(&f),
+        [serde_json::json!([
+            {"type": "localImage", "path": attachment_path(&f, &format!("{SHOT_ID}.png"))},
+        ])]
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn a_submit_refuses_images_that_are_not_staged() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let shot = app
+        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .await
+        .unwrap();
+    let wrong_size = ImageAttachment {
+        size_bytes: 13,
+        ..shot.clone()
+    };
+    let refused = app
+        .submit(
+            thread.id.clone(),
+            "forged".into(),
+            "Look".into(),
+            vec![wrong_size],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        AppError::new(
+            "missing_attachment",
+            "'shot.png' is no longer available. Attach the image again."
+        )
+    );
+    std::fs::remove_file(attachment_path(&f, &format!("{SHOT_ID}.png"))).unwrap();
+    let refused = app
+        .submit(
+            thread.id.clone(),
+            "missing".into(),
+            "Look".into(),
+            vec![shot],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "missing_attachment");
+    assert!(app.thread(thread.id).await.unwrap().turns.is_empty());
+    assert!(turn_inputs(&f).is_empty());
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn turn_images_survive_reopen_and_the_sweep_keeps_only_referenced_old_files() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let shot = app
+        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .await
+        .unwrap();
+    app.stage_attachment("clip.gif".into(), CLIP.to_vec())
+        .await
+        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "keep".into(),
+        "Look".into(),
+        vec![shot.clone()],
+    )
+    .await
+    .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    app.shutdown().await.unwrap();
+    let day = Duration::from_secs(25 * 60 * 60);
+    age(&attachment_path(&f, &format!("{SHOT_ID}.png")), day);
+    age(&attachment_path(&f, &format!("{CLIP_ID}.gif")), day);
+    let app = reopen(&f.config).await;
+    let restored = app.thread(thread.id).await.unwrap();
+    assert_eq!(restored.turns[0].attachments, [shot]);
+    let mut files: Vec<_> = std::fs::read_dir(attachment_path(&f, ""))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    files.sort();
+    assert_eq!(files, [format!("{SHOT_ID}.png")]);
     app.shutdown().await.unwrap();
 }

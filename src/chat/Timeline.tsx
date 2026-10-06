@@ -26,6 +26,7 @@ import { cn } from "../lib/cn";
 import { formatDayAwareTimestamp, formatWorkingTimer } from "../lib/time";
 import { Button } from "../ui/controls";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { attachmentUrl } from "./composerImages";
 import {
   deriveRows,
   liveLabel,
@@ -117,13 +118,31 @@ function UserRow({ row }: { row: Extract<TimelineRow, { kind: "user" }> }) {
     <div className="group flex flex-col items-end gap-1">
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
         <h3 className="sr-only select-none">You</h3>
-        <div data-user-message-body="true" className="relative">
-          <ChatMarkdown
-            text={row.text}
-            className="text-message-foreground"
-            lineBreaks
-          />
-        </div>
+        {row.attachments.length > 0 ? (
+          <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">
+            {row.attachments.map((image) => (
+              <div
+                key={image.id}
+                className="bg-background/70 aspect-[4/3] overflow-hidden rounded-lg border border-border/80"
+              >
+                <img
+                  src={attachmentUrl(image)}
+                  alt={image.name}
+                  className="block size-full object-cover"
+                />
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {row.text ? (
+          <div data-user-message-body="true" className="relative">
+            <ChatMarkdown
+              text={row.text}
+              className="text-message-foreground"
+              lineBreaks
+            />
+          </div>
+        ) : null}
       </div>
       <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover:opacity-100">
         <div className="flex shrink-0 items-center gap-2">
@@ -133,7 +152,7 @@ function UserRow({ row }: { row: Extract<TimelineRow, { kind: "user" }> }) {
             </p>
           ) : null}
           <div className="flex items-center gap-0.5">
-            <CopyButton text={row.text} />
+            {row.text ? <CopyButton text={row.text} /> : null}
           </div>
         </div>
       </div>

@@ -4,6 +4,25 @@ use tauri::{Emitter, Manager};
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .register_asynchronous_uri_scheme_protocol(
+            "botcode-attachment",
+            |ctx, request, responder| {
+                let app = ctx.app_handle().state::<App>().inner().clone();
+                let file = request.uri().path().trim_start_matches('/').to_owned();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let response = match app.read_attachment(&file) {
+                        Ok((bytes, mime)) => tauri::http::Response::builder()
+                            .header("Content-Type", mime.as_str())
+                            .header("Cache-Control", "private, max-age=31536000, immutable")
+                            .body(bytes),
+                        Err(_) => tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new()),
+                    };
+                    responder.respond(response.expect("static response parts are valid"));
+                });
+            },
+        )
         .setup(|app| {
             let runtime =
                 tauri::async_runtime::block_on(App::open(RuntimeConfig::from_environment()?))?;
@@ -66,6 +85,7 @@ fn main() {
             ipc::create_thread,
             ipc::thread_snapshot,
             ipc::open_thread,
+            ipc::stage_attachment,
             ipc::submit,
             ipc::list_models,
             ipc::usage_limits,

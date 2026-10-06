@@ -68,6 +68,14 @@ Approval callbacks map an application approval ID to the reverse JSON-RPC reques
 
 On provider loss, the runtime terminates managed execution, retires the epoch, expires callbacks, marks unresolved turns Lost or Uncertain, and releases checkout leases. It does not replay turn/start. Startup restores local history and marks previously live execution unresolved. Reconnect resumes the exact native thread and merges matching native turn or client-message identities when returned. Incomplete history never deletes local items or proves lost execution live.
 
+## Image attachments
+
+`attachments.rs` owns `<data dir>/attachments`. `App::stage_attachment` runs outside the owner loop. It reads the image type from the leading bytes, ignoring the type the renderer sends, and accepts PNG, JPEG, GIF, and WebP up to 10 MiB. It names the file by the SHA-256 of its bytes, writes a `.part` file, and renames it into place. Staging the same bytes again returns the same `ImageAttachment` id and writes nothing, so concurrent stagers need no lock. `AttachmentId` parses only 64 lowercase hex digits, so an id cannot name a path outside the directory.
+
+The renderer stages each image when it is pasted or dropped, and sends the returned `ImageAttachment` values with the submit. `accept_submit` puts the attachments in the receipt input, so the same operation ID with the same images returns the original turn and the same ID with other images is refused. It checks that each file exists with the recorded size, then stores the list in `Turn::attachments` in the thread snapshot. That list is the only reference to a file. `turn/start` sends the text item, then a `localImage` item with each file's absolute path. Codex reads the files itself, so the request size does not grow with the images. The renderer keeps one operation ID while the thread, text, and images of a failed send stay unchanged.
+
+`App::open` deletes files that no saved turn lists once they are 24 hours old, and `.part` files after an hour. The sweep runs before the owner serves commands, so it cannot race staging. A composer image is never saved, so after a restart nothing refers to an unsent file. The Tauri adapter serves files through the `botcode-attachment` URI scheme. It returns 404 for a name that does not parse as `<hash>.<ext>`.
+
 ## Reconciled design choices
 
 Candidate A supplied the owner loop, shared provider, execution leases, and delivery model. Candidate B supplied caller operation receipts and simple snapshot invalidation. The independent review added canonical-root exclusion, revision guards, storage-failure rollback, bounded stdin writes, old-response ordering, and process-group cleanup.

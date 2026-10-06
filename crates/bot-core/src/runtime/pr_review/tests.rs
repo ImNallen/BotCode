@@ -32,6 +32,7 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
         prs: PrWork::load(&mut store).unwrap(),
         review_work: ReviewWork::new(),
         git_jobs: JoinSet::new(),
+        attachments: Attachments::new(dir.path()),
         config: RuntimeConfig {
             data_dir: dir.path().into(),
             gh_binary: "/no/gh".into(),
@@ -182,6 +183,7 @@ async fn late_lifecycle_completion_preserves_supersession_and_cleanup_latch() {
         prs: PrWork::load(&mut store).unwrap(),
         review_work: ReviewWork::new(),
         git_jobs: JoinSet::new(),
+        attachments: Attachments::new(dir.path()),
         config: RuntimeConfig {
             data_dir: dir.path().into(),
             gh_binary: "/no/gh".into(),

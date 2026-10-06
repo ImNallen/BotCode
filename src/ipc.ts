@@ -7,7 +7,13 @@ import {
   type PrReviewChange,
 } from "./panel/prReview";
 import { threadPrSummary, type PullRequestKey } from "./panel/pullRequests";
-import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import {
+  Channel,
+  type InvokeArgs,
+  type InvokeOptions,
+  invoke,
+  isTauri,
+} from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { QueryClient } from "@tanstack/react-query";
 import { z } from "zod";
@@ -40,6 +46,12 @@ const execution = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("failed"), reason: z.string() }),
   z.object({ kind: z.literal("lost"), reason: z.string() }),
 ]);
+const imageAttachment = z.object({
+  id: z.string().regex(/^[0-9a-f]{64}$/),
+  mimeType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+  name: z.string(),
+  sizeBytes: z.number(),
+});
 const item = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("assistant"),
@@ -175,6 +187,7 @@ const thread = z.object({
       settings: settings.nullable(),
       startedAtMs: z.number().nullable(),
       completedAtMs: z.number().nullable(),
+      attachments: z.array(imageAttachment).default([]),
     }),
   ),
   approvals: z.array(approval),
@@ -334,6 +347,7 @@ export type LimitWindow = z.infer<typeof limitWindow>;
 export type UsageLimits = z.infer<typeof usageLimits>;
 export type Approval = z.infer<typeof approval>;
 export type Item = z.infer<typeof item>;
+export type ImageAttachment = z.infer<typeof imageAttachment>;
 export type ApprovalDecision = "accept" | "decline" | "cancel";
 export type Arrange =
   | { kind: "pin" | "unpin" | "settle" | "unsettle" | "wake" }
@@ -396,11 +410,12 @@ export class IpcError extends Error {
 }
 async function call<S extends z.ZodType>(
   command: string,
-  args: Record<string, unknown>,
+  args: InvokeArgs,
   schema: S,
+  options?: InvokeOptions,
 ): Promise<z.infer<S>> {
   try {
-    const result: unknown = await invoke(command, args);
+    const result: unknown = await invoke(command, args, options);
     return schema.parse(result);
   } catch (error: unknown) {
     const parsed = z
@@ -591,8 +606,24 @@ export const ipc = {
     call("usage_limits", { refresh }, usageLimits),
   settings: (threadId: string, value: SessionSettings) =>
     call("update_thread_settings", { threadId, settings: value }, thread),
-  submit: (threadId: string, text: string, requestId: string) =>
-    call("submit", { threadId, text, requestId }, z.object({ turnId: id })),
+  stageAttachment: async (file: File) =>
+    call(
+      "stage_attachment",
+      new Uint8Array(await file.arrayBuffer()),
+      imageAttachment,
+      { headers: { "x-attachment-name": encodeURIComponent(file.name) } },
+    ),
+  submit: (
+    threadId: string,
+    text: string,
+    requestId: string,
+    attachments: ImageAttachment[],
+  ) =>
+    call(
+      "submit",
+      { threadId, text, requestId, attachments },
+      z.object({ turnId: id }),
+    ),
   approval: (approvalId: string, decision: ApprovalDecision) =>
     call("answer_approval", { approvalId, decision }, z.null()),
   interrupt: (threadId: string) => call("interrupt", { threadId }, z.null()),

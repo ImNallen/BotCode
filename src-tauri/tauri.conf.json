@@ -19,6 +19,7 @@
         "minWidth": 1000,
         "minHeight": 620,
         "titleBarStyle": "Overlay",
+        "dragDropEnabled": false,
         "hiddenTitle": true,
         "trafficLightPosition": {
           "x": 16,
@@ -27,7 +28,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: https://avatars.githubusercontent.com; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:"
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost botcode-attachment: http://botcode-attachment.localhost data: https://avatars.githubusercontent.com; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:"
     }
   },
   "bundle": {
