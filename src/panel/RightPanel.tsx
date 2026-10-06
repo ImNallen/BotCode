@@ -37,13 +37,15 @@ import {
   eligibleSurfaces,
 } from "./panelState";
 import { usePanelWidth } from "./usePanelWidth";
+import type { TerminalSurfaceId } from "../terminal/terminalState";
 
 export type Surface =
   | { kind: "files" }
   | { kind: "diff" }
   | { kind: "pull_requests" }
   | { kind: "pull_request"; key: PullRequestKey }
-  | { kind: "file"; path: string };
+  | { kind: "file"; path: string }
+  | { kind: "terminal"; id: TerminalSurfaceId };
 
 export type PanelState = { surfaces: Surface[]; active: number | null };
 

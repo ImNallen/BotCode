@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { it } from "node:test";
+import { describe, it } from "node:test";
 import {
+  closeSurface,
   eligibleSurfaces,
   openSurface,
   pullRequestSurface,
+  reconcileTerminalSurfaces,
   surfaceTitle,
 } from "./panelState.ts";
 import { pullRequestKey, type ThreadPrSummary } from "./pullRequests.ts";
-import type { PanelState } from "./RightPanel.tsx";
+import type { PanelState, Surface } from "./RightPanel.tsx";
 
 const emptyPanel: PanelState = { surfaces: [], active: null };
 
@@ -40,7 +42,10 @@ it("opens one tab per pull request and reuses an open one", () => {
   }));
   assert.ok(first && second);
   const both = openSurface(openSurface(emptyPanel, first), second);
-  assert.deepEqual(both.surfaces.map(surfaceTitle), ["#24", "#25"]);
+  assert.deepEqual(
+    both.surfaces.map((surface) => surfaceTitle(surface)),
+    ["#24", "#25"],
+  );
   assert.deepEqual(openSurface(both, first), { ...both, active: 0 });
 });
 
@@ -49,4 +54,90 @@ it("hides pull request tabs the conversation does not link", () => {
   assert.deepEqual(eligibleSurfaces(state, true, links(24, 25)), state);
   assert.deepEqual(eligibleSurfaces(state, true, links(25)), emptyPanel);
   assert.deepEqual(eligibleSurfaces(state, true, undefined), emptyPanel);
+});
+
+describe("terminal tabs", () => {
+  const files: Surface = { kind: "files" };
+  const diff: Surface = { kind: "diff" };
+  const terminal1: Surface = { kind: "terminal", id: "terminal:term-1" };
+  const terminal2: Surface = { kind: "terminal", id: "terminal:term-2" };
+
+  it("titles a terminal tab with its active terminal", () => {
+    assert.equal(
+      surfaceTitle(terminal1, [
+        {
+          id: "terminal:term-1",
+          terminalIds: ["term-1", "term-2"],
+          activeTerminalId: "term-2",
+        },
+      ]),
+      "Terminal 2",
+    );
+    assert.equal(surfaceTitle(terminal1), "Terminal 1");
+  });
+
+  it("returns the same state when the tabs match the scope", () => {
+    const state: PanelState = { surfaces: [files, terminal1], active: 1 };
+    assert.equal(reconcileTerminalSurfaces(state, ["terminal:term-1"]), state);
+  });
+
+  it("closes terminal tabs the scope no longer holds", () => {
+    assert.deepEqual(
+      reconcileTerminalSurfaces(
+        { surfaces: [files, terminal1, diff, terminal2], active: 2 },
+        [],
+      ),
+      { surfaces: [files, diff], active: 1 },
+    );
+    assert.deepEqual(
+      reconcileTerminalSurfaces(
+        { surfaces: [files, terminal1, terminal2], active: 2 },
+        ["terminal:term-1"],
+      ),
+      { surfaces: [files, terminal1], active: 1 },
+    );
+    assert.deepEqual(
+      reconcileTerminalSurfaces({ surfaces: [terminal1], active: 0 }, []),
+      emptyPanel,
+    );
+  });
+
+  it("closes the active terminal tab like its close button", () => {
+    const state: PanelState = { surfaces: [files, terminal1, diff], active: 1 };
+    assert.deepEqual(
+      reconcileTerminalSurfaces(state, []),
+      closeSurface(state, 1),
+    );
+  });
+
+  it("brings back the scope's terminal tabs without taking the active tab", () => {
+    assert.deepEqual(
+      reconcileTerminalSurfaces({ surfaces: [files, diff], active: 0 }, [
+        "terminal:term-1",
+        "terminal:term-2",
+      ]),
+      { surfaces: [files, diff, terminal1, terminal2], active: 0 },
+    );
+  });
+
+  it("shows a returning terminal tab when no tab is active", () => {
+    assert.deepEqual(
+      reconcileTerminalSurfaces(emptyPanel, ["terminal:term-1"]),
+      { surfaces: [terminal1], active: 0 },
+    );
+  });
+
+  it("keeps a just-opened terminal tab active", () => {
+    const opened = openSurface({ surfaces: [files], active: 0 }, terminal1);
+    assert.equal(
+      reconcileTerminalSurfaces(opened, ["terminal:term-1"]),
+      opened,
+    );
+    assert.equal(opened.active, 1);
+  });
+
+  it("keeps terminal tabs in scratch threads without a repository", () => {
+    const state: PanelState = { surfaces: [files, terminal1], active: 1 };
+    assert.deepEqual(eligibleSurfaces(state, false), state);
+  });
 });
