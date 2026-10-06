@@ -11,6 +11,8 @@ pnpm install
 pnpm tauri dev
 ```
 
+The dev server uses port 1420. If another dev build holds that port, `pnpm tauri dev` takes the next free one.
+
 Open a Git repository and start a conversation. To work outside a repository, choose **Start without a project** or press Command+Option+N, and Bot Code runs that conversation in its own folder under `scratch` in the data directory. Send with Enter. Shift+Enter adds a line. The right-panel toggle in the header opens Files, Diff, and Reviews tabs. Approvals offer Approve, Decline, or Cancel turn. Stop is available after Codex acknowledges the running turn.
 
 The folder button beside the sidebar search filters threads by project. Its gear buttons open that project's Project settings page, where you can rename a repository, choose where its new threads start, or remove it. Removing a project deletes it and its threads from Bot Code and clears its overrides. The repository, Bot Code worktrees, and scratch folders stay on disk. Stop a project's running conversations before you remove it.
