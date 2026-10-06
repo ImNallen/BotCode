@@ -13,11 +13,17 @@ import {
   SparklesIcon,
 } from "lucide-react";
 import { Menu, MenuItem } from "../ui/menu";
-import type { Checkout, ModelOption, SessionSettings } from "../ipc";
+import type {
+  Checkout,
+  ContextUsage,
+  ModelOption,
+  SessionSettings,
+} from "../ipc";
 import { cn } from "../lib/cn";
 import { checkoutModeLabels, type CheckoutMode } from "../settings/preferences";
 import { selectItem, selectTrigger } from "../ui/controls";
 import { OpenAI } from "../ui/icons";
+import { ContextWindowMeter } from "./ContextWindowMeter";
 import { ModelPicker } from "./ModelPicker";
 import { ComposerSurface } from "./ComposerSurface";
 
@@ -38,6 +44,8 @@ export function Composer({
   stopping,
   placeholder,
   approval,
+  notice,
+  contextUsage,
   disabled,
   context,
   autoFocus,
@@ -60,6 +68,8 @@ export function Composer({
   stopping: boolean;
   placeholder: string;
   approval: ReactNode;
+  notice: ReactNode;
+  contextUsage: ContextUsage | null;
   disabled: boolean;
   context?: {
     checkout:
@@ -149,6 +159,7 @@ export function Composer({
               onSubmit();
             }}
           >
+            {notice}
             {approval}
             <div className="relative">
               <ComposerSurface.Main>
@@ -388,6 +399,16 @@ export function Composer({
                         data-chat-composer-actions="right"
                         className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                       >
+                        {contextUsage ? (
+                          <ContextWindowMeter
+                            usage={contextUsage}
+                            modelDisplayName={
+                              selectedModel?.displayName ??
+                              settings.model ??
+                              null
+                            }
+                          />
+                        ) : null}
                         {running && canStop ? (
                           <button
                             type="button"

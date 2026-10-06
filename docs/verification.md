@@ -420,3 +420,19 @@ Verified on 2026-10-06 in the same native setup.
 | Quit | No shell processes remained. |
 
 Returning to a thread restores its terminal tabs in `reconcileTerminalSurfaces` tests but had no native observation, because the disposable data directory had no threads.
+
+## Context window meter and usage limits
+
+Verified on macOS on 2026-10-06 in the native debug bundle with the temporary identifier `dev.z1.code.usageverify`, an isolated `Z1_DATA_DIR`, a disposable one-commit repository and real codex-cli 0.160.1 signed in to a ChatGPT Pro account. `cargo test -p z1-core` drives the fake peer through reads, sparse updates, other limit buckets, API-key and signed-out accounts, failed reads and provider loss. At 1100×780:
+
+| Workflow | Observed result |
+| --- | --- |
+| `/usage-limits` on a draft | The notice docked above the composer with "Codex · ChatGPT Pro 20x Subscription" and one Weekly row: 56% left, the even-spending mark and "resets in 3d 4h". No thread was created. |
+| First turn | The notice closed when the turn started. The ring appeared left of Send, and SQLite stored `{"usedTokens":20682,"maxTokens":258400,"totalProcessedTokens":null}`. |
+| Meter card | Hovering the ring showed "Context Window", "8% · 21k/258k", the bar and "Context for GPT-6.1-Sol compacts automatically when needed." |
+| Usage page | The sidebar Usage button opened the page with the same Weekly row and Refresh. The thread list stayed, the footer showed Back, and Escape returned to the conversation. |
+| Switch | Turning off **Context window indicator** removed the ring. Turning it on brought it back. |
+| `/usage-limits` during a turn | The notice opened while Stop showed, and nothing reached Codex. |
+| Quit and relaunch | The ring returned from storage with "8.1% · 21k/258k" and "Total processed 42k". |
+
+The account has no 5-hour window, so a Session row had no native observation. Light mode, an API-key login and a live percentage change during a turn had no native observation.

@@ -11,8 +11,10 @@ import {
   type Branches,
   type TerminalEvent,
   type ThreadSummary,
+  type UsageLimits,
   type WorkspaceView,
 } from "./ipc.ts";
+import { usageLimitsQuery } from "./usage/limits.ts";
 
 it("refreshes the active branch picker after a worktree naming event without refreshing another workspace", async () => {
   const workspaceId = "67ce24cf-70e2-44b3-99f4-53bd8d155d19";
@@ -258,6 +260,123 @@ it("attaches a terminal, parses its events and chunks large writes", async () =>
         { workspaceId: "ws", threadId: null, terminalId: "term-1", data: 1 },
       ],
     ]);
+  } finally {
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+it("caches pushed usage limits without reading them again", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: Object.assign(new EventTarget(), { crypto: globalThis.crypto }),
+  });
+  const calls: string[] = [];
+  mockIPC(
+    (command) => {
+      calls.push(command);
+      return { kind: "unsupported" };
+    },
+    { shouldMockEvents: true },
+  );
+  const client = new QueryClient();
+  const cached: UsageLimits = {
+    kind: "failed",
+    message: "Usage service unavailable",
+  };
+  client.setQueryData(usageLimitsQuery.queryKey, cached);
+  const observer = new QueryObserver(client, usageLimitsQuery);
+  const pushed: UsageLimits = {
+    kind: "reported",
+    plan: "ChatGPT Pro 20x Subscription",
+    windows: [
+      {
+        slot: "primary",
+        kind: "weekly",
+        usedPercent: 44,
+        durationMins: 10080,
+        resetsAtMs: 1_791_580_401_000,
+      },
+    ],
+  };
+  let resolvePushed = () => {};
+  const received = new Promise<void>((resolve) => {
+    resolvePushed = resolve;
+  });
+  const offObserver = observer.subscribe((result) => {
+    if (result.data?.kind === "reported") resolvePushed();
+  });
+  let offEvents: (() => void) | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    offEvents = await subscribe(client);
+    await emit("z1:usage-limits", { kind: "reported", plan: null });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(client.getQueryData(usageLimitsQuery.queryKey), cached);
+    await emit("z1:usage-limits", pushed);
+    await Promise.race([
+      received,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("The pushed limits never reached the cache")),
+          2000,
+        );
+      }),
+    ]);
+    assert.deepEqual(client.getQueryData(usageLimitsQuery.queryKey), pushed);
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(calls, []);
+    assert.deepEqual(client.getQueryData(usageLimitsQuery.queryKey), pushed);
+  } finally {
+    clearTimeout(timeout);
+    offEvents?.();
+    offObserver();
+    client.clear();
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+it("reads a thread saved before context usage as having none", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: Object.assign(new EventTarget(), { crypto: globalThis.crypto }),
+  });
+  const snapshot = {
+    id: "058478ab-2c41-40e0-83b7-dd2c71b3c368",
+    workspaceId: "67ce24cf-70e2-44b3-99f4-53bd8d155d19",
+    title: "Fixture",
+    nativeThreadId: null,
+    revision: 1,
+    session: { kind: "ready" },
+    settings: {
+      model: null,
+      effort: null,
+      permissionMode: "approval-required",
+    },
+    checkout: { kind: "local" },
+    turns: [],
+    approvals: [],
+    diagnostic: null,
+  };
+  const context = {
+    usedTokens: 20575,
+    maxTokens: 258400,
+    totalProcessedTokens: 41150,
+  };
+  let reply: unknown = snapshot;
+  mockIPC(() => reply);
+  try {
+    assert.equal((await ipc.thread(snapshot.id)).context, null);
+    reply = { ...snapshot, context };
+    assert.deepEqual((await ipc.thread(snapshot.id)).context, context);
   } finally {
     clearMocks();
     if (previousWindow)

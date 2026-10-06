@@ -410,6 +410,16 @@ export function SettingsPage() {
           }
         />
       );
+    if (id === "context-window-indicator")
+      return (
+        <Switch
+          aria-label="Context window indicator"
+          checked={preferences.contextWindowMeter}
+          onCheckedChange={(contextWindowMeter) =>
+            update({ contextWindowMeter })
+          }
+        />
+      );
     if (id === "restore")
       return (
         <Button size="sm" variant="outline" onClick={reset}>

@@ -70,6 +70,8 @@ import { GitActionsControl } from "./GitActionsControl";
 import { ApprovalDrawer } from "./ApprovalDrawer";
 import { BranchPicker, startsFromOrigin } from "./BranchPicker";
 import { Composer } from "./Composer";
+import { ComposerUsageLimits } from "./ComposerUsageLimits";
+import { isUsageLimitsCommand, usageNoticeKey } from "../usage/limits";
 import { Timeline } from "./Timeline";
 import { PersistentThreadTerminalDrawer } from "../terminal/ThreadTerminalDrawer";
 import {
@@ -121,6 +123,10 @@ export function ChatView({
     }
   }, [prPanelRequest, threadId]);
   const [draft, setDraft] = useState("");
+  const [usageNotice, setUsageNotice] = useState<{
+    key: string;
+    now: number;
+  } | null>(null);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [createdDraft, setCreatedDraft] = useState<Thread>();
   const [draftSettings, setDraftSettings] = useState<SessionSettings>({
@@ -356,6 +362,11 @@ export function ChatView({
   const busy = thread ? workingSessions.has(thread.session.kind) : false;
   const pending = thread?.approvals.filter((a) => a.state === "pending") ?? [];
   const approval = pending[0];
+  const noticeKey = usageNoticeKey(
+    threadId ?? `draft:${workspaceId}`,
+    thread?.turns.at(-1)?.id ?? null,
+    approval?.id ?? null,
+  );
   const reviewDraftTarget = useRef<ReviewDraftTarget>({
     workspaceId,
     threadId,
@@ -392,6 +403,11 @@ export function ChatView({
   const dormant =
     thread && ["dormant", "unavailable"].includes(thread.session.kind);
   const submit = () => {
+    if (isUsageLimitsCommand(draft)) {
+      setUsageNotice({ key: noticeKey, now: Date.now() });
+      setDraft("");
+      return;
+    }
     if (
       !draft.trim() ||
       busy ||
@@ -722,11 +738,12 @@ export function ChatView({
                       onSubmit={submit}
                       onStop={() => stop.mutate()}
                       canSend={
-                        Boolean(draft.trim()) &&
-                        !busy &&
-                        !send.isPending &&
-                        !saveSettings.isPending &&
-                        (!threadId || Boolean(thread))
+                        isUsageLimitsCommand(draft) ||
+                        (Boolean(draft.trim()) &&
+                          !busy &&
+                          !send.isPending &&
+                          !saveSettings.isPending &&
+                          (!threadId || Boolean(thread)))
                       }
                       running={busy}
                       canStop={canStop}
@@ -750,6 +767,22 @@ export function ChatView({
                             }
                           />
                         ) : null
+                      }
+                      notice={
+                        usageNotice?.key === noticeKey ? (
+                          <ComposerUsageLimits
+                            now={usageNotice.now}
+                            onDismiss={() => {
+                              setUsageNotice(null);
+                              setComposerFocusRequest((current) => current + 1);
+                            }}
+                          />
+                        ) : null
+                      }
+                      contextUsage={
+                        preferences.contextWindowMeter
+                          ? (thread?.context ?? null)
+                          : null
                       }
                       disabled={Boolean(approval)}
                       context={context}

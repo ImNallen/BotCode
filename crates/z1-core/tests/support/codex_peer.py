@@ -33,6 +33,13 @@ def event(method, params):
     emit({'method': method, 'params': params})
 def finish(status='completed'):
     event('turn/completed', {'threadId': current_thread, 'turn': {'id': active, 'status': status, 'items': []}})
+def limits_update(snapshot):
+    event('account/rateLimits/updated', {'rateLimits': snapshot})
+codex_limits = {'limitId': 'codex', 'planType': 'pro', 'primary': {'usedPercent': 44, 'windowDurationMins': 10080, 'resetsAt': 1791580401}, 'secondary': None}
+other_limits = {'limitId': 'base_model_inference', 'planType': 'pro', 'primary': {'usedPercent': 99, 'windowDurationMins': 300, 'resetsAt': 1791500000}, 'secondary': None}
+def token_usage(last, total):
+    breakdown = lambda n: {'totalTokens': n, 'inputTokens': n, 'cachedInputTokens': 0, 'outputTokens': 0, 'reasoningOutputTokens': 0}
+    event('thread/tokenUsage/updated', {'threadId': current_thread, 'turnId': active, 'tokenUsage': {'last': breakdown(last), 'total': breakdown(total), 'modelContextWindow': 258400}})
 for line in sys.stdin:
     request = json.loads(line)
     with log.open('a') as output:
@@ -58,6 +65,18 @@ for line in sys.stdin:
             result(request, {'data': [{'model': 'model-two', 'displayName': 'Model Two', 'description': 'Another model',
                 'isDefault': False, 'hidden': False, 'defaultReasoningEffort': 'medium',
                 'supportedReasoningEfforts': [{'reasoningEffort': 'medium', 'description': 'Medium'}]}], 'nextCursor': None})
+    elif method == 'account/read':
+        if (root / 'account_apikey').exists():
+            result(request, {'account': {'type': 'apiKey'}, 'requiresOpenaiAuth': True})
+        elif (root / 'account_none').exists():
+            result(request, {'account': None, 'requiresOpenaiAuth': True})
+        else:
+            result(request, {'account': {'type': 'chatgpt', 'email': 'fixture@example.invalid', 'planType': 'pro'}, 'requiresOpenaiAuth': True})
+    elif method == 'account/rateLimits/read':
+        if (root / 'limits_error').exists():
+            emit({'id': request['id'], 'error': {'message': 'Usage service unavailable'}})
+        else:
+            result(request, {'rateLimits': codex_limits, 'rateLimitsByLimitId': {'codex': codex_limits, 'base_model_inference': other_limits}})
     elif method in ('thread/start', 'thread/resume'):
         current_thread = params['threadId'] if method == 'thread/resume' else 'native-thread-' + str(request['id'])
         result(request, {'thread': {'id': current_thread, 'turns': []}})
@@ -94,6 +113,14 @@ for line in sys.stdin:
             pid_file.replace(root / 'descendant.pid')
             time.sleep(0.15)
         else:
+            if prompt == 'usage':
+                token_usage(20575, 41150)
+                tick = {'limitId': 'codex', 'primary': {'usedPercent': 47}, 'secondary': {'usedPercent': 3, 'windowDurationMins': 300, 'resetsAt': 1791470000}, 'planType': None}
+                limits_update(tick)
+                limits_update(tick)
+                limits_update({'limitId': 'base_model_inference', 'primary': {'usedPercent': 99}})
+                limits_update({'limitId': 'codex', 'primary': None, 'secondary': None, 'planType': None})
+                token_usage(0, 41150)
             event('item/agentMessage/delta', {'threadId': current_thread, 'turnId': active, 'itemId': 'reply', 'delta': 'fixture reply'})
             event('item/completed', {'threadId': current_thread, 'turnId': active, 'item': {'id': 'reply', 'type': 'agentMessage', 'text': 'fixture reply'}})
             finish()

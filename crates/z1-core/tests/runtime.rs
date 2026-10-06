@@ -870,6 +870,7 @@ fn legacy_snapshots_default_settings() {
         diagnostic: None,
         placement: Placement::Kept,
         snooze: None,
+        context: None,
     };
     let mut value = serde_json::to_value(thread).unwrap();
     value.as_object_mut().unwrap().remove("placement");
@@ -906,6 +907,182 @@ async fn provider_loss_invalidates_catalog_and_reloads_on_request() {
             .count(),
         4
     );
+    app.shutdown().await.unwrap();
+}
+fn limits_json(limits: UsageLimits) -> serde_json::Value {
+    serde_json::to_value(limits).unwrap()
+}
+fn weekly_44() -> serde_json::Value {
+    serde_json::json!({"kind":"reported","plan":"ChatGPT Pro 20x Subscription","windows":[{"slot":"primary","kind":"weekly","usedPercent":44,"durationMins":10080,"resetsAtMs":1791580401000u64}]})
+}
+fn method_count(f: &Fixture, method: &str) -> usize {
+    f.calls()
+        .iter()
+        .filter(|call| call["method"] == method)
+        .count()
+}
+#[tokio::test]
+async fn first_usage_limits_read_launches_codex_and_reads_the_codex_bucket() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    assert_eq!(
+        limits_json(app.usage_limits(false).await.unwrap()),
+        weekly_44()
+    );
+    assert_eq!(
+        limits_json(app.usage_limits(false).await.unwrap()),
+        weekly_44()
+    );
+    let methods: Vec<_> = f
+        .calls()
+        .into_iter()
+        .map(|call| call["method"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        methods,
+        vec![
+            "initialize",
+            "initialized",
+            "account/read",
+            "account/rateLimits/read"
+        ]
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn usage_turn_records_context_and_merges_limits() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    app.usage_limits(false).await.unwrap();
+    let mut watch = app.watch_usage_limits();
+    watch.borrow_and_update();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "usage".into(), "usage".into())
+        .await
+        .unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    let context = Some(ContextUsage {
+        used_tokens: 20575,
+        max_tokens: Some(258400),
+        total_processed_tokens: Some(41150),
+    });
+    assert_eq!(done.context, context);
+    let merged = serde_json::json!({"kind":"reported","plan":"ChatGPT Pro 20x Subscription","windows":[
+        {"slot":"secondary","kind":"session","usedPercent":3,"durationMins":300,"resetsAtMs":1791470000000u64},
+        {"slot":"primary","kind":"weekly","usedPercent":47,"durationMins":10080,"resetsAtMs":1791580401000u64}]});
+    assert!(watch.has_changed().unwrap());
+    assert_eq!(
+        limits_json(watch.borrow_and_update().clone().unwrap()),
+        merged
+    );
+    app.submit(thread.id.clone(), "usage-again".into(), "usage".into())
+        .await
+        .unwrap();
+    let again = wait(&app, &thread.id, |t| {
+        t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(again.context, context);
+    assert!(
+        !watch.has_changed().unwrap(),
+        "Repeated, foreign and empty limit updates must not notify"
+    );
+    assert_eq!(limits_json(app.usage_limits(false).await.unwrap()), merged);
+    assert_eq!(method_count(&f, "account/rateLimits/read"), 1);
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(app.thread(thread.id).await.unwrap().context, context);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn usage_limits_failure_keeps_the_last_report() {
+    let f = Fixture::new();
+    let marker = f.peer.parent().unwrap().join("limits_error");
+    std::fs::write(&marker, "").unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    assert_eq!(
+        app.usage_limits(false).await.unwrap(),
+        UsageLimits::Failed {
+            message: "Usage service unavailable".into()
+        }
+    );
+    std::fs::remove_file(&marker).unwrap();
+    assert_eq!(
+        limits_json(app.usage_limits(true).await.unwrap()),
+        weekly_44()
+    );
+    std::fs::write(&marker, "").unwrap();
+    assert_eq!(
+        limits_json(app.usage_limits(true).await.unwrap()),
+        weekly_44()
+    );
+    assert_eq!(method_count(&f, "account/rateLimits/read"), 3);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn usage_limits_classify_api_key_and_signed_out_accounts() {
+    let f = Fixture::new();
+    let apikey = f.peer.parent().unwrap().join("account_apikey");
+    std::fs::write(&apikey, "").unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    assert_eq!(
+        app.usage_limits(false).await.unwrap(),
+        UsageLimits::Unsupported
+    );
+    assert_eq!(method_count(&f, "account/rateLimits/read"), 0);
+    std::fs::remove_file(&apikey).unwrap();
+    std::fs::write(f.peer.parent().unwrap().join("account_none"), "").unwrap();
+    assert_eq!(
+        app.usage_limits(true).await.unwrap(),
+        UsageLimits::Failed {
+            message: "Codex is not signed in.".into()
+        }
+    );
+    assert_eq!(method_count(&f, "account/rateLimits/read"), 0);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn usage_limits_answer_when_codex_cannot_launch() {
+    let mut f = Fixture::new();
+    f.config.codex_binary = f.peer.with_file_name("missing-codex");
+    let app = App::open(f.config.clone()).await.unwrap();
+    assert!(matches!(
+        app.usage_limits(false).await.unwrap(),
+        UsageLimits::Failed { .. }
+    ));
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn provider_loss_keeps_usage_limits_and_relaunch_reads_again() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    app.usage_limits(false).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "loss".into(), "lose".into())
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.session, SessionState::Unavailable { .. })
+    })
+    .await;
+    assert_eq!(
+        limits_json(app.usage_limits(false).await.unwrap()),
+        weekly_44()
+    );
+    assert_eq!(method_count(&f, "initialize"), 1);
+    app.submit(thread.id.clone(), "relaunch".into(), "hello".into())
+        .await
+        .unwrap();
+    for _ in 0..500 {
+        if method_count(&f, "account/rateLimits/read") == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(method_count(&f, "account/rateLimits/read"), 2);
     app.shutdown().await.unwrap();
 }
 fn worktree(checkout: &Checkout) -> (std::path::PathBuf, String) {
@@ -1890,6 +2067,7 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
         diagnostic: None,
         placement: Placement::Auto,
         snooze: None,
+        context: None,
     }
 }
 #[test]

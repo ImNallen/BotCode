@@ -22,6 +22,16 @@ fn main() {
                     }
                 }
             });
+            let mut limits = runtime.watch_usage_limits();
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while limits.changed().await.is_ok() {
+                    let value = limits.borrow_and_update().clone();
+                    if let Some(value) = value {
+                        let _ = handle.emit("z1:usage-limits", value);
+                    }
+                }
+            });
             app.manage(runtime);
             Ok(())
         })
@@ -55,6 +65,7 @@ fn main() {
             ipc::open_thread,
             ipc::submit,
             ipc::list_models,
+            ipc::usage_limits,
             ipc::update_thread_settings,
             ipc::answer_approval,
             ipc::interrupt,

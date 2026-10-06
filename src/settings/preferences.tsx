@@ -44,6 +44,7 @@ const schema = z.object({
   appearance: z.enum(["system", "light", "dark"]),
   promptFontSize: z.number().int().min(12).max(20),
   codeFontSize: z.number().int().min(11).max(20),
+  contextWindowMeter: z.boolean(),
   favoriteModels: z.array(favoriteModelSchema),
   ...projectSchema.shape,
   projectOverrides: z.record(z.uuid(), projectSchema.partial()),
@@ -59,6 +60,7 @@ const defaults: Preferences = {
   appearance: "system",
   promptFontSize: 14,
   codeFontSize: 13,
+  contextWindowMeter: true,
   favoriteModels: [],
   ...builtInProject,
   projectOverrides: {},
@@ -109,6 +111,7 @@ function readPreferences(): PreferenceState {
         appearance: z.unknown().optional(),
         promptFontSize: z.unknown().optional(),
         codeFontSize: z.unknown().optional(),
+        contextWindowMeter: z.unknown().optional(),
         favoriteModels: z.unknown().optional(),
         newThreadCheckout: z.unknown().optional(),
         newWorktreesStartFromOrigin: z.unknown().optional(),
@@ -126,6 +129,9 @@ function readPreferences(): PreferenceState {
     );
     const codeFontSize = schema.shape.codeFontSize.safeParse(
       object.codeFontSize,
+    );
+    const contextWindowMeter = schema.shape.contextWindowMeter.safeParse(
+      object.contextWindowMeter,
     );
     const newThreadCheckout = schema.shape.newThreadCheckout.safeParse(
       object.newThreadCheckout,
@@ -195,6 +201,9 @@ function readPreferences(): PreferenceState {
         codeFontSize: codeFontSize.success
           ? codeFontSize.data
           : defaults.codeFontSize,
+        contextWindowMeter: contextWindowMeter.success
+          ? contextWindowMeter.data
+          : defaults.contextWindowMeter,
         newThreadCheckout: newThreadCheckout.success
           ? newThreadCheckout.data
           : defaults.newThreadCheckout,

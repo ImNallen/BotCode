@@ -1,6 +1,8 @@
 // Copied from pingdotgg/t3code v0.0.45 components/chat/ComposerBanner.tsx (MIT).
+import { XIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 import { cn } from "../lib/cn";
+import { Button } from "../ui/controls";
 
 export type ComposerBannerVariant =
   | "default"
@@ -85,6 +87,31 @@ function Attachment({ className, ...props }: ComponentProps<"div">) {
   );
 }
 
+function Dock({ className, ...props }: ComponentProps<"div">) {
+  return (
+    <Attachment
+      className={cn(
+        "flex items-end gap-1 not-has-data-[composer-banner-surface=attached]:hidden",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+function Column({ className, ...props }: ComponentProps<"div">) {
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 flex-1 flex-col empty:hidden",
+        "[&>[data-slot=composer-banner-attachment]]:w-full [&>[data-slot=composer-banner-attachment]:last-child]:mb-0",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
 function Root({
   className,
   density = "default",
@@ -122,7 +149,9 @@ function Row({
   className,
   layout = "inline",
   ...props
-}: ComponentProps<"div"> & { layout?: "inline" | "approval" }) {
+}: ComponentProps<"div"> & {
+  layout?: "inline" | "wrap-actions" | "wrap-actions-narrow" | "approval";
+}) {
   return (
     <div
       data-composer-banner-row="true"
@@ -130,6 +159,10 @@ function Row({
       className={cn(
         "group/banner-row grid min-h-(--composer-banner-icon-column) w-full min-w-0 grid-cols-[var(--composer-banner-icon-column)_minmax(0,1fr)_auto] items-center gap-x-1 text-start",
         "not-has-[>[data-slot=composer-banner-actions]]:grid-cols-[var(--composer-banner-icon-column)_minmax(0,1fr)]",
+        layout === "wrap-actions" &&
+          "@max-[400px]:*:data-[slot=composer-banner-content]:min-h-(--composer-banner-icon-column)",
+        layout === "wrap-actions-narrow" &&
+          "@max-[320px]:*:data-[slot=composer-banner-content]:min-h-(--composer-banner-icon-column)",
         layout === "approval" && "items-start gap-x-2 gap-y-3",
         className,
       )}
@@ -185,4 +218,57 @@ function Actions({ className, ...props }: ComponentProps<"span">) {
   );
 }
 
-export const ComposerBanner = { Attachment, Root, Row, Icon, Content, Actions };
+function Children({ className, ...props }: ComponentProps<"div">) {
+  return (
+    <div
+      className={cn(
+        "grid gap-px [&_[data-composer-banner-row]]:min-h-5",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+function Scroll({ className, ...props }: ComponentProps<"div">) {
+  return (
+    <div
+      className={cn(
+        "h-auto max-h-[min(24rem,40dvh)] overflow-y-auto",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+function Body({ className, ...props }: ComponentProps<"div">) {
+  return <div className={cn("min-w-0 ps-8 sm:ps-7", className)} {...props} />;
+}
+
+function Dismiss({
+  className,
+  children,
+  ...props
+}: ComponentProps<typeof Button>) {
+  return (
+    <Button size="icon-xs" variant="ghost" className={className} {...props}>
+      {children ?? <XIcon className="size-3.5" />}
+    </Button>
+  );
+}
+
+export const ComposerBanner = {
+  Attachment,
+  Dock,
+  Column,
+  Root,
+  Row,
+  Icon,
+  Content,
+  Actions,
+  Children,
+  Scroll,
+  Body,
+  Dismiss,
+};
