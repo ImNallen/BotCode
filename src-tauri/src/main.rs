@@ -1,10 +1,14 @@
 mod ipc;
+mod notifications;
 use bot_core::{App, RuntimeConfig};
 use tauri::{Emitter, Manager};
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .manage(notifications::NotificationActions::default())
         .setup(|app| {
+            notifications::install(app.handle());
             let runtime =
                 tauri::async_runtime::block_on(App::open(RuntimeConfig::from_environment()?))?;
             let mut changes = runtime.subscribe();
@@ -36,6 +40,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            notifications::notification_actions,
             ipc::list_workspaces,
             ipc::open_workspace,
             ipc::rename_workspace,
