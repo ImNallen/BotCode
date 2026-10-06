@@ -277,7 +277,6 @@ const terminalEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("exited"), exitCode: z.number().nullable() }),
 ]);
 const TERMINAL_WRITE_MAX_BYTES = 65536;
-/** Splits input into pieces of at most `maxBytes` UTF-8 bytes on code point boundaries. */
 export function chunkTerminalInput(
   data: string,
   maxBytes = TERMINAL_WRITE_MAX_BYTES,
@@ -320,7 +319,6 @@ export type NewCheckout =
   | { kind: "folder"; prompt: string };
 export type CheckoutRef = { workspaceId: string; threadId?: string };
 export type TerminalEvent = z.infer<typeof terminalEvent>;
-/** The real thread id even for a local checkout, or null for a repository draft. */
 export type TerminalTarget = {
   workspaceId: string;
   threadId: string | null;

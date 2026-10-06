@@ -1,4 +1,3 @@
-//! Integrated terminals: one PTY shell per `TerminalKey`, independent of the conversation owner.
 mod history;
 use crate::domain::*;
 use history::History;
@@ -90,11 +89,11 @@ impl TerminalSize {
 }
 
 pub(crate) const MAX_WRITE_BYTES: usize = 65_536;
+const KILL_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct TerminalKey {
     pub workspace: WorkspaceId,
-    /// `None` is a repository draft that has no thread yet.
     pub thread: Option<ThreadId>,
     pub terminal: TerminalId,
 }
@@ -103,10 +102,8 @@ pub(crate) type Sink = Arc<dyn Fn(TerminalEvent) + Send + Sync>;
 
 struct Output {
     history: History,
-    /// An incomplete control sequence the sanitizer carries into the next chunk.
-    pending: String,
+    unfinished_sequence: String,
     subscribers: Vec<(u64, Sink)>,
-    /// Set once the pump has sent `Exited`, so a late attach starts a fresh shell instead.
     exited: bool,
 }
 
@@ -130,8 +127,8 @@ impl Session {
     }
     fn publish(&self, data: String) {
         let mut output = lock(&self.output);
-        let (visible, pending) = history::sanitize(&output.pending, &data);
-        output.pending = pending;
+        let (visible, unfinished) = history::sanitize(&output.unfinished_sequence, &data);
+        output.unfinished_sequence = unfinished;
         output.history.append(&visible);
         for (_, sink) in &output.subscribers {
             sink(TerminalEvent::Output { data: data.clone() });
@@ -145,7 +142,6 @@ impl Session {
             libc::kill(-self.pid, signal);
         }
     }
-    /// Polls instead of blocking in `wait`, so `terminate` can take the child lock meanwhile.
     fn reap(&self) -> Option<i32> {
         loop {
             match lock(&self.child).try_wait() {
@@ -166,7 +162,7 @@ fn terminate(sessions: &[Arc<Session>]) {
     for session in &live {
         session.signal(libc::SIGHUP);
     }
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + KILL_GRACE;
     while live.iter().any(|s| s.running()) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -175,7 +171,6 @@ fn terminate(sessions: &[Arc<Session>]) {
             session.signal(libc::SIGKILL);
         }
         session.reap();
-        // Members that outlived the shell, such as a job that ignores SIGHUP.
         session.signal(libc::SIGKILL);
     }
 }
@@ -203,7 +198,6 @@ impl Drop for Registry {
     }
 }
 
-/// Live shells keyed by `TerminalKey`. Dropping the last handle kills every shell.
 #[derive(Clone)]
 pub(crate) struct Terminals(Arc<Registry>);
 impl Terminals {
@@ -217,9 +211,6 @@ impl Terminals {
     fn get(&self, key: &TerminalKey) -> Option<Arc<Session>> {
         lock(&self.0.sessions).get(key).cloned()
     }
-    /// Resizes the session at `key`, spawning a shell in `cwd` first when there is none, then
-    /// sends the history snapshot and registers `sink` in one step, so no output is lost or
-    /// repeated between them. `Ok(None)` means there is no session and no `cwd` to start one.
     pub(crate) fn attach(
         &self,
         key: TerminalKey,
@@ -237,7 +228,6 @@ impl Terminals {
                         let (session, reader) = spawn(self.0.shell.as_deref(), cwd, size)?;
                         let registry = Arc::downgrade(&self.0);
                         let (pumped, pump_key) = (session.clone(), key.clone());
-                        // The pump touches the registry only after end of file, behind this lock.
                         if let Err(error) = std::thread::Builder::new()
                             .name("z1-terminal".into())
                             .spawn(move || pump(registry, pump_key, pumped, reader))
@@ -252,7 +242,6 @@ impl Terminals {
             };
             session.resize(size)?;
             let mut output = lock(&session.output);
-            // The shell exited after the lookup; the pump has already retired this session.
             if output.exited {
                 continue;
             }
@@ -271,7 +260,6 @@ impl Terminals {
                 .retain(|(id, _)| *id != subscription);
         }
     }
-    /// Blocks while the shell is not reading and the PTY buffer is full.
     pub(crate) fn write(&self, key: &TerminalKey, data: &[u8]) -> Result<()> {
         match self.get(key) {
             Some(session) => session.write(data),
@@ -284,7 +272,6 @@ impl Terminals {
             None => Ok(()),
         }
     }
-    /// Blocks up to about a second while shells exit.
     pub(crate) fn close(&self, matches: impl Fn(&TerminalKey) -> bool) {
         let closed: Vec<Arc<Session>> = {
             let mut sessions = lock(&self.0.sessions);
@@ -295,7 +282,6 @@ impl Terminals {
     }
 }
 
-/// Reads until the PTY closes, then reaps the shell and retires the session.
 fn pump(
     registry: Weak<Registry>,
     key: TerminalKey,
@@ -321,7 +307,6 @@ fn pump(
     let exit_code = session.reap();
     if let Some(registry) = registry.upgrade() {
         let mut sessions = lock(&registry.sessions);
-        // A close followed by a new attach may have replaced this session.
         if sessions.get(&key).is_some_and(|s| Arc::ptr_eq(s, &session)) {
             sessions.remove(&key);
         }
@@ -373,7 +358,7 @@ fn spawn(
         child: Mutex::new(child),
         output: Mutex::new(Output {
             history: History::default(),
-            pending: String::new(),
+            unfinished_sequence: String::new(),
             subscribers: Vec::new(),
             exited: false,
         }),
@@ -381,8 +366,6 @@ fn spawn(
     Ok((session, reader))
 }
 
-/// A pinned shell is the only candidate. A relative `$SHELL` is skipped, since only absolute
-/// paths can be checked for existence before spawning.
 fn shell_candidates(
     pinned: Option<&Path>,
     env_shell: Option<OsString>,

@@ -10,8 +10,6 @@ struct Chunk {
     newlines: usize,
 }
 
-/// The tail of a terminal's output, capped by lines and bytes and trimmed from the front.
-/// The unterminated last line counts as a line.
 pub struct History {
     chunks: VecDeque<Chunk>,
     bytes: usize,
@@ -117,7 +115,6 @@ impl History {
     }
 }
 
-/// Decodes PTY bytes, carrying an incomplete trailing UTF-8 sequence in `carry` to the next read.
 pub fn decode(carry: &mut Vec<u8>, bytes: &[u8]) -> String {
     carry.extend_from_slice(bytes);
     let complete = carry.len() - incomplete_tail(carry);
@@ -142,9 +139,6 @@ fn incomplete_tail(bytes: &[u8]) -> usize {
     0
 }
 
-/// Strips terminal query and reply traffic from output before it enters history, so a replayed
-/// snapshot cannot make the terminal answer again. Returns the visible text and the incomplete
-/// control sequence to prepend to the next chunk.
 pub fn sanitize(pending: &str, data: &str) -> (String, String) {
     let input: Vec<char> = pending.chars().chain(data.chars()).collect();
     let text = |from: usize, to: usize| input[from..to].iter().collect::<String>();
@@ -358,8 +352,6 @@ mod tests {
         );
     }
 
-    /// T3's reference policy: keep the last `max_lines` lines, then the longest
-    /// character-aligned tail within `max_bytes`.
     fn retained(text: &str, max_lines: usize, max_bytes: usize) -> String {
         let terminated = text.ends_with('\n');
         let mut lines: Vec<&str> = text.split('\n').collect();

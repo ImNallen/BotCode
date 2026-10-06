@@ -2,16 +2,11 @@
 function quoteFontFamilyName(name: string): string {
   const bare = name.trim();
   if (bare.length === 0) return "";
-  // Already quoted, or a single ident that needs no quoting.
   if (/^(['"]).*\1$/.test(bare)) return bare;
   if (/^[a-zA-Z][a-zA-Z0-9-]*$/.test(bare)) return bare;
   return `"${bare.replaceAll('"', "")}"`;
 }
 
-/**
- * Normalize a user-entered family (single name or comma-separated list) into a
- * safe CSS font-family list, or null when the input is effectively empty.
- */
 export function cssFontFamilies(input: string): string | null {
   const families = input
     .split(",")
@@ -54,15 +49,6 @@ export function areFontAdvancesMonospace(advances: readonly number[]): boolean {
   );
 }
 
-/**
- * Whether a family renders every character on the same advance. Cell-grid
- * surfaces (the terminal) require this: a proportional face draws its text
- * narrower than the lattice the cursor and selection are placed on, which
- * reads as ragged gaps and a cursor stranded to the right of the text.
- *
- * Unmeasurable environments answer true, so a missing canvas never blocks a
- * legitimate font.
- */
 export function isMonospaceFamily(family: string): boolean {
   const families = cssFontFamilies(family);
   if (families === null) return true;

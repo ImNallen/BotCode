@@ -20,8 +20,6 @@ const TERMINAL_LINE_START = "\u0001";
 const TERMINAL_LINE_END = "\u0005";
 const TERMINAL_DELETE_TO_LINE_START = "\u0015";
 
-// mod is Command on macOS and Control elsewhere. Every command except the
-// toggle applies only while a terminal has focus.
 const TERMINAL_BINDINGS: ReadonlyArray<{
   key: string;
   shift: boolean;
@@ -186,7 +184,6 @@ export function isMacCommandChord(
   return isMacPlatform(platform) && event.metaKey && !event.ctrlKey;
 }
 
-/** Whether keyboard focus is inside the terminal drawer. */
 export function isTerminalFocused(): boolean {
   const activeElement = document.activeElement;
   if (!(activeElement instanceof HTMLElement)) return false;

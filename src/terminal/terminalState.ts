@@ -21,7 +21,6 @@ export interface ThreadTerminalUiState {
   activeTerminalGroupId: string;
 }
 
-/** Terminal UI state per scope key, without entries equal to the default. */
 export type TerminalStates = Readonly<Record<string, ThreadTerminalUiState>>;
 
 export const DEFAULT_THREAD_TERMINAL_UI_STATE: ThreadTerminalUiState =
@@ -34,7 +33,6 @@ export const DEFAULT_THREAD_TERMINAL_UI_STATE: ThreadTerminalUiState =
     activeTerminalGroupId: "",
   });
 
-/** A thread's terminals belong to the thread. A repository draft has none yet. */
 export function terminalScopeKey(
   workspaceId: string,
   threadId: string | null,
@@ -51,7 +49,6 @@ export function getTerminalLabel(terminalId: string): string {
   return terminalId;
 }
 
-/** The lowest unused `term-N` id, starting at `term-1`. */
 export function nextTerminalId(
   existingTerminalIds: ReadonlyArray<string>,
 ): string {
@@ -572,7 +569,6 @@ const persistedState = z.object({
   activeTerminalGroupId: z.string(),
 });
 
-/** Reads stored states, dropping entries that no longer parse. */
 export function parseTerminalStates(stored: string | null): TerminalStates {
   if (stored === null) return {};
   let value: unknown;

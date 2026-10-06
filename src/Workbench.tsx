@@ -184,8 +184,6 @@ export function Workbench() {
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if (event.isComposing || event.defaultPrevented) return;
-      // In a terminal, Control chords belong to the shell, and the thread
-      // shortcuts stand down as T3's !terminalFocus bindings do.
       const terminalFocus = isTerminalFocused();
       const mod = terminalFocus
         ? isMacPlatform(navigator.platform)

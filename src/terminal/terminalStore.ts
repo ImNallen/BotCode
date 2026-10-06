@@ -13,7 +13,6 @@ const STORAGE_KEY = "z1:terminal-state";
 let states: TerminalStates | undefined;
 const listeners = new Set<() => void>();
 
-// Storage loads before the first render, so the first read sees saved state.
 function current(): TerminalStates {
   states ??= parseTerminalStates(storage.getItem(STORAGE_KEY));
   return states;

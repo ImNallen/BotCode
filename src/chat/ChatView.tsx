@@ -337,7 +337,6 @@ export function ChatView({
       },
     };
   }, [view]);
-  // A thread without a project has no folder until its first message.
   const terminalAvailable = !(isScratch && !threadId);
   const terminalScope = terminalScopeKey(workspaceId, threadId ?? null);
   const terminalOpen = useTerminalState(terminalScope).terminalOpen;

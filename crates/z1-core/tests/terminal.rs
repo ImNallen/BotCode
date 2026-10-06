@@ -89,7 +89,6 @@ impl Events {
         self.until(needle, |_| self.output().contains(needle)).await;
         self.output()
     }
-    /// The shell's pid, printed by `echo pid=$$` (the echoed command line has no digits).
     async fn pid(&self) -> i32 {
         self.until("a pid", |_| last_pid(&self.output()).is_some())
             .await;

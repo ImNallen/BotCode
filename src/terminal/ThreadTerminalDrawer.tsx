@@ -216,7 +216,6 @@ function terminalThemeFromApp(mountElement?: HTMLElement | null): GhosttyTheme {
 
 let pendingConfirmations = 0;
 
-/** Whether a terminal-close confirmation is currently waiting on the user. */
 function isTerminalCloseConfirmPending(): boolean {
   return pendingConfirmations > 0;
 }
@@ -304,8 +303,7 @@ function TerminalViewport({
     if (!mount) return;
 
     const target = { workspaceId, threadId, terminalId };
-    // Attach, writes and resizes reach the core in the order they were made.
-    const enqueue = serial();
+    const inOrder = serial();
     let attach: Promise<number | null> | null = null;
     let attachFailed = false;
     let exited = false;
@@ -318,7 +316,7 @@ function TerminalViewport({
 
     const send = (task: () => Promise<unknown>, fallbackError: string) => {
       if (!attach || attachFailed) return;
-      void enqueue(task).catch((error: unknown) => {
+      void inOrder(task).catch((error: unknown) => {
         const activeTerminal = terminalRef.current;
         if (activeTerminal)
           writeSystemMessage(
@@ -367,28 +365,20 @@ function TerminalViewport({
         onSelectionChange: () => handleSelectionChange(),
         beforeKey: (event) => handleBeforeKey(event),
         onLinkActivate: (text) => handleLinkActivate(text),
-        // The surface listens from construction, so a right-click can land
-        // while `create` is still awaiting WASM.
-        onContextMenu: (event) => {
-          if (terminalRef.current) showContextMenu(event);
-        },
+        onContextMenu: (event) => showContextMenu(event),
       });
       if (cancelled) {
         terminal.dispose();
         return null;
       }
       terminal.setVisible(visibleRef.current);
-      // The theme observer is not installed yet, so re-read the theme in case
-      // the app toggled light/dark while the WASM surface was loading.
       terminal.setTheme(terminalThemeFromApp(mount));
       setupTerminal = terminal;
       terminalRef.current = terminal;
-      // A font size change that landed while the surface was loading found
-      // terminalRef null, so apply whatever is current now.
       if (fontSizeRef.current !== setupFontSize) {
         void terminal.setFont({ size: fontSizeRef.current });
       }
-      attach = enqueue(() =>
+      attach = inOrder(() =>
         ipc.terminalAttach(
           target,
           { cols: terminal.cols, rows: terminal.rows },
@@ -402,7 +392,6 @@ function TerminalViewport({
         );
         return null;
       });
-      // Startup may finish after the user has returned to the composer.
       if (visibleRef.current && mount.contains(document.activeElement)) {
         terminal.focus();
       }
@@ -564,7 +553,7 @@ function TerminalViewport({
           ?.then((subscription) =>
             subscription === null
               ? undefined
-              : enqueue(() => ipc.terminalDetach(subscription)),
+              : inOrder(() => ipc.terminalDetach(subscription)),
           )
           .catch(() => {});
       };
@@ -602,8 +591,6 @@ function TerminalViewport({
 
   useEffect(() => {
     if (!autoFocus || !visible) return;
-    // Claim focus when requested, then hand it to the terminal once ready only
-    // if the user has not focused something else in the meantime.
     (terminalRef.current ?? containerRef.current)?.focus();
   }, [autoFocus, focusRequestId, visible]);
 
@@ -611,8 +598,6 @@ function TerminalViewport({
     const terminal = terminalRef.current;
     if (!terminal || !visibleRef.current) return;
     const wasAtBottom = terminal.isAtBottom();
-    // The surface reports grid changes through onResize, which is the single
-    // channel for PTY resizes; fitting here only refreshes the layout.
     const frame = window.requestAnimationFrame(() => {
       if (!visibleRef.current) return;
       terminal.fit();
@@ -1220,7 +1205,6 @@ export function PersistentThreadTerminalDrawer({
   threadId: string | null;
   fontSize: number;
   fileLinks: FileLinks | undefined;
-  /** Runs after the drawer closes, so the composer can take focus back. */
   onClosed: () => void;
 }) {
   const scopeKey = terminalScopeKey(workspaceId, threadId);
@@ -1235,7 +1219,6 @@ export function PersistentThreadTerminalDrawer({
   );
   const bumpFocusRequestId = () => setLocalFocusRequestId((value) => value + 1);
 
-  // Opening focuses the terminal and closing hands focus back to the composer.
   const wasOpen = useRef(false);
   const handleClosed = useEffectEvent(onClosed);
   useEffect(() => {
