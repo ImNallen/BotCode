@@ -1176,6 +1176,60 @@ async fn worktree_cleanup_cancels_a_running_commit_preview() {
 }
 
 #[tokio::test]
+async fn thread_deletion_cancels_a_running_commit_preview() {
+    let f = Fixture::new();
+    generation_file(&f, "commit_stall", "");
+    generation_file(&f, "commit_descendant", "");
+    let (app, workspace) = f.open().await;
+    let thread = app
+        .create_thread(
+            workspace,
+            NewCheckout::Worktree {
+                base: "main".into(),
+                from_origin: false,
+            },
+        )
+        .await
+        .unwrap();
+    let Checkout::Worktree { path, .. } = thread.checkout else {
+        panic!("expected a worktree");
+    };
+    let changed = path.join("preview.txt");
+    std::fs::write(&changed, "preview content\n").unwrap();
+    let job = app.begin_commit_message(thread.id.clone()).await.unwrap();
+    wait_until(|| f.dir.path().join("peers/commit_child.pid").exists()).await;
+    let pids: Vec<i32> = ["commit.pid", "commit_child.pid"]
+        .into_iter()
+        .map(|name| {
+            std::fs::read_to_string(f.dir.path().join("peers").join(name))
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    std::fs::remove_file(changed).unwrap();
+    app.save_settings(r#"{"storageCleanup":{"worktreeOnDelete":true}}"#)
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.delete_thread(thread.id.clone()).await.unwrap(),
+        DeletedWorktree::Removed
+    ));
+    assert!(!path.exists());
+    assert_eq!(
+        app.thread(thread.id).await.unwrap_err().code,
+        "missing_thread"
+    );
+    let cancelled = tokio::time::timeout(Duration::from_secs(1), app.await_commit_message(job))
+        .await
+        .expect("deletion must cancel generation before its timeout")
+        .unwrap_err();
+    assert_eq!(cancelled.code, "cancelled");
+    wait_until(|| pids.iter().all(|pid| unsafe { libc::kill(*pid, 0) } != 0)).await;
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn blank_combined_action_generates_from_actual_index_and_new_commit_against_recorded_base() {
     let f = Fixture::new();
     git_output(&f.repository, &["checkout", "-qb", "develop"]);
