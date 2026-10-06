@@ -13,6 +13,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { savedDisposition, setReviewDisposition } from "./panel/reviews";
 import type { SetReviewDisposition } from "./panel/reviews";
+import { notificationHistory } from "./notifications/observer";
 export const native = isTauri();
 const id = z.uuid();
 const reason = z.object({ kind: z.literal("unavailable"), reason: z.string() });
@@ -182,6 +183,11 @@ const thread = z.object({
   context: contextUsage.nullable().default(null),
 });
 const threadSummary = z.object({
+  revision: z.number().int().nonnegative(),
+  latestTurn: z
+    .object({ id, execution, completedAtMs: z.number().nullable() })
+    .nullable(),
+  pendingApprovalIds: z.array(id),
   pullRequests: threadPrSummary.default({
     sequence: 0,
     links: [],
@@ -633,6 +639,12 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       .safeParse(event.payload);
     if (hint.success) {
       const { summary } = hint.data;
+      if (
+        summary.id !== hint.data.threadId ||
+        summary.revision !== hint.data.revision
+      )
+        return;
+      notificationHistory.observe(hint.data.workspaceId, summary);
       client.setQueryData(
         ["thread-prs", hint.data.threadId],
         summary.pullRequests,
@@ -646,7 +658,10 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
             ...view,
             threads: view.threads.some((thread) => thread.id === summary.id)
               ? view.threads.map((thread) =>
-                  thread.id === summary.id ? summary : thread,
+                  thread.id === summary.id &&
+                  thread.revision <= summary.revision
+                    ? summary
+                    : thread,
                 )
               : [...view.threads, summary],
           },
@@ -703,19 +718,28 @@ export function configurePullRequestQueries(client: QueryClient): void {
       const previous = workspaceView.safeParse(prior);
       return {
         ...next,
-        threads: next.threads.map((thread) => ({
-          ...thread,
-          pullRequests: newest(
-            newest(
-              thread.pullRequests,
-              previous.success
-                ? previous.data.threads.find((row) => row.id === thread.id)
-                    ?.pullRequests
-                : undefined,
+        threads: next.threads.map((incomingThread) => {
+          const priorThread = previous.success
+            ? previous.data.threads.find((row) => row.id === incomingThread.id)
+            : undefined;
+          const thread =
+            priorThread && priorThread.revision > incomingThread.revision
+              ? priorThread
+              : incomingThread;
+          return {
+            ...thread,
+            pullRequests: newest(
+              newest(
+                thread.pullRequests,
+                previous.success
+                  ? previous.data.threads.find((row) => row.id === thread.id)
+                      ?.pullRequests
+                  : undefined,
+              ),
+              client.getQueryData(["thread-prs", thread.id]),
             ),
-            client.getQueryData(["thread-prs", thread.id]),
-          ),
-        })),
+          };
+        }),
       };
     },
   });

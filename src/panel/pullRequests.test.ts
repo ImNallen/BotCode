@@ -54,6 +54,9 @@ function workspace(
     unavailable: null,
     threads: [
       {
+        revision: 0,
+        latestTurn: null,
+        pendingApprovalIds: [],
         id: threadId,
         title: branch,
         session: { kind: "draft" },

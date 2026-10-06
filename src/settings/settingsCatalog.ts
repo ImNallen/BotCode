@@ -208,6 +208,28 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         ],
       },
       {
+        id: "behavior",
+        title: "Behavior",
+        rows: [
+          {
+            id: "thread-notifications",
+            title: "Thread notifications",
+            description:
+              "System alerts when a thread finishes, fails, or needs approval. Applies to this device while Bot Code is open.",
+            keywords:
+              "notification sound alert completion input approval desktop",
+          },
+          {
+            id: "in-app-notifications",
+            title: "In-app notifications",
+            description:
+              "Show a toast when another thread finishes, fails, or needs approval while this app has focus.",
+            keywords:
+              "notification toast popup completion input approval failure",
+          },
+        ],
+      },
+      {
         id: "preferences",
         title: "Device preferences",
         when: "all-projects",
@@ -216,7 +238,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "restore",
             title: "Restore defaults",
             description:
-              "Reset appearance, font sizes, the context window indicator, storage cleanup, new thread defaults and auto-settle, including project overrides, on this device.",
+              "Reset appearance, font sizes, the context window indicator, notifications, storage cleanup, new thread defaults and auto-settle, including project overrides, on this device.",
           },
         ],
       },

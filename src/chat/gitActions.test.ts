@@ -282,6 +282,9 @@ describe("codexBusy", () => {
     session: ThreadSummary["session"]["kind"],
   ): ThreadSummary {
     return {
+      revision: 0,
+      latestTurn: null,
+      pendingApprovalIds: [],
       id,
       title: id,
       pullRequests: {

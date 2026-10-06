@@ -457,3 +457,29 @@ The native debug bundle used `dev.bot.code.writingverify`, `BOT_CODE_DATA_DIR=/t
 | Real Codex                | Selecting GPT-6-Luna generated a visible preview. Clearing it and submitting generated a fresh commit and a PR title and Markdown body with `## Summary` and `## Testing`. All three exec calls succeeded with `--model gpt-6-luna`. Git and the fixture contained the returned text exactly, and the remote branch matched HEAD. The native toast showed the generated PR title. |
 
 The fixture does not supply complete PR-review metadata, so the right panel showed status or metadata warnings for fixture PRs. PR-review behavior was outside this check. Light mode and minimum-size layout had no native observation. Logs, fixture data and the real-Codex comparison are under `/tmp/bot-git-writing-verification`. The isolated app was closed after verification. No changes in the working repository were committed or pushed.
+
+## Turn notifications
+
+Verified on macOS on 2026-10-06 against T3 Code v0.0.45. `pnpm typecheck`, `pnpm test:ui` (201 tests), `pnpm format:check`, `cargo fmt --check`, `cargo test -p bot-core` (229 tests), and the debug `.app` build passed. Observer tests cover startup baselines, duplicate and stale revisions, new approval identities, off and focused suppression, and recovery through refresh after a missed live hint. The refresh regression failed before its fix.
+
+After rebasing onto the updated main branch for the pull request, typecheck, all 209 UI tests, the production frontend build, Prettier, rustfmt, Clippy with warnings denied, and all 239 core tests passed.
+
+The real Tauri bundle used `dev.bot.code.turnnotificationsverify`, an isolated `BOT_CODE_DATA_DIR` at `/tmp/bot-turn-notifications/native/data`, and a disposable one-commit repository with separate Alpha and Beta worktrees. A release-controlled Codex app-server peer ran through the actual Rust runtime and produced completion, failure and approval events. At 1100×780, the sidebar, centered chat, bottom composer, compact header and neutral colors remained intact. General > Behavior showed T3's two rows, four mode labels and menu width. Search found and focused Thread notifications.
+
+| Workflow | Observed result |
+| --- | --- |
+| Initial launch and Sound only | No macOS permission prompt. Sound only saved on this device. |
+| Explicit notification opt-in | Choosing Notifications only opened the macOS permission dialog. Permission refusal preserved Sound only and appeared in the row. After enabling the disposable app in System Settings, the mode saved. |
+| Two concurrent background turns | Both threads showed Working before minimizing the window. Releasing Alpha's completion and Beta's approval produced separate native alerts, visible together in the expanded macOS notification group. |
+| Completion click | From minimized Beta, the native completion alert restored the window, focused the composer and opened Alpha's exact workspace/thread URL. |
+| Approval click | Opened Beta's exact thread with the harmless command approval still waiting. |
+| Background failure | Showed Thread failed; clicking it restored Alpha from selected Beta and displayed the failure reason. |
+| Focused selected thread | With both mode and in-app notifications enabled, Alpha completed without a toast. A native Web Inspector audio probe recorded zero audio-buffer starts. |
+| Focused other thread | While viewing Beta, Alpha's completion showed Thread completed with Open thread. Clicking it opened Alpha. The decoded completion buffer started in a running AudioContext. |
+| Notifications with sound | A background Beta approval showed a native alert and started the copied attention buffer in a running AudioContext. Its click opened Beta. |
+| Full quit and relaunch | Both mode and in-app enabled persisted. Historical turns produced no toast or permission prompt on startup. |
+| Restore defaults | The saved mode returned to off and In-app notifications returned to false. |
+
+The first native permission request exposed a packaging defect: the debug bundle's linker signature had a different identifier from its Info.plist, and Apple returned `UNErrorDomain` error 1. Signing the bundle with its own identifier produced the permission dialog. The final build applies Tauri's ad-hoc signing configuration automatically and passed the native alert/click checks.
+
+macOS suppressed banners while display sharing was configured to hide notifications. The test temporarily allowed them and restored the original Notifications Off setting afterwards. All three disposable Git checkouts stayed clean. The audio probe verified decoded buffer playback, not audible output from physical speakers. Clicks after the application has completely quit were not exercised. Test logs, fixture scripts, the decision trail and native accessibility observations are under `/tmp/bot-turn-notifications`; native screenshots are in the task's tool transcript.

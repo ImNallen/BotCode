@@ -25,6 +25,9 @@ it("refreshes the active branch picker after a worktree naming event without ref
   const checkout = { workspaceId, threadId };
   const otherCheckout = { workspaceId: otherWorkspaceId, threadId };
   const summary = {
+    revision: 0,
+    latestTurn: null,
+    pendingApprovalIds: [],
     id: threadId,
     title: "Fix login redirect",
     session: { kind: "ready" },
@@ -135,6 +138,7 @@ it("refreshes the active branch picker after a worktree naming event without ref
       refreshWorkspace: true,
       summary: {
         ...summary,
+        revision: 2,
         checkout: { ...summary.checkout, branch: generatedBranch },
       },
     });

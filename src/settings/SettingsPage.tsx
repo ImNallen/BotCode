@@ -1,5 +1,6 @@
 // Classes copied from pingdotgg/t3code v0.0.45 settings/SettingsSidebarNav.tsx, SettingsGroup.tsx,
 // settingsLayout.tsx, WorkspacePageContainer.tsx, WorkspacePageHeader.tsx and ui/number-field.tsx (MIT).
+import { NotificationSettings } from "./NotificationSettings";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowLeftIcon, SearchIcon, XIcon } from "lucide-react";
@@ -410,6 +411,16 @@ export function SettingsPage() {
           }
         />
       );
+    if (id === "in-app-notifications")
+      return (
+        <Switch
+          aria-label="In-app notifications"
+          checked={preferences.inAppNotificationsEnabled}
+          onCheckedChange={(inAppNotificationsEnabled) =>
+            update({ inAppNotificationsEnabled })
+          }
+        />
+      );
     if (id === "context-window-indicator")
       return (
         <Switch
@@ -436,7 +447,9 @@ export function SettingsPage() {
     return null;
   };
   const row = (info: SettingsRowInfo) =>
-    info.setting ? (
+    info.id === "thread-notifications" ? (
+      <NotificationSettings key={info.id} info={info} />
+    ) : info.setting ? (
       <ProjectSettingRow
         key={info.id}
         id={info.id}
