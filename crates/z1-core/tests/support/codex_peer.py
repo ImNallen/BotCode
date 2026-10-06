@@ -9,6 +9,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'exec':
     if (root / 'naming_descendant').exists():
         child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(90)'])
         (root / 'naming_child.pid').write_text(str(child.pid))
+    (root / 'naming_ready').touch()
     if (root / 'naming_stall').exists():
         while True:
             time.sleep(1)

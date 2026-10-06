@@ -294,13 +294,21 @@ async fn generation_failures_leave_the_user_turn_and_branch_intact() {
 async fn delayed_generation_cannot_rename_after_second_submit_or_manual_switch() {
     for switched in [false, true] {
         let f = Fixture::new(Some(r#"{"branch":"late-name"}"#));
-        f.control("naming_delay", "1");
+        f.control("naming_stall", "");
         let app = App::open(f.config.clone()).await.unwrap();
         let t = f.thread(&app).await;
         app.submit(t.id.clone(), "first".into(), "ordinary prompt".into())
             .await
             .unwrap();
+        let root = f.peer.parent().unwrap();
+        wait_file(&root.join("naming_ready")).await;
         wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
+        let pid = std::fs::read_to_string(root.join("naming.pid"))
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
         if switched {
             app.switch_branch(
                 t.workspace_id.clone(),
@@ -316,14 +324,20 @@ async fn delayed_generation_cannot_rename_after_second_submit_or_manual_switch()
                 .unwrap();
             wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
         }
-        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let cancelled = tokio::time::timeout(Duration::from_secs(5), async {
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
         let actual = app.thread(t.id.clone()).await.unwrap();
+        app.shutdown().await.unwrap();
+        assert!(cancelled.is_ok(), "naming process survived cancellation");
         assert_eq!(
             checkout(&actual).1,
             if switched { "manual" } else { checkout(&t).1 }
         );
         assert_eq!(f.invocations().len(), 1);
-        app.shutdown().await.unwrap();
     }
 }
 #[tokio::test]
