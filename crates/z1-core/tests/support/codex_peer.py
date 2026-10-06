@@ -33,6 +33,9 @@ def event(method, params):
     emit({'method': method, 'params': params})
 def finish(status='completed'):
     event('turn/completed', {'threadId': current_thread, 'turn': {'id': active, 'status': status, 'items': []}})
+def token_usage(last, total):
+    breakdown = lambda n: {'totalTokens': n, 'inputTokens': n, 'cachedInputTokens': 0, 'outputTokens': 0, 'reasoningOutputTokens': 0}
+    event('thread/tokenUsage/updated', {'threadId': current_thread, 'turnId': active, 'tokenUsage': {'last': breakdown(last), 'total': breakdown(total), 'modelContextWindow': 258400}})
 for line in sys.stdin:
     request = json.loads(line)
     with log.open('a') as output:
@@ -94,6 +97,9 @@ for line in sys.stdin:
             pid_file.replace(root / 'descendant.pid')
             time.sleep(0.15)
         else:
+            if prompt == 'usage':
+                token_usage(20575, 41150)
+                token_usage(0, 41150)
             event('item/agentMessage/delta', {'threadId': current_thread, 'turnId': active, 'itemId': 'reply', 'delta': 'fixture reply'})
             event('item/completed', {'threadId': current_thread, 'turnId': active, 'item': {'id': 'reply', 'type': 'agentMessage', 'text': 'fixture reply'}})
             finish()

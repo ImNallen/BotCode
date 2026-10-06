@@ -27,6 +27,7 @@ fn thread() -> ThreadSnapshot {
         diagnostic: None,
         placement: Placement::Auto,
         snooze: None,
+        context: None,
     }
 }
 fn link(lifecycle: PrLifecycle) -> LinkedPrSummary {

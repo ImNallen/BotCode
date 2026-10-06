@@ -1,3 +1,4 @@
+use crate::usage::ContextUsage;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -372,6 +373,8 @@ pub struct ThreadSnapshot {
     pub placement: Placement,
     #[serde(default)]
     pub snooze: Option<Snooze>,
+    #[serde(default)]
+    pub context: Option<ContextUsage>,
 }
 impl ThreadSnapshot {
     pub fn root<'a>(&'a self, workspace: &'a Workspace) -> &'a Path {

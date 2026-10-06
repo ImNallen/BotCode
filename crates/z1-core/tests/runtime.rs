@@ -870,6 +870,7 @@ fn legacy_snapshots_default_settings() {
         diagnostic: None,
         placement: Placement::Kept,
         snooze: None,
+        context: None,
     };
     let mut value = serde_json::to_value(thread).unwrap();
     value.as_object_mut().unwrap().remove("placement");
@@ -906,6 +907,29 @@ async fn provider_loss_invalidates_catalog_and_reloads_on_request() {
             .count(),
         4
     );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn usage_turn_records_context_and_merges_limits() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "usage".into(), "usage".into())
+        .await
+        .unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    let context = Some(ContextUsage {
+        used_tokens: 20575,
+        max_tokens: Some(258400),
+        total_processed_tokens: Some(41150),
+    });
+    assert_eq!(done.context, context);
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(app.thread(thread.id).await.unwrap().context, context);
     app.shutdown().await.unwrap();
 }
 fn worktree(checkout: &Checkout) -> (std::path::PathBuf, String) {
@@ -1890,6 +1914,7 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
         diagnostic: None,
         placement: Placement::Auto,
         snooze: None,
+        context: None,
     }
 }
 #[test]

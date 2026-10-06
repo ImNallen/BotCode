@@ -12,6 +12,7 @@ use crate::{
     terminal::{
         MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey, TerminalSize, Terminals,
     },
+    usage::ContextUsage,
     vcs,
 };
 use pr_review::ReviewWork;
@@ -1525,6 +1526,7 @@ impl Owner {
                         diagnostic: None,
                         placement: Placement::Auto,
                         snooze: None,
+                        context: None,
                     };
                     self.store.save(&t)?;
                     self.threads.insert(t.id.clone(), t.clone());
@@ -2351,6 +2353,15 @@ impl Owner {
         }
         let Some(id) = id else { return Ok(()) };
         let t = self.threads.get_mut(&id).unwrap();
+        if method == "thread/tokenUsage/updated" {
+            if let Some(context) = ContextUsage::from_update(p)
+                && t.context.as_ref() != Some(&context)
+            {
+                t.context = Some(context);
+                self.dirty.insert(id);
+            }
+            return Ok(());
+        }
         let native_turn = p
             .get("turnId")
             .and_then(Value::as_str)
