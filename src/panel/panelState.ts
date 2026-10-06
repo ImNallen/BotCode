@@ -1,4 +1,9 @@
 // Surface transitions follow pingdotgg/t3code v0.0.45 apps/web/src/rightPanelStore.ts (MIT).
+import {
+  getTerminalLabel,
+  type TerminalPanelSurface,
+  type TerminalSurfaceId,
+} from "../terminal/terminalState";
 import type { PanelState, Surface } from "./RightPanel";
 import type { ThreadPrSummary } from "./pullRequests";
 
@@ -59,6 +64,43 @@ export function closeSurface(state: PanelState, index: number): PanelState {
   };
 }
 
+export function reconcileTerminalSurfaces(
+  state: PanelState,
+  surfaceIds: readonly TerminalSurfaceId[],
+): PanelState {
+  const kept = state.surfaces.filter(
+    (surface) => surface.kind !== "terminal" || surfaceIds.includes(surface.id),
+  );
+  const missing = surfaceIds.filter(
+    (id) =>
+      !kept.some((surface) => surface.kind === "terminal" && surface.id === id),
+  );
+  if (kept.length === state.surfaces.length && missing.length === 0) {
+    return state;
+  }
+  let active: number | null = null;
+  if (state.active !== null) {
+    const activeSurface = state.surfaces[state.active];
+    const keptIndex = activeSurface ? kept.indexOf(activeSurface) : -1;
+    if (keptIndex >= 0) {
+      active = keptIndex;
+    } else if (kept.length > 0) {
+      const keptBefore = state.surfaces
+        .slice(0, state.active)
+        .filter((surface) => kept.includes(surface)).length;
+      active = Math.min(keptBefore, kept.length - 1);
+    }
+  }
+  const surfaces: Surface[] = [
+    ...kept,
+    ...missing.map((id) => ({ kind: "terminal" as const, id })),
+  ];
+  return {
+    surfaces,
+    active: active ?? (surfaces.length > kept.length ? kept.length : null),
+  };
+}
+
 export const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 export function eligibleSurfaces(
@@ -72,6 +114,8 @@ export function eligibleSurfaces(
         return links !== undefined;
       case "pull_request":
         return links?.some((link) => link.pr.key === surface.key) ?? false;
+      case "terminal":
+        return true;
       default:
         return (
           repository || surface.kind === "files" || surface.kind === "file"
@@ -88,7 +132,10 @@ export function eligibleSurfaces(
   return { surfaces, active: index < 0 ? null : index };
 }
 
-export function surfaceTitle(surface: Surface): string {
+export function surfaceTitle(
+  surface: Surface,
+  terminals: readonly TerminalPanelSurface[] = [],
+): string {
   switch (surface.kind) {
     case "files":
       return "Files";
@@ -100,6 +147,11 @@ export function surfaceTitle(surface: Surface): string {
       return `#${surface.key.split("/").at(-1)}`;
     case "file":
       return basename(surface.path);
+    case "terminal":
+      return getTerminalLabel(
+        terminals.find((terminal) => terminal.id === surface.id)
+          ?.activeTerminalId ?? surface.id.slice("terminal:".length),
+      );
   }
 }
 
@@ -109,6 +161,8 @@ export function surfaceKey(surface: Surface): string {
       return `file:${surface.path}`;
     case "pull_request":
       return `pr:${surface.key}`;
+    case "terminal":
+      return surface.id;
     default:
       return surface.kind;
   }

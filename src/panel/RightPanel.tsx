@@ -5,6 +5,7 @@ import {
   GitPullRequestIcon,
   FilesIcon,
   PlusIcon,
+  TerminalSquareIcon,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -14,8 +15,22 @@ import {
   useRef,
   useState,
 } from "react";
+import type { FileLinks } from "../chat/ChatMarkdown";
 import type { CheckoutRef, WorkspaceView } from "../ipc";
 import { cn } from "../lib/cn";
+import { usePreferences } from "../settings/preferences";
+import {
+  PersistentThreadTerminalPanel,
+  requestClosePanelSurface,
+} from "../terminal/ThreadTerminalDrawer";
+import {
+  terminalScopeKey,
+  type TerminalSurfaceId,
+} from "../terminal/terminalState";
+import {
+  createPanelTerminal,
+  useTerminalState,
+} from "../terminal/terminalStore";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { Kbd, MenuShortcut, PanelTabCloseButton, ScrollRow } from "./chrome";
@@ -43,7 +58,8 @@ export type Surface =
   | { kind: "diff" }
   | { kind: "pull_requests" }
   | { kind: "pull_request"; key: PullRequestKey }
-  | { kind: "file"; path: string };
+  | { kind: "file"; path: string }
+  | { kind: "terminal"; id: TerminalSurfaceId };
 
 export type PanelState = { surfaces: Surface[]; active: number | null };
 
@@ -53,10 +69,18 @@ type SurfaceAction = {
   label: string;
   icon: LucideIcon;
   shortcut: string;
+  onSelect: () => void;
+  unavailable?: { hint: string; reason: string };
+};
+
+type SurfaceTarget = {
+  label: string;
+  icon: LucideIcon;
+  shortcut: string;
   surface: Surface;
 };
 
-const SURFACE_ACTIONS: readonly SurfaceAction[] = [
+const SURFACE_TARGETS: readonly SurfaceTarget[] = [
   {
     label: "Files",
     icon: FilesIcon,
@@ -71,12 +95,17 @@ const SURFACE_ACTIONS: readonly SurfaceAction[] = [
   },
 ];
 
+const FOLDER_TARGETS = SURFACE_TARGETS.filter(
+  (target) => target.surface.kind === "files",
+);
+
+const TERMINAL_UNAVAILABLE = {
+  hint: "Available when a project is open.",
+  reason: "Terminal surfaces are only available from a project thread.",
+};
+
 const LAUNCHER_SHORTCUT_BLOCKING_LAYERS =
   '[data-slot="menu-popup"],[role="dialog"]';
-
-const FOLDER_ACTIONS = SURFACE_ACTIONS.filter(
-  (action) => action.surface.kind === "files",
-);
 
 function actionForKey(
   event: KeyboardEvent,
@@ -85,7 +114,9 @@ function actionForKey(
   if (event.defaultPrevented || event.isComposing) return;
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   return actions.find(
-    (action) => action.shortcut.toLowerCase() === event.key.toLowerCase(),
+    (action) =>
+      !action.unavailable &&
+      action.shortcut.toLowerCase() === event.key.toLowerCase(),
   );
 }
 
@@ -106,6 +137,8 @@ export function RightPanel({
   pullRequests,
   canAskCodex,
   onAskCodex,
+  terminalAvailable,
+  fileLinks,
 }: {
   checkout: CheckoutRef;
   git: boolean;
@@ -117,6 +150,8 @@ export function RightPanel({
   pullRequests: ThreadPrSummary["links"];
   canAskCodex: boolean;
   onAskCodex: (request: ReviewDraftRequest) => void;
+  terminalAvailable: boolean;
+  fileLinks: FileLinks;
 }) {
   const state = eligibleSurfaces(
     savedState,
@@ -129,24 +164,54 @@ export function RightPanel({
   const tabList = useRef<HTMLDivElement>(null);
   const active =
     state.active === null ? undefined : state.surfaces[state.active];
-  const available =
-    Boolean(conversationId) ||
-    (view !== undefined && view.unavailable === null);
+  const { preferences } = usePreferences();
+  const threadId = conversationId ?? null;
+  const terminalScope = terminalScopeKey(checkout.workspaceId, threadId);
+  const terminals = useTerminalState(terminalScope).panelSurfaces;
   const localAvailable = view !== undefined && view.unavailable === null;
+  const open = (surface: Surface) => onChange(openSurface(state, surface));
+  const openTerminal = () => {
+    if (!terminalAvailable) return;
+    open({ kind: "terminal", id: createPanelTerminal(terminalScope) });
+  };
+  const close = (index: number) => {
+    const surface = state.surfaces[index];
+    const terminal =
+      surface?.kind === "terminal"
+        ? terminals.find((entry) => entry.id === surface.id)
+        : undefined;
+    if (terminal) {
+      requestClosePanelSurface(checkout.workspaceId, threadId, terminal);
+      return;
+    }
+    onChange(closeSurface(state, index));
+  };
+  const surfaceAction = ({ surface, ...target }: SurfaceTarget) => ({
+    ...target,
+    onSelect: () => open(surface),
+  });
   const actions: SurfaceAction[] = [
     ...(conversationId && pullRequests.length > 0
       ? [
-          {
+          surfaceAction({
             label: "Pull requests",
             icon: GitPullRequestIcon,
             shortcut: "P",
             surface: pullRequestSurface(pullRequests),
-          },
+          }),
         ]
       : []),
-    ...(!localAvailable ? [] : git ? SURFACE_ACTIONS : FOLDER_ACTIONS),
+    {
+      label: "Terminal",
+      icon: TerminalSquareIcon,
+      shortcut: "T",
+      onSelect: openTerminal,
+      ...(terminalAvailable ? {} : { unavailable: TERMINAL_UNAVAILABLE }),
+    },
+    ...(!localAvailable ? [] : git ? SURFACE_TARGETS : FOLDER_TARGETS).map(
+      surfaceAction,
+    ),
   ];
-  const open = (surface: Surface) => onChange(openSurface(state, surface));
   const handleOpenFile = (path: string) => onChange(openFile(state, path));
 
   useEffect(() => {
@@ -170,11 +235,11 @@ export function RightPanel({
 
   const handleAddMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const action = actionForKey(event.nativeEvent, actions);
-    if (!action || !available) return;
+    if (!action) return;
     event.preventDefault();
     event.stopPropagation();
     setAddMenuOpen(false);
-    open(action.surface);
+    action.onSelect();
   };
 
   return (
@@ -223,7 +288,7 @@ export function RightPanel({
               <div className="flex h-full w-max min-w-full items-center gap-1">
                 {state.surfaces.map((surface, index) => {
                   const isActive = index === state.active;
-                  const title = surfaceTitle(surface);
+                  const title = surfaceTitle(surface, terminals);
                   return (
                     <div
                       key={surfaceKey(surface)}
@@ -234,7 +299,7 @@ export function RightPanel({
                       onAuxClick={(event) => {
                         if (event.button !== 1) return;
                         event.preventDefault();
-                        onChange(closeSurface(state, index));
+                        close(index);
                       }}
                       className={cn(
                         "cursor-pointer group/tab flex h-6 max-w-36 shrink-0 items-center gap-0.5 rounded-md pr-2 pl-1.5 text-xs [-webkit-app-region:no-drag]",
@@ -245,7 +310,7 @@ export function RightPanel({
                     >
                       <PanelTabCloseButton
                         label={`Close ${title}`}
-                        onClick={() => onChange(closeSurface(state, index))}
+                        onClick={() => close(index)}
                       >
                         <SurfaceIcon
                           surface={surface}
@@ -285,9 +350,15 @@ export function RightPanel({
                     {actions.map((action) => (
                       <MenuItem
                         key={action.label}
-                        disabled={!available}
+                        className={
+                          action.unavailable
+                            ? "disabled:pointer-events-auto"
+                            : undefined
+                        }
+                        disabled={Boolean(action.unavailable)}
+                        title={action.unavailable?.reason}
                         aria-keyshortcuts={action.shortcut}
-                        onClick={() => open(action.surface)}
+                        onClick={action.onSelect}
                       >
                         <action.icon />
                         {action.label}
@@ -323,12 +394,22 @@ export function RightPanel({
                 onAskCodex={onAskCodex}
                 onBack={() => open({ kind: "pull_requests" })}
               />
+            ) : active?.kind === "terminal" ? (
+              <PersistentThreadTerminalPanel
+                key={`${terminalScope}/${active.id}`}
+                workspaceId={checkout.workspaceId}
+                threadId={threadId}
+                surfaceId={active.id}
+                fontSize={preferences.codeFontSize}
+                fileLinks={fileLinks}
+                onNewTerminal={openTerminal}
+              />
             ) : view?.unavailable && active ? (
               <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
                 <p className="text-center">{view.unavailable}</p>
               </div>
             ) : !active ? (
-              <Launcher actions={actions} available={available} onOpen={open} />
+              <Launcher actions={actions} />
             ) : active.kind === "diff" ? (
               <DiffSurface
                 checkout={checkout}
@@ -376,40 +457,38 @@ function SurfaceIcon({
       return <FilesIcon className="size-3 shrink-0" />;
     case "file":
       return <FileEntryIcon path={surface.path} className="size-3" />;
+    case "terminal":
+      return <TerminalSquareIcon className="size-3 shrink-0" />;
   }
 }
 
-function Launcher({
-  actions,
-  available,
-  onOpen,
-}: {
-  actions: readonly SurfaceAction[];
-  available: boolean;
-  onOpen: (surface: Surface) => void;
-}) {
+function Launcher({ actions }: { actions: readonly SurfaceAction[] }) {
   const [highlight, setHighlight] = useState(-1);
-  const onOpenRef = useRef(onOpen);
-  onOpenRef.current = onOpen;
+  const availableActions = actions.filter((action) => !action.unavailable);
+  const highlightIndex =
+    availableActions.length === 0
+      ? -1
+      : Math.min(highlight, availableActions.length - 1);
+  const shortcutActionsRef = useRef(availableActions);
+  shortcutActionsRef.current = availableActions;
   useEffect(() => {
-    if (!available) return;
     const handler = (event: KeyboardEvent) => {
-      const action = actionForKey(event, actions);
+      const action = actionForKey(event, shortcutActionsRef.current);
       if (!action) return;
       if (document.querySelector(LAUNCHER_SHORTCUT_BLOCKING_LAYERS)) return;
       if (targetsTypingContext(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
-      onOpenRef.current(action.surface);
+      action.onSelect();
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
-  }, [actions, available]);
+  }, []);
   const focusOnMount = useCallback(
     (node: HTMLDivElement | null) => node?.focus(),
     [],
   );
-  const count = available ? actions.length : 0;
+  const count = availableActions.length;
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (
       event.defaultPrevented ||
@@ -421,28 +500,32 @@ function Launcher({
     if (count === 0) return;
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
       event.preventDefault();
-      setHighlight((highlight + 1) % count);
+      setHighlight((highlightIndex + 1) % count);
     } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
       event.preventDefault();
       setHighlight(
-        highlight === -1 ? count - 1 : (highlight - 1 + count) % count,
+        highlightIndex === -1
+          ? count - 1
+          : (highlightIndex - 1 + count) % count,
       );
     } else if (event.key === "Enter" && event.target === event.currentTarget) {
-      const action = actions[highlight];
+      const action = availableActions[highlightIndex];
       if (!action) return;
       event.preventDefault();
-      onOpen(action.surface);
+      action.onSelect();
     }
   };
+  const isHighlighted = (action: SurfaceAction) =>
+    highlightIndex !== -1 && availableActions[highlightIndex] === action;
   return (
     <div
       ref={focusOnMount}
       tabIndex={0}
       onKeyDown={handleKeyDown}
       aria-label="Open a surface"
-      data-surface-launcher-keys={
-        available ? actions.map((a) => a.shortcut).join("") : ""
-      }
+      data-surface-launcher-keys={availableActions
+        .map((action) => action.shortcut)
+        .join("")}
       className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 outline-none pb-(--workspace-topbar-height)"
     >
       <div className="w-full max-w-xs py-6">
@@ -450,22 +533,40 @@ function Launcher({
           Open a surface
         </h3>
         <div className="flex flex-col gap-0.5">
-          {actions.map((action, index) =>
-            available ? (
+          {actions.map((action) =>
+            action.unavailable ? (
+              <div
+                key={action.label}
+                tabIndex={0}
+                aria-disabled="true"
+                title={action.unavailable.hint}
+                className="flex h-8 w-full cursor-default items-center gap-2.5 rounded-(--control-radius) px-2.5 text-left text-sm opacity-50"
+              >
+                <span className="relative inline-flex shrink-0">
+                  <action.icon className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1 truncate">{action.label}</span>
+                <Kbd>{action.shortcut}</Kbd>
+              </div>
+            ) : (
               <div
                 key={action.label}
                 className="group relative"
-                onMouseEnter={() => setHighlight(index)}
+                onMouseEnter={() =>
+                  setHighlight(availableActions.indexOf(action))
+                }
                 onMouseLeave={() =>
-                  setHighlight((current) => (current === index ? -1 : current))
+                  setHighlight((current) =>
+                    current === availableActions.indexOf(action) ? -1 : current,
+                  )
                 }
               >
                 <button
                   type="button"
-                  onClick={() => onOpen(action.surface)}
+                  onClick={action.onSelect}
                   className={cn(
                     "flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-2.5 text-left text-sm transition-colors group-hover:bg-accent/60",
-                    highlight === index && "bg-accent/60",
+                    isHighlighted(action) && "bg-accent/60",
                   )}
                 >
                   <span className="relative inline-flex shrink-0">
@@ -476,20 +577,6 @@ function Launcher({
                   </span>
                   <Kbd>{action.shortcut}</Kbd>
                 </button>
-              </div>
-            ) : (
-              <div
-                key={action.label}
-                tabIndex={0}
-                aria-disabled="true"
-                title="Available when a project is open."
-                className="flex h-8 w-full cursor-default items-center gap-2.5 rounded-(--control-radius) px-2.5 text-left text-sm opacity-50"
-              >
-                <span className="relative inline-flex shrink-0">
-                  <action.icon className="size-4" />
-                </span>
-                <span className="min-w-0 flex-1 truncate">{action.label}</span>
-                <Kbd>{action.shortcut}</Kbd>
               </div>
             ),
           )}

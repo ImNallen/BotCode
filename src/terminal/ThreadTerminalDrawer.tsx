@@ -1,5 +1,6 @@
 // Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/ThreadTerminalDrawer.tsx,
-// PersistentThreadTerminalDrawer in components/ChatView.tsx and lib/terminalCloseConfirm.ts (MIT).
+// PersistentThreadTerminalDrawer and PersistentThreadTerminalPanel in components/ChatView.tsx and
+// lib/terminalCloseConfirm.ts (MIT).
 import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -46,10 +47,10 @@ import {
   isTerminalPasteShortcut,
 } from "./ghostty/surface";
 import {
+  getTerminalFocusOwner,
   isMacCommandChord,
   isMacOptionText,
   isTerminalClearShortcut,
-  isTerminalFocused,
   terminalDeleteShortcutData,
   terminalNavigationShortcutData,
   terminalShortcutCommand,
@@ -57,15 +58,21 @@ import {
 import {
   DEFAULT_THREAD_TERMINAL_HEIGHT,
   MAX_TERMINALS_PER_GROUP,
+  activatePanelTerminal,
+  closePanelSurface,
+  closePanelTerminal,
   closeTerminal,
   getTerminalLabel,
   newTerminal,
-  nextTerminalId,
+  allocateTerminalId,
   setActiveTerminal,
   setTerminalHeight,
+  splitPanelTerminal,
   splitTerminal,
   terminalScopeKey,
   toggleTerminalOpen,
+  type TerminalPanelSurface,
+  type TerminalSurfaceId,
   type ThreadTerminalGroup,
   type ThreadTerminalUiState,
 } from "./terminalState";
@@ -220,15 +227,24 @@ function isTerminalCloseConfirmPending(): boolean {
   return pendingConfirmations > 0;
 }
 
-async function confirmTerminalClose(label: string): Promise<boolean> {
+async function confirmTerminalClose(
+  labels: readonly [string, ...string[]],
+): Promise<boolean> {
   if (!native) return true;
   pendingConfirmations += 1;
   try {
     return await confirm(
-      [
-        `Close terminal "${label}"?`,
-        "This stops the running process and clears its history.",
-      ].join("\n"),
+      labels.length === 1
+        ? [
+            `Close terminal "${labels[0]}"?`,
+            "This stops the running process and clears its history.",
+          ].join("\n")
+        : [
+            `Close ${labels.length} terminals?`,
+            `This stops their running processes and clears their histories: ${labels
+              .map((label) => `"${label}"`)
+              .join(", ")}.`,
+          ].join("\n"),
       {
         title: "Close terminal",
         kind: "warning",
@@ -241,6 +257,13 @@ async function confirmTerminalClose(label: string): Promise<boolean> {
   } finally {
     pendingConfirmations -= 1;
   }
+}
+
+function killTerminal(target: TerminalTarget): void {
+  void ipc
+    .terminalClose(target)
+    .catch(() => ipc.terminalWrite(target, "exit\n"))
+    .catch(() => {});
 }
 
 type TerminalMenu = {
@@ -666,6 +689,7 @@ function TerminalViewport({
 }
 
 interface ThreadTerminalDrawerProps {
+  mode?: "drawer" | "panel";
   workspaceId: string;
   threadId: string | null;
   fontSize: number;
@@ -713,6 +737,7 @@ function TerminalActionButton({
 }
 
 function ThreadTerminalDrawer({
+  mode = "drawer",
   workspaceId,
   threadId,
   fontSize,
@@ -732,6 +757,7 @@ function ThreadTerminalDrawer({
   onCloseTerminal,
   onHeightChange,
 }: ThreadTerminalDrawerProps) {
+  const isPanel = mode === "panel";
   const [drawerHeight, setDrawerHeight] = useState(() =>
     clampDrawerHeight(height),
   );
@@ -905,7 +931,7 @@ function ThreadTerminalDrawer({
     };
   }, [syncHeight]);
 
-  const resizeHandle = (
+  const resizeHandle = !isPanel ? (
     <div
       className="absolute inset-x-0 top-0 z-20 h-1.5 cursor-row-resize"
       onPointerDown={handleResizePointerDown}
@@ -913,16 +939,20 @@ function ThreadTerminalDrawer({
       onPointerUp={handleResizePointerEnd}
       onPointerCancel={handleResizePointerEnd}
     />
-  );
+  ) : null;
+  const shellProps = {
+    "data-thread-terminal-drawer": true,
+    "data-terminal-owner": isPanel ? "right-panel" : "drawer",
+    className: cn(
+      "relative flex min-w-0 flex-col overflow-hidden bg-background",
+      isPanel ? "h-full flex-1" : "shrink-0 border-t border-border/80",
+    ),
+    style: isPanel ? undefined : { height: `${drawerHeight}px` },
+  };
 
   if (terminalIds.length === 0) {
     return (
-      <aside
-        data-thread-terminal-drawer
-        data-terminal-owner="drawer"
-        className="relative flex min-w-0 flex-col overflow-hidden bg-background shrink-0 border-t border-border/80"
-        style={{ height: `${drawerHeight}px` }}
-      >
+      <aside {...shellProps}>
         {resizeHandle}
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 py-6 text-center text-sm text-muted-foreground">
           <p>No terminal sessions for this thread yet.</p>
@@ -949,12 +979,7 @@ function ThreadTerminalDrawer({
   );
 
   return (
-    <aside
-      data-thread-terminal-drawer
-      data-terminal-owner="drawer"
-      className="relative flex min-w-0 flex-col overflow-hidden bg-background shrink-0 border-t border-border/80"
-      style={{ height: `${drawerHeight}px` }}
-    >
+    <aside {...shellProps}>
       {resizeHandle}
 
       {!hasTerminalSidebar && (
@@ -1234,12 +1259,12 @@ export function PersistentThreadTerminalDrawer({
 
   const splitTerminalIn = (direction: "horizontal" | "vertical") => {
     update((state) =>
-      splitTerminal(state, nextTerminalId(state.terminalIds), direction),
+      splitTerminal(state, allocateTerminalId(state), direction),
     );
     bumpFocusRequestId();
   };
   const createNewTerminal = () => {
-    update((state) => newTerminal(state, nextTerminalId(state.terminalIds)));
+    update((state) => newTerminal(state, allocateTerminalId(state)));
     bumpFocusRequestId();
   };
   const activateTerminal = (terminalId: string) => {
@@ -1247,16 +1272,12 @@ export function PersistentThreadTerminalDrawer({
     bumpFocusRequestId();
   };
   const removeTerminal = (terminalId: string) => {
-    const target = { workspaceId, threadId, terminalId };
-    void ipc
-      .terminalClose(target)
-      .catch(() => ipc.terminalWrite(target, "exit\n"))
-      .catch(() => {});
+    killTerminal({ workspaceId, threadId, terminalId });
     update((state) => closeTerminal(state, terminalId));
     bumpFocusRequestId();
   };
   const requestCloseTerminal = (terminalId: string) => {
-    void confirmTerminalClose(getTerminalLabel(terminalId)).then(
+    void confirmTerminalClose([getTerminalLabel(terminalId)]).then(
       (confirmed) => {
         if (confirmed) removeTerminal(terminalId);
       },
@@ -1275,9 +1296,9 @@ export function PersistentThreadTerminalDrawer({
       event.stopPropagation();
       return;
     }
-    const terminalFocus = isTerminalFocused();
-    if (command !== "terminal.toggle" && !terminalFocus) return;
-    if (event.defaultPrevented && !terminalFocus) return;
+    const focusOwner = getTerminalFocusOwner();
+    if (command !== "terminal.toggle" && focusOwner !== "drawer") return;
+    if (event.defaultPrevented && focusOwner === null) return;
     event.preventDefault();
     event.stopPropagation();
     switch (command) {
@@ -1340,4 +1361,148 @@ export function PersistentThreadTerminalDrawer({
       </div>
     </div>
   );
+}
+
+export function PersistentThreadTerminalPanel({
+  workspaceId,
+  threadId,
+  surfaceId,
+  fontSize,
+  fileLinks,
+  onNewTerminal,
+}: {
+  workspaceId: string;
+  threadId: string | null;
+  surfaceId: TerminalSurfaceId;
+  fontSize: number;
+  fileLinks: FileLinks | undefined;
+  onNewTerminal: () => void;
+}) {
+  const scopeKey = terminalScopeKey(workspaceId, threadId);
+  const surface = useTerminalState(scopeKey).panelSurfaces.find(
+    (entry) => entry.id === surfaceId,
+  );
+  const [focusRequestId, setFocusRequestId] = useState(0);
+  const update = (
+    transition: (state: ThreadTerminalUiState) => ThreadTerminalUiState,
+  ) => {
+    updateTerminalState(scopeKey, transition);
+    setFocusRequestId((value) => value + 1);
+  };
+  const splitTerminalIn = (direction: "horizontal" | "vertical") =>
+    update((state) =>
+      splitPanelTerminal(
+        state,
+        surfaceId,
+        allocateTerminalId(state),
+        direction,
+      ),
+    );
+  const removeTerminal = (terminalId: string) => {
+    killTerminal({ workspaceId, threadId, terminalId });
+    update((state) => closePanelTerminal(state, terminalId));
+  };
+  const requestCloseTerminal = (terminalId: string) => {
+    void confirmTerminalClose([getTerminalLabel(terminalId)]).then(
+      (confirmed) => {
+        if (confirmed) removeTerminal(terminalId);
+      },
+    );
+  };
+
+  const handleShortcut = useEffectEvent((event: KeyboardEvent) => {
+    const command = terminalShortcutCommand(event);
+    if (
+      command === null ||
+      command === "terminal.toggle" ||
+      getTerminalFocusOwner() !== "right-panel"
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (
+      command === "terminal.close" &&
+      (event.repeat || isTerminalCloseConfirmPending())
+    ) {
+      return;
+    }
+    switch (command) {
+      case "terminal.split":
+        splitTerminalIn("horizontal");
+        return;
+      case "terminal.splitVertical":
+        splitTerminalIn("vertical");
+        return;
+      case "terminal.new":
+        onNewTerminal();
+        return;
+      case "terminal.close":
+        if (surface) requestCloseTerminal(surface.activeTerminalId);
+        return;
+    }
+  });
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => handleShortcut(event);
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, []);
+
+  if (!surface) return null;
+
+  return (
+    <ThreadTerminalDrawer
+      mode="panel"
+      workspaceId={workspaceId}
+      threadId={threadId}
+      fontSize={fontSize}
+      fileLinks={fileLinks}
+      visible
+      height={0}
+      terminalIds={surface.terminalIds}
+      activeTerminalId={surface.activeTerminalId}
+      terminalGroups={[
+        {
+          id: surface.id,
+          terminalIds: surface.terminalIds,
+          ...(surface.splitDirection === "vertical"
+            ? { splitDirection: "vertical" as const }
+            : {}),
+        },
+      ]}
+      activeTerminalGroupId={surface.id}
+      focusRequestId={focusRequestId}
+      onSplitTerminal={() => splitTerminalIn("horizontal")}
+      onSplitTerminalVertical={() => splitTerminalIn("vertical")}
+      onNewTerminal={onNewTerminal}
+      onActiveTerminalChange={(terminalId) =>
+        update((state) => activatePanelTerminal(state, surfaceId, terminalId))
+      }
+      onRequestCloseTerminal={requestCloseTerminal}
+      onCloseTerminal={removeTerminal}
+      onHeightChange={() => undefined}
+    />
+  );
+}
+
+export function requestClosePanelSurface(
+  workspaceId: string,
+  threadId: string | null,
+  surface: TerminalPanelSurface,
+): void {
+  const labels = [
+    surface.activeTerminalId,
+    ...surface.terminalIds.filter((id) => id !== surface.activeTerminalId),
+  ].map(getTerminalLabel);
+  const [first, ...rest] = labels;
+  if (first === undefined) return;
+  void confirmTerminalClose([first, ...rest]).then((confirmed) => {
+    if (!confirmed) return;
+    for (const terminalId of surface.terminalIds) {
+      killTerminal({ workspaceId, threadId, terminalId });
+    }
+    updateTerminalState(terminalScopeKey(workspaceId, threadId), (state) =>
+      closePanelSurface(state, surface.id),
+    );
+  });
 }

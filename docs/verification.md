@@ -405,3 +405,18 @@ Verified on macOS on 2026-10-06 in the `pnpm tauri dev` window with an isolated 
 | Quit and relaunch | Quitting left no shell processes. The persisted open drawer started a new shell after relaunch. |
 
 A tall drawer on an empty draft lets the centered heading overlap the header, as T3's identical overlay does. Light mode, link clicks and switching between existing threads had no native observation.
+
+## Right-panel terminal
+
+Verified on 2026-10-06 in the same native setup.
+
+| Workflow | Observed result |
+| --- | --- |
+| Launcher | **Open a surface** listed **Terminal** with T above Files and Diff. T opened a focused "Terminal 1" tab in the repository while the drawer held `term-3`. |
+| Panel shortcuts | Command+D split the tab side by side, Command+N opened a "Terminal 4" tab, and Command+J closed the drawer. |
+| Tab switch | Returning to the split tab replayed both panes' earlier output. |
+| Tab close | The tab's close button asked "Close 2 terminals?". Confirming ended both shells and left the other tab. |
+| No-project draft | The Terminal row was dimmed, and T started no shell. |
+| Quit | No shell processes remained. |
+
+Returning to a thread restores its terminal tabs in `reconcileTerminalSurfaces` tests but had no native observation, because the disposable data directory had no threads.

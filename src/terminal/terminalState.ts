@@ -1,14 +1,23 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/terminalUiStateStore.ts, types.ts and
-// packages/shared/src/terminalLabels.ts (MIT): the store's transitions as pure functions.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/terminalUiStateStore.ts, types.ts,
+// packages/shared/src/terminalLabels.ts and the terminal transitions of rightPanelStore.ts (MIT):
+// the stores' transitions as pure functions.
 import { z } from "zod";
 
 export const DEFAULT_THREAD_TERMINAL_HEIGHT = 280;
-export const DEFAULT_THREAD_TERMINAL_ID = "term-1";
 export const MAX_TERMINALS_PER_GROUP = 4;
 
 export interface ThreadTerminalGroup {
   id: string;
   terminalIds: string[];
+  splitDirection?: "horizontal" | "vertical";
+}
+
+export type TerminalSurfaceId = `terminal:${string}`;
+
+export interface TerminalPanelSurface {
+  id: TerminalSurfaceId;
+  terminalIds: string[];
+  activeTerminalId: string;
   splitDirection?: "horizontal" | "vertical";
 }
 
@@ -19,6 +28,7 @@ export interface ThreadTerminalUiState {
   activeTerminalId: string;
   terminalGroups: ThreadTerminalGroup[];
   activeTerminalGroupId: string;
+  panelSurfaces: TerminalPanelSurface[];
 }
 
 export type TerminalStates = Readonly<Record<string, ThreadTerminalUiState>>;
@@ -31,6 +41,7 @@ export const DEFAULT_THREAD_TERMINAL_UI_STATE: ThreadTerminalUiState =
     activeTerminalId: "",
     terminalGroups: [],
     activeTerminalGroupId: "",
+    panelSurfaces: [],
   });
 
 export function terminalScopeKey(
@@ -61,6 +72,14 @@ export function nextTerminalId(
   }
 
   return `term-${nextIndex}`;
+}
+
+export function panelTerminalIds(state: ThreadTerminalUiState): string[] {
+  return state.panelSurfaces.flatMap((surface) => surface.terminalIds);
+}
+
+export function allocateTerminalId(state: ThreadTerminalUiState): string {
+  return nextTerminalId([...state.terminalIds, ...panelTerminalIds(state)]);
 }
 
 function normalizeTerminalIds(terminalIds: string[]): string[] {
@@ -181,6 +200,28 @@ function terminalGroupsEqual(
   return true;
 }
 
+function panelSurfacesEqual(
+  left: TerminalPanelSurface[],
+  right: TerminalPanelSurface[],
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const leftSurface = left[index];
+    const rightSurface = right[index];
+    if (!leftSurface || !rightSurface) return false;
+    if (
+      leftSurface.id !== rightSurface.id ||
+      leftSurface.activeTerminalId !== rightSurface.activeTerminalId ||
+      (leftSurface.splitDirection ?? "horizontal") !==
+        (rightSurface.splitDirection ?? "horizontal") ||
+      !arraysEqual(leftSurface.terminalIds, rightSurface.terminalIds)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function threadTerminalUiStateEqual(
   left: ThreadTerminalUiState,
   right: ThreadTerminalUiState,
@@ -191,22 +232,61 @@ function threadTerminalUiStateEqual(
     left.activeTerminalId === right.activeTerminalId &&
     left.activeTerminalGroupId === right.activeTerminalGroupId &&
     arraysEqual(left.terminalIds, right.terminalIds) &&
-    terminalGroupsEqual(left.terminalGroups, right.terminalGroups)
+    terminalGroupsEqual(left.terminalGroups, right.terminalGroups) &&
+    panelSurfacesEqual(left.panelSurfaces, right.panelSurfaces)
   );
 }
 
-function createDefaultThreadTerminalUiState(): ThreadTerminalUiState {
+function createDefaultThreadTerminalUiState(
+  panelSurfaces: TerminalPanelSurface[],
+): ThreadTerminalUiState {
   return {
     ...DEFAULT_THREAD_TERMINAL_UI_STATE,
     terminalIds: [],
     terminalGroups: [],
+    panelSurfaces,
   };
+}
+
+function normalizePanelSurfaces(
+  surfaces: TerminalPanelSurface[],
+): TerminalPanelSurface[] {
+  const usedTerminalIds = new Set<string>();
+  const usedSurfaceIds = new Set<string>();
+  const nextSurfaces: TerminalPanelSurface[] = [];
+  for (const surface of surfaces) {
+    if (usedSurfaceIds.has(surface.id)) continue;
+    const terminalIds = normalizeTerminalIds(surface.terminalIds).filter(
+      (terminalId) => !usedTerminalIds.has(terminalId),
+    );
+    const firstTerminalId = terminalIds[0];
+    if (firstTerminalId === undefined) continue;
+    usedSurfaceIds.add(surface.id);
+    for (const terminalId of terminalIds) usedTerminalIds.add(terminalId);
+    nextSurfaces.push({
+      id: surface.id,
+      terminalIds,
+      activeTerminalId: terminalIds.includes(surface.activeTerminalId)
+        ? surface.activeTerminalId
+        : firstTerminalId,
+      ...(surface.splitDirection === "vertical"
+        ? { splitDirection: "vertical" as const }
+        : {}),
+    });
+  }
+  return nextSurfaces;
 }
 
 function normalizeThreadTerminalUiState(
   state: ThreadTerminalUiState,
 ): ThreadTerminalUiState {
-  const nextTerminalIds = normalizeTerminalIds(state.terminalIds);
+  const panelSurfaces = normalizePanelSurfaces(state.panelSurfaces);
+  const panelIds = new Set(
+    panelSurfaces.flatMap((surface) => surface.terminalIds),
+  );
+  const nextTerminalIds = normalizeTerminalIds(state.terminalIds).filter(
+    (terminalId) => !panelIds.has(terminalId),
+  );
   const activeTerminalId = nextTerminalIds.includes(state.activeTerminalId)
     ? state.activeTerminalId
     : (nextTerminalIds[0] ?? "");
@@ -237,6 +317,7 @@ function normalizeThreadTerminalUiState(
       activeGroupIdFromTerminal ??
       terminalGroups[0]?.id ??
       "",
+    panelSurfaces,
   };
   return threadTerminalUiStateEqual(state, normalized) ? state : normalized;
 }
@@ -269,7 +350,10 @@ function upsertTerminalIntoGroups(
   const normalized = normalizeThreadTerminalUiState(state);
   const effectiveMode: "split" | "new" =
     normalized.terminalIds.length === 0 ? "new" : mode;
-  if (terminalId.trim().length === 0) {
+  if (
+    terminalId.trim().length === 0 ||
+    panelTerminalIds(normalized).includes(terminalId)
+  ) {
     return normalized;
   }
 
@@ -380,7 +464,7 @@ export function setTerminalOpen(
   if (open && normalized.terminalIds.length === 0) {
     return upsertTerminalIntoGroups(
       normalized,
-      DEFAULT_THREAD_TERMINAL_ID,
+      allocateTerminalId(normalized),
       "new",
     );
   }
@@ -487,7 +571,7 @@ export function closeTerminal(
     (id) => id !== terminalId,
   );
   if (remainingTerminalIds.length === 0) {
-    return createDefaultThreadTerminalUiState();
+    return createDefaultThreadTerminalUiState(normalized.panelSurfaces);
   }
 
   const closedTerminalIndex = normalized.terminalIds.indexOf(terminalId);
@@ -522,7 +606,132 @@ export function closeTerminal(
     activeTerminalId: nextActiveTerminalId,
     terminalGroups,
     activeTerminalGroupId: nextActiveTerminalGroupId,
+    panelSurfaces: normalized.panelSurfaces,
   });
+}
+
+function updatePanelSurface(
+  state: ThreadTerminalUiState,
+  surfaceId: TerminalSurfaceId,
+  update: (surface: TerminalPanelSurface) => TerminalPanelSurface,
+): ThreadTerminalUiState {
+  const normalized = normalizeThreadTerminalUiState(state);
+  const surface = normalized.panelSurfaces.find(
+    (entry) => entry.id === surfaceId,
+  );
+  if (!surface) return normalized;
+  const next = update(surface);
+  if (next === surface) return normalized;
+  return {
+    ...normalized,
+    panelSurfaces: normalized.panelSurfaces.map((entry) =>
+      entry === surface ? next : entry,
+    ),
+  };
+}
+
+export function openPanelTerminal(
+  state: ThreadTerminalUiState,
+  terminalId: string,
+): ThreadTerminalUiState {
+  const normalized = normalizeThreadTerminalUiState(state);
+  if (
+    terminalId.trim().length === 0 ||
+    normalized.terminalIds.includes(terminalId) ||
+    panelTerminalIds(normalized).includes(terminalId)
+  ) {
+    return normalized;
+  }
+  return {
+    ...normalized,
+    panelSurfaces: [
+      ...normalized.panelSurfaces,
+      {
+        id: `terminal:${terminalId}`,
+        terminalIds: [terminalId],
+        activeTerminalId: terminalId,
+      },
+    ],
+  };
+}
+
+export function splitPanelTerminal(
+  state: ThreadTerminalUiState,
+  surfaceId: TerminalSurfaceId,
+  terminalId: string,
+  direction: "horizontal" | "vertical" = "horizontal",
+): ThreadTerminalUiState {
+  const normalized = normalizeThreadTerminalUiState(state);
+  if (
+    terminalId.trim().length === 0 ||
+    normalized.terminalIds.includes(terminalId) ||
+    panelTerminalIds(normalized).includes(terminalId)
+  ) {
+    return normalized;
+  }
+  return updatePanelSurface(normalized, surfaceId, (surface) => {
+    if (surface.terminalIds.length >= MAX_TERMINALS_PER_GROUP) return surface;
+    const { splitDirection: _splitDirection, ...baseSurface } = surface;
+    return {
+      ...baseSurface,
+      terminalIds: [...surface.terminalIds, terminalId],
+      activeTerminalId: terminalId,
+      ...(direction === "vertical"
+        ? { splitDirection: "vertical" as const }
+        : {}),
+    };
+  });
+}
+
+export function activatePanelTerminal(
+  state: ThreadTerminalUiState,
+  surfaceId: TerminalSurfaceId,
+  terminalId: string,
+): ThreadTerminalUiState {
+  return updatePanelSurface(state, surfaceId, (surface) =>
+    surface.terminalIds.includes(terminalId) &&
+    surface.activeTerminalId !== terminalId
+      ? { ...surface, activeTerminalId: terminalId }
+      : surface,
+  );
+}
+
+export function closePanelTerminal(
+  state: ThreadTerminalUiState,
+  terminalId: string,
+): ThreadTerminalUiState {
+  const normalized = normalizeThreadTerminalUiState(state);
+  const surface = normalized.panelSurfaces.find((entry) =>
+    entry.terminalIds.includes(terminalId),
+  );
+  if (!surface) return normalized;
+  const terminalIds = surface.terminalIds.filter((id) => id !== terminalId);
+  const lastTerminalId = terminalIds.at(-1);
+  if (lastTerminalId === undefined) {
+    return closePanelSurface(normalized, surface.id);
+  }
+  return updatePanelSurface(normalized, surface.id, (entry) => ({
+    ...entry,
+    terminalIds,
+    activeTerminalId:
+      entry.activeTerminalId === terminalId
+        ? lastTerminalId
+        : entry.activeTerminalId,
+  }));
+}
+
+export function closePanelSurface(
+  state: ThreadTerminalUiState,
+  surfaceId: TerminalSurfaceId,
+): ThreadTerminalUiState {
+  const normalized = normalizeThreadTerminalUiState(state);
+  const panelSurfaces = normalized.panelSurfaces.filter(
+    (surface) => surface.id !== surfaceId,
+  );
+  if (panelSurfaces.length === normalized.panelSurfaces.length) {
+    return normalized;
+  }
+  return { ...normalized, panelSurfaces };
 }
 
 export function selectTerminalState(
@@ -567,6 +776,16 @@ const persistedState = z.object({
     }),
   ),
   activeTerminalGroupId: z.string(),
+  panelSurfaces: z
+    .array(
+      z.object({
+        id: z.templateLiteral(["terminal:", z.string()]),
+        terminalIds: z.array(z.string()),
+        activeTerminalId: z.string(),
+        splitDirection: z.enum(["horizontal", "vertical"]).optional(),
+      }),
+    )
+    .default([]),
 });
 
 export function parseTerminalStates(stored: string | null): TerminalStates {

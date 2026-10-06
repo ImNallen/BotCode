@@ -56,6 +56,7 @@ import {
   openFile,
   openSurface,
   pullRequestSurface,
+  reconcileTerminalSurfaces,
 } from "../panel/panelState";
 import type { ThreadPrSummary } from "../panel/pullRequests";
 import {
@@ -339,7 +340,15 @@ export function ChatView({
   }, [view]);
   const terminalAvailable = !(isScratch && !threadId);
   const terminalScope = terminalScopeKey(workspaceId, threadId ?? null);
-  const terminalOpen = useTerminalState(terminalScope).terminalOpen;
+  const terminalState = useTerminalState(terminalScope);
+  const terminalOpen = terminalState.terminalOpen;
+  const reconciledPanel = reconcileTerminalSurfaces(
+    panel,
+    terminalAvailable
+      ? terminalState.panelSurfaces.map((surface) => surface.id)
+      : [],
+  );
+  if (reconciledPanel !== panel) setPanel(reconciledPanel);
   const label = (isScratch ? scratch : workspace)?.label ?? "Repository";
   const newThreadLabel = isScratch
     ? "New thread without a project"
@@ -786,6 +795,8 @@ export function ChatView({
           pullRequests={pullRequests}
           canAskCodex={reviewDraftTarget.current.canAccept}
           onAskCodex={askCodex}
+          terminalAvailable={terminalAvailable}
+          fileLinks={fileLinks}
         />
       ) : null}
     </div>
