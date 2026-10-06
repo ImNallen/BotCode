@@ -1,10 +1,13 @@
 import { useSyncExternalStore } from "react";
 import { storage } from "../lib/storage";
 import {
+  allocateTerminalId,
+  openPanelTerminal,
   parseTerminalStates,
   selectTerminalState,
   updateTerminalStates,
   type TerminalStates,
+  type TerminalSurfaceId,
   type ThreadTerminalUiState,
 } from "./terminalState";
 
@@ -43,4 +46,12 @@ export function updateTerminalState(
   void (Object.keys(next).length === 0
     ? storage.removeItem(STORAGE_KEY)
     : storage.setItem(STORAGE_KEY, JSON.stringify(next)));
+}
+
+export function createPanelTerminal(scopeKey: string): TerminalSurfaceId {
+  const terminalId = allocateTerminalId(readTerminalState(scopeKey));
+  updateTerminalState(scopeKey, (state) =>
+    openPanelTerminal(state, terminalId),
+  );
+  return `terminal:${terminalId}`;
 }

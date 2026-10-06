@@ -184,9 +184,18 @@ export function isMacCommandChord(
   return isMacPlatform(platform) && event.metaKey && !event.ctrlKey;
 }
 
-export function isTerminalFocused(): boolean {
+export type TerminalFocusOwner = "drawer" | "right-panel";
+
+export function getTerminalFocusOwner(): TerminalFocusOwner | null {
   const activeElement = document.activeElement;
-  if (!(activeElement instanceof HTMLElement)) return false;
-  if (!activeElement.isConnected) return false;
-  return activeElement.closest("[data-terminal-owner]") !== null;
+  if (!(activeElement instanceof HTMLElement)) return null;
+  if (!activeElement.isConnected) return null;
+  const owner = activeElement.closest<HTMLElement>("[data-terminal-owner]")
+    ?.dataset.terminalOwner;
+  if (owner === "drawer" || owner === "right-panel") return owner;
+  return null;
+}
+
+export function isTerminalFocused(): boolean {
+  return getTerminalFocusOwner() !== null;
 }
