@@ -343,7 +343,7 @@ export function Workbench() {
   if (!native)
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm text-muted-foreground">
-        <div className="font-semibold text-2xl text-foreground">Z1 Code</div>
+        <div className="font-semibold text-2xl text-foreground">Bot Code</div>
         <p>This workbench runs in its native macOS window.</p>
         <code className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-foreground">
           pnpm tauri dev

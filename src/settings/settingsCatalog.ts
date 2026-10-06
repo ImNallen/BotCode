@@ -149,7 +149,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
           {
             id: "provider",
             title: "Provider",
-            description: "Z1 Code runs your conversations with Codex.",
+            description: "Bot Code runs your conversations with Codex.",
           },
           {
             id: "approval",

@@ -20,8 +20,8 @@ it("refreshes the active branch picker after a worktree naming event without ref
   const workspaceId = "67ce24cf-70e2-44b3-99f4-53bd8d155d19";
   const otherWorkspaceId = "ba2baf88-7534-4d53-947c-bc2e432a549d";
   const threadId = "058478ab-2c41-40e0-83b7-dd2c71b3c368";
-  const temporaryBranch = "z1code/1234abcd";
-  const generatedBranch = "z1code/fix-login-redirect";
+  const temporaryBranch = "botcode/1234abcd";
+  const generatedBranch = "botcode/fix-login-redirect";
   const checkout = { workspaceId, threadId };
   const otherCheckout = { workspaceId: otherWorkspaceId, threadId };
   const summary = {
@@ -30,7 +30,7 @@ it("refreshes the active branch picker after a worktree naming event without ref
     session: { kind: "ready" },
     checkout: {
       kind: "worktree",
-      path: "/fixture/z1code-1234abcd",
+      path: "/fixture/botcode-1234abcd",
       branch: temporaryBranch,
     },
     pullRequests: {
@@ -128,7 +128,7 @@ it("refreshes the active branch picker after a worktree naming event without ref
       matching.getCurrentResult().data?.branches[0]?.name,
       temporaryBranch,
     );
-    await emit("z1:changed", {
+    await emit("bot:changed", {
       threadId,
       workspaceId,
       revision: 2,
@@ -313,10 +313,10 @@ it("caches pushed usage limits without reading them again", async () => {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     offEvents = await subscribe(client);
-    await emit("z1:usage-limits", { kind: "reported", plan: null });
+    await emit("bot:usage-limits", { kind: "reported", plan: null });
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.deepEqual(client.getQueryData(usageLimitsQuery.queryKey), cached);
-    await emit("z1:usage-limits", pushed);
+    await emit("bot:usage-limits", pushed);
     await Promise.race([
       received,
       new Promise<never>((_, reject) => {

@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/z1-core", "src-tauri"]
-default-members = ["crates/z1-core"]
+members = ["crates/bot-core", "src-tauri"]
+default-members = ["crates/bot-core"]
 resolver = "2"
 
 [workspace.dependencies]

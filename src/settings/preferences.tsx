@@ -253,7 +253,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         setState((state) => ({
           ...state,
           persistenceError:
-            "Changes apply now, but could not be saved. They may be lost when Z1 Code restarts.",
+            "Changes apply now, but could not be saved. They may be lost when Bot Code restarts.",
         })),
     );
   };

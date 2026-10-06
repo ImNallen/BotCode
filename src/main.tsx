@@ -14,7 +14,7 @@ configurePullRequestQueries(client);
 if (native && /Mac/.test(navigator.userAgent))
   document.documentElement.classList.add("macos-desktop");
 const root = document.getElementById("root");
-if (!root) throw new Error("Z1 Code root element is missing.");
+if (!root) throw new Error("Bot Code root element is missing.");
 const mount = () =>
   createRoot(root).render(
     <StrictMode>
@@ -38,7 +38,7 @@ if (native) {
       root.textContent =
         error instanceof Error
           ? error.message
-          : "Z1 Code could not connect to its native runtime.";
+          : "Bot Code could not connect to its native runtime.";
     });
 } else {
   mount();

@@ -589,7 +589,7 @@ export function Sidebar({
 }
 
 // Items and order follow T3's threadActionMenu.logic.ts, limited to the
-// actions Z1 backs.
+// actions Bot Code backs.
 function ThreadContextMenu({
   row: { thread },
   point,
@@ -1080,8 +1080,19 @@ export function SidebarBrand() {
       className="@container/sidebar-header relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 px-3 md:px-0 drag-region"
     >
       <span className="relative z-10 ml-[var(--workspace-titlebar-content-left)] hidden h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md md:flex text-foreground">
+        <svg
+          viewBox="16 16 480 480"
+          aria-hidden="true"
+          className="mr-1.5 size-4 shrink-0"
+        >
+          <circle cx="256" cy="256" r="240" fill="currentColor" />
+          <g className="fill-sidebar">
+            <rect x="146" y="188" width="70" height="124" rx="26" />
+            <rect x="296" y="188" width="70" height="124" rx="26" />
+          </g>
+        </svg>
         <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
-          <span className="shrink-0 font-bold">Z1</span>
+          <span className="shrink-0 font-bold">Bot</span>
           <span className="truncate [text-box:trim-both_cap_alphabetic] text-muted-foreground">
             Code
           </span>

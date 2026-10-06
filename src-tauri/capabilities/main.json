@@ -1,6 +1,6 @@
 {
   "identifier": "main",
-  "description": "Z1 workbench window",
+  "description": "Bot Code workbench window",
   "windows": ["main"],
   "permissions": [
     "core:default",

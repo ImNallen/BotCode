@@ -1,8 +1,8 @@
 // Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/GitActionsControl.logic.ts (MIT).
-// Z1: drops buildGitActionProgressStages (the core reports phases, see gitActions.ts phaseLabel),
-// the thread-branch sync helpers and resolveAutoFeatureBranchName (Z1 has no feature branches).
+// Bot Code: drops buildGitActionProgressStages (the core reports phases, see gitActions.ts phaseLabel),
+// the thread-branch sync helpers and resolveAutoFeatureBranchName (Bot Code has no feature branches).
 
-// Z1: the fields of T3's VcsStatusResult that the rules read, built by gitActions.ts `toVcsStatus`.
+// Bot Code: the fields of T3's VcsStatusResult that the rules read, built by gitActions.ts `toVcsStatus`.
 export interface VcsStatus {
   refName: string | null;
   isDefaultRef: boolean;
@@ -50,7 +50,7 @@ export interface GitActionMenuItem {
 export interface GitQuickAction {
   label: string;
   disabled: boolean;
-  // Z1: no "open_publish", Z1 has no publish flow.
+  // Bot Code: no "open_publish", Bot Code has no publish flow.
   kind: "run_action" | "run_pull" | "open_pr" | "show_hint";
   action?: GitStackedAction;
   hint?: string;
@@ -68,7 +68,7 @@ export type DefaultBranchConfirmableAction =
   | "commit_push"
   | "commit_push_pr";
 
-// Z1: GitHub only, so the change-request terminology is T3's default rather than per provider.
+// Bot Code: GitHub only, so the change-request terminology is T3's default rather than per provider.
 const terminology = { shortLabel: "PR", singular: "pull request" } as const;
 
 export function buildMenuItems(
@@ -220,7 +220,7 @@ export function resolveQuickAction(
           kind: "open_pr",
         };
       }
-      // Z1: no "Publish repository" flow, so the quick action explains what is missing.
+      // Bot Code: no "Publish repository" flow, so the quick action explains what is missing.
       return {
         label: "Push",
         disabled: true,
@@ -248,7 +248,7 @@ export function resolveQuickAction(
         label: "Push",
         disabled: false,
         kind: "run_action",
-        // Z1: T3 runs commit_push on the default ref to avoid its feature-branch path. Z1 has no
+        // Bot Code: T3 runs commit_push on the default ref to avoid its feature-branch path. Bot Code has no
         // feature branches and its commits need a message, so a clean push is a push.
         action: "push",
       };
@@ -284,7 +284,7 @@ export function resolveQuickAction(
         label: "Push",
         disabled: false,
         kind: "run_action",
-        // Z1: push, not commit_push, as above.
+        // Bot Code: push, not commit_push, as above.
         action: "push",
       };
     }
@@ -321,7 +321,7 @@ export function resolveQuickAction(
   };
 }
 
-// Z1: moved here from GitActionsControl.tsx so the ported test covers it.
+// Bot Code: moved here from GitActionsControl.tsx so the ported test covers it.
 export function getMenuActionDisabledReason({
   item,
   gitStatus,
@@ -409,7 +409,7 @@ export function resolveDefaultBranchActionDialogCopy(input: {
   includesCommit: boolean;
 }): DefaultBranchActionDialogCopy {
   const branchLabel = input.branchName;
-  // Z1: the dialog offers only Abort and Continue, so the copy drops T3's
+  // Bot Code: the dialog offers only Abort and Continue, so the copy drops T3's
   // "You can continue on this ref or create a feature ref and run the same action there."
   const suffix = ` on "${branchLabel}".`;
 
