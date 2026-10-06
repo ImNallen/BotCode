@@ -276,6 +276,7 @@ const gitPhase = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pull") }),
 ]);
 const gitOutcome = z.object({
+  warnings: z.array(z.string()).default([]),
   commit: z.object({ sha: z.string(), subject: z.string() }).nullable(),
   push: z
     .object({
@@ -358,7 +359,10 @@ export type PrLookup = z.infer<typeof prLookup>;
 export type GitPhase = z.infer<typeof gitPhase>;
 export type GitOutcome = z.infer<typeof gitOutcome>;
 export type GitAction =
-  | { kind: "commit" | "commit_push" | "commit_push_pr"; message: string }
+  | {
+      kind: "commit" | "commit_push" | "commit_push_pr";
+      message: string | null;
+    }
   | { kind: "push" | "create_pr" | "pull" };
 export type CheckoutScope =
   | "workspace"
@@ -502,6 +506,12 @@ export const ipc = {
       { workspaceId, threadId: threadId ?? null, branch },
       prLookup,
     ),
+  beginCommitMessage: (threadId: string) =>
+    call("begin_commit_message", { threadId }, z.string()),
+  awaitCommitMessage: (job: string) =>
+    call("await_commit_message", { job }, z.string()),
+  cancelCommitMessage: (job: string) =>
+    call("cancel_commit_message", { job }, z.null()),
   runGitAction: (
     { workspaceId }: CheckoutRef,
     originThreadId: string,

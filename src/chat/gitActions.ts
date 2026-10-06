@@ -197,6 +197,7 @@ export function codexBusy(
 export interface Pending {
   target: GitTarget;
   message?: string;
+  composed?: boolean;
   confirmed?: boolean;
 }
 
@@ -229,7 +230,7 @@ export function nextStep(pending: Pending, vcs: VcsStatus): Step {
 }
 
 function toAction(
-  { target, message }: Pending,
+  { target, message, composed }: Pending,
   vcs: VcsStatus,
 ): GitAction | null {
   switch (target) {
@@ -245,7 +246,7 @@ function toAction(
       break;
   }
   const text = message?.trim();
-  return text ? { kind: target, message: text } : null;
+  return text || composed ? { kind: target, message: text || null } : null;
 }
 
 const commitLabels: Partial<Record<GitTarget, string>> = {
@@ -274,7 +275,7 @@ export function phaseLabel(phase: GitPhase): string {
 export type ToastCta =
   | { kind: "none" }
   | { kind: "open_pr"; label: "View PR"; url: string }
-  | { kind: "run"; label: "Push" | "Create PR"; target: GitTarget };
+  | { kind: "run"; label: "Commit" | "Push" | "Create PR"; target: GitTarget };
 
 export interface GitToast {
   type: "loading" | "success" | "error" | "info";
@@ -323,20 +324,29 @@ export function outcomeToast(
       return {
         type: "error",
         title: failure.phase.kind === "pull" ? "Pull failed" : "Action failed",
-        description: failure.error.message,
-        cta: { kind: "none" },
+        description: [failure.error.message, ...outcome.warnings].join(" "),
+        cta:
+          failure.error.code === "commit_generation"
+            ? { kind: "run", label: "Commit", target: "commit" }
+            : { kind: "none" },
       };
     }
     return {
       type: "error",
       title: landed.title,
-      description: `${failedStep[failure.phase.kind]} failed: ${failure.error.message}`,
+      description: [
+        `${failedStep[failure.phase.kind]} failed: ${failure.error.message}`,
+        ...outcome.warnings,
+      ].join(" "),
       cta: { kind: "none" },
     };
   }
   return {
     type: "success",
     ...(landed ?? { title: "Done" }),
+    ...(outcome.warnings.length > 0
+      ? { description: outcome.warnings.join(" ") }
+      : {}),
     cta: completionCta(outcome, before, gh),
   };
 }

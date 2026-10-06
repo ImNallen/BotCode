@@ -689,9 +689,18 @@ pub enum GhProblem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GitAction {
-    Commit { message: CommitMessage },
-    CommitPush { message: CommitMessage },
-    CommitPushPr { message: CommitMessage },
+    Commit {
+        #[serde(default)]
+        message: Option<CommitMessage>,
+    },
+    CommitPush {
+        #[serde(default)]
+        message: Option<CommitMessage>,
+    },
+    CommitPushPr {
+        #[serde(default)]
+        message: Option<CommitMessage>,
+    },
     Push,
     CreatePr,
     Pull,
@@ -744,6 +753,8 @@ pub struct GitOutcome {
     pub pr: Option<PrOpened>,
     pub pull: Option<Pulled>,
     pub failure: Option<GitFailure>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

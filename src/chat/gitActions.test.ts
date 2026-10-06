@@ -356,6 +356,23 @@ describe("nextStep", () => {
     );
   });
 
+  it("submitting an empty message advances to an automatic commit without reopening the dialog", () => {
+    assert.deepEqual(
+      nextStep(
+        { target: "commit_push_pr", composed: true, message: "  " },
+        feature,
+      ),
+      {
+        kind: "run",
+        action: { kind: "commit_push_pr", message: null },
+      },
+    );
+    assert.equal(
+      nextStep({ target: "commit_push", composed: true }, main).kind,
+      "confirm",
+    );
+  });
+
   it("runs the stacked commit with the trimmed message on a feature branch", () => {
     assert.deepEqual(
       nextStep({ target: "commit_push_pr", message: "  feat: x\n" }, feature),
@@ -453,6 +470,7 @@ describe("phaseLabel", () => {
 describe("outcomeToast", () => {
   function outcome(fields: Partial<GitOutcome>): GitOutcome {
     return {
+      warnings: [],
       commit: null,
       push: null,
       pr: null,
@@ -461,6 +479,44 @@ describe("outcomeToast", () => {
       ...fields,
     };
   }
+  it("shows a pull request generation fallback even if PR creation then fails", () => {
+    const warning =
+      "Could not generate pull request text. Used GitHub CLI's commit-based title and body.";
+    const toast = outcomeToast(
+      outcome({
+        warnings: [warning],
+        failure: {
+          phase: { kind: "pr" },
+          error: { code: "gh", message: "Creation refused" },
+        },
+      }),
+      toVcsStatus(status({}, dirty), undefined),
+      undefined,
+    );
+    assert.equal(toast.description, `Creation refused ${warning}`);
+  });
+
+  it("offers a commit dialog retry when an automatic message fails", () => {
+    const toast = outcomeToast(
+      outcome({
+        failure: {
+          phase: { kind: "commit" },
+          error: {
+            code: "commit_generation",
+            message: "Enter a commit message",
+          },
+        },
+      }),
+      toVcsStatus(status({}, dirty), undefined),
+      undefined,
+    );
+    assert.deepEqual(toast.cta, {
+      kind: "run",
+      label: "Commit",
+      target: "commit",
+    });
+  });
+
   const feature = toVcsStatus(
     status({ aheadOfBase: 1, upstream: tracking(1) }),
     undefined,

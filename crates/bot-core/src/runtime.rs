@@ -1,6 +1,7 @@
 mod naming;
 mod pr_review;
 mod pull_requests;
+mod writing;
 use crate::pr_review::*;
 use crate::pull_requests::{PrLinkSource, PullRequestKey, ThreadPrSummary};
 use crate::{
@@ -152,6 +153,9 @@ fn not_repository() -> AppError {
     )
 }
 enum Command {
+    BeginCommitPreview(ThreadId, Reply<String>),
+    AwaitCommitPreview(String, Reply<String>),
+    CancelCommitPreview(String, Reply<()>),
     List(Reply<Vec<Workspace>>),
     PrList(ThreadId, bool, Reply<ThreadPrSummary>),
     PrLink(ThreadId, PullRequestKey, Reply<ThreadPrSummary>),
@@ -290,6 +294,7 @@ impl App {
                     work
                 },
                 naming: naming::Naming::default(),
+                writing: writing::Writing::default(),
                 git_jobs: tokio::task::JoinSet::new(),
                 config,
                 store,
@@ -558,6 +563,18 @@ impl App {
             .await
             .map_err(|e| AppError::new("repository", e))??;
         Ok(crate::pull_requests::current_branch(&self.gh, &root, &branch).await)
+    }
+    pub async fn begin_commit_message(&self, thread: ThreadId) -> Result<String> {
+        self.call(|reply| Command::BeginCommitPreview(thread, reply))
+            .await
+    }
+    pub async fn await_commit_message(&self, job: String) -> Result<String> {
+        self.call(|reply| Command::AwaitCommitPreview(job, reply))
+            .await
+    }
+    pub async fn cancel_commit_message(&self, job: String) -> Result<()> {
+        self.call(|reply| Command::CancelCommitPreview(job, reply))
+            .await
     }
     /// Runs a Git action on a thread's checkout, holding it against turns and other mutations.
     /// `Err` means the action never started. `progress` hears each step as it starts.
@@ -996,6 +1013,7 @@ struct GitCompletion {
 }
 struct Owner {
     naming: naming::Naming,
+    writing: writing::Writing,
     prs: PrWork,
     review_work: ReviewWork,
     git_jobs: tokio::task::JoinSet<GitCompletion>,
@@ -1075,6 +1093,7 @@ impl Owner {
             if self.leases.contains_key(&root) {
                 return Err(hold.lease_refusal());
             }
+            self.cancel_commit_previews(Some(&root));
             self.invalidate_names(&root);
             self.held.insert(root.clone(), hold);
             Ok(root)
@@ -1129,6 +1148,7 @@ impl Owner {
         }
         let removed: HashSet<ThreadId> = threads.iter().map(|t| t.id.clone()).collect();
         self.store.remove_workspace(id)?;
+        self.cancel_thread_commit_previews(&removed);
         for id in &removed {
             self.cancel_name(id);
         }
@@ -1222,6 +1242,7 @@ impl Owner {
                 "the thread changed since the sweep began",
             ));
         }
+        self.cancel_commit_previews(Some(&candidate.path));
         self.invalidate_names(&candidate.path);
         self.held.insert(candidate.path.clone(), Hold::Cleanup);
         Ok(())
@@ -1326,6 +1347,9 @@ impl Owner {
                         _=>{}
                     }
                 }
+                Some(done)=self.writing.active.join_next(), if !self.writing.active.is_empty()=>{
+                    self.finish_commit_preview(done);
+                }
                 Some(done)=self.naming.active.join_next(), if !self.naming.active.is_empty()=>{
                     self.finish_name(done);
                 }
@@ -1345,6 +1369,7 @@ impl Owner {
                     if let Err(error)=self.complete(done).await {self.lose(&error.message).await;}
                 }
                 _=tick.tick()=>{
+                    self.expire_commit_previews();
                     self.apply_ready_names();
                     self.poll_prs();
                     for id in self.dirty.clone(){
@@ -1367,6 +1392,7 @@ impl Owner {
                 git_shutdown = Err(error);
             }
         }
+        self.stop_commit_previews().await;
         self.stop_names().await;
         let review_shutdown = self.stop_reviews().await;
         let pr_shutdown = self.stop_pr_jobs().await;
@@ -1383,6 +1409,15 @@ impl Owner {
     }
     async fn command(&mut self, command: Command) {
         match command {
+            Command::BeginCommitPreview(thread, reply) => {
+                let result = self.begin_commit_preview(thread);
+                let _ = reply.send(result);
+            }
+            Command::AwaitCommitPreview(job, reply) => self.await_commit_preview(job, reply),
+            Command::CancelCommitPreview(job, reply) => {
+                self.cancel_commit_preview(&job);
+                let _ = reply.send(Ok(()));
+            }
             Command::PrList(id, refresh, reply) => {
                 let result = if refresh {
                     self.refresh_prs(&id, true, PrLinkSource::BranchDiscovery)
@@ -1406,6 +1441,11 @@ impl Owner {
                         let _ = reply.send(Err(error));
                     }
                     Ok(root) => {
+                        let model = thread
+                            .as_ref()
+                            .and_then(|id| self.threads.get(id))
+                            .and_then(|t| self.resolve_model(&t.settings))
+                            .map(str::to_owned);
                         let origin = thread.map(|id| {
                             let generation = self.pr_generation(&id);
                             (id, generation)
@@ -1414,6 +1454,8 @@ impl Owner {
                             root: root.clone(),
                             gh: self.config.gh_binary.clone(),
                             network: self.config.network_timeout,
+                            codex: self.config.codex_binary.clone(),
+                            model,
                             progress,
                         };
                         self.git_jobs.spawn(async move {
@@ -1904,6 +1946,7 @@ impl Owner {
         }
         t.revision += 1;
         self.store.accept(&t, request_id, &input, &receipt)?;
+        self.cancel_commit_previews(Some(&root));
         self.leases.insert(root, t.id.clone());
         let hint = self.thread_hint(&t);
         let _ = self.changes.send(hint);
@@ -2285,6 +2328,7 @@ impl Owner {
     }
     async fn lose(&mut self, reason: &str) {
         self.cancel_names();
+        self.cancel_commit_previews(None);
         if let Some(provider) = self.provider.take() {
             let _ = provider.terminate().await;
         }
