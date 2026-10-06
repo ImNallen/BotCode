@@ -751,6 +751,11 @@ export function ChatView({
                           />
                         ) : null
                       }
+                      contextUsage={
+                        preferences.contextWindowMeter
+                          ? (thread?.context ?? null)
+                          : null
+                      }
                       disabled={Boolean(approval)}
                       context={context}
                       settings={settings}

@@ -157,6 +157,12 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             description:
               "Choose Supervised, Auto-accept edits, Auto, or Full access in each conversation composer.",
           },
+          {
+            id: "context-window-indicator",
+            title: "Context window indicator",
+            description:
+              "Shows context window usage as a circular indicator in the composer.",
+          },
         ],
       },
       {
@@ -210,7 +216,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "restore",
             title: "Restore defaults",
             description:
-              "Reset appearance, font sizes, storage cleanup, new thread defaults and auto-settle, including project overrides, on this device.",
+              "Reset appearance, font sizes, the context window indicator, storage cleanup, new thread defaults and auto-settle, including project overrides, on this device.",
           },
         ],
       },

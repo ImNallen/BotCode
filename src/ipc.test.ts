@@ -265,3 +265,45 @@ it("attaches a terminal, parses its events and chunks large writes", async () =>
     else Reflect.deleteProperty(globalThis, "window");
   }
 });
+
+it("reads a thread saved before context usage as having none", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: Object.assign(new EventTarget(), { crypto: globalThis.crypto }),
+  });
+  const snapshot = {
+    id: "058478ab-2c41-40e0-83b7-dd2c71b3c368",
+    workspaceId: "67ce24cf-70e2-44b3-99f4-53bd8d155d19",
+    title: "Fixture",
+    nativeThreadId: null,
+    revision: 1,
+    session: { kind: "ready" },
+    settings: {
+      model: null,
+      effort: null,
+      permissionMode: "approval-required",
+    },
+    checkout: { kind: "local" },
+    turns: [],
+    approvals: [],
+    diagnostic: null,
+  };
+  const context = {
+    usedTokens: 20575,
+    maxTokens: 258400,
+    totalProcessedTokens: 41150,
+  };
+  let reply: unknown = snapshot;
+  mockIPC(() => reply);
+  try {
+    assert.equal((await ipc.thread(snapshot.id)).context, null);
+    reply = { ...snapshot, context };
+    assert.deepEqual((await ipc.thread(snapshot.id)).context, context);
+  } finally {
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});

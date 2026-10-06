@@ -113,6 +113,11 @@ const modelOption = z.object({
     z.object({ reasoningEffort: z.string(), description: z.string() }),
   ),
 });
+const contextUsage = z.object({
+  usedTokens: z.number(),
+  maxTokens: z.number().nullable(),
+  totalProcessedTokens: z.number().nullable(),
+});
 const checkout = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("local") }),
   z.object({
@@ -158,6 +163,7 @@ const thread = z.object({
   ),
   approvals: z.array(approval),
   diagnostic: z.string().nullable(),
+  context: contextUsage.nullable().default(null),
 });
 const threadSummary = z.object({
   pullRequests: threadPrSummary.default({
@@ -306,6 +312,7 @@ export type WorkspaceView = z.infer<typeof workspaceView>;
 export type Thread = z.infer<typeof thread>;
 export type SessionSettings = z.infer<typeof settings>;
 export type ModelOption = z.infer<typeof modelOption>;
+export type ContextUsage = z.infer<typeof contextUsage>;
 export type Approval = z.infer<typeof approval>;
 export type Item = z.infer<typeof item>;
 export type ApprovalDecision = "accept" | "decline" | "cancel";
