@@ -37,6 +37,7 @@ export const builtInProject: ProjectValues = {
 const storageCleanupSchema = z.object({
   worktreeAfterDays: z.number().int().min(1).max(3650).nullable(),
   worktreeUnchanged: z.boolean(),
+  worktreeOnDelete: z.boolean(),
 });
 export type StorageCleanup = z.infer<typeof storageCleanupSchema>;
 
@@ -64,7 +65,11 @@ const defaults: Preferences = {
   favoriteModels: [],
   ...builtInProject,
   projectOverrides: {},
-  storageCleanup: { worktreeAfterDays: null, worktreeUnchanged: false },
+  storageCleanup: {
+    worktreeAfterDays: null,
+    worktreeUnchanged: false,
+    worktreeOnDelete: false,
+  },
 };
 const storageKey = "z1:preferences:v1";
 let fileText: string | null | Error = null;
@@ -218,6 +223,7 @@ function readPreferences(): PreferenceState {
           : defaults.sidebarAutoSettleAfterDays,
         projectOverrides,
         storageCleanup: {
+          worktreeOnDelete: storageCleanup.worktreeOnDelete === true,
           worktreeAfterDays: worktreeAfterDays.success
             ? worktreeAfterDays.data
             : defaults.storageCleanup.worktreeAfterDays,

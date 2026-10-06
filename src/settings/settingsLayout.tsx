@@ -53,18 +53,21 @@ export function SettingsRow({
   inheritance,
   resetAction,
   disabled = false,
+  onContextMenu,
 }: {
   id: string;
-  title: string;
+  title: ReactNode;
   description: string;
   control: ReactNode;
   inheritance?: ReactNode;
   resetAction?: ReactNode;
   disabled?: boolean;
+  onContextMenu?: React.MouseEventHandler<HTMLDivElement>;
 }) {
   return (
     <div
       id={id}
+      onContextMenu={onContextMenu}
       tabIndex={-1}
       aria-disabled={disabled || undefined}
       data-slot="settings-row"

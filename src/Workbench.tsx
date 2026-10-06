@@ -139,10 +139,14 @@ export function Workbench() {
   });
   const openSummary = views
     .flatMap((query) => query.data?.threads ?? [])
-    .find((thread) => thread.id === selection.thread);
+    .find(
+      (thread) =>
+        thread.id === selection.thread && thread.archivedAtMs === null,
+    );
   const arrange = useCallback(async (threadId: string, action: Arrange) => {
     try {
       await ipc.arrange(threadId, action);
+      setError(undefined);
       return true;
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));

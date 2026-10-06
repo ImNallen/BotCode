@@ -205,6 +205,8 @@ const threadSummary = z.object({
   title: z.string(),
   session,
   checkout,
+  createdAtMs: z.number().nullable().default(null),
+  archivedAtMs: z.number().nullable().default(null),
   updatedAtMs: z.number().nullable(),
   awaitingApproval: z.boolean(),
   pinnedAtMs: z.number().nullable(),
@@ -350,7 +352,16 @@ export type Item = z.infer<typeof item>;
 export type ImageAttachment = z.infer<typeof imageAttachment>;
 export type ApprovalDecision = "accept" | "decline" | "cancel";
 export type Arrange =
-  | { kind: "pin" | "unpin" | "settle" | "unsettle" | "wake" }
+  | {
+      kind:
+        | "pin"
+        | "unpin"
+        | "settle"
+        | "unsettle"
+        | "wake"
+        | "archive"
+        | "unarchive";
+    }
   | { kind: "snooze"; untilMs: number };
 export type Checkout = z.infer<typeof checkout>;
 export type NewCheckout =
@@ -629,6 +640,20 @@ export const ipc = {
   interrupt: (threadId: string) => call("interrupt", { threadId }, z.null()),
   arrange: (threadId: string, action: Arrange) =>
     call("arrange_thread", { threadId, action }, z.null()),
+  threadSummaries: (workspaceId: string) =>
+    call("list_thread_summaries", { workspaceId }, z.array(threadSummary)),
+  renameThread: (threadId: string, title: string) =>
+    call("rename_thread", { threadId, title }, thread),
+  deleteThread: (threadId: string) =>
+    call(
+      "delete_thread",
+      { threadId },
+      z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("not_requested") }),
+        z.object({ kind: z.literal("removed") }),
+        z.object({ kind: z.literal("retained"), reason: z.string() }),
+      ]),
+    ),
   uiState: () => call("ui_state", {}, z.record(z.string(), z.string())),
   setUiState: (key: string, value: string | null) =>
     call("set_ui_state", { key, value }, z.null()),
@@ -664,6 +689,9 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       .safeParse(event.payload);
     if (hint.success) {
       const { summary } = hint.data;
+      void client.invalidateQueries({
+        queryKey: ["thread-summaries", hint.data.workspaceId],
+      });
       client.setQueryData(
         ["thread-prs", hint.data.threadId],
         summary.pullRequests,

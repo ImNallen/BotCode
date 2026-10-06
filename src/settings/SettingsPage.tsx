@@ -38,6 +38,7 @@ const shortcuts: Record<string, string | undefined> = {
 import { cn } from "../lib/cn";
 import { ProjectSettingRow } from "./ProjectSettingRow";
 import { usePreferences } from "./preferences";
+import { ArchivedThreadsPanel } from "./ArchivedThreadsPanel";
 import { ProjectsSettings } from "./ProjectsSettings";
 import { RetentionControl } from "./RetentionControl";
 import {
@@ -380,6 +381,21 @@ export function SettingsPage() {
         />
       );
     }
+    if (id === "worktree-on-delete")
+      return (
+        <Switch
+          aria-label="Delete worktrees with deleted threads"
+          checked={preferences.storageCleanup.worktreeOnDelete}
+          onCheckedChange={(worktreeOnDelete) =>
+            update({
+              storageCleanup: {
+                ...preferences.storageCleanup,
+                worktreeOnDelete,
+              },
+            })
+          }
+        />
+      );
     if (id === "worktree-after-days")
       return (
         <RetentionControl
@@ -502,29 +518,27 @@ export function SettingsPage() {
               {persistenceError}
             </p>
           ) : null}
-          {category.section === "projects"
-            ? scope && (
-                <ProjectsSettings scope={scope} workspaces={workspaces} />
-              )
-            : category.groups.map((group) => {
-                const rows = visibleRows(group, scope);
-                if (rows === undefined) return null;
-                return (
-                  <SettingsGroup
-                    key={group.id}
-                    id={group.id}
-                    title={group.title}
-                  >
-                    {rows.length > 0 ? (
-                      rows.map(row)
-                    ) : (
-                      <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
-                        This project is no longer available.
-                      </p>
-                    )}
-                  </SettingsGroup>
-                );
-              })}
+          {category.section === "archived" ? (
+            <ArchivedThreadsPanel />
+          ) : category.section === "projects" ? (
+            scope && <ProjectsSettings scope={scope} workspaces={workspaces} />
+          ) : (
+            category.groups.map((group) => {
+              const rows = visibleRows(group, scope);
+              if (rows === undefined) return null;
+              return (
+                <SettingsGroup key={group.id} id={group.id} title={group.title}>
+                  {rows.length > 0 ? (
+                    rows.map(row)
+                  ) : (
+                    <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
+                      This project is no longer available.
+                    </p>
+                  )}
+                </SettingsGroup>
+              );
+            })
+          )}
         </div>
       </div>
     </div>

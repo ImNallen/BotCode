@@ -55,3 +55,11 @@ export function createPanelTerminal(scopeKey: string): TerminalSurfaceId {
   );
   return `terminal:${terminalId}`;
 }
+
+export function forgetThreadTerminals(threadId: string): void {
+  states = Object.fromEntries(
+    Object.entries(current()).filter(([key]) => key !== threadId),
+  );
+  for (const listener of listeners) listener();
+  void storage.setItem(STORAGE_KEY, JSON.stringify(states));
+}
