@@ -149,10 +149,10 @@ pub async fn run_git_action(
 }
 #[tauri::command]
 pub fn open_url(url: String) -> Result<()> {
-    if !url.starts_with("https://") {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err(AppError::new(
             "invalid_url",
-            "Only https links can be opened.",
+            "Only web links can be opened.",
         ));
     }
     let status = std::process::Command::new("/usr/bin/open")
@@ -272,4 +272,62 @@ pub async fn acknowledge_uncertain_update(
     input: AcknowledgeUncertainUpdate,
 ) -> Result<PrChangeResult> {
     app.acknowledge_uncertain_update(thread_id, input).await
+}
+#[tauri::command]
+pub async fn terminal_attach(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    terminal_id: TerminalId,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<TerminalEvent>,
+) -> Result<u64> {
+    app.terminal_attach(
+        workspace_id,
+        thread_id,
+        terminal_id,
+        cols,
+        rows,
+        move |event| {
+            let _ = on_event.send(event);
+        },
+    )
+    .await
+}
+#[tauri::command]
+pub fn terminal_detach(app: State<'_, App>, subscription: u64) {
+    app.terminal_detach(subscription)
+}
+#[tauri::command]
+pub async fn terminal_write(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    terminal_id: TerminalId,
+    data: String,
+) -> Result<()> {
+    app.terminal_write(workspace_id, thread_id, terminal_id, data)
+        .await
+}
+#[tauri::command]
+pub fn terminal_resize(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    terminal_id: TerminalId,
+    cols: u16,
+    rows: u16,
+) -> Result<()> {
+    app.terminal_resize(workspace_id, thread_id, terminal_id, cols, rows)
+}
+#[tauri::command]
+pub async fn terminal_close(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    terminal_id: TerminalId,
+) -> Result<()> {
+    app.terminal_close(workspace_id, thread_id, terminal_id)
+        .await
 }

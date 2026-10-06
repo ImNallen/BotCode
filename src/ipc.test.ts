@@ -5,9 +5,11 @@ import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import {
   checkoutKey,
+  chunkTerminalInput,
   ipc,
   subscribe,
   type Branches,
+  type TerminalEvent,
   type ThreadSummary,
   type WorkspaceView,
 } from "./ipc.ts";
@@ -167,6 +169,96 @@ it("refreshes the active branch picker after a worktree naming event without ref
     offMatching();
     offUnrelated();
     client.clear();
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+it("splits terminal input on code point boundaries within the byte limit", () => {
+  const bytes = (text: string) => new TextEncoder().encode(text).length;
+  assert.deepEqual(chunkTerminalInput("", 4), []);
+  assert.deepEqual(chunkTerminalInput("abcdef", 4), ["abcd", "ef"]);
+  assert.deepEqual(chunkTerminalInput("aé€😀", 4), ["aé", "€", "😀"]);
+  const paste = "é".repeat(40_000);
+  const chunks = chunkTerminalInput(paste);
+  assert.deepEqual(chunks.map(bytes), [65536, 14464]);
+  assert.equal(chunks.join(""), paste);
+});
+
+it("attaches a terminal, parses its events and chunks large writes", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: Object.assign(new EventTarget(), { crypto: globalThis.crypto }),
+  });
+  const calls: Array<[string, Record<string, unknown>]> = [];
+  let channelId: number | undefined;
+  mockIPC((command, payload) => {
+    const args = payload as Record<string, unknown>;
+    if (command === "terminal_attach") {
+      channelId = (args.onEvent as { id: number }).id;
+      const { onEvent: _channel, ...rest } = args;
+      calls.push([command, rest]);
+      return 7;
+    }
+    calls.push([command, { ...args, data: String(args.data).length }]);
+    return null;
+  });
+  const target = { workspaceId: "ws", threadId: null, terminalId: "term-1" };
+  const events: TerminalEvent[] = [];
+  try {
+    const subscription = await ipc.terminalAttach(
+      target,
+      { cols: 2000, rows: 40.4 },
+      (event) => events.push(event),
+    );
+    assert.equal(subscription, 7);
+    const run = (
+      window as unknown as {
+        __TAURI_INTERNALS__: {
+          runCallback: (id: number, data: unknown) => void;
+        };
+      }
+    ).__TAURI_INTERNALS__.runCallback;
+    assert.ok(channelId !== undefined);
+    run(channelId, { index: 0, message: { type: "snapshot", history: "$ " } });
+    run(channelId, { index: 1, message: { type: "bogus" } });
+    run(channelId, { index: 2, message: { type: "output", data: "ls" } });
+    run(channelId, { index: 3, message: { type: "exited", exitCode: null } });
+    assert.deepEqual(events, [
+      { type: "snapshot", history: "$ " },
+      { type: "output", data: "ls" },
+      { type: "exited", exitCode: null },
+    ]);
+    await ipc.terminalWrite(target, "x".repeat(65537));
+    assert.deepEqual(calls, [
+      [
+        "terminal_attach",
+        {
+          workspaceId: "ws",
+          threadId: null,
+          terminalId: "term-1",
+          cols: 1000,
+          rows: 40,
+        },
+      ],
+      [
+        "terminal_write",
+        {
+          workspaceId: "ws",
+          threadId: null,
+          terminalId: "term-1",
+          data: 65536,
+        },
+      ],
+      [
+        "terminal_write",
+        { workspaceId: "ws", threadId: null, terminalId: "term-1", data: 1 },
+      ],
+    ]);
+  } finally {
     clearMocks();
     if (previousWindow)
       Object.defineProperty(globalThis, "window", previousWindow);

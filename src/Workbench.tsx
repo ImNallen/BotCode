@@ -36,6 +36,8 @@ import { ChatView } from "./chat/ChatView";
 import type { Surface } from "./panel/RightPanel";
 import { Button } from "./ui/controls";
 import { storage } from "./lib/storage";
+import { isMacPlatform } from "./lib/utils";
+import { isTerminalFocused } from "./terminal/terminalKeys";
 
 const SIDEBAR_DEFAULT = 256;
 const SIDEBAR_MIN = 208;
@@ -182,30 +184,38 @@ export function Workbench() {
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if (event.isComposing || event.defaultPrevented) return;
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
+      const terminalFocus = isTerminalFocused();
+      const mod = terminalFocus
+        ? isMacPlatform(navigator.platform)
+          ? event.metaKey
+          : event.ctrlKey
+        : event.metaKey || event.ctrlKey;
+      if (mod && event.key.toLowerCase() === "b") {
         event.preventDefault();
         setSidebarOpen((value) => !value);
       }
-      if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+      if (mod && event.key === ",") {
         event.preventDefault();
         openSettings();
       }
       // Option+N types a dead key on macOS, so match the physical key.
       if (
-        (event.metaKey || event.ctrlKey) &&
+        mod &&
         event.altKey &&
         event.code === "KeyN" &&
-        scratchAvailable
+        scratchAvailable &&
+        !terminalFocus
       ) {
         event.preventDefault();
         void startScratch();
       }
       // As in T3, the shortcut toggles in place and never navigates.
       if (
-        (event.metaKey || event.ctrlKey) &&
+        mod &&
         event.shiftKey &&
         event.key.toLowerCase() === "s" &&
         !settingsOpen &&
+        !terminalFocus &&
         openSummary
       ) {
         event.preventDefault();
@@ -214,10 +224,11 @@ export function Workbench() {
         });
       }
       if (
-        (event.metaKey || event.ctrlKey) &&
+        mod &&
         event.shiftKey &&
         event.key.toLowerCase() === "p" &&
         !settingsOpen &&
+        !terminalFocus &&
         openSummary
       ) {
         event.preventDefault();

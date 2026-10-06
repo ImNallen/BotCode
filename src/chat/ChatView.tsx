@@ -14,6 +14,7 @@ import {
   FolderPlusIcon,
   Maximize2Icon,
   Minimize2Icon,
+  PanelBottomIcon,
   PanelRightIcon,
 } from "lucide-react";
 import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
@@ -26,7 +27,10 @@ import type {
 } from "../ipc";
 import { cn } from "../lib/cn";
 import { workingSessions } from "../lib/sessions";
-import { newWithoutProjectShortcut } from "../lib/shortcuts";
+import {
+  newWithoutProjectShortcut,
+  terminalToggleShortcut,
+} from "../lib/shortcuts";
 import {
   type CheckoutMode,
   projectSetting,
@@ -66,6 +70,15 @@ import { ApprovalDrawer } from "./ApprovalDrawer";
 import { BranchPicker, startsFromOrigin } from "./BranchPicker";
 import { Composer } from "./Composer";
 import { Timeline } from "./Timeline";
+import { PersistentThreadTerminalDrawer } from "../terminal/ThreadTerminalDrawer";
+import {
+  terminalScopeKey,
+  toggleTerminalOpen,
+} from "../terminal/terminalState";
+import {
+  updateTerminalState,
+  useTerminalState,
+} from "../terminal/terminalStore";
 
 type DraftCheckout = {
   mode: CheckoutMode;
@@ -324,6 +337,9 @@ export function ChatView({
       },
     };
   }, [view]);
+  const terminalAvailable = !(isScratch && !threadId);
+  const terminalScope = terminalScopeKey(workspaceId, threadId ?? null);
+  const terminalOpen = useTerminalState(terminalScope).terminalOpen;
   const label = (isScratch ? scratch : workspace)?.label ?? "Repository";
   const newThreadLabel = isScratch
     ? "New thread without a project"
@@ -471,6 +487,23 @@ export function ChatView({
             className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
             data-panel-layout-controls
           >
+            {terminalAvailable ? (
+              <span className="flex shrink-0">
+                <Toggle
+                  className="shrink-0 [-webkit-app-region:no-drag]"
+                  pressed={terminalOpen}
+                  onClick={() =>
+                    updateTerminalState(terminalScope, toggleTerminalOpen)
+                  }
+                  aria-label="Toggle terminal drawer"
+                  title={`Toggle terminal drawer (${terminalToggleShortcut})`}
+                  variant="ghost"
+                  size="sm"
+                >
+                  <PanelBottomIcon className="size-4" />
+                </Toggle>
+              </span>
+            ) : null}
             <span className="flex shrink-0">
               <Toggle
                 className="shrink-0 [-webkit-app-region:no-drag]"
@@ -557,7 +590,9 @@ export function ChatView({
                   "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
                   panelOpen
                     ? "pr-0"
-                    : "pr-10.25 sm:pr-7.25 @3xl/header-actions:pr-8.25",
+                    : terminalAvailable
+                      ? "pr-19.25 sm:pr-15.25 @3xl/header-actions:pr-16.25"
+                      : "pr-10.25 sm:pr-7.25 @3xl/header-actions:pr-8.25",
                 )}
               >
                 <GitActionsControl
@@ -728,6 +763,16 @@ export function ChatView({
             </div>
           </div>
         </div>
+        {terminalAvailable ? (
+          <PersistentThreadTerminalDrawer
+            key={terminalScope}
+            workspaceId={workspaceId}
+            threadId={threadId ?? null}
+            fontSize={preferences.codeFontSize}
+            fileLinks={fileLinks}
+            onClosed={() => setComposerFocusRequest((current) => current + 1)}
+          />
+        ) : null}
       </div>
       {panelOpen ? (
         <RightPanel

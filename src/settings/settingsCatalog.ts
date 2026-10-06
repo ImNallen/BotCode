@@ -246,7 +246,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "code-font",
             title: "Code font size",
             description:
-              "Set the font size of code blocks, tool output, file previews and diffs.",
+              "Set the font size of code blocks, tool output, file previews, diffs and the terminal.",
           },
         ],
       },
@@ -304,6 +304,46 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             description:
               "Keep the open thread at the top of the sidebar, or unpin it.",
             keywords: "pinned unpin",
+          },
+        ],
+      },
+      {
+        id: "terminal",
+        title: "Terminal",
+        rows: [
+          {
+            id: "toggle-terminal",
+            title: "Toggle terminal drawer",
+            description:
+              "Show or hide the terminal under the conversation, including from inside the terminal.",
+            keywords: "shell console",
+          },
+          {
+            id: "split-terminal",
+            title: "Split terminal horizontally",
+            description:
+              "Add a terminal beside the focused one, up to four side by side.",
+            keywords: "shell console",
+          },
+          {
+            id: "split-terminal-vertical",
+            title: "Split terminal vertically",
+            description:
+              "Add a terminal below the focused one, up to four stacked.",
+            keywords: "shell console stacked",
+          },
+          {
+            id: "new-terminal",
+            title: "New terminal",
+            description: "Open another terminal in its own tab.",
+            keywords: "shell console tab",
+          },
+          {
+            id: "close-terminal",
+            title: "Close terminal",
+            description:
+              "Close the focused terminal after confirmation and stop its process.",
+            keywords: "shell console kill",
           },
         ],
       },

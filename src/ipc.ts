@@ -271,6 +271,36 @@ const gitOutcome = z.object({
     })
     .nullable(),
 });
+const terminalEvent = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("snapshot"), history: z.string() }),
+  z.object({ type: z.literal("output"), data: z.string() }),
+  z.object({ type: z.literal("exited"), exitCode: z.number().nullable() }),
+]);
+const TERMINAL_WRITE_MAX_BYTES = 65536;
+export function chunkTerminalInput(
+  data: string,
+  maxBytes = TERMINAL_WRITE_MAX_BYTES,
+): string[] {
+  const chunks: string[] = [];
+  let chunk = "";
+  let bytes = 0;
+  for (const char of data) {
+    const point = char.codePointAt(0) ?? 0;
+    const size =
+      point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    if (bytes + size > maxBytes) {
+      chunks.push(chunk);
+      chunk = "";
+      bytes = 0;
+    }
+    chunk += char;
+    bytes += size;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, Math.round(value)));
 export type Workspace = z.infer<typeof workspace>;
 export type WorkspaceView = z.infer<typeof workspaceView>;
 export type Thread = z.infer<typeof thread>;
@@ -288,6 +318,12 @@ export type NewCheckout =
   | { kind: "worktree"; base: string; fromOrigin: boolean }
   | { kind: "folder"; prompt: string };
 export type CheckoutRef = { workspaceId: string; threadId?: string };
+export type TerminalEvent = z.infer<typeof terminalEvent>;
+export type TerminalTarget = {
+  workspaceId: string;
+  threadId: string | null;
+  terminalId: string;
+};
 export type Branches = z.infer<typeof branches>;
 export type Branch = Branches["branches"][number];
 export type ThreadSummary = z.infer<typeof threadSummary>;
@@ -457,6 +493,59 @@ export const ipc = {
       gitOutcome,
     );
   },
+  terminalAttach: (
+    { workspaceId, threadId, terminalId }: TerminalTarget,
+    size: { cols: number; rows: number },
+    onEvent: (event: TerminalEvent) => void,
+  ) => {
+    const channel = new Channel<unknown>((message) => {
+      const event = terminalEvent.safeParse(message);
+      if (event.success) onEvent(event.data);
+    });
+    return call(
+      "terminal_attach",
+      {
+        workspaceId,
+        threadId,
+        terminalId,
+        cols: clamp(size.cols, 1, 1000),
+        rows: clamp(size.rows, 1, 500),
+        onEvent: channel,
+      },
+      z.number(),
+    );
+  },
+  terminalDetach: (subscription: number) =>
+    call("terminal_detach", { subscription }, z.null()),
+  terminalWrite: async (
+    { workspaceId, threadId, terminalId }: TerminalTarget,
+    data: string,
+  ) => {
+    for (const chunk of chunkTerminalInput(data))
+      await call(
+        "terminal_write",
+        { workspaceId, threadId, terminalId, data: chunk },
+        z.null(),
+      );
+  },
+  terminalResize: (
+    { workspaceId, threadId, terminalId }: TerminalTarget,
+    cols: number,
+    rows: number,
+  ) =>
+    call(
+      "terminal_resize",
+      {
+        workspaceId,
+        threadId,
+        terminalId,
+        cols: clamp(cols, 1, 1000),
+        rows: clamp(rows, 1, 500),
+      },
+      z.null(),
+    ),
+  terminalClose: ({ workspaceId, threadId, terminalId }: TerminalTarget) =>
+    call("terminal_close", { workspaceId, threadId, terminalId }, z.null()),
   openUrl: (url: string) => call("open_url", { url }, z.null()),
   create: (workspaceId: string, checkout: NewCheckout) =>
     call("create_thread", { workspaceId, checkout }, thread),

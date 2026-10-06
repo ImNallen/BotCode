@@ -46,6 +46,7 @@ impl Fixture {
             codex_binary: "/no/codex".into(),
             gh_binary: gh,
             network_timeout: Duration::from_secs(5),
+            shell: None,
         };
         let fixture = Self { dir, root, config };
         fixture.state(json!({}));

@@ -17,6 +17,8 @@ The folder button beside the sidebar search filters threads by project. Its gear
 
 The sidebar's bottom Settings button opens General, Appearance, Keyboard shortcuts, and Storage. Command+, also opens settings. General and Project start with "Applying settings for", followed by a project picker. With **All projects** picked, General sets where new threads start for every project. Pick a repository to override those defaults for that project only. The reset button beside a setting removes the override, and the layers button shows which value applies. While a project is picked, a **Project** page appears at the top of the navigation. Appearance, prompt and code font sizes, and project overrides save on this device. Back or Escape returns to the same conversation and draft.
 
+The terminal toggle in the header, or Command+J, opens a terminal drawer under the conversation in the thread's checkout. Command+D and Shift+Command+D split the focused terminal, Command+N adds one, and Command+W closes it after confirmation. Each thread keeps its own terminals. Their shells keep running while you work in another thread and show their earlier output when you return. Shells do not survive quitting Z1.
+
 The composer has model, reasoning effort, and access menus. Model and effort choices come from the installed Codex. Settings save per conversation and apply to the next turn. Supervised is the default access mode. The other modes are Auto-accept edits, Auto, and Full access.
 
 A new worktree starts on a temporary `z1code/<random>` branch. Its first message generates a short branch name in the background. Z1 applies the name after the first Codex turn ends and keeps the same folder. A branch switch, Git action, cleanup, or later message cancels pending naming. A generation failure keeps the temporary branch and does not interrupt the conversation. Local checkouts and branches you name yourself keep their names.
@@ -58,7 +60,7 @@ Pierre helper packages currently report a theme peer-version warning. Tree, file
 
 ## Roadmap
 
-PR review triage now records local intent and prepares scoped Codex drafts. Automatic verified-fix tracking remains future work. This version does not include a terminal, browser preview, manual worktree management, Cursor, or a provider plugin system.
+PR review triage now records local intent and prepares scoped Codex drafts. Automatic verified-fix tracking remains future work. This version does not include browser preview, manual worktree management, Cursor, or a provider plugin system.
 
 The implementation and recovery decisions are in [docs/architecture.md](docs/architecture.md).
 
