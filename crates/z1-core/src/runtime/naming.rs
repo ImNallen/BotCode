@@ -461,23 +461,39 @@ mod tests {
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(dir.path().join("naming_stall"), "").unwrap();
         std::fs::write(dir.path().join("naming_descendant"), "").unwrap();
-        let (_send, cancel) = watch::channel(false);
-        let error = generate(
-            &binary,
-            None,
-            "work request",
-            cancel,
-            Duration::from_millis(500),
-        )
-        .await
-        .unwrap_err();
+        let (send, cancel) = watch::channel(false);
+        let generation = generate(&binary, None, "work request", cancel, GENERATION_LIMIT);
+        tokio::pin!(generation);
+        let files = ["naming.pid", "naming_child.pid"];
+        let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let pids = loop {
+            tokio::select! {
+                result = &mut generation => panic!("Generation ended before setup: {result:?}"),
+                _ = tokio::time::sleep_until(startup_deadline) => {
+                    let _ = send.send(true);
+                    let _ = generation.await;
+                    panic!("Naming processes did not become ready");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+            let pids = files.map(|file| {
+                std::fs::read_to_string(dir.path().join(file))
+                    .ok()?
+                    .trim()
+                    .parse::<i32>()
+                    .ok()
+                    .filter(|&pid| pid > 0 && unsafe { libc::kill(pid, 0) } == 0)
+            });
+            if let [Some(parent), Some(descendant)] = pids {
+                break [parent, descendant];
+            }
+        };
+        tokio::time::pause();
+        tokio::time::advance(GENERATION_LIMIT).await;
+        tokio::time::resume();
+        let error = generation.await.unwrap_err();
         assert_eq!(error.code, "timeout");
-        for file in ["naming.pid", "naming_child.pid"] {
-            let pid: i32 = std::fs::read_to_string(dir.path().join(file))
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
+        for (file, pid) in files.into_iter().zip(pids) {
             assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "{file} was left alive");
         }
     }
