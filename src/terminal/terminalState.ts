@@ -391,6 +391,12 @@ export function setTerminalOpen(
   return { ...normalized, terminalOpen: open };
 }
 
+export function toggleTerminalOpen(
+  state: ThreadTerminalUiState,
+): ThreadTerminalUiState {
+  return setTerminalOpen(state, !state.terminalOpen);
+}
+
 export function setTerminalHeight(
   state: ThreadTerminalUiState,
   height: number,

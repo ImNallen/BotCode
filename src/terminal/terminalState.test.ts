@@ -16,6 +16,7 @@ import {
   setTerminalOpen,
   splitTerminal,
   terminalScopeKey,
+  toggleTerminalOpen,
   updateTerminalStates,
   type ThreadTerminalUiState,
 } from "./terminalState.ts";
@@ -58,6 +59,15 @@ describe("terminal transitions", () => {
     );
     assert.equal(state.terminalOpen, false);
     assert.deepEqual(state.terminalIds, ["term-1"]);
+  });
+
+  it("toggles the drawer open with a terminal and closed again", () => {
+    const opened = toggleTerminalOpen(initial);
+    assert.equal(opened.terminalOpen, true);
+    assert.deepEqual(opened.terminalIds, ["term-1"]);
+    const closed = toggleTerminalOpen(opened);
+    assert.equal(closed.terminalOpen, false);
+    assert.deepEqual(closed.terminalIds, ["term-1"]);
   });
 
   it("opens and splits terminals into the active group", () => {
