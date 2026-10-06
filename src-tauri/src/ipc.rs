@@ -149,10 +149,10 @@ pub async fn run_git_action(
 }
 #[tauri::command]
 pub fn open_url(url: String) -> Result<()> {
-    if !url.starts_with("https://") {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err(AppError::new(
             "invalid_url",
-            "Only https links can be opened.",
+            "Only web links can be opened.",
         ));
     }
     let status = std::process::Command::new("/usr/bin/open")
