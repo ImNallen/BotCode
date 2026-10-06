@@ -273,6 +273,7 @@ async fn lifecycle_queue_and_auto_merge_stay_pending_and_disable_remains_availab
         thread.clone(),
         uuid::Uuid::new_v4().to_string(),
         "hold".into(),
+        vec![],
     )
     .await
     .unwrap();
@@ -403,6 +404,7 @@ async fn lifecycle_hold_excludes_new_turns_and_old_status_cannot_restore_freshne
             thread.clone(),
             uuid::Uuid::new_v4().to_string(),
             "Must not start".into(),
+            vec![],
         )
         .await
         .unwrap_err();
@@ -523,6 +525,7 @@ async fn settlement_public_all_links_settings_inheritance_and_recent_activity() 
         thread.clone(),
         uuid::Uuid::new_v4().to_string(),
         "new work".into(),
+        vec![],
     )
     .await
     .unwrap();
@@ -642,6 +645,7 @@ async fn linked_pending_start_refuses_lifecycle_and_removed_checkout_adds_no_hol
         other.id.clone(),
         uuid::Uuid::new_v4().to_string(),
         "hold".into(),
+        vec![],
     )
     .await
     .unwrap();

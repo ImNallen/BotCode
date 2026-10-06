@@ -290,14 +290,20 @@ export function Menu({
   );
 }
 
-export function MenuItem({ className, ...props }: ComponentProps<"button">) {
+export function MenuItem({
+  className,
+  variant = "default",
+  ...props
+}: ComponentProps<"button"> & { variant?: "default" | "destructive" }) {
   return (
     <button
       type="button"
       role="menuitem"
       data-slot="menu-item"
+      data-variant={variant}
       className={cn(
         "[&>svg]:-mx-0.5 flex min-h-8 w-full cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1 text-left text-base text-foreground outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-64 sm:min-h-7 sm:text-sm [&>svg:not([class*='opacity-'])]:opacity-80 [&>svg:not([class*='size-'])]:size-4.5 sm:[&>svg:not([class*='size-'])]:size-4 [&>svg:not([class*='text-'])]:text-muted-foreground [&>svg]:pointer-events-none [&>svg]:shrink-0",
+        "data-[variant=destructive]:text-destructive-foreground data-[variant=destructive]:[&>svg:not([class*='text-'])]:text-current",
         className,
       )}
       {...props}

@@ -61,6 +61,8 @@ function workspace(
         title: branch,
         session: { kind: "draft" },
         checkout: { kind: "local" },
+        createdAtMs: null,
+        archivedAtMs: null,
         updatedAtMs: null,
         awaitingApproval: false,
         pinnedAtMs: null,

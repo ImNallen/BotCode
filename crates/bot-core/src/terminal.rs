@@ -4,7 +4,7 @@ use history::History;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsString,
     io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
@@ -188,6 +188,7 @@ struct Registry {
     shell: Option<PathBuf>,
     sessions: Mutex<HashMap<TerminalKey, Arc<Session>>>,
     subscriptions: AtomicU64,
+    blocked: Mutex<HashSet<ThreadId>>,
 }
 impl Drop for Registry {
     fn drop(&mut self) {
@@ -206,6 +207,7 @@ impl Terminals {
             shell,
             sessions: Mutex::new(HashMap::new()),
             subscriptions: AtomicU64::new(1),
+            blocked: Mutex::new(HashSet::new()),
         }))
     }
     fn get(&self, key: &TerminalKey) -> Option<Arc<Session>> {
@@ -219,6 +221,13 @@ impl Terminals {
         sink: Sink,
     ) -> Result<Option<u64>> {
         loop {
+            let blocked = lock(&self.0.blocked);
+            if key.thread.as_ref().is_some_and(|id| blocked.contains(id)) {
+                return Err(AppError::new(
+                    "missing_thread",
+                    "This thread is being deleted.",
+                ));
+            }
             let session = {
                 let mut sessions = lock(&self.0.sessions);
                 match (sessions.get(&key), cwd) {
@@ -240,6 +249,7 @@ impl Terminals {
                     }
                 }
             };
+            drop(blocked);
             session.resize(size)?;
             let mut output = lock(&session.output);
             if output.exited {
@@ -252,6 +262,12 @@ impl Terminals {
             output.subscribers.push((id, sink));
             return Ok(Some(id));
         }
+    }
+    pub(crate) fn block_thread(&self, id: &ThreadId) {
+        lock(&self.0.blocked).insert(id.clone());
+    }
+    pub(crate) fn unblock_thread(&self, id: &ThreadId) {
+        lock(&self.0.blocked).remove(id);
     }
     pub(crate) fn detach(&self, subscription: u64) {
         for session in lock(&self.0.sessions).values() {
@@ -416,6 +432,42 @@ fn shell_environment(
 mod tests {
     use super::*;
 
+    #[test]
+    fn deleted_thread_gate_prevents_stale_checkout_attach() {
+        let directory = tempfile::tempdir().unwrap();
+        let terminals = Terminals::new(Some("/bin/sh".into()));
+        let id = ThreadId::default();
+        let key = TerminalKey {
+            workspace: WorkspaceId::default(),
+            thread: Some(id.clone()),
+            terminal: "term-1".parse().unwrap(),
+        };
+        let sink: Sink = Arc::new(|_| {});
+        let size = TerminalSize::new(80, 24).unwrap();
+        assert!(
+            terminals
+                .attach(key.clone(), Some(directory.path()), size, sink.clone())
+                .unwrap()
+                .is_some()
+        );
+        terminals.block_thread(&id);
+        terminals.close(|key| key.thread.as_ref() == Some(&id));
+        assert!(terminals.get(&key).is_none());
+        assert!(
+            terminals
+                .attach(key.clone(), Some(directory.path()), size, sink.clone())
+                .is_err()
+        );
+        assert!(terminals.get(&key).is_none());
+        terminals.unblock_thread(&id);
+        assert!(
+            terminals
+                .attach(key.clone(), Some(directory.path()), size, sink)
+                .unwrap()
+                .is_some()
+        );
+        terminals.close(|_| true);
+    }
     fn env(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
         pairs
             .iter()

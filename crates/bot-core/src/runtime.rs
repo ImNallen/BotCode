@@ -1,10 +1,13 @@
 mod naming;
+mod thread_actions;
+use thread_actions::DeleteCompletion;
 mod pr_review;
 mod pull_requests;
 mod writing;
 use crate::pr_review::*;
 use crate::pull_requests::{PrLinkSource, PullRequestKey, ThreadPrSummary};
 use crate::{
+    attachments::{self, Attachments},
     cleanup::{self, Candidate, Sweep},
     codex::{Codex, Signal},
     domain::*,
@@ -79,6 +82,7 @@ impl Location {
 /// Why a checkout path is temporarily closed to new turns and switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Hold {
+    Delete,
     Switch,
     Cleanup,
     Restore,
@@ -91,6 +95,7 @@ impl Hold {
         AppError::new(
             "checkout_busy",
             match self {
+                Self::Delete => "Bot Code is deleting a thread in this checkout.",
                 Self::Naming => "Bot Code is naming this worktree branch. Try again in a moment.",
                 Self::PullRequest => {
                     "A pull request operation is using this checkout. Wait for its result."
@@ -116,12 +121,17 @@ impl Hold {
                 "checkout_busy",
                 "Codex is working in this checkout. Git actions return when the turn finishes.",
             ),
-            Self::Switch | Self::Cleanup | Self::Restore | Self::PullRequest | Self::Naming => {
-                turn_running()
-            }
+            Self::Delete
+            | Self::Switch
+            | Self::Cleanup
+            | Self::Restore
+            | Self::PullRequest
+            | Self::Naming => turn_running(),
         }
     }
 }
+/// T3's PROVIDER_SEND_TURN_MAX_ATTACHMENTS.
+const MAX_ATTACHMENTS: usize = 100;
 fn turn_running() -> AppError {
     AppError::new(
         "checkout_busy",
@@ -192,10 +202,19 @@ enum Command {
     UsageLimits(bool, Reply<UsageLimits>),
     Settings(ThreadId, SessionSettings, Reply<ThreadSnapshot>),
     /// The path carries a `Hold::Restore` to release in the same step as acceptance.
-    Submit(ThreadId, String, String, Option<PathBuf>, Reply<Receipt>),
+    Submit(
+        ThreadId,
+        String,
+        String,
+        Vec<ImageAttachment>,
+        Option<PathBuf>,
+        Reply<Receipt>,
+    ),
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
     Interrupt(ThreadId, Reply<()>),
     Arrange(ThreadId, Arrange, Reply<()>),
+    Rename(ThreadId, String, Reply<ThreadSnapshot>),
+    Delete(ThreadId, Reply<DeletedWorktree>),
     AutoSettle(settings::AutoSettle, Reply<()>),
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
@@ -218,6 +237,7 @@ pub struct App {
     wake: Arc<Notify>,
     gh: PathBuf,
     terminals: Terminals,
+    attachments: Attachments,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
@@ -270,6 +290,17 @@ impl App {
             thread.revision += 1;
             store.save(thread)?;
         }
+        // Codex reads images by absolute path.
+        let attachments = Attachments::new(&config.data_dir.canonicalize()?);
+        let referenced = threads
+            .values()
+            .flat_map(|t| &t.turns)
+            .flat_map(|turn| &turn.attachments)
+            .map(|a| a.id.clone())
+            .collect();
+        if let Err(e) = attachments.sweep(&referenced, std::time::SystemTime::now()) {
+            eprintln!("Attachment sweep failed: {}", e.message);
+        }
         let worktrees = config.data_dir.join("worktrees");
         let gh = config.gh_binary.clone();
         let terminals = Terminals::new(config.shell.clone());
@@ -296,6 +327,10 @@ impl App {
                 naming: naming::Naming::default(),
                 writing: writing::Writing::default(),
                 git_jobs: tokio::task::JoinSet::new(),
+                attachments: attachments.clone(),
+                delete_jobs: tokio::task::JoinSet::new(),
+                deleting: HashSet::new(),
+                terminals: terminals.clone(),
                 config,
                 store,
                 workspaces,
@@ -332,6 +367,7 @@ impl App {
             wake: Arc::new(Notify::new()),
             gh,
             terminals,
+            attachments,
         };
         tokio::spawn(Sweeper::from(&app).run(
             app.commands.downgrade(),
@@ -377,6 +413,12 @@ impl App {
         thread: Option<ThreadId>,
     ) -> Result<(Workspace, Location)> {
         self.call(|r| Command::Checkout(id, thread, r)).await
+    }
+    pub async fn list_thread_summaries(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Result<Vec<ThreadSummary>> {
+        self.call(|r| Command::Threads(workspace, r)).await
     }
     pub async fn workspace_view(
         &self,
@@ -663,7 +705,22 @@ impl App {
     ) -> Result<ThreadSnapshot> {
         self.call(|r| Command::Settings(id, settings, r)).await
     }
-    pub async fn submit(&self, id: ThreadId, request_id: String, text: String) -> Result<Receipt> {
+    pub async fn stage_attachment(&self, name: String, bytes: Vec<u8>) -> Result<ImageAttachment> {
+        let attachments = self.attachments.clone();
+        tokio::task::spawn_blocking(move || attachments.stage(&name, &bytes))
+            .await
+            .map_err(|e| AppError::new("attachment", e))?
+    }
+    pub fn read_attachment(&self, file: &str) -> Result<(Vec<u8>, ImageMime)> {
+        self.attachments.read(file)
+    }
+    pub async fn submit(
+        &self,
+        id: ThreadId,
+        request_id: String,
+        text: String,
+        attachments: Vec<ImageAttachment>,
+    ) -> Result<Receipt> {
         let restored = match self.call(|r| Command::ClaimRestore(id.clone(), r)).await? {
             Some(Restore { root, path, branch }) => {
                 let target = path.clone();
@@ -680,7 +737,7 @@ impl App {
             }
             None => None,
         };
-        self.call(|r| Command::Submit(id, request_id, text, restored, r))
+        self.call(|r| Command::Submit(id, request_id, text, attachments, restored, r))
             .await
     }
     pub async fn answer_approval(&self, id: ApprovalId, decision: ApprovalDecision) -> Result<()> {
@@ -688,6 +745,12 @@ impl App {
     }
     pub async fn interrupt(&self, id: ThreadId) -> Result<()> {
         self.call(|r| Command::Interrupt(id, r)).await
+    }
+    pub async fn rename_thread(&self, id: ThreadId, title: String) -> Result<ThreadSnapshot> {
+        self.call(|r| Command::Rename(id, title, r)).await
+    }
+    pub async fn delete_thread(&self, id: ThreadId) -> Result<DeletedWorktree> {
+        self.call(|r| Command::Delete(id, r)).await
     }
     pub async fn arrange(&self, id: ThreadId, action: Arrange) -> Result<()> {
         self.call(|r| Command::Arrange(id, action, r)).await
@@ -1017,6 +1080,10 @@ struct Owner {
     prs: PrWork,
     review_work: ReviewWork,
     git_jobs: tokio::task::JoinSet<GitCompletion>,
+    attachments: Attachments,
+    delete_jobs: tokio::task::JoinSet<DeleteCompletion>,
+    deleting: HashSet<ThreadId>,
+    terminals: Terminals,
     config: RuntimeConfig,
     store: Store,
     workspaces: HashMap<WorkspaceId, Workspace>,
@@ -1161,6 +1228,9 @@ impl Owner {
         Ok(())
     }
     fn thread(&self, id: &ThreadId) -> Result<&ThreadSnapshot> {
+        if self.deleting.contains(id) {
+            return Err(AppError::new("busy", "This thread is being deleted."));
+        }
         self.threads
             .get(id)
             .ok_or_else(|| AppError::new("missing_thread", "Conversation not found."))
@@ -1353,6 +1423,9 @@ impl Owner {
                 Some(done)=self.naming.active.join_next(), if !self.naming.active.is_empty()=>{
                     self.finish_name(done);
                 }
+                Some(Ok(done))=self.delete_jobs.join_next(), if !self.delete_jobs.is_empty()=>{
+                    self.finish_delete(done);
+                }
                 Some(done)=self.git_jobs.join_next(), if !self.git_jobs.is_empty()=>{
                     if let Err(error)=self.finish_git_job(done, true) { eprintln!("Git completion failed: {}", error.message); }
                 }
@@ -1386,6 +1459,9 @@ impl Owner {
             let _ = provider.terminate().await;
         }
         commands.close();
+        while let Some(Ok(done)) = self.delete_jobs.join_next().await {
+            self.finish_delete(done);
+        }
         let mut git_shutdown = Ok(());
         while let Some(completion) = self.git_jobs.join_next().await {
             if let Err(error) = self.finish_git_job(completion, false) {
@@ -1605,6 +1681,14 @@ impl Owner {
                 let _ = reply.send(result);
             }
             Command::Snapshot(id, resume, reply) => {
+                if resume && self.thread(&id).is_ok_and(|thread| thread.archived()) {
+                    let _ = reply.send(Err(AppError::new(
+                        "thread_archived",
+                        "Unarchive this thread first.",
+                    )));
+                    return;
+                }
+
                 // A removed worktree is restored by the next submit, which resumes as usual.
                 let should_resume = resume && self.thread(&id).is_ok_and(|t| {
                     t.native_thread_id.is_some()
@@ -1688,11 +1772,11 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
-            Command::Submit(id, request_id, text, restored, reply) => {
+            Command::Submit(id, request_id, text, attachments, restored, reply) => {
                 if let Some(path) = restored {
                     self.held.remove(&path);
                 }
-                let result = self.accept_submit(&id, &request_id, &text);
+                let result = self.accept_submit(&id, &request_id, &text, attachments);
                 if let Ok((receipt, true)) = &result {
                     self.prepare(Prepare::Submit(id, receipt.turn_id.clone()));
                 }
@@ -1797,22 +1881,34 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
+            Command::Delete(id, reply) => self.begin_delete(id, reply),
+            Command::Rename(id, title, reply) => {
+                let result = (|| {
+                    let mut thread = self.thread(&id)?.clone();
+                    thread.rename(&title)?;
+                    self.install(thread)?;
+                    self.thread(&id).cloned()
+                })();
+                let _ = reply.send(result);
+            }
             Command::Arrange(id, action, reply) => {
                 let result = (|| -> Result<()> {
-                    self.thread(&id)?;
-                    let current = self.thread(&id)?;
+                    let mut thread = self.thread(&id)?.clone();
+                    if matches!(action, Arrange::Archive)
+                        && !self.idle(&thread, thread.root(self.workspace(&thread.workspace_id)?))
+                    {
+                        return Err(AppError::new(
+                            "busy",
+                            "Stop this thread and wait for checkout operations before archiving it.",
+                        ));
+                    }
                     let settled = self.settlement(
-                        current,
-                        self.auto_settle.rules(&current.workspace_id),
+                        &thread,
+                        self.auto_settle.rules(&thread.workspace_id),
                         now_ms(),
                     );
-                    let thread = self.threads.get_mut(&id).unwrap();
-                    let before = (thread.placement, thread.snooze);
-                    let arranged = thread.arrange(action, now_ms(), settled);
-                    if (thread.placement, thread.snooze) != before {
-                        self.commit(&id)?;
-                    }
-                    arranged
+                    thread.arrange(action, now_ms(), settled)?;
+                    self.install(thread)
                 })();
                 let _ = reply.send(result);
             }
@@ -1851,6 +1947,14 @@ impl Owner {
                 let _ = reply.send(Ok(()));
             }
             Command::ClaimRestore(id, reply) => {
+                if self.thread(&id).is_ok_and(|thread| thread.archived()) {
+                    let _ = reply.send(Err(AppError::new(
+                        "thread_archived",
+                        "Unarchive this thread first.",
+                    )));
+                    return;
+                }
+
                 let _ = reply.send(self.claim_restore(&id));
             }
             Command::ReleaseRestore(path, reply) => {
@@ -1865,6 +1969,7 @@ impl Owner {
         id: &ThreadId,
         request_id: &str,
         text: &str,
+        attachments: Vec<ImageAttachment>,
     ) -> Result<(Receipt, bool)> {
         if request_id.is_empty() || request_id.len() > 200 {
             return Err(AppError::new(
@@ -1873,17 +1978,29 @@ impl Owner {
             ));
         }
         let text = text.trim();
-        if text.is_empty() || text.len() > 100_000 {
+        if (text.is_empty() && attachments.is_empty()) || text.len() > 100_000 {
             return Err(AppError::new(
                 "invalid_prompt",
                 "Enter a prompt up to 100,000 bytes.",
             ));
         }
-        let input = serde_json::to_string(&(id, text))?;
+        if attachments.len() > MAX_ATTACHMENTS {
+            return Err(AppError::new(
+                "invalid_attachments",
+                format!("You can attach up to {MAX_ATTACHMENTS} images per message."),
+            ));
+        }
+        let input = serde_json::to_string(&(id, text, &attachments))?;
         if let Some(receipt) = self.store.receipt(request_id, &input)? {
             return Ok((receipt, false));
         }
         let thread = self.thread(id)?;
+        if thread.archived() {
+            return Err(AppError::new(
+                "thread_archived",
+                "Unarchive this thread first.",
+            ));
+        }
         if matches!(
             thread.session,
             SessionState::Connecting | SessionState::Running | SessionState::Interrupting
@@ -1920,6 +2037,23 @@ impl Owner {
         if self.leases.contains_key(&root) {
             return Err(turn_running());
         }
+        for attachment in &attachments {
+            let name = attachment.name.trim();
+            if name.is_empty() || name.chars().count() > attachments::MAX_NAME_CHARS {
+                return Err(AppError::new(
+                    "invalid_attachments",
+                    "Image names must be 1 to 255 characters.",
+                ));
+            }
+            let staged = std::fs::metadata(self.attachments.path(attachment))
+                .is_ok_and(|m| m.is_file() && m.len() == attachment.size_bytes);
+            if !staged {
+                return Err(AppError::new(
+                    "missing_attachment",
+                    format!("'{name}' is no longer available. Attach the image again."),
+                ));
+            }
+        }
         let mut t = thread.clone();
         t.record_activity(self.settlement(&t, self.auto_settle.rules(&t.workspace_id), now_ms()));
         t.latest_user_activity_at_ms = Some(now_ms());
@@ -1933,6 +2067,7 @@ impl Owner {
             settings: Some(t.settings.clone()),
             started_at_ms: Some(now_ms()),
             completed_at_ms: None,
+            attachments,
         };
         let receipt = Receipt {
             turn_id: turn.id.clone(),
@@ -1941,8 +2076,15 @@ impl Owner {
         t.session = SessionState::Connecting;
         t.diagnostic = None;
         t.snooze = None;
-        if t.turns.len() == 1 {
-            t.title = text.chars().take(54).collect()
+        if t.turns.len() == 1 && t.title == "New conversation" {
+            let first = &t.turns[0];
+            t.title = match first.attachments.first() {
+                Some(image) if text.is_empty() => format!("Image: {}", image.name),
+                _ => text.into(),
+            }
+            .chars()
+            .take(54)
+            .collect()
         }
         t.revision += 1;
         self.store.accept(&t, request_id, &input, &receipt)?;
@@ -2198,7 +2340,15 @@ impl Owner {
                                 .find(|v| v.id == turn_id)
                                 .ok_or_else(|| AppError::new("missing_turn", "Turn not found."))?;
                             turn.delivery = Delivery::Sending;
-                            let prompt = turn.prompt.clone();
+                            let mut input = Vec::new();
+                            if !turn.prompt.is_empty() {
+                                input.push(
+                                    json!({"type":"text","text":turn.prompt,"text_elements":[]}),
+                                );
+                            }
+                            input.extend(turn.attachments.iter().map(
+                                |a| json!({"type":"localImage","path":self.attachments.path(a)}),
+                            ));
                             let settings = turn.settings.clone().unwrap_or_default();
                             let (approval_policy, approvals_reviewer, _) =
                                 settings.permission_mode.protocol();
@@ -2211,7 +2361,7 @@ impl Owner {
                             })?;
                             let done = self.done.clone();
                             tokio::spawn(async move {
-                                let result=provider.request("turn/start",json!({"threadId":native,"clientUserMessageId":turn_id.to_string(),"input":[{"type":"text","text":prompt,"text_elements":[]}],"model":model,"effort":effort,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandboxPolicy":sandbox_policy})).await;
+                                let result=provider.request("turn/start",json!({"threadId":native,"clientUserMessageId":turn_id.to_string(),"input":input,"model":model,"effort":effort,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandboxPolicy":sandbox_policy})).await;
                                 let _ = done
                                     .send(Completion::Started {
                                         epoch,

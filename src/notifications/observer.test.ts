@@ -27,6 +27,8 @@ function summary(
     latestTurn: null,
     pendingApprovalIds: [],
     awaitingApproval: false,
+    createdAtMs: null,
+    archivedAtMs: null,
     updatedAtMs: 0,
     pinnedAtMs: null,
     snoozedUntilMs: null,

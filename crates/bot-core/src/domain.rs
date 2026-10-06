@@ -222,6 +222,84 @@ pub struct Turn {
     pub started_at_ms: Option<u64>,
     #[serde(default)]
     pub completed_at_ms: Option<u64>,
+    #[serde(default)]
+    pub attachments: Vec<ImageAttachment>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageMime {
+    #[serde(rename = "image/png")]
+    Png,
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+    #[serde(rename = "image/gif")]
+    Gif,
+    #[serde(rename = "image/webp")]
+    Webp,
+}
+impl ImageMime {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Gif => "gif",
+            Self::Webp => "webp",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Gif => "image/gif",
+            Self::Webp => "image/webp",
+        }
+    }
+}
+/// The SHA-256 of an attachment's bytes as 64 lowercase hex digits. Parsing rejects anything
+/// else, so an id can never name a path outside the attachments directory.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct AttachmentId(String);
+impl AttachmentId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl std::str::FromStr for AttachmentId {
+    type Err = AppError;
+    fn from_str(s: &str) -> Result<Self> {
+        if s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            Ok(Self(s.into()))
+        } else {
+            Err(AppError::new(
+                "invalid_attachment",
+                "Invalid attachment id.",
+            ))
+        }
+    }
+}
+impl TryFrom<String> for AttachmentId {
+    type Error = AppError;
+    fn try_from(s: String) -> Result<Self> {
+        s.parse()
+    }
+}
+impl From<AttachmentId> for String {
+    fn from(id: AttachmentId) -> Self {
+        id.0
+    }
+}
+impl std::fmt::Display for AttachmentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAttachment {
+    pub id: AttachmentId,
+    pub mime_type: ImageMime,
+    pub name: String,
+    pub size_bytes: u64,
 }
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -316,6 +394,10 @@ pub const AUTO_SETTLE_AFTER_MS: u64 = 3 * 24 * 60 * 60 * 1000;
     rename_all_fields = "camelCase"
 )]
 pub enum Placement {
+    Archived {
+        at_ms: u64,
+        restore: LivePlacement,
+    },
     #[default]
     Auto,
     Kept,
@@ -327,6 +409,41 @@ pub enum Placement {
     Settled {
         at_ms: u64,
     },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum LivePlacement {
+    Auto,
+    Kept,
+    Pinned {
+        at_ms: u64,
+        #[serde(default)]
+        kept: bool,
+    },
+    Settled {
+        at_ms: u64,
+    },
+}
+impl From<LivePlacement> for Placement {
+    fn from(value: LivePlacement) -> Self {
+        match value {
+            LivePlacement::Auto => Self::Auto,
+            LivePlacement::Kept => Self::Kept,
+            LivePlacement::Pinned { at_ms, kept } => Self::Pinned { at_ms, kept },
+            LivePlacement::Settled { at_ms } => Self::Settled { at_ms },
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeletedWorktree {
+    NotRequested,
+    Removed,
+    Retained { reason: String },
 }
 // Ports T3 v0.0.45 snoozedUntil and snoozedAt. Snooze overlays any placement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,6 +465,8 @@ pub enum Arrange {
     Unsettle,
     Snooze { until_ms: u64 },
     Wake,
+    Archive,
+    Unarchive,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -377,6 +496,20 @@ pub struct ThreadSnapshot {
     pub context: Option<ContextUsage>,
 }
 impl ThreadSnapshot {
+    pub fn archived(&self) -> bool {
+        matches!(self.placement, Placement::Archived { .. })
+    }
+    pub fn rename(&mut self, title: &str) -> Result<()> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(AppError::new(
+                "invalid_title",
+                "Thread name cannot be empty.",
+            ));
+        }
+        self.title = title.into();
+        Ok(())
+    }
     pub fn root<'a>(&'a self, workspace: &'a Workspace) -> &'a Path {
         match &self.checkout {
             Checkout::Local => &workspace.root,
@@ -433,20 +566,62 @@ impl ThreadSnapshot {
     }
     // Ports the activity reset of decider.ts: it wakes a settled thread and clears a keep.
     pub fn record_activity(&mut self, settled_at: Option<u64>) {
+        if self.archived() {
+            return;
+        }
         self.materialize_settlement(settled_at);
         self.placement = match self.placement {
             Placement::Settled { .. } | Placement::Kept => Placement::Auto,
             Placement::Pinned { at_ms, .. } => Placement::Pinned { at_ms, kept: false },
             Placement::Auto => Placement::Auto,
+            Placement::Archived { .. } => self.placement,
         };
     }
     // Ports the pin, settle and snooze rules of orchestration/decider.ts.
     pub fn arrange(&mut self, action: Arrange, now: u64, settled_at: Option<u64>) -> Result<()> {
+        if matches!(action, Arrange::Unarchive) {
+            if let Placement::Archived { restore, .. } = self.placement {
+                self.placement = restore.into();
+            }
+            return Ok(());
+        }
+        if self.archived() {
+            return Err(AppError::new(
+                "thread_archived",
+                "Unarchive this thread first.",
+            ));
+        }
+        if matches!(action, Arrange::Archive) {
+            if self.approval_open()
+                || matches!(
+                    self.session,
+                    SessionState::Connecting | SessionState::Running | SessionState::Interrupting
+                )
+            {
+                return Err(AppError::new(
+                    "busy",
+                    "Stop this thread before archiving it.",
+                ));
+            }
+            let restore = match self.placement {
+                Placement::Auto => LivePlacement::Auto,
+                Placement::Kept => LivePlacement::Kept,
+                Placement::Pinned { at_ms, kept } => LivePlacement::Pinned { at_ms, kept },
+                Placement::Settled { at_ms } => LivePlacement::Settled { at_ms },
+                Placement::Archived { .. } => unreachable!(),
+            };
+            self.placement = Placement::Archived {
+                at_ms: now,
+                restore,
+            };
+            self.snooze = None;
+            return Ok(());
+        }
         self.materialize_settlement(settled_at);
         match action {
             Arrange::Pin => {
                 self.placement = match self.placement {
-                    Placement::Pinned { .. } => self.placement,
+                    Placement::Archived { .. } | Placement::Pinned { .. } => self.placement,
                     Placement::Settled { .. } | Placement::Kept => Placement::Pinned {
                         at_ms: now,
                         kept: true,
@@ -508,6 +683,7 @@ impl ThreadSnapshot {
                 self.snooze = Some(Snooze { until_ms, at_ms });
             }
             Arrange::Wake => self.snooze = None,
+            Arrange::Archive | Arrange::Unarchive => unreachable!(),
         }
         Ok(())
     }
@@ -529,6 +705,11 @@ impl ThreadSnapshot {
             title: self.title.clone(),
             session: self.session.clone(),
             checkout: self.checkout.clone(),
+            archived_at_ms: match self.placement {
+                Placement::Archived { at_ms, .. } => Some(at_ms),
+                _ => None,
+            },
+            created_at_ms: self.created_at_ms,
             updated_at_ms: self.turns.iter().rev().find_map(|turn| turn.started_at_ms),
             awaiting_approval: self
                 .approvals
@@ -563,6 +744,8 @@ pub struct ThreadSummary {
     pub title: String,
     pub session: SessionState,
     pub checkout: Checkout,
+    pub created_at_ms: Option<u64>,
+    pub archived_at_ms: Option<u64>,
     pub updated_at_ms: Option<u64>,
     pub awaiting_approval: bool,
     pub pinned_at_ms: Option<u64>,

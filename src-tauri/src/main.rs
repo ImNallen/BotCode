@@ -7,6 +7,25 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(notifications::NotificationActions::default())
+        .register_asynchronous_uri_scheme_protocol(
+            "botcode-attachment",
+            |ctx, request, responder| {
+                let app = ctx.app_handle().state::<App>().inner().clone();
+                let file = request.uri().path().trim_start_matches('/').to_owned();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let response = match app.read_attachment(&file) {
+                        Ok((bytes, mime)) => tauri::http::Response::builder()
+                            .header("Content-Type", mime.as_str())
+                            .header("Cache-Control", "private, max-age=31536000, immutable")
+                            .body(bytes),
+                        Err(_) => tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new()),
+                    };
+                    responder.respond(response.expect("static response parts are valid"));
+                });
+            },
+        )
         .setup(|app| {
             notifications::install(app.handle());
             let runtime =
@@ -71,6 +90,7 @@ fn main() {
             ipc::create_thread,
             ipc::thread_snapshot,
             ipc::open_thread,
+            ipc::stage_attachment,
             ipc::submit,
             ipc::list_models,
             ipc::usage_limits,
@@ -78,6 +98,9 @@ fn main() {
             ipc::answer_approval,
             ipc::interrupt,
             ipc::arrange_thread,
+            ipc::rename_thread,
+            ipc::delete_thread,
+            ipc::list_thread_summaries,
             ipc::ui_state,
             ipc::set_ui_state,
             ipc::settings,

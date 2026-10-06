@@ -95,6 +95,7 @@ pub fn write(path: &Path, text: &str) -> Result<()> {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CleanupRules {
+    pub worktree_on_delete: bool,
     pub worktree_after_days: Option<u64>,
     pub worktree_unchanged: bool,
 }
@@ -114,6 +115,7 @@ pub fn cleanup_rules(path: &Path) -> CleanupRules {
         worktree_after_days: rules["worktreeAfterDays"]
             .as_u64()
             .filter(|days| (1..=3650).contains(days)),
+        worktree_on_delete: rules["worktreeOnDelete"].as_bool() == Some(true),
         worktree_unchanged: rules["worktreeUnchanged"].as_bool() == Some(true),
     }
 }

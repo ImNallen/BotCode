@@ -1,6 +1,6 @@
 // Row derivation follows pingdotgg/t3code v0.0.45 components/chat/MessagesTimeline.logic.ts
 // and packages/client-runtime/src/work-log/presentation.ts (MIT).
-import type { Item, Thread } from "../ipc";
+import type { ImageAttachment, Item, Thread } from "../ipc";
 import { formatDuration } from "../lib/time";
 
 type Turn = Thread["turns"][number];
@@ -17,7 +17,13 @@ export type WorkEntry = {
 };
 
 export type TimelineRow =
-  | { kind: "user"; id: string; text: string; at: number | null }
+  | {
+      kind: "user";
+      id: string;
+      text: string;
+      attachments: ImageAttachment[];
+      at: number | null;
+    }
   | { kind: "working"; id: string; startedAtMs: number | null }
   | {
       kind: "fold";
@@ -230,6 +236,7 @@ export function deriveRows(
       kind: "user",
       id: `user:${turn.id}`,
       text: turn.prompt,
+      attachments: turn.attachments,
       at: turn.startedAtMs,
     });
     const list = entries(turn);

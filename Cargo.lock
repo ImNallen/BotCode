@@ -297,6 +297,7 @@ name = "bot-code"
 version = "0.1.0"
 dependencies = [
  "bot-core",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tauri",

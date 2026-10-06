@@ -194,14 +194,40 @@ pub async fn thread_snapshot(app: State<'_, App>, thread_id: ThreadId) -> Result
 pub async fn open_thread(app: State<'_, App>, thread_id: ThreadId) -> Result<ThreadSnapshot> {
     app.open_thread(thread_id).await
 }
+/// The image arrives as the raw request body, so 10 MiB is not JSON-encoded as a number array.
+#[tauri::command]
+pub async fn stage_attachment(
+    app: State<'_, App>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<ImageAttachment> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err(AppError::new(
+            "invalid_request",
+            "Expected the image bytes.",
+        ));
+    };
+    let name = request
+        .headers()
+        .get("x-attachment-name")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            percent_encoding::percent_decode_str(value)
+                .decode_utf8()
+                .ok()
+        })
+        .unwrap_or_default()
+        .into_owned();
+    app.stage_attachment(name, bytes.clone()).await
+}
 #[tauri::command]
 pub async fn submit(
     app: State<'_, App>,
     thread_id: ThreadId,
     request_id: String,
     text: String,
+    attachments: Vec<ImageAttachment>,
 ) -> Result<Receipt> {
-    app.submit(thread_id, request_id, text).await
+    app.submit(thread_id, request_id, text, attachments).await
 }
 #[tauri::command]
 pub async fn answer_approval(
@@ -346,4 +372,25 @@ pub async fn terminal_close(
 ) -> Result<()> {
     app.terminal_close(workspace_id, thread_id, terminal_id)
         .await
+}
+
+#[tauri::command]
+pub async fn rename_thread(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    title: String,
+) -> Result<ThreadSnapshot> {
+    app.rename_thread(thread_id, title).await
+}
+#[tauri::command]
+pub async fn delete_thread(app: State<'_, App>, thread_id: ThreadId) -> Result<DeletedWorktree> {
+    app.delete_thread(thread_id).await
+}
+
+#[tauri::command]
+pub async fn list_thread_summaries(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<ThreadSummary>> {
+    app.list_thread_summaries(workspace_id).await
 }

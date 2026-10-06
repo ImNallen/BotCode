@@ -87,7 +87,7 @@ for line in sys.stdin:
             while True:
                 time.sleep(1)
     elif method == 'turn/start':
-        prompt = params['input'][0]['text']
+        prompt = params['input'][0].get('text', '')
         if prompt == 'lose':
             sys.exit(0)
         active = 'native-' + params['clientUserMessageId']

@@ -8,19 +8,19 @@ The core suite passed 13 tests. The real Codex smoke observed partial streamed t
 
 The native checks used the actual Tauri window, disposable Git repositories, and a separate `Z1_DATA_DIR`.
 
-| Workflow | Observed result |
-| --- | --- |
-| Native folder picker | Opened a real Git repository. |
-| Pierre tree and files | Displayed real paths and syntax-highlighted contents; refresh found a newly created file. |
-| Workspace selection | A second repository displayed its own tree and file contents. |
-| Pierre diffs | Displayed modified and untracked file contents from the actual working copy. |
-| Codex streaming | Partial assistant text appeared while the turn was running. |
-| Stop | The real turn became interrupted and another prompt could run. |
-| Command approval | Decline prevented execution; Allow once ran a reviewed Python print command and showed its output. |
-| Full app restart | Restored four saved turns and continued the same native thread. |
-| Renderer reload | Retained the live run and its file-change approval. |
-| File approval | Displayed and applied the exact one-line patch in the disposable repository; the open file and Git diff refreshed. |
-| Composer | Typed straight quotes remained literal. |
+| Workflow              | Observed result                                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Native folder picker  | Opened a real Git repository.                                                                                      |
+| Pierre tree and files | Displayed real paths and syntax-highlighted contents; refresh found a newly created file.                          |
+| Workspace selection   | A second repository displayed its own tree and file contents.                                                      |
+| Pierre diffs          | Displayed modified and untracked file contents from the actual working copy.                                       |
+| Codex streaming       | Partial assistant text appeared while the turn was running.                                                        |
+| Stop                  | The real turn became interrupted and another prompt could run.                                                     |
+| Command approval      | Decline prevented execution; Allow once ran a reviewed Python print command and showed its output.                 |
+| Full app restart      | Restored four saved turns and continued the same native thread.                                                    |
+| Renderer reload       | Retained the live run and its file-change approval.                                                                |
+| File approval         | Displayed and applied the exact one-line patch in the disposable repository; the open file and Git diff refreshed. |
+| Composer              | Typed straight quotes remained literal.                                                                            |
 
 The native tree theme needed explicit Pierre CSS overrides. Pierre helper packages still report a theme peer-version warning, although native tree, file, and diff rendering passed.
 
@@ -42,16 +42,16 @@ Native traffic lights stayed visible and clear of controls. Double-clicking the 
 
 Verified on 2026-10-03 against the server and web client bundled in the installed T3 Code 0.0.45 app. Both apps rendered in headless Chrome at 1440x900 with the same disposable repository and the same two-turn conversation. The table counts pixels that differ by region.
 
-| Scene and region | Differing pixels | Cause of the difference |
-| --- | --- | --- |
-| Header, light and dark | 0 | None. |
-| Sidebar thread row | 0 | None. |
-| Sidebar, whole column | 678 of 230,400 | The Z1 brand, and T3's Settled shelf and footer icons, which Z1 lacks. |
-| Timeline above the second turn's work row | 0 | None. |
-| Timeline, whole column | 3,809 of 505,600 | T3 records an extra "Approval resolved" activity, which shifts the rows below it. |
-| Composer | 2,279 of 165,900 | The placeholder text, and T3's model, effort, access-mode menus and attach button. |
-| Right panel, Files and Diff | 0 | Measured without the titlebar cluster, where T3 adds a terminal toggle. |
-| Approval drawer | 172 of 132,880 | Label text inside the drawer. |
+| Scene and region                          | Differing pixels | Cause of the difference                                                            |
+| ----------------------------------------- | ---------------- | ---------------------------------------------------------------------------------- |
+| Header, light and dark                    | 0                | None.                                                                              |
+| Sidebar thread row                        | 0                | None.                                                                              |
+| Sidebar, whole column                     | 678 of 230,400   | The Z1 brand, and T3's Settled shelf and footer icons, which Z1 lacks.             |
+| Timeline above the second turn's work row | 0                | None.                                                                              |
+| Timeline, whole column                    | 3,809 of 505,600 | T3 records an extra "Approval resolved" activity, which shifts the rows below it.  |
+| Composer                                  | 2,279 of 165,900 | The placeholder text, and T3's model, effort, access-mode menus and attach button. |
+| Right panel, Files and Diff               | 0                | Measured without the titlebar cluster, where T3 adds a terminal toggle.            |
+| Approval drawer                           | 172 of 132,880   | Label text inside the drawer.                                                      |
 
 The native debug bundle ran with an isolated `Z1_DATA_DIR` and copies of the disposable repositories. These checks passed in the actual Tauri window:
 
@@ -130,7 +130,7 @@ The native debug bundle used a disposable one-commit repository, an isolated `Z1
 - Settings › General › New threads › Workspace changed the default to **New worktree**. The open draft followed it. Search for "worktree" found the row.
 - After Command+Q and an explicit relaunch with the same data directory, the default stayed **New worktree**. The thread reopened as **Worktree**, and a follow-up replied `Z1_RESUME_OK`. All six cwd records in its Codex session named the worktree.
 
-Worktrees are not removed, because Z1 does not delete threads yet. No new pixel-difference measurement was made.
+Thread deletion was unavailable in this 2026-10-03 run. Delete-time worktree removal is now verified under [Thread actions and Archived settings](#thread-actions-and-archived-settings). No new pixel-difference measurement was made.
 
 ## Branch picker
 
@@ -306,7 +306,6 @@ The native debug bundle used the same disposable GitHub repository, an isolated 
 - The header's **View PR** opened that pull request in the default browser.
 - While a second Codex turn ran in the worktree, the quick action read **Commit** and was disabled. When the turn completed, it read **View PR** again.
 
-
 ## PR review triage
 
 Verified on 2026-10-04. The core suite passed 115 tests. The frontend suite passed 93 tests. Clippy with warnings denied, rustfmt, TypeScript checking, the production build, Prettier and the debug Mac bundle passed.
@@ -392,17 +391,17 @@ The native recheck passed on 2026-10-06 after desktop access became available. W
 
 Verified on macOS on 2026-10-06 in the `pnpm tauri dev` window with an isolated `Z1_DATA_DIR`, a disposable repository and a Swedish Pro keyboard layout. `cargo test -p z1-core` covers the PTY manager against `/bin/sh`: spawning in the thread's checkout, history replay on reattach from the same shell, resize, close, exit, and shutdown and drop reaping.
 
-| Workflow | Observed result |
-| --- | --- |
-| No-project draft | No terminal toggle. |
-| Repository draft | The toggle sat left of the right-panel toggle. Command+J opened a login zsh in the repository and focused it. |
-| Typing | `$`, `@`, `[`, `]` and the `~` dead key arrived intact. Command+T and Command+U sent nothing to the shell. |
-| Reattach | Closing and reopening the drawer, and switching split groups, replayed earlier output from the same shell. |
-| Split and new | Command+D split side by side, Command+N added a group, and T3's tab sidebar listed both groups. |
-| Close | Command+W asked "Close terminal "Terminal 1"?" and kept the window open. Confirming ended one shell process. |
-| Exit | `exit` removed the tab and its process. |
-| Resize | Dragging the top edge grew the drawer and shrank the conversation above it. |
-| Quit and relaunch | Quitting left no shell processes. The persisted open drawer started a new shell after relaunch. |
+| Workflow          | Observed result                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------------------- |
+| No-project draft  | No terminal toggle.                                                                                           |
+| Repository draft  | The toggle sat left of the right-panel toggle. Command+J opened a login zsh in the repository and focused it. |
+| Typing            | `$`, `@`, `[`, `]` and the `~` dead key arrived intact. Command+T and Command+U sent nothing to the shell.    |
+| Reattach          | Closing and reopening the drawer, and switching split groups, replayed earlier output from the same shell.    |
+| Split and new     | Command+D split side by side, Command+N added a group, and T3's tab sidebar listed both groups.               |
+| Close             | Command+W asked "Close terminal "Terminal 1"?" and kept the window open. Confirming ended one shell process.  |
+| Exit              | `exit` removed the tab and its process.                                                                       |
+| Resize            | Dragging the top edge grew the drawer and shrank the conversation above it.                                   |
+| Quit and relaunch | Quitting left no shell processes. The persisted open drawer started a new shell after relaunch.               |
 
 A tall drawer on an empty draft lets the centered heading overlap the header, as T3's identical overlay does. Light mode, link clicks and switching between existing threads had no native observation.
 
@@ -410,14 +409,14 @@ A tall drawer on an empty draft lets the centered heading overlap the header, as
 
 Verified on 2026-10-06 in the same native setup.
 
-| Workflow | Observed result |
-| --- | --- |
-| Launcher | **Open a surface** listed **Terminal** with T above Files and Diff. T opened a focused "Terminal 1" tab in the repository while the drawer held `term-3`. |
-| Panel shortcuts | Command+D split the tab side by side, Command+N opened a "Terminal 4" tab, and Command+J closed the drawer. |
-| Tab switch | Returning to the split tab replayed both panes' earlier output. |
-| Tab close | The tab's close button asked "Close 2 terminals?". Confirming ended both shells and left the other tab. |
-| No-project draft | The Terminal row was dimmed, and T started no shell. |
-| Quit | No shell processes remained. |
+| Workflow         | Observed result                                                                                                                                           |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Launcher         | **Open a surface** listed **Terminal** with T above Files and Diff. T opened a focused "Terminal 1" tab in the repository while the drawer held `term-3`. |
+| Panel shortcuts  | Command+D split the tab side by side, Command+N opened a "Terminal 4" tab, and Command+J closed the drawer.                                               |
+| Tab switch       | Returning to the split tab replayed both panes' earlier output.                                                                                           |
+| Tab close        | The tab's close button asked "Close 2 terminals?". Confirming ended both shells and left the other tab.                                                   |
+| No-project draft | The Terminal row was dimmed, and T started no shell.                                                                                                      |
+| Quit             | No shell processes remained.                                                                                                                              |
 
 Returning to a thread restores its terminal tabs in `reconcileTerminalSurfaces` tests but had no native observation, because the disposable data directory had no threads.
 
@@ -425,15 +424,15 @@ Returning to a thread restores its terminal tabs in `reconcileTerminalSurfaces` 
 
 Verified on macOS on 2026-10-06 in the native debug bundle with the temporary identifier `dev.z1.code.usageverify`, an isolated `Z1_DATA_DIR`, a disposable one-commit repository and real codex-cli 0.160.1 signed in to a ChatGPT Pro account. `cargo test -p z1-core` drives the fake peer through reads, sparse updates, other limit buckets, API-key and signed-out accounts, failed reads and provider loss. At 1100×780:
 
-| Workflow | Observed result |
-| --- | --- |
-| `/usage-limits` on a draft | The notice docked above the composer with "Codex · ChatGPT Pro 20x Subscription" and one Weekly row: 56% left, the even-spending mark and "resets in 3d 4h". No thread was created. |
-| First turn | The notice closed when the turn started. The ring appeared left of Send, and SQLite stored `{"usedTokens":20682,"maxTokens":258400,"totalProcessedTokens":null}`. |
-| Meter card | Hovering the ring showed "Context Window", "8% · 21k/258k", the bar and "Context for GPT-6.1-Sol compacts automatically when needed." |
-| Usage page | The sidebar Usage button opened the page with the same Weekly row and Refresh. The thread list stayed, the footer showed Back, and Escape returned to the conversation. |
-| Switch | Turning off **Context window indicator** removed the ring. Turning it on brought it back. |
-| `/usage-limits` during a turn | The notice opened while Stop showed, and nothing reached Codex. |
-| Quit and relaunch | The ring returned from storage with "8.1% · 21k/258k" and "Total processed 42k". |
+| Workflow                      | Observed result                                                                                                                                                                     |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/usage-limits` on a draft    | The notice docked above the composer with "Codex · ChatGPT Pro 20x Subscription" and one Weekly row: 56% left, the even-spending mark and "resets in 3d 4h". No thread was created. |
+| First turn                    | The notice closed when the turn started. The ring appeared left of Send, and SQLite stored `{"usedTokens":20682,"maxTokens":258400,"totalProcessedTokens":null}`.                   |
+| Meter card                    | Hovering the ring showed "Context Window", "8% · 21k/258k", the bar and "Context for GPT-6.1-Sol compacts automatically when needed."                                               |
+| Usage page                    | The sidebar Usage button opened the page with the same Weekly row and Refresh. The thread list stayed, the footer showed Back, and Escape returned to the conversation.             |
+| Switch                        | Turning off **Context window indicator** removed the ring. Turning it on brought it back.                                                                                           |
+| `/usage-limits` during a turn | The notice opened while Stop showed, and nothing reached Codex.                                                                                                                     |
+| Quit and relaunch             | The ring returned from storage with "8.1% · 21k/258k" and "Total processed 42k".                                                                                                    |
 
 The account has no 5-hour window, so a Session row had no native observation. Light mode, an API-key login and a live percentage change during a turn had no native observation.
 
@@ -466,20 +465,68 @@ After rebasing onto the updated main branch for the pull request, typecheck, all
 
 The real Tauri bundle used `dev.bot.code.turnnotificationsverify`, an isolated `BOT_CODE_DATA_DIR` at `/tmp/bot-turn-notifications/native/data`, and a disposable one-commit repository with separate Alpha and Beta worktrees. A release-controlled Codex app-server peer ran through the actual Rust runtime and produced completion, failure and approval events. At 1100×780, the sidebar, centered chat, bottom composer, compact header and neutral colors remained intact. General > Behavior showed T3's two rows, four mode labels and menu width. Search found and focused Thread notifications.
 
-| Workflow | Observed result |
-| --- | --- |
-| Initial launch and Sound only | No macOS permission prompt. Sound only saved on this device. |
-| Explicit notification opt-in | Choosing Notifications only opened the macOS permission dialog. Permission refusal preserved Sound only and appeared in the row. After enabling the disposable app in System Settings, the mode saved. |
+| Workflow                        | Observed result                                                                                                                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Initial launch and Sound only   | No macOS permission prompt. Sound only saved on this device.                                                                                                                                           |
+| Explicit notification opt-in    | Choosing Notifications only opened the macOS permission dialog. Permission refusal preserved Sound only and appeared in the row. After enabling the disposable app in System Settings, the mode saved. |
 | Two concurrent background turns | Both threads showed Working before minimizing the window. Releasing Alpha's completion and Beta's approval produced separate native alerts, visible together in the expanded macOS notification group. |
-| Completion click | From minimized Beta, the native completion alert restored the window, focused the composer and opened Alpha's exact workspace/thread URL. |
-| Approval click | Opened Beta's exact thread with the harmless command approval still waiting. |
-| Background failure | Showed Thread failed; clicking it restored Alpha from selected Beta and displayed the failure reason. |
-| Focused selected thread | With both mode and in-app notifications enabled, Alpha completed without a toast. A native Web Inspector audio probe recorded zero audio-buffer starts. |
-| Focused other thread | While viewing Beta, Alpha's completion showed Thread completed with Open thread. Clicking it opened Alpha. The decoded completion buffer started in a running AudioContext. |
-| Notifications with sound | A background Beta approval showed a native alert and started the copied attention buffer in a running AudioContext. Its click opened Beta. |
-| Full quit and relaunch | Both mode and in-app enabled persisted. Historical turns produced no toast or permission prompt on startup. |
-| Restore defaults | The saved mode returned to off and In-app notifications returned to false. |
+| Completion click                | From minimized Beta, the native completion alert restored the window, focused the composer and opened Alpha's exact workspace/thread URL.                                                              |
+| Approval click                  | Opened Beta's exact thread with the harmless command approval still waiting.                                                                                                                           |
+| Background failure              | Showed Thread failed; clicking it restored Alpha from selected Beta and displayed the failure reason.                                                                                                  |
+| Focused selected thread         | With both mode and in-app notifications enabled, Alpha completed without a toast. A native Web Inspector audio probe recorded zero audio-buffer starts.                                                |
+| Focused other thread            | While viewing Beta, Alpha's completion showed Thread completed with Open thread. Clicking it opened Alpha. The decoded completion buffer started in a running AudioContext.                            |
+| Notifications with sound        | A background Beta approval showed a native alert and started the copied attention buffer in a running AudioContext. Its click opened Beta.                                                             |
+| Full quit and relaunch          | Both mode and in-app enabled persisted. Historical turns produced no toast or permission prompt on startup.                                                                                            |
+| Restore defaults                | The saved mode returned to off and In-app notifications returned to false.                                                                                                                             |
 
 The first native permission request exposed a packaging defect: the debug bundle's linker signature had a different identifier from its Info.plist, and Apple returned `UNErrorDomain` error 1. Signing the bundle with its own identifier produced the permission dialog. The final build applies Tauri's ad-hoc signing configuration automatically and passed the native alert/click checks.
 
 macOS suppressed banners while display sharing was configured to hide notifications. The test temporarily allowed them and restored the original Notifications Off setting afterwards. All three disposable Git checkouts stayed clean. The audio probe verified decoded buffer playback, not audible output from physical speakers. Clicks after the application has completely quit were not exercised. Test logs, fixture scripts, the decision trail and native accessibility observations are under `/tmp/bot-turn-notifications`; native screenshots are in the task's tool transcript.
+
+## Composer image attachments
+
+Verified on macOS on 2026-10-06 with `pnpm tauri dev`, an isolated `BOT_CODE_DATA_DIR` at `/tmp/botcode-img-data`, a disposable one-commit repository and real codex-cli 0.160.1. The installed app-server protocol, generated with `codex app-server generate-ts`, lists `{ "type": "localImage", "path": string }` as a `turn/start` input item. Bot Code sends the text item, then one `localImage` item per image.
+
+`cargo test -p bot-core` passed 248 tests. The attachment tests cover content sniffing, the 10 MiB limit, one file for repeated bytes, and the sweep. The runtime tests cover the `turn/start` input order, a retried submit that returns the same turn and sends once, conflicting retries, image-only messages, missing files, and attachments after reopening. `pnpm test:ui` passed 223 tests, including the paste and drop classification and the retry operation ID. `pnpm typecheck` passed.
+
+| Workflow                  | Observed result                                                                                                                                                                                                                                                                     |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Paste                     | A window screenshot taken with `screencapture -c` pasted as a 64px thumbnail with a remove button. The data directory held one file, `attachments/d2dc25f3….png`, 100,089 bytes.                                                                                                    |
+| Send                      | The prompt "Describe the attached image in one sentence, including any text it shows." returned "The image shows a blue circle on a yellow background beside bold black text reading 'ZEBRA 7319,' displayed in a window titled 'zebra.png.'" The prompt did not name the contents. |
+| Timeline                  | The user message showed the image above its text. SQLite stored the turn's attachment as `{"id":"d2dc25f3…","mimeType":"image/png","name":"image.png","sizeBytes":100089}` with accepted delivery and completed execution.                                                          |
+| Quit and relaunch         | The thread opened with the image still rendered from `botcode-attachment://`.                                                                                                                                                                                                       |
+| Drop                      | Dragging a different PNG from Finder showed the drag-over ring. The drop added its thumbnail and stored a second file. The Finder file stayed in place.                                                                                                                             |
+| Remove                    | The remove button cleared the thumbnail and disabled Send.                                                                                                                                                                                                                          |
+| Drop outside the composer | Dropping the PNG on the timeline added nothing, and the page stayed in place.                                                                                                                                                                                                       |
+
+A retried submit after a lost response had no native observation, because the window cannot drop a response. The runtime test covers it. An image-only message, unsupported image types, and the 10 MiB limit had no native observation. Tests cover each.
+
+## Thread actions and Archived settings
+
+Initial feature verification passed on macOS on 2026-10-06 against T3 Code v0.0.45. `pnpm typecheck`, `pnpm test:ui` (197 tests), and `cargo test -p bot-core` (241 tests) passed. The debug Tauri app bundle built successfully. Prettier, rustfmt, and the whitespace check passed.
+
+The native bundle used the temporary identifier `dev.bot.code.threadverify`, the disposable repository `/tmp/bot-thread-actions/native/repository`, and `BOT_CODE_DATA_DIR=/tmp/bot-thread-actions/native/data`. Five persisted conversation fixtures supplied history and local, clean-worktree, and dirty-worktree checkouts. Three additional fixtures exercised automatic, kept, and settled placement. `BOT_CODE_CODEX_BIN` pointed to the core tests' scripted app-server peer, so running-turn checks used no live Codex account. Git, SQLite, the native warning sheets, clipboard, and terminal processes were real. The window was 1100×780.
+
+Each successful rename, copy, pin, archive, restore, storage change, and deletion was followed by a full quit and explicit relaunch with the same isolated data directory. The following checks combined native observations with clipboard, SQLite, Git, file, and process assertions:
+
+| Workflow                 | Observed result                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Thread menu              | T3's Rename thread, Copy, Archive thread, and destructive Delete appeared after the existing arrangement actions. Copy offered Path, Branch, and Thread ID.                                                                                                                                                                                                          |
+| Rename                   | The inline input selected the title. Enter updated the card and breadcrumb, and the title persisted after restart. Escape cancelled a replacement, an empty Enter left the editor open, and a valid title saved on blur and survived restart.                                                                                                                        |
+| Copy                     | Thread ID matched SQLite. Local Path and Branch matched the repository and `main`; worktree Path and Branch matched the actual checkout and `botcode/fixture-3`. The clipboard was checked after each action.                                                                                                                                                        |
+| Archive and restore      | Archiving the open pinned thread hid it and selected the next card. Settings > Archived listed its project, title, ages, and Unarchive button after restart. Restore preserved the exact pin timestamp and conversation history. Separate archive/restore cycles preserved automatic, kept, and settled placements, including the settled timestamp, across restart. |
+| Delete with cleanup off  | Cancel retained the open thread. Confirm removed its history and selected the next thread. The worktree and branch remained after restart.                                                                                                                                                                                                                           |
+| Storage                  | Delete worktrees with deleted threads started off. Enabling it persisted after restart; the existing inactive and unchanged switches stayed off.                                                                                                                                                                                                                     |
+| Clean worktree deletion  | A native terminal recorded its shell PID. Confirming deletion stopped that PID before app quit, removed the checkout, kept the branch, and selected the next thread. The history and checkout stayed absent after restart.                                                                                                                                           |
+| Dirty worktree deletion  | The thread disappeared and the sidebar reported "Thread deleted. Worktree kept. working tree has changes" in neutral text. Its untracked `draft.txt`, checkout, and branch survived restart.                                                                                                                                                                         |
+| Running checkout refusal | Archive and Delete were disabled on the running thread. Confirming Delete on another thread sharing its local checkout returned the busy error; both histories and the target's live terminal remained. Stop completed the scripted turn before restart.                                                                                                             |
+| Git checkout refusal     | A native Commit ran inside a held disposable pre-commit hook. Deleting another thread sharing the checkout returned the busy error without removing its history or terminal. Releasing the hook completed the commit; both threads remained after restart.                                                                                                           |
+| Archived deletion        | The Archived row's context menu offered Unarchive and Delete. Cancel preserved the archive across restart. After temporarily moving the repository away, the page still listed it and Delete succeeded. The empty archive and retained project were checked after restart.                                                                                           |
+
+Core regressions additionally cover running and pending admission, shared checkout ownership, deletion surviving caller cancellation, stale terminal attachment, PR membership and submission-receipt removal, shared PR/review data retention, ignored and locked worktrees, default-off cleanup, and database failure after worktree removal. That last case leaves the conversation available through the existing missing-worktree restoration path. No force removal or delayed cleanup queue was added.
+
+Screenshots, fixture manifests, timestamped assertions, suite logs, and the independent review are under `/tmp/bot-thread-actions`. Review found and rechecked a pending-rename race: the editor and rename switching now stay disabled until the save finishes. Native focus and normal save paths passed. No new pixel-difference measurement was made; live GitHub PR mutations and a real Codex turn were outside this run.
+
+After composer image attachments merged in PR #46, this change was rebased onto `8db0584`. Type checking, all 226 UI tests, the production web build, formatting, all 261 existing core tests, and workspace Clippy passed. An additional core integration test passed for a renamed image-only first message, image history retained by an archived thread across restart, and the attachment sweep removing an old shared image after its last referencing thread is deleted. Rebase and integration evidence is under `/tmp/bot-thread-actions/shipping`.
+
+Before opening the PR, the branch was rebased onto the updated `main`, which adds generated commit messages and pull request text. Typecheck, all 205 UI tests, all 252 core tests, the production and Tauri builds, formatting, and Clippy with warnings denied passed. The new `thread_deletion_cancels_a_running_commit_preview` test passed without a production fix. It deletes a clean worktree during a stalled preview, requires a cancelled result, and checks that the generator and its descendant stop before app shutdown. The existing maintenance loop provides that cancellation after the thread disappears. The rebuilt native app repeated rename, archive, restore, and clean worktree deletion, with a restart after each action. Deletion stopped its live terminal before app quit, kept the branch, selected the next thread, and remained absent after restart. These integration checks used the same isolated data directory and an additional disposable worktree. An independent integration review found no remaining blocker.
