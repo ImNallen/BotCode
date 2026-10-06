@@ -23,12 +23,15 @@ fn thread() -> ThreadSnapshot {
             started_at_ms: Some(2000),
             completed_at_ms: Some(3000),
             attachments: vec![],
+            checkpoint: TurnCheckpoint::default(),
         }],
         approvals: vec![],
         diagnostic: None,
         placement: Placement::Auto,
         snooze: None,
         context: None,
+        pending_revert: None,
+        last_revert: None,
     }
 }
 fn link(lifecycle: PrLifecycle) -> LinkedPrSummary {

@@ -1,3 +1,4 @@
+mod checkpoints;
 mod naming;
 mod thread_actions;
 use thread_actions::DeleteCompletion;
@@ -89,6 +90,8 @@ enum Hold {
     Git,
     PullRequest,
     Naming,
+    Checkpoint,
+    Revert,
 }
 impl Hold {
     fn refusal(self) -> AppError {
@@ -96,6 +99,12 @@ impl Hold {
             "checkout_busy",
             match self {
                 Self::Delete => "Bot Code is deleting a thread in this checkout.",
+                Self::Checkpoint => {
+                    "Bot Code is capturing this turn's checkpoint. Wait for it to finish."
+                }
+                Self::Revert => {
+                    "A conversation revert is using this checkout. Finish or retry it first."
+                }
                 Self::Naming => "Bot Code is naming this worktree branch. Try again in a moment.",
                 Self::PullRequest => {
                     "A pull request operation is using this checkout. Wait for its result."
@@ -126,7 +135,9 @@ impl Hold {
             | Self::Cleanup
             | Self::Restore
             | Self::PullRequest
-            | Self::Naming => turn_running(),
+            | Self::Naming
+            | Self::Checkpoint
+            | Self::Revert => turn_running(),
         }
     }
 }
@@ -166,6 +177,8 @@ enum Command {
     BeginCommitPreview(ThreadId, Reply<String>),
     AwaitCommitPreview(String, Reply<String>),
     CancelCommitPreview(String, Reply<()>),
+    TurnDiff(ThreadId, TurnId, String, Reply<TurnDiffView>),
+    Revert(ThreadId, String, TurnId, bool, Reply<ThreadSnapshot>),
     List(Reply<Vec<Workspace>>),
     PrList(ThreadId, bool, Reply<ThreadPrSummary>),
     PrLink(ThreadId, PullRequestKey, Reply<ThreadPrSummary>),
@@ -278,6 +291,15 @@ impl App {
                         }
                     }
                 }
+                if matches!(turn.checkpoint, TurnCheckpoint::Pending) {
+                    turn.checkpoint = TurnCheckpoint::Unavailable {
+                        before: None,
+                        reason: "The application closed before checkpoint capture completed."
+                            .into(),
+                    };
+                } else if let TurnCheckpoint::Before { before } = &turn.checkpoint {
+                    turn.checkpoint = TurnCheckpoint::Unavailable { before: Some(before.clone()), reason: "The application closed before this turn's final checkpoint was recorded.".into() };
+                }
             }
             for approval in &mut thread.approvals {
                 if matches!(
@@ -294,8 +316,18 @@ impl App {
         let attachments = Attachments::new(&config.data_dir.canonicalize()?);
         let referenced = threads
             .values()
-            .flat_map(|t| &t.turns)
-            .flat_map(|turn| &turn.attachments)
+            .flat_map(|thread| {
+                thread
+                    .turns
+                    .iter()
+                    .flat_map(|turn| &turn.attachments)
+                    .chain(
+                        thread
+                            .last_revert
+                            .iter()
+                            .flat_map(|result| &result.attachments),
+                    )
+            })
             .map(|a| a.id.clone())
             .collect();
         if let Err(e) = attachments.sweep(&referenced, std::time::SystemTime::now()) {
@@ -326,6 +358,8 @@ impl App {
                 },
                 naming: naming::Naming::default(),
                 writing: writing::Writing::default(),
+                checkpoint_work: checkpoints::CheckpointWork::new(),
+                closing: false,
                 git_jobs: tokio::task::JoinSet::new(),
                 attachments: attachments.clone(),
                 delete_jobs: tokio::task::JoinSet::new(),
@@ -686,6 +720,25 @@ impl App {
     pub async fn thread(&self, id: ThreadId) -> Result<ThreadSnapshot> {
         self.call(|r| Command::Snapshot(id, false, r)).await
     }
+    pub async fn read_turn_diff(
+        &self,
+        thread: ThreadId,
+        turn: TurnId,
+        path: String,
+    ) -> Result<TurnDiffView> {
+        self.call(|r| Command::TurnDiff(thread, turn, path, r))
+            .await
+    }
+    pub async fn revert_thread(
+        &self,
+        thread: ThreadId,
+        request_id: String,
+        turn: TurnId,
+        files: bool,
+    ) -> Result<ThreadSnapshot> {
+        self.call(|r| Command::Revert(thread, request_id, turn, files, r))
+            .await
+    }
     pub async fn open_thread(&self, id: ThreadId) -> Result<ThreadSnapshot> {
         self.call(|r| Command::Snapshot(id, true, r)).await
     }
@@ -1018,11 +1071,12 @@ async fn call<T>(
 enum Prepare {
     Resume(ThreadId),
     Submit(ThreadId, TurnId),
+    Revert(ThreadId),
 }
 impl Prepare {
     fn thread(&self) -> &ThreadId {
         match self {
-            Self::Resume(id) | Self::Submit(id, _) => id,
+            Self::Resume(id) | Self::Submit(id, _) | Self::Revert(id) => id,
         }
     }
 }
@@ -1075,6 +1129,8 @@ struct GitCompletion {
     reply: Reply<GitOutcome>,
 }
 struct Owner {
+    closing: bool,
+    checkpoint_work: checkpoints::CheckpointWork,
     naming: naming::Naming,
     writing: writing::Writing,
     prs: PrWork,
@@ -1275,6 +1331,7 @@ impl Owner {
             .approvals
             .iter()
             .any(|a| matches!(a.state, ApprovalState::Pending | ApprovalState::Answering))
+            && t.pending_revert.is_none()
             && !self.leases.contains_key(root)
             && !self.pending.iter().any(|job| job.thread() == &t.id)
             && !self.held.contains_key(root)
@@ -1386,6 +1443,11 @@ impl Owner {
         mut completions: mpsc::Receiver<Completion>,
     ) {
         let ids: Vec<_> = self.threads.keys().cloned().collect();
+        for thread in self.threads.values() {
+            if let Some(intent) = &thread.pending_revert {
+                self.held.insert(intent.checkout_root.clone(), Hold::Revert);
+            }
+        }
         for id in ids {
             self.schedule_discovery(&id, PrLinkSource::BranchDiscovery);
         }
@@ -1396,10 +1458,12 @@ impl Owner {
             tokio::select! {
                 command=commands.recv()=>{
                     let Some(command)=command else {
+                        self.closing = true;
                         self.lose("Bot Code runtime handles were released.").await;
                         break;
                     };
                     if let Command::Shutdown(reply)=command {
+                        self.closing = true;
                         commands.close();
                         let result=if let Some(provider)=self.provider.take(){provider.terminate().await}else{Ok(())};
                         self.lose("Bot Code closed. Native execution stopped.").await;
@@ -1429,6 +1493,9 @@ impl Owner {
                 Some(done)=self.git_jobs.join_next(), if !self.git_jobs.is_empty()=>{
                     if let Err(error)=self.finish_git_job(done, true) { eprintln!("Git completion failed: {}", error.message); }
                 }
+                Some(done)=self.checkpoint_work.active.join_next(), if !self.checkpoint_work.active.is_empty()=>{
+                    if let Err(error)=self.finish_checkpoint_job(done) { eprintln!("Checkpoint completion failed: {}", error.message); }
+                }
                 Some(done)=self.review_work.active.join_next(), if !self.review_work.active.is_empty()=>{
                     if let Err(error)=self.finish_review(done) { eprintln!("Review completion failed: {}",error.code); }
                 }
@@ -1443,6 +1510,7 @@ impl Owner {
                 }
                 _=tick.tick()=>{
                     self.expire_commit_previews();
+                    self.retry_checkpoint_saves();
                     self.apply_ready_names();
                     self.poll_prs();
                     for id in self.dirty.clone(){
@@ -1470,6 +1538,11 @@ impl Owner {
         }
         self.stop_commit_previews().await;
         self.stop_names().await;
+        while let Some(completion) = self.checkpoint_work.active.join_next().await {
+            if let Err(error) = self.finish_checkpoint_job(completion) {
+                git_shutdown = Err(error);
+            }
+        }
         let review_shutdown = self.stop_reviews().await;
         let pr_shutdown = self.stop_pr_jobs().await;
         let store_shutdown = self.store.close();
@@ -1493,6 +1566,12 @@ impl Owner {
             Command::CancelCommitPreview(job, reply) => {
                 self.cancel_commit_preview(&job);
                 let _ = reply.send(Ok(()));
+            }
+            Command::TurnDiff(thread, turn, path, reply) => {
+                self.read_turn_diff(thread, turn, path, reply)
+            }
+            Command::Revert(thread, request, turn, files, reply) => {
+                self.begin_revert(thread, request, turn, files, reply)
             }
             Command::PrList(id, refresh, reply) => {
                 let result = if refresh {
@@ -1672,6 +1751,8 @@ impl Owner {
                         placement: Placement::Auto,
                         snooze: None,
                         context: None,
+                        pending_revert: None,
+                        last_revert: None,
                     };
                     self.store.save(&t)?;
                     self.threads.insert(t.id.clone(), t.clone());
@@ -1692,6 +1773,7 @@ impl Owner {
                 // A removed worktree is restored by the next submit, which resumes as usual.
                 let should_resume = resume && self.thread(&id).is_ok_and(|t| {
                     t.native_thread_id.is_some()
+                        && t.pending_revert.is_none()
                         && matches!(
                             t.session,
                             SessionState::Dormant | SessionState::Unavailable { .. }
@@ -1778,7 +1860,7 @@ impl Owner {
                 }
                 let result = self.accept_submit(&id, &request_id, &text, attachments);
                 if let Ok((receipt, true)) = &result {
-                    self.prepare(Prepare::Submit(id, receipt.turn_id.clone()));
+                    self.capture_before(id, receipt.turn_id.clone());
                 }
                 let _ = reply.send(result.map(|(receipt, _)| receipt));
             }
@@ -2068,11 +2150,13 @@ impl Owner {
             started_at_ms: Some(now_ms()),
             completed_at_ms: None,
             attachments,
+            checkpoint: TurnCheckpoint::Pending,
         };
         let receipt = Receipt {
             turn_id: turn.id.clone(),
         };
         t.turns.push(turn);
+        t.last_revert = None;
         t.session = SessionState::Connecting;
         t.diagnostic = None;
         t.snooze = None;
@@ -2256,9 +2340,32 @@ impl Owner {
         }
     }
     fn prepare(&mut self, job: Prepare) {
+        if self.closing {
+            return;
+        }
+        if let Prepare::Revert(id) = &job {
+            let t = &self.threads[id];
+            let intent = t.pending_revert.as_ref().unwrap();
+            if t.turns
+                .first()
+                .is_some_and(|turn| turn.id == intent.turn_id)
+                || intent.source_native_thread_id.is_none()
+                || intent.before_native_turn_id.is_none()
+            {
+                self.fork_revert(id.clone());
+                return;
+            }
+        }
         if self.provider.is_none() {
+            if let Prepare::Revert(id) = &job {
+                self.waiting_revert_provider(id.clone());
+            }
             self.pending.push(job);
             self.launch();
+            return;
+        }
+        if let Prepare::Revert(id) = job {
+            self.fork_revert(id);
             return;
         }
         let t = match self.thread(job.thread()) {
@@ -2381,6 +2488,10 @@ impl Owner {
                         t.diagnostic = Some(e.message.clone());
                         if let Prepare::Submit(_, turn_id) = job {
                             if let Some(turn) = t.turns.iter_mut().find(|t| t.id == turn_id) {
+                                turn.checkpoint = TurnCheckpoint::Unavailable {
+                                    before: turn.checkpoint.before().cloned(),
+                                    reason: e.message.clone(),
+                                };
                                 turn.delivery = Delivery::NotSent {
                                     reason: e.message.clone(),
                                 };
@@ -2426,6 +2537,10 @@ impl Owner {
                             return Ok(());
                         }
                         row.delivery = Delivery::Uncertain {
+                            reason: e.message.clone(),
+                        };
+                        row.checkpoint = TurnCheckpoint::Unavailable {
+                            before: row.checkpoint.before().cloned(),
                             reason: e.message.clone(),
                         };
                         row.execution=Execution::Lost{reason:"The request may have reached Codex. It will not be sent again automatically.".into()};
@@ -2485,6 +2600,7 @@ impl Owner {
         self.epoch += 1;
         self.launching = false;
         self.pending.clear();
+        self.fail_reverts(reason);
         self.models = None;
         self.listing_models = false;
         for reply in std::mem::take(&mut self.model_waiters) {
@@ -2514,6 +2630,15 @@ impl Owner {
             };
             t.diagnostic = Some(reason.into());
             for turn in &mut t.turns {
+                if matches!(
+                    turn.checkpoint,
+                    TurnCheckpoint::Pending | TurnCheckpoint::Before { .. }
+                ) {
+                    turn.checkpoint = TurnCheckpoint::Unavailable {
+                        before: turn.checkpoint.before().cloned(),
+                        reason: format!("Checkpoint capture did not finish. {reason}"),
+                    };
+                }
                 if turn.execution.active() {
                     turn.execution = Execution::Lost {
                         reason: reason.into(),
@@ -2656,12 +2781,16 @@ impl Owner {
         let Some(position) = position else {
             return Ok(());
         };
+        let current_turn = position + 1 == t.turns.len();
         let turn = &mut t.turns[position];
         if turn.native_turn_id.is_none() {
             turn.native_turn_id = native_turn.map(str::to_owned)
         }
         match method {
             "turn/started" => {
+                if !current_turn || !turn.execution.active() {
+                    return Ok(());
+                }
                 turn.delivery = Delivery::Accepted;
                 turn.execution = Execution::Running;
                 t.session = SessionState::Running;
@@ -2714,6 +2843,10 @@ impl Owner {
                 }
             }
             "turn/completed" => {
+                if !current_turn || !turn.execution.active() {
+                    return Ok(());
+                }
+                let completed_turn = turn.id.clone();
                 let status = p
                     .pointer("/turn/status")
                     .and_then(Value::as_str)
@@ -2734,9 +2867,7 @@ impl Owner {
                         self.routes.remove(&approval.id);
                     }
                 }
-                self.leases
-                    .remove(t.root(&self.workspaces[&t.workspace_id]));
-                self.commit(&id)?;
+                self.capture_after(&id, completed_turn)?;
                 let _ = self.refresh_prs(&id, true, PrLinkSource::AgentDiscovered);
                 return Ok(());
             }

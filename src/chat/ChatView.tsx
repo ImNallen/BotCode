@@ -1,6 +1,4 @@
-// Column, header and composer overlay follow pingdotgg/t3code v0.0.45
-// components/ChatView.tsx, chat/ChatHeader.tsx and chat/PanelLayoutControls.tsx,
-// and chat/DraftHeroHeadline.tsx at 6b286ae8a (MIT).
+// Ported from T3 Code v0.0.45 apps/web/src/components/ChatView.tsx, chat/ChatHeader.tsx, chat/PanelLayoutControls.tsx and DraftHeroHeadline.tsx at 6b286ae8a (MIT).
 import {
   type ComponentProps,
   useEffect,
@@ -11,13 +9,17 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  FolderPlusIcon,
   Maximize2Icon,
   Minimize2Icon,
   PanelBottomIcon,
   PanelRightIcon,
 } from "lucide-react";
-import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
+import {
+  checkoutKey,
+  invalidateCheckouts,
+  ipc,
+  setThreadSnapshot,
+} from "../ipc";
 import type {
   ApprovalDecision,
   CheckoutRef,
@@ -28,10 +30,7 @@ import type {
 } from "../ipc";
 import { cn } from "../lib/cn";
 import { workingSessions } from "../lib/sessions";
-import {
-  newWithoutProjectShortcut,
-  terminalToggleShortcut,
-} from "../lib/shortcuts";
+import { terminalToggleShortcut } from "../lib/shortcuts";
 import {
   type CheckoutMode,
   projectSetting,
@@ -45,7 +44,6 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { Toggle } from "../ui/controls";
-import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import {
   RightPanel,
   emptyPanel,
@@ -74,14 +72,28 @@ import { Composer } from "./Composer";
 import { classifyComposerAttachmentFile } from "./composerAttachmentFiles";
 import {
   type ComposerImage,
-  finishStaging,
+  finishComposerStaging,
   readyAttachments,
   type SendAttempt,
   sendAttempt,
+  activateComposer,
+  acceptsCompletion,
+  clearAcceptedInput,
+  mergeRecoveredInput,
+  recoveryFit,
+  MAX_IMAGES,
+  type ComposerInput,
 } from "./composerImages";
 import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import { isUsageLimitsCommand, usageNoticeKey } from "../usage/limits";
 import { Timeline } from "./Timeline";
+import { EditFromHereDialog } from "./EditFromHereDialog";
+import { useTurnRevert } from "./useTurnRevert";
+import { DraftHeadline } from "./DraftHeadline";
+import {
+  selectedCheckpointTurn,
+  type TurnDiffSelection,
+} from "../panel/turnDiffSelection";
 import { PersistentThreadTerminalDrawer } from "../terminal/ThreadTerminalDrawer";
 import {
   terminalScopeKey,
@@ -93,7 +105,6 @@ import {
 } from "../terminal/terminalStore";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_IMAGES = 100;
 
 type DraftCheckout = {
   mode: CheckoutMode;
@@ -128,14 +139,33 @@ export function ChatView({
   const [panelOpen, setPanelOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [panel, setPanel] = useState<PanelState>(emptyPanel);
+  const [turnSelection, setTurnSelection] = useState<TurnDiffSelection | null>(
+    null,
+  );
   useEffect(() => {
     if (prPanelRequest && prPanelRequest.threadId === threadId) {
       setPanel((current) => openSurface(current, prPanelRequest.surface));
       setPanelOpen(true);
     }
   }, [prPanelRequest, threadId]);
-  const [draft, setDraft] = useState("");
-  const [images, setImages] = useState<ComposerImage[]>([]);
+  const [composer, setComposer] = useState(() => activateComposer(threadId));
+  if (composer.threadId !== threadId)
+    setComposer(activateComposer(threadId, composer.activation + 1));
+  const composerRef = useRef(composer);
+  composerRef.current = composer;
+  const { text: draft, images } = composer;
+  const setDraft = (update: string | ((text: string) => string)) =>
+    setComposer((current) => ({
+      ...current,
+      text: typeof update === "function" ? update(current.text) : update,
+      generation: current.generation + 1,
+    }));
+  const setImages = (update: (images: ComposerImage[]) => ComposerImage[]) =>
+    setComposer((current) => ({
+      ...current,
+      images: update(current.images),
+      generation: current.generation + 1,
+    }));
   const lastAttempt = useRef<SendAttempt | null>(null);
   const [usageNotice, setUsageNotice] = useState<{
     key: string;
@@ -182,8 +212,6 @@ export function ChatView({
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    setDraft("");
-    setImages([]);
     setCreatedDraft(undefined);
   }, [threadId]);
   const query = useQuery({
@@ -198,6 +226,39 @@ export function ChatView({
     enabled: Boolean(threadId),
   });
   const thread = threadId ? query.data : undefined;
+  const recovery =
+    thread?.lastRevert && thread.turns.length === thread.lastRevert.turnCount
+      ? thread.lastRevert
+      : null;
+  const recoveryNotice =
+    recovery && composer.appliedRevertId !== recovery.requestId
+      ? recoveryFit(images, recovery)
+      : null;
+  useEffect(() => {
+    setComposer((current) => {
+      if (current.threadId !== thread?.id) return current;
+      if (recovery) return mergeRecoveredInput(current, recovery);
+      return current.appliedRevertId === null
+        ? current
+        : { ...current, appliedRevertId: null };
+    });
+  }, [thread?.id, recovery, images]);
+  useEffect(() => {
+    if (composer.appliedRevertId)
+      setComposerFocusRequest((current) => current + 1);
+  }, [composer.activation, composer.appliedRevertId]);
+  const selectTurnDiff = (turnId: string | null, filePath?: string) => {
+    setTurnSelection(
+      turnId && threadId
+        ? { threadId, turnId, filePath: filePath ?? null, request: Date.now() }
+        : null,
+    );
+  };
+  const openTurnDiff = (turnId: string, filePath?: string) => {
+    selectTurnDiff(turnId, filePath);
+    setPanel((current) => openSurface(current, { kind: "diff" }));
+    setPanelOpen(true);
+  };
   const checkout: CheckoutRef = {
     workspaceId,
     threadId:
@@ -267,9 +328,11 @@ export function ChatView({
     mutationFn: async ({
       text,
       attachments,
+      started,
     }: {
       text: string;
       attachments: ImageAttachment[];
+      started: ComposerInput;
     }) => {
       let target = threadId ?? createdDraft?.id;
       if (!target) {
@@ -287,17 +350,13 @@ export function ChatView({
         );
         setThreadSnapshot(client, created);
         target = created.id;
-        setCreatedDraft(created);
+        if (acceptsCompletion(composerRef.current, started))
+          setCreatedDraft(created);
         void client.invalidateQueries({ queryKey: ["workspace"] });
       }
       if (!threadId) {
-        try {
-          const updated = await ipc.settings(target, draftSettings);
-          setThreadSnapshot(client, updated);
-        } catch (error) {
-          setError(error instanceof Error ? error.message : String(error));
-          throw error;
-        }
+        const updated = await ipc.settings(target, draftSettings);
+        setThreadSnapshot(client, updated);
       }
       const attempt = sendAttempt(
         lastAttempt.current,
@@ -306,17 +365,21 @@ export function ChatView({
         attachments,
         () => crypto.randomUUID(),
       );
-      lastAttempt.current = attempt;
+      if (acceptsCompletion(composerRef.current, started))
+        lastAttempt.current = attempt;
       await ipc.submit(target, text, attempt.requestId, attachments);
       return target;
     },
-    onSuccess: (target) => {
+    onSuccess: (target, { started }) => {
+      void client.invalidateQueries({ queryKey: ["thread", target] });
+      void client.invalidateQueries({ queryKey: ["workspace"] });
+      if (!acceptsCompletion(composerRef.current, started)) return;
       lastAttempt.current = null;
-      setCreatedDraft(undefined);
-      setDraft("");
-      setImages([]);
+      if (acceptsCompletion(composerRef.current, started, true))
+        setCreatedDraft(undefined);
+      setComposer((current) => clearAcceptedInput(current, started));
       setError(undefined);
-      if (!threadId) {
+      if (!threadId && acceptsCompletion(composerRef.current, started, true)) {
         void navigate({
           to: "/",
           search: (previous) => ({
@@ -326,10 +389,9 @@ export function ChatView({
           }),
         });
       }
-      void client.invalidateQueries({ queryKey: ["thread", target] });
-      void client.invalidateQueries({ queryKey: ["workspace"] });
     },
-    onError: (e) => {
+    onError: (e, { started }) => {
+      if (!acceptsCompletion(composerRef.current, started)) return;
       setError(e.message);
       refresh();
     },
@@ -352,6 +414,26 @@ export function ChatView({
       setError(undefined);
     },
     onError: (e) => setError(e.message),
+  });
+  const {
+    revert,
+    preflightError,
+    reverting,
+    visibleEditTarget,
+    startRevert,
+    openEdit,
+    closeEdit,
+  } = useTurnRevert({
+    workspaceId,
+    threadId,
+    thread,
+    composer,
+    onReverted: () => {
+      setTurnSelection(null);
+      setPanel(closeFiles);
+      setMaximized(false);
+      setError(undefined);
+    },
   });
   const workspace = view?.workspace;
   const fileLinks = useMemo<FileLinks>(() => {
@@ -390,7 +472,14 @@ export function ChatView({
   const newThreadLabel = isScratch
     ? "New thread without a project"
     : `New thread in ${label}`;
-  const busy = thread ? workingSessions.has(thread.session.kind) : false;
+  const busy = thread
+    ? workingSessions.has(thread.session.kind) ||
+      thread.turns.some(
+        (turn) =>
+          turn.checkpoint.kind === "pending" ||
+          turn.checkpoint.kind === "before",
+      )
+    : false;
   const pending = thread?.approvals.filter((a) => a.state === "pending") ?? [];
   const approval = pending[0];
   const noticeKey = usageNoticeKey(
@@ -411,6 +500,7 @@ export function ChatView({
       thread &&
       !isScratch &&
       !busy &&
+      !reverting &&
       !send.isPending &&
       !saveSettings.isPending &&
       !approval,
@@ -453,11 +543,19 @@ export function ChatView({
     if (rejection) setError(rejection);
     if (accepted.length === 0) return;
     setImages((current) => [...current, ...accepted]);
+    const started = composer;
     for (const [key, file] of staging) {
       ipc.stageAttachment(file).then(
         (attachment) =>
-          setImages((current) => finishStaging(current, key, attachment)),
+          setComposer((current) =>
+            finishComposerStaging(current, started, key, attachment),
+          ),
         (error: Error) => {
+          if (
+            !acceptsCompletion(composerRef.current, started) ||
+            !composerRef.current.images.some((image) => image.key === key)
+          )
+            return;
           setImages((current) => current.filter((image) => image.key !== key));
           setError(error.message);
         },
@@ -475,19 +573,21 @@ export function ChatView({
       attachments === null ||
       (!draft.trim() && attachments.length === 0) ||
       busy ||
+      reverting ||
       send.isPending ||
       saveSettings.isPending ||
       approval ||
       (Boolean(threadId) && !thread)
     )
       return;
-    send.mutate({ text: draft, attachments });
+    send.mutate({ text: draft, attachments, started: composer });
   };
   const title = isDraft ? "New thread" : (thread?.title ?? "");
   const worktreeDraft =
     isDraft && !createdDraft && draftCheckout.mode === "worktree";
   const controlsDisabled =
     busy ||
+    reverting ||
     send.isPending ||
     saveSettings.isPending ||
     Boolean(approval) ||
@@ -738,7 +838,14 @@ export function ChatView({
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
               {thread ? (
                 <FileLinkProvider value={fileLinks}>
-                  <Timeline thread={thread} clearance={clearance} />
+                  <Timeline
+                    thread={thread}
+                    clearance={clearance}
+                    reverting={revert.isPending}
+                    busy={busy}
+                    onEdit={openEdit}
+                    onOpenTurnDiff={openTurnDiff}
+                  />
                 </FileLinkProvider>
               ) : null}
             </div>
@@ -793,6 +900,32 @@ export function ChatView({
                       </button>
                     </div>
                   ) : null}
+                  {recoveryNotice ? (
+                    <div
+                      role="status"
+                      className="mb-2 px-4 text-xs text-muted-foreground"
+                    >
+                      {recoveryNotice}
+                    </div>
+                  ) : null}
+                  {thread?.pendingRevert ? (
+                    <div className="mb-2 flex items-center justify-between gap-2 px-4 text-xs text-muted-foreground">
+                      <span>
+                        A saved revert needs to finish before this checkout can
+                        continue.
+                      </span>
+                      <button
+                        type="button"
+                        className="font-medium text-foreground hover:underline disabled:opacity-64"
+                        disabled={revert.isPending}
+                        onClick={() =>
+                          openEdit(thread.pendingRevert?.turnId ?? "")
+                        }
+                      >
+                        Retry revert
+                      </button>
+                    </div>
+                  ) : null}
                   <div className="relative">
                     <Composer
                       key={threadId ?? "draft"}
@@ -813,6 +946,7 @@ export function ChatView({
                         ((Boolean(draft.trim()) || images.length > 0) &&
                           attachments !== null &&
                           !busy &&
+                          !reverting &&
                           !send.isPending &&
                           !saveSettings.isPending &&
                           (!threadId || Boolean(thread)))
@@ -891,7 +1025,7 @@ export function ChatView({
       {panelOpen ? (
         <RightPanel
           checkout={checkout}
-          git={!isScratch && !view?.unavailable}
+          git={!isScratch}
           view={view}
           state={panel}
           onChange={setPanel}
@@ -902,104 +1036,23 @@ export function ChatView({
           onAskCodex={askCodex}
           terminalAvailable={terminalAvailable}
           fileLinks={fileLinks}
+          thread={thread}
+          turnSelection={
+            selectedCheckpointTurn(thread, turnSelection) ? turnSelection : null
+          }
+          onSelectTurn={selectTurnDiff}
         />
       ) : null}
-    </div>
-  );
-}
-
-function DraftHeadline({
-  label,
-  workspaceId,
-  workspaces,
-  isScratch,
-  scratchAvailable,
-  onSelectWorkspace,
-  onStartScratch,
-  onOpenRepository,
-}: {
-  label: string;
-  workspaceId: string;
-  workspaces: Workspace[];
-  isScratch: boolean;
-  scratchAvailable: boolean;
-  onSelectWorkspace: (workspaceId: string) => void;
-  onStartScratch: () => void;
-  onOpenRepository: () => void;
-}) {
-  const picker = (
-    <Menu
-      align="center"
-      trigger={(props) => (
-        <button
-          type="button"
-          className="inline-flex shrink-0 cursor-pointer items-center whitespace-nowrap font-medium underline-offset-2 focus-visible:outline-2 focus-visible:outline-ring gap-1.5 text-foreground underline decoration-foreground/30 decoration-dotted decoration-from-font hover:decoration-foreground hover:decoration-solid data-popup-open:decoration-foreground data-popup-open:decoration-solid pointer-events-auto max-w-64 align-baseline"
-          {...props}
-        >
-          <span className="min-w-0 truncate">{label}</span>
-        </button>
-      )}
-    >
-      {scratchAvailable ? (
-        <MenuItem aria-current={isScratch} onClick={onStartScratch}>
-          <span className="flex min-w-0 items-center gap-2">
-            <WorkspaceBadge
-              workspace={{ kind: "scratch", label: "No project" }}
-              className="size-4 shrink-0"
-            />
-            <span className="block min-w-0 truncate">No project</span>
-          </span>
-        </MenuItem>
-      ) : null}
-      {workspaces.map((workspace) => (
-        <MenuItem
-          key={workspace.id}
-          aria-current={workspace.id === workspaceId}
-          onClick={() => onSelectWorkspace(workspace.id)}
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            <WorkspaceBadge workspace={workspace} className="size-4 shrink-0" />
-            <span className="block min-w-0 truncate">{workspace.label}</span>
-          </span>
-        </MenuItem>
-      ))}
-      <MenuSeparator />
-      <MenuItem onClick={onOpenRepository}>
-        <FolderPlusIcon />
-        Add project
-      </MenuItem>
-    </Menu>
-  );
-  const heading = isScratch
-    ? "What should we work on?"
-    : `What should we build in ${label}?`;
-  return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col items-center">
-      <h1
-        aria-label={heading}
-        className="w-full text-center font-normal text-2xl text-foreground tracking-tight sm:text-3xl"
-      >
-        {isScratch ? (
-          <>What should we work on?</>
-        ) : (
-          <>What should we build in {picker}?</>
-        )}
-      </h1>
-      {isScratch || scratchAvailable ? (
-        <p className="mt-2 flex h-6 items-center text-sm">
-          {isScratch ? (
-            picker
-          ) : (
-            <button
-              type="button"
-              title={newWithoutProjectShortcut}
-              onClick={onStartScratch}
-              className="inline-flex shrink-0 cursor-pointer items-center gap-0.5 whitespace-nowrap font-medium underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-64 text-muted-foreground hover:text-foreground pointer-events-auto"
-            >
-              or start without a project
-            </button>
-          )}
-        </p>
+      {thread && visibleEditTarget ? (
+        <EditFromHereDialog
+          thread={thread}
+          turnId={visibleEditTarget}
+          working={revert.isPending}
+          error={preflightError ?? revert.error?.message}
+          onClose={closeEdit}
+          onRevert={startRevert}
+          checkoutAvailable={Boolean(view && !view.unavailable)}
+        />
       ) : null}
     </div>
   );

@@ -101,7 +101,15 @@ async fn wait(
 ) -> ThreadSnapshot {
     for _ in 0..500 {
         let t = app.thread(id.clone()).await.unwrap();
-        if predicate(&t) {
+        if predicate(&t)
+            && !t.turns.last().is_some_and(|turn| {
+                !turn.execution.active()
+                    && matches!(
+                        turn.checkpoint,
+                        TurnCheckpoint::Pending | TurnCheckpoint::Before { .. }
+                    )
+            })
+        {
             return t;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;

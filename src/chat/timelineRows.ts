@@ -1,5 +1,4 @@
-// Row derivation follows pingdotgg/t3code v0.0.45 components/chat/MessagesTimeline.logic.ts
-// and packages/client-runtime/src/work-log/presentation.ts (MIT).
+// Ported from T3 Code v0.0.45 apps/web/src/components/chat/MessagesTimeline.logic.ts and packages/client-runtime/src/work-log/presentation.ts (MIT).
 import type { ImageAttachment, Item, Thread } from "../ipc";
 import { formatDuration } from "../lib/time";
 
@@ -20,9 +19,16 @@ export type TimelineRow =
   | {
       kind: "user";
       id: string;
+      turnId: string;
       text: string;
       attachments: ImageAttachment[];
       at: number | null;
+    }
+  | {
+      kind: "checkpoint";
+      id: string;
+      turnId: string;
+      checkpoint: Turn["checkpoint"];
     }
   | { kind: "working"; id: string; startedAtMs: number | null }
   | {
@@ -235,6 +241,7 @@ export function deriveRows(
     rows.push({
       kind: "user",
       id: `user:${turn.id}`,
+      turnId: turn.id,
       text: turn.prompt,
       attachments: turn.attachments,
       at: turn.startedAtMs,
@@ -347,6 +354,17 @@ export function deriveRows(
           : null;
     if (failure)
       rows.push({ kind: "error", id: `error:${turn.id}`, text: failure });
+    if (
+      !isRunning(turn) &&
+      (turn.checkpoint.kind === "complete" ||
+        turn.checkpoint.kind === "unavailable")
+    )
+      rows.push({
+        kind: "checkpoint",
+        id: `checkpoint:${turn.id}`,
+        turnId: turn.id,
+        checkpoint: turn.checkpoint,
+      });
   }
   return rows;
 }

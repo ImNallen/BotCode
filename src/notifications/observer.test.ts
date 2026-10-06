@@ -48,6 +48,32 @@ const completed = (id: string): ThreadSummary["latestTurn"] => ({
   completedAtMs: 5,
 });
 
+it("does not replay retained completions after rewind and alerts for the next new turn", () => {
+  const history = new NotificationHistory();
+  const alerts: ThreadAlert[] = [];
+  history.subscribe((alert) => alerts.push(alert));
+  history.seed({ workspace, threads: [summary("a", 1)] });
+  for (const [index, id] of ["turn-1", "turn-2", "turn-3"].entries())
+    history.observe(
+      workspace.id,
+      summary("a", index + 2, { latestTurn: completed(id) }),
+    );
+  const rewound = summary("a", 5, { latestTurn: completed("turn-1") });
+  history.observe(workspace.id, rewound);
+  history.seed({ workspace, threads: [rewound] });
+  history.observe(
+    workspace.id,
+    summary("a", 4, { latestTurn: completed("turn-3") }),
+  );
+  const next = summary("a", 6, { latestTurn: completed("turn-4") });
+  history.observe(workspace.id, next);
+  history.seed({ workspace, threads: [next] });
+  assert.deepEqual(
+    alerts.map((alert) => alert.eventKey),
+    ["turn:turn-1", "turn:turn-2", "turn:turn-3", "turn:turn-4"],
+  );
+});
+
 it("alerts for distinct approvals and completions in two threads exactly once despite repeats and stale refreshes", () => {
   const history = new NotificationHistory();
   const alerts: ThreadAlert[] = [];

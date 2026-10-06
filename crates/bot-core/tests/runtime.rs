@@ -80,7 +80,15 @@ async fn wait(
 ) -> ThreadSnapshot {
     for _ in 0..500 {
         let snapshot = app.thread(id.clone()).await.unwrap();
-        if predicate(&snapshot) {
+        if predicate(&snapshot)
+            && !snapshot.turns.last().is_some_and(|turn| {
+                !turn.execution.active()
+                    && matches!(
+                        turn.checkpoint,
+                        TurnCheckpoint::Pending | TurnCheckpoint::Before { .. }
+                    )
+            })
+        {
             return snapshot;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -917,12 +925,15 @@ fn legacy_snapshots_default_settings() {
             started_at_ms: None,
             completed_at_ms: None,
             attachments: vec![],
+            checkpoint: TurnCheckpoint::default(),
         }],
         approvals: vec![],
         diagnostic: None,
         placement: Placement::Kept,
         snooze: None,
         context: None,
+        pending_revert: None,
+        last_revert: None,
     };
     let mut value = serde_json::to_value(thread).unwrap();
     value.as_object_mut().unwrap().remove("placement");
@@ -2130,12 +2141,15 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
             started_at_ms,
             completed_at_ms,
             attachments: vec![],
+            checkpoint: TurnCheckpoint::default(),
         }],
         approvals: vec![],
         diagnostic: None,
         placement: Placement::Auto,
         snooze: None,
         context: None,
+        pending_revert: None,
+        last_revert: None,
     }
 }
 #[test]

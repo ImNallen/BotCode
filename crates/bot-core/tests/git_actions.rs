@@ -825,7 +825,12 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
     app.interrupt(local.id.clone()).await.unwrap();
     for _ in 0..500 {
         let t = app.thread(local.id.clone()).await.unwrap();
-        if matches!(t.turns[0].execution, Execution::Interrupted) {
+        if matches!(t.turns[0].execution, Execution::Interrupted)
+            && matches!(
+                t.turns[0].checkpoint,
+                TurnCheckpoint::Complete { .. } | TurnCheckpoint::Unavailable { .. }
+            )
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;

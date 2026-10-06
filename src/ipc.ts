@@ -168,6 +168,36 @@ const branches = z.object({
   ),
   origin: z.boolean(),
 });
+const checkpoint = z.object({ reference: z.string(), commit: z.string() });
+const turnDiffFile = z.object({
+  path: z.string(),
+  additions: z.number().int().nullable(),
+  deletions: z.number().int().nullable(),
+});
+const turnCheckpoint = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("pending") }),
+  z.object({ kind: z.literal("before"), before: checkpoint }),
+  z.object({
+    kind: z.literal("complete"),
+    before: checkpoint,
+    after: checkpoint,
+    files: z.array(turnDiffFile),
+  }),
+  z.object({
+    kind: z.literal("unavailable"),
+    before: checkpoint.nullable(),
+    reason: z.string(),
+  }),
+]);
+const fileText = z.object({ name: z.string(), contents: z.string() });
+const turnDiff = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("text"),
+    old: fileText.nullable(),
+    new: fileText.nullable(),
+  }),
+  reason,
+]);
 const thread = z.object({
   id,
   workspaceId: id,
@@ -189,10 +219,29 @@ const thread = z.object({
       startedAtMs: z.number().nullable(),
       completedAtMs: z.number().nullable(),
       attachments: z.array(imageAttachment).default([]),
+      checkpoint: turnCheckpoint.default({
+        kind: "unavailable",
+        before: null,
+        reason: "This turn predates checkpoints.",
+      }),
     }),
   ),
   approvals: z.array(approval),
   diagnostic: z.string().nullable(),
+  pendingRevert: z
+    .object({ requestId: z.string(), turnId: id, files: z.boolean() })
+    .nullable()
+    .default(null),
+  lastRevert: z
+    .object({
+      requestId: z.string(),
+      turnId: id,
+      prompt: z.string(),
+      turnCount: z.number().int(),
+      attachments: z.array(imageAttachment).default([]),
+    })
+    .nullable()
+    .default(null),
   context: contextUsage.nullable().default(null),
 });
 const threadSummary = z.object({
@@ -356,6 +405,7 @@ export type UsageLimits = z.infer<typeof usageLimits>;
 export type Approval = z.infer<typeof approval>;
 export type Item = z.infer<typeof item>;
 export type ImageAttachment = z.infer<typeof imageAttachment>;
+export type TurnDiffFile = z.infer<typeof turnDiffFile>;
 export type ApprovalDecision = "accept" | "decline" | "cancel";
 export type Arrange =
   | {
@@ -479,6 +529,14 @@ export const ipc = {
       { workspaceId, threadId: threadId ?? null, path, basis },
       diff,
     ),
+  turnDiff: (threadId: string, turnId: string, path: string) =>
+    call("read_turn_diff", { threadId, turnId, path }, turnDiff),
+  revert: (
+    threadId: string,
+    requestId: string,
+    turnId: string,
+    files: boolean,
+  ) => call("revert_thread", { threadId, requestId, turnId, files }, thread),
   branches: ({ workspaceId, threadId }: CheckoutRef) =>
     call(
       "list_branches",
