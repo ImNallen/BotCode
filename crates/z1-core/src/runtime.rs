@@ -12,7 +12,7 @@ use crate::{
     terminal::{
         MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey, TerminalSize, Terminals,
     },
-    usage::ContextUsage,
+    usage::{self, ContextUsage, UsageLimits},
     vcs,
 };
 use pr_review::ReviewWork;
@@ -24,7 +24,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::{Mutex, Notify, broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, Notify, broadcast, mpsc, oneshot, watch};
 
 #[derive(Clone)]
 pub struct RuntimeConfig {
@@ -178,6 +178,7 @@ enum Command {
     Create(WorkspaceId, Checkout, Reply<ThreadSnapshot>),
     Snapshot(ThreadId, bool, Reply<ThreadSnapshot>),
     Models(Reply<Vec<ModelOption>>),
+    UsageLimits(bool, Reply<UsageLimits>),
     Settings(ThreadId, SessionSettings, Reply<ThreadSnapshot>),
     /// The path carries a `Hold::Restore` to release in the same step as acceptance.
     Submit(ThreadId, String, String, Option<PathBuf>, Reply<Receipt>),
@@ -198,6 +199,7 @@ enum Command {
 pub struct App {
     commands: mpsc::Sender<Command>,
     changes: broadcast::Sender<ChangeHint>,
+    limits: watch::Receiver<Option<UsageLimits>>,
     worktrees: PathBuf,
     scratch: Option<PathBuf>,
     settings: PathBuf,
@@ -264,6 +266,7 @@ impl App {
         let auto_settle = settings::auto_settle(&settings);
         let (commands, rx) = mpsc::channel(128);
         let (changes, _) = broadcast::channel(256);
+        let (limits, limits_rx) = watch::channel(None);
         let (provider_events, signals) = mpsc::channel(512);
         let (done, completions) = mpsc::channel(128);
         let prs = PrWork::load(&mut store)?;
@@ -296,6 +299,9 @@ impl App {
                 models: None,
                 model_waiters: vec![],
                 listing_models: false,
+                limits,
+                limit_waiters: vec![],
+                reading_limits: false,
                 dirty: HashSet::new(),
                 changes: changes.clone(),
                 provider_events,
@@ -306,6 +312,7 @@ impl App {
         let app = Self {
             commands,
             changes,
+            limits: limits_rx,
             worktrees,
             scratch,
             settings,
@@ -619,6 +626,12 @@ impl App {
     pub async fn models(&self) -> Result<Vec<ModelOption>> {
         self.call(Command::Models).await
     }
+    pub async fn usage_limits(&self, refresh: bool) -> Result<UsageLimits> {
+        self.call(|r| Command::UsageLimits(refresh, r)).await
+    }
+    pub fn watch_usage_limits(&self) -> watch::Receiver<Option<UsageLimits>> {
+        self.limits.clone()
+    }
     pub async fn update_settings(
         &self,
         id: ThreadId,
@@ -931,6 +944,10 @@ enum Completion {
         epoch: u64,
         result: Result<Vec<ModelOption>>,
     },
+    Limits {
+        epoch: u64,
+        result: Result<UsageLimits>,
+    },
     Launched {
         epoch: u64,
         result: Result<Codex>,
@@ -990,6 +1007,9 @@ struct Owner {
     models: Option<Vec<ModelOption>>,
     model_waiters: Vec<Reply<Vec<ModelOption>>>,
     listing_models: bool,
+    limits: watch::Sender<Option<UsageLimits>>,
+    limit_waiters: Vec<Reply<UsageLimits>>,
+    reading_limits: bool,
     dirty: HashSet<ThreadId>,
     changes: broadcast::Sender<ChangeHint>,
     provider_events: mpsc::Sender<Signal>,
@@ -1572,6 +1592,19 @@ impl Owner {
                     self.list_models();
                 }
             }
+            Command::UsageLimits(refresh, reply) => {
+                let cached = self.limits.borrow().clone().filter(|_| !refresh);
+                if let Some(limits) = cached {
+                    let _ = reply.send(Ok(limits));
+                } else {
+                    self.limit_waiters.push(reply);
+                    if self.provider.is_none() {
+                        self.launch();
+                    } else {
+                        self.read_limits();
+                    }
+                }
+            }
             Command::Settings(id, settings, reply) => {
                 let result = (|| -> Result<ThreadSnapshot> {
                     let thread = self.thread(&id)?;
@@ -1997,6 +2030,39 @@ impl Owner {
             let _ = done.send(Completion::Models { epoch, result }).await;
         });
     }
+    fn read_limits(&mut self) {
+        if self.reading_limits {
+            return;
+        }
+        let Some(provider) = self.provider.clone() else {
+            return;
+        };
+        self.reading_limits = true;
+        let epoch = self.epoch;
+        let done = self.done.clone();
+        tokio::spawn(async move {
+            let result = usage::read(&provider).await;
+            let _ = done.send(Completion::Limits { epoch, result }).await;
+        });
+    }
+    fn settle_limits(&mut self, result: Result<UsageLimits>) {
+        self.reading_limits = false;
+        self.limits.send_if_modified(|current| match result {
+            Ok(limits) => {
+                let changed = current.as_ref() != Some(&limits);
+                *current = Some(limits);
+                changed
+            }
+            Err(e) => UsageLimits::after_failure(current, &e.message),
+        });
+        let limits = self.limits.borrow().clone();
+        for reply in std::mem::take(&mut self.limit_waiters) {
+            let _ =
+                reply.send(limits.clone().ok_or_else(|| {
+                    AppError::new("provider", "Codex usage limits are unavailable.")
+                }));
+        }
+    }
     fn prepare(&mut self, job: Prepare) {
         if self.provider.is_none() {
             self.pending.push(job);
@@ -2035,11 +2101,15 @@ impl Owner {
                     let _ = reply.send(result.clone());
                 }
             }
+            Completion::Limits { epoch, result } if epoch == self.epoch => {
+                self.settle_limits(result);
+            }
             Completion::Launched { epoch, result } if epoch == self.epoch => {
                 self.launching = false;
                 match result {
                     Ok(provider) => {
                         self.provider = Some(provider);
+                        self.read_limits();
                         if !self.model_waiters.is_empty() {
                             self.list_models();
                         }
@@ -2219,6 +2289,10 @@ impl Owner {
         for reply in std::mem::take(&mut self.model_waiters) {
             let _ = reply.send(Err(AppError::new("provider_lost", reason)));
         }
+        self.reading_limits = false;
+        if !self.limit_waiters.is_empty() {
+            self.settle_limits(Err(AppError::new("provider_lost", reason)));
+        }
         self.routes.clear();
         self.leases.clear();
         let ids: Vec<_> = self.threads.keys().cloned().collect();
@@ -2349,6 +2423,11 @@ impl Owner {
                     provider.refuse(request.clone(), method).await?;
                 }
             }
+            return Ok(());
+        }
+        if method == "account/rateLimits/updated" {
+            self.limits
+                .send_if_modified(|limits| UsageLimits::apply_update(limits, p));
             return Ok(());
         }
         let Some(id) = id else { return Ok(()) };

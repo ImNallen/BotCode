@@ -17,7 +17,7 @@ mod store;
 mod terminal;
 pub use terminal::{TerminalEvent, TerminalId};
 mod usage;
-pub use usage::ContextUsage;
+pub use usage::{ContextUsage, LimitWindow, Slot, UsageLimits, WindowKind};
 mod vcs;
 pub use domain::*;
 pub use runtime::{App, RuntimeConfig};

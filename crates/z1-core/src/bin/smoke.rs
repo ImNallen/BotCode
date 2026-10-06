@@ -79,6 +79,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let thread = app.create_thread(workspace.id, NewCheckout::Local).await?;
     let receipt=app.submit(thread.id.clone(),"smoke-first".into(),"Do not use any tools or change files. Reply with Z1_CORE_OK followed by roughly 100 words about local applications.".into()).await?;
     let (first, streamed) = wait(&app, thread.id.clone(), &receipt).await?;
+    assert!(matches!(
+        app.usage_limits(false).await?,
+        UsageLimits::Reported { .. } | UsageLimits::Unsupported
+    ));
     let native = first
         .native_thread_id
         .clone()
