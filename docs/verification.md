@@ -387,3 +387,21 @@ The native debug bundle used `dev.z1.code.namingverify`, a disposable repository
 That native run exposed a stale composer branch because workspace hints did not invalidate the branch query. The fix uses the existing checkout invalidation helper. All 134 frontend tests passed. The new subscriber regression uses Tauri's event mock and an active React Query observer. A naming hint refreshes the current branch data and sidebar summary while another workspace stays cached. It failed against the old invalidations and passed with the fix.
 
 The native recheck passed on 2026-10-06 after desktop access became available. With `dev.z1.code.namingfinalverify` and the same disposable repository and isolated state, a new worktree started on `z1code/7c956a08` and changed to `z1code/improve-password-reset-validation`. Both the sidebar and composer refreshed automatically without opening the branch picker. A follow-up about checkout cleanup kept that name. After a full quit and relaunch, opening the conversation restored both responses and the generated name in the sidebar and composer. Git HEAD and SQLite agreed, the folder remained `z1code-7c956a08`, the PR base remained `main`, and the worktree stayed clean. The core restart and follow-up tests also passed. Evidence and review reports are under `/tmp/z1-worktree-naming`.
+
+## Terminal drawer
+
+Verified on macOS on 2026-10-06 in the `pnpm tauri dev` window with an isolated `Z1_DATA_DIR`, a disposable repository and a Swedish Pro keyboard layout. `cargo test -p z1-core` covers the PTY manager against `/bin/sh`: spawning in the thread's checkout, history replay on reattach from the same shell, resize, close, exit, and shutdown and drop reaping.
+
+| Workflow | Observed result |
+| --- | --- |
+| No-project draft | No terminal toggle. |
+| Repository draft | The toggle sat left of the right-panel toggle. Command+J opened a login zsh in the repository and focused it. |
+| Typing | `$`, `@`, `[`, `]` and the `~` dead key arrived intact. Command+T and Command+U sent nothing to the shell. |
+| Reattach | Closing and reopening the drawer, and switching split groups, replayed earlier output from the same shell. |
+| Split and new | Command+D split side by side, Command+N added a group, and T3's tab sidebar listed both groups. |
+| Close | Command+W asked "Close terminal "Terminal 1"?" and kept the window open. Confirming ended one shell process. |
+| Exit | `exit` removed the tab and its process. |
+| Resize | Dragging the top edge grew the drawer and shrank the conversation above it. |
+| Quit and relaunch | Quitting left no shell processes. The persisted open drawer started a new shell after relaunch. |
+
+A tall drawer on an empty draft lets the centered heading overlap the header, as T3's identical overlay does. Light mode, link clicks and switching between existing threads had no native observation.
