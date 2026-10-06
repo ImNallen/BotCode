@@ -149,6 +149,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "bot-code"
+version = "0.1.0"
+dependencies = [
+ "bot-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tokio",
+]
+
+[[package]]
+name = "bot-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "libc",
+ "portable-pty",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "brotli"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4708,35 +4737,6 @@ dependencies = [
  "quote",
  "syn 3.0.6",
  "synstructure",
-]
-
-[[package]]
-name = "z1-code"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tokio",
- "z1-core",
-]
-
-[[package]]
-name = "z1-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "libc",
- "portable-pty",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "uuid",
 ]
 
 [[package]]

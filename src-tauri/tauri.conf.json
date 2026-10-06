@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Z1 Code",
+  "productName": "Bot Code",
   "version": "0.1.0",
-  "identifier": "dev.z1.code",
+  "identifier": "dev.bot.code",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Z1 Code",
+        "title": "Bot Code",
         "width": 1100,
         "height": 780,
         "minWidth": 1000,

@@ -1,6 +1,6 @@
 mod ipc;
+use bot_core::{App, RuntimeConfig};
 use tauri::{Emitter, Manager};
-use z1_core::{App, RuntimeConfig};
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -13,10 +13,10 @@ fn main() {
                 loop {
                     match changes.recv().await {
                         Ok(change) => {
-                            let _ = handle.emit("z1:changed", change);
+                            let _ = handle.emit("bot:changed", change);
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            let _ = handle.emit("z1:refresh", ());
+                            let _ = handle.emit("bot:refresh", ());
                         }
                         Err(_) => break,
                     }
@@ -28,7 +28,7 @@ fn main() {
                 while limits.changed().await.is_ok() {
                     let value = limits.borrow_and_update().clone();
                     if let Some(value) = value {
-                        let _ = handle.emit("z1:usage-limits", value);
+                        let _ = handle.emit("bot:usage-limits", value);
                     }
                 }
             });
@@ -81,7 +81,7 @@ fn main() {
             ipc::terminal_close
         ])
         .build(tauri::generate_context!())
-        .expect("Z1 Code could not start");
+        .expect("Bot Code could not start");
     app.run(|handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
             let runtime = handle.state::<App>();

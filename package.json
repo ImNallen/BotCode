@@ -1,5 +1,5 @@
 {
-  "name": "z1-code",
+  "name": "bot-code",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,9 +9,9 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
-    "test:core": "cargo test -p z1-core",
+    "test:core": "cargo test -p bot-core",
     "test:ui": "node --import ./src/test/tsx.mjs --test 'src/**/*.test.ts'",
-    "smoke": "cargo run -p z1-core --bin smoke",
+    "smoke": "cargo run -p bot-core --bin smoke",
     "format": "prettier --write 'src/**/*.{ts,tsx,css}' '*.{json,ts,yaml}' 'src-tauri/*.json' 'src-tauri/capabilities/*.json'",
     "format:check": "prettier --check 'src/**/*.{ts,tsx,css}' '*.{json,ts,yaml}' 'src-tauri/*.json' 'src-tauri/capabilities/*.json'"
   },

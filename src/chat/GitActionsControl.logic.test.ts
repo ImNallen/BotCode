@@ -10,7 +10,7 @@ import {
 } from "./GitActionsControl.logic.ts";
 
 function status(overrides: Partial<VcsStatus> = {}): VcsStatus {
-  // Z1: no isRepo; the control renders only inside a repository.
+  // Bot Code: no isRepo; the control renders only inside a repository.
   return {
     hasPrimaryRemote: true,
     isDefaultRef: false,
@@ -541,7 +541,7 @@ describe("when: on default ref without open PR", () => {
     );
     assert.deepInclude(quick, {
       kind: "run_action",
-      // Z1: a clean push on the default ref runs push, not commit_push.
+      // Bot Code: a clean push on the default ref runs push, not commit_push.
       action: "push",
       label: "Push",
       disabled: false,
@@ -758,7 +758,7 @@ describe("when: ref has no upstream configured", () => {
     });
   });
 
-  // Z1: no publish flow; the quick action explains the missing origin instead.
+  // Bot Code: no publish flow; the quick action explains the missing origin instead.
   it("resolveQuickAction asks for an origin remote when none exists", () => {
     const quick = resolveQuickAction(
       status({
@@ -861,7 +861,7 @@ describe("when: ref has no upstream configured", () => {
     );
     assert.deepInclude(quick, {
       kind: "run_action",
-      // Z1: a clean push on the default ref runs push, not commit_push.
+      // Bot Code: a clean push on the default ref runs push, not commit_push.
       action: "push",
       label: "Push",
       disabled: false,
@@ -929,7 +929,7 @@ describe("resolveDefaultBranchActionDialogCopy", () => {
 
     assert.deepEqual(copy, {
       title: "Push to default ref?",
-      // Z1: no feature-ref clause; the dialog offers only Abort and Continue.
+      // Bot Code: no feature-ref clause; the dialog offers only Abort and Continue.
       description: 'This action will push local commits on "main".',
       continueLabel: "Push to main",
     });
@@ -944,7 +944,7 @@ describe("resolveDefaultBranchActionDialogCopy", () => {
 
     assert.deepEqual(copy, {
       title: "Push & create PR from default ref?",
-      // Z1: no feature-ref clause; the dialog offers only Abort and Continue.
+      // Bot Code: no feature-ref clause; the dialog offers only Abort and Continue.
       description:
         'This action will push local commits and create a pull request on "main".',
       continueLabel: "Push & create PR",
@@ -960,7 +960,7 @@ describe("resolveDefaultBranchActionDialogCopy", () => {
 
     assert.deepEqual(copy, {
       title: "Commit, push & create PR from default ref?",
-      // Z1: no feature-ref clause; the dialog offers only Abort and Continue.
+      // Bot Code: no feature-ref clause; the dialog offers only Abort and Continue.
       description:
         'This action will commit, push, and create a pull request on "main".',
       continueLabel: "Commit, push & create PR",

@@ -611,7 +611,7 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       workspaces.clear();
     }, 160);
   };
-  const offChanged = await listen<unknown>("z1:changed", (event) => {
+  const offChanged = await listen<unknown>("bot:changed", (event) => {
     const hint = z
       .object({
         threadId: id,
@@ -645,11 +645,11 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       schedule(hint.data.threadId);
     }
   });
-  const offLimits = await listen<unknown>("z1:usage-limits", (event) => {
+  const offLimits = await listen<unknown>("bot:usage-limits", (event) => {
     const limits = usageLimits.safeParse(event.payload);
     if (limits.success) client.setQueryData(["usage-limits"], limits.data);
   });
-  const offRefresh = await listen("z1:refresh", () => {
+  const offRefresh = await listen("bot:refresh", () => {
     void client.invalidateQueries();
   });
   const focus = () => {

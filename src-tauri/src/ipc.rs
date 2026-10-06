@@ -1,5 +1,5 @@
+use bot_core::*;
 use tauri::{State, ipc::Channel};
-use z1_core::*;
 #[tauri::command]
 pub async fn list_workspaces(app: State<'_, App>) -> Result<Vec<Workspace>> {
     app.list_workspaces().await

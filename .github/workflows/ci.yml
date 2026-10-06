@@ -38,4 +38,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test -p z1-core --locked
+      - run: cargo test -p bot-core --locked
