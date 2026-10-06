@@ -3487,6 +3487,79 @@ async fn turn_images_survive_reopen_and_the_sweep_keeps_only_referenced_old_file
 }
 
 #[tokio::test]
+async fn image_threads_keep_renames_and_archives_until_the_last_reference_is_deleted() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let first = conversation(&app, &f).await;
+    let second = app
+        .create_thread(first.workspace_id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    let image = app
+        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .await
+        .unwrap();
+    app.rename_thread(first.id.clone(), "Saved image".into())
+        .await
+        .unwrap();
+    for thread in [&first, &second] {
+        app.submit(
+            thread.id.clone(),
+            format!("image-{}", thread.id),
+            String::new(),
+            vec![image.clone()],
+        )
+        .await
+        .unwrap();
+        wait(&app, &thread.id, |t| {
+            matches!(t.turns[0].execution, Execution::Completed)
+        })
+        .await;
+    }
+    assert_eq!(
+        app.thread(first.id.clone()).await.unwrap().title,
+        "Saved image"
+    );
+    assert_eq!(
+        app.thread(second.id.clone()).await.unwrap().title,
+        "Image: shot.png"
+    );
+    app.arrange(first.id.clone(), Arrange::Archive)
+        .await
+        .unwrap();
+    app.delete_thread(second.id.clone()).await.unwrap();
+    app.shutdown().await.unwrap();
+    let path = attachment_path(&f, &format!("{SHOT_ID}.png"));
+    age(&path, Duration::from_secs(25 * 60 * 60));
+    let app = reopen(&f.config).await;
+    let archived = app.thread(first.id.clone()).await.unwrap();
+    assert!(archived.archived());
+    assert_eq!(archived.title, "Saved image");
+    assert_eq!(archived.turns[0].attachments, [image]);
+    assert!(path.exists());
+    assert_eq!(
+        app.thread(second.id).await.unwrap_err().code,
+        "missing_thread"
+    );
+    app.arrange(first.id.clone(), Arrange::Unarchive)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.thread(first.id.clone()).await.unwrap().title,
+        "Saved image"
+    );
+    app.delete_thread(first.id.clone()).await.unwrap();
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        app.thread(first.id).await.unwrap_err().code,
+        "missing_thread"
+    );
+    assert!(!path.exists());
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn archived_placements_and_rename_survive_restart_and_reject_live_actions() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
@@ -3579,9 +3652,14 @@ async fn manual_draft_rename_survives_first_prompt_and_empty_name_refuses() {
             .code,
         "invalid_title"
     );
-    app.submit(thread.id.clone(), "rename-first".into(), "hello".into(), vec![])
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "rename-first".into(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &thread.id, |t| {
         matches!(t.turns[0].execution, Execution::Completed)
     })
@@ -3605,9 +3683,14 @@ async fn delete_refuses_running_and_same_checkout_then_removes_receipts_durably(
         .create_thread(thread.workspace_id.clone(), NewCheckout::Local)
         .await
         .unwrap();
-    app.submit(thread.id.clone(), "deleted-receipt".into(), "hold".into(), vec![])
-        .await
-        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "deleted-receipt".into(),
+        "hold".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &thread.id, |t| {
         matches!(t.turns[0].execution, Execution::Running)
     })
