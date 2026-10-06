@@ -332,14 +332,7 @@ export function Workbench() {
   const selectWorkspace = (workspace: string) =>
     void navigate({ to: "/", search: { workspace } });
   const newThread = (workspace = workspaceId) =>
-    void navigate({
-      to: "/",
-      search: (previous) => ({
-        ...previous,
-        workspace,
-        thread: undefined,
-      }),
-    });
+    void navigate({ to: "/", search: { workspace } });
   if (!native)
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm text-muted-foreground">
@@ -387,7 +380,7 @@ export function Workbench() {
             data-slot="sidebar-inner"
             className="flex h-full w-full flex-col bg-sidebar"
           >
-            <SidebarBrand />
+            <SidebarBrand onNewThread={() => newThread()} />
             <div className="relative min-h-0 flex-1">
               <div
                 className="absolute inset-0 flex min-h-0 flex-col"
