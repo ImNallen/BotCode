@@ -55,14 +55,27 @@ impl Tool<'_> {
         cancel: &mut tokio::sync::watch::Receiver<bool>,
         input: Option<&[u8]>,
     ) -> Result<Output> {
+        self.run_with_env_input(args, limit, bytes, cancel, input, &[])
+            .await
+    }
+    pub async fn run_with_env_input(
+        &self,
+        args: &[&str],
+        limit: Duration,
+        bytes: u64,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+        input: Option<&[u8]>,
+        env: &[(&str, &std::ffi::OsStr)],
+    ) -> Result<Output> {
         if *cancel.borrow() {
-            return Err(AppError::new("cancelled", "Pull request work cancelled."));
+            return Err(AppError::new("cancelled", "Tool work cancelled."));
         }
         let mut command = tokio::process::Command::new(self.program);
         command
             .args(args)
             .current_dir(self.cwd)
             .envs(NON_INTERACTIVE)
+            .envs(env.iter().copied())
             .stdin(if input.is_some() {
                 Stdio::piped()
             } else {
@@ -137,7 +150,7 @@ impl Tool<'_> {
         };
         let Some(finished) = finished else {
             stop(&mut child, pid).await?;
-            return Err(AppError::new("cancelled", "Pull request work cancelled."));
+            return Err(AppError::new("cancelled", "Tool work cancelled."));
         };
         match finished {
             Ok(result) => {
@@ -500,10 +513,14 @@ pub(crate) enum Plan {
         upstream: String,
     },
     Stack {
-        commit: Option<CommitMessage>,
+        commit: Option<CommitRequest>,
         push: Option<PushTarget>,
         pr: Option<PrStep>,
     },
+}
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommitRequest {
+    pub message: Option<CommitMessage>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PushTarget {
@@ -525,9 +542,9 @@ pub(crate) fn plan(
 ) -> std::result::Result<Plan, GitFailure> {
     let (commit, pushes, opens) = match action {
         GitAction::Pull => return plan_pull(status),
-        GitAction::Commit { message } => (Some(message), false, false),
-        GitAction::CommitPush { message } => (Some(message), true, false),
-        GitAction::CommitPushPr { message } => (Some(message), true, true),
+        GitAction::Commit { message } => (Some(CommitRequest { message }), false, false),
+        GitAction::CommitPush { message } => (Some(CommitRequest { message }), true, false),
+        GitAction::CommitPushPr { message } => (Some(CommitRequest { message }), true, true),
         GitAction::Push => (None, true, false),
         GitAction::CreatePr => (None, false, true),
     };
@@ -684,6 +701,8 @@ pub(crate) struct Context {
     pub root: PathBuf,
     pub gh: PathBuf,
     pub network: Duration,
+    pub codex: PathBuf,
+    pub model: Option<String>,
     pub progress: Box<dyn Fn(GitPhase) + Send + Sync>,
 }
 pub(crate) async fn run(cx: &Context, action: GitAction) -> Result<GitOutcome> {
@@ -718,7 +737,7 @@ async fn steps(
     if let Some(message) = commit_message {
         (cx.progress)(GitPhase::Commit);
         out.commit = Some(
-            commit(&cx.root, &message)
+            commit(cx, message.message)
                 .await
                 .map_err(failed(GitPhase::Commit))?,
         );
@@ -732,11 +751,16 @@ async fn steps(
     }
     if let Some(step) = pr_step {
         (cx.progress)(GitPhase::Pr);
-        out.pr = Some(open_pr(cx, step).await.map_err(failed(GitPhase::Pr))?);
+        out.pr = Some(
+            open_pr(cx, step, &mut out.warnings)
+                .await
+                .map_err(failed(GitPhase::Pr))?,
+        );
     }
     Ok(())
 }
-async fn commit(root: &Path, message: &CommitMessage) -> Result<Committed> {
+async fn commit(cx: &Context, message: Option<CommitMessage>) -> Result<Committed> {
+    let root = &cx.root;
     let git = git(root);
     git.ok(&["add", "-A"], LOCAL, "git").await?;
     if git.run(&["diff", "--cached", "--quiet"], LOCAL).await?.code == Some(0) {
@@ -745,6 +769,26 @@ async fn commit(root: &Path, message: &CommitMessage) -> Result<Committed> {
             "There are no changes to commit.",
         ));
     }
+    let message = match message {
+        Some(message) => message,
+        None => {
+            let (_send, mut cancel) = tokio::sync::watch::channel(false);
+            crate::text_generation::commit_message(
+                &cx.codex,
+                cx.model.as_deref(),
+                root,
+                None,
+                &mut cancel,
+            )
+            .await
+            .map_err(|_| {
+                AppError::new(
+                    "commit_generation",
+                    "Could not generate a commit message. Enter a commit message and try again.",
+                )
+            })?
+        }
+    };
     git.ok(&["commit", "-m", message.as_str()], COMMIT, "git")
         .await?;
     Ok(Committed {
@@ -785,28 +829,52 @@ async fn pull(cx: &Context, upstream: String) -> Result<Pulled> {
         upstream,
     })
 }
-async fn open_pr(cx: &Context, step: PrStep) -> Result<PrOpened> {
+async fn open_pr(cx: &Context, step: PrStep, warnings: &mut Vec<String>) -> Result<PrOpened> {
     let (base, head) = match step {
         PrStep::Existing(pr) => return Ok(PrOpened { pr, created: false }),
         PrStep::Create { base, head } => (base, head),
     };
     let repository = pr_repository(&cx.root).await?;
-    let created = gh(
-        &cx.gh,
+    let (_send, mut cancel) = tokio::sync::watch::channel(false);
+    let content = crate::text_generation::pr_content(
+        &cx.codex,
+        cx.model.as_deref(),
         &cx.root,
-        &[
-            "pr",
-            "create",
-            "--repo",
-            &repository,
-            "--fill",
-            "--base",
-            &base,
-            "--head",
-            &head,
-        ],
-        cx.network,
+        &base,
+        &head,
+        &mut cancel,
     )
+    .await
+    .and_then(|content| {
+        let body_file = tempfile::NamedTempFile::new()?;
+        std::fs::write(body_file.path(), content.body)?;
+        Ok((content.title, body_file))
+    });
+    let generated_title = content.as_ref().ok().map(|(title, _)| title.clone());
+    let body_path = content
+        .as_ref()
+        .ok()
+        .map(|(_, file)| file.path().to_string_lossy());
+    let mut args = vec![
+        "pr",
+        "create",
+        "--repo",
+        &repository,
+        "--base",
+        &base,
+        "--head",
+        &head,
+    ];
+    if let (Some(title), Some(path)) = (&generated_title, &body_path) {
+        args.extend(["--title", title, "--body-file", path]);
+    } else {
+        warnings.push(
+            "Could not generate pull request text. Used GitHub CLI's commit-based title and body."
+                .into(),
+        );
+        args.insert(4, "--fill");
+    }
+    let created = gh(&cx.gh, &cx.root, &args, cx.network)
     .await.map_err(|error| {
         if error.code == "timeout" || error.code == "process_cleanup" || error.code == "io" {
             AppError::new("pr_creation_uncertain", "GitHub may have created this pull request. Refresh pull requests to confirm before starting another create action.")
@@ -823,7 +891,7 @@ async fn open_pr(cx: &Context, step: PrStep) -> Result<PrOpened> {
     Ok(PrOpened {
         pr: PullRequest {
             number: key.number().parse().unwrap(),
-            title: None,
+            title: generated_title,
             url: key.url(),
             base,
             head,

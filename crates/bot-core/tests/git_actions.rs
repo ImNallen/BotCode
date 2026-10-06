@@ -354,7 +354,7 @@ async fn commit_includes_untracked_files_and_reports_its_subject() {
         &workspace,
         None,
         GitAction::Commit {
-            message: message("  Add new.txt\n\nWith a body.  "),
+            message: Some(message("  Add new.txt\n\nWith a body.  ")),
         },
     )
     .await
@@ -397,7 +397,7 @@ async fn commit_push_publishes_a_branch_and_records_its_base() {
         &workspace,
         None,
         GitAction::CommitPush {
-            message: message("Add a"),
+            message: Some(message("Add a")),
         },
     )
     .await
@@ -434,7 +434,7 @@ async fn commit_push_publishes_a_branch_and_records_its_base() {
         &workspace,
         None,
         GitAction::CommitPush {
-            message: message("Add b"),
+            message: Some(message("Add b")),
         },
     )
     .await
@@ -471,7 +471,7 @@ async fn commit_push_pr_opens_one_pull_request_against_the_worktree_base() {
         &workspace,
         Some(&thread.id),
         GitAction::CommitPushPr {
-            message: message("Add the feature"),
+            message: Some(message("Add the feature")),
         },
     )
     .await
@@ -555,6 +555,10 @@ async fn create_pr_returns_the_open_pull_request_instead_of_creating_one() {
     );
     assert_eq!(phases, [GitPhase::Pr], "nothing to push, nothing to create");
     assert!(
+        generation_calls(&f, "pr").is_empty(),
+        "existing pull requests bypass generation"
+    );
+    assert!(
         f.gh_calls().iter().all(|call| call[1] != "create"),
         "gh pr create never ran: {:?}",
         f.gh_calls()
@@ -571,7 +575,7 @@ async fn pull_request_actions_are_refused_before_the_commit_without_gh() {
     std::fs::write(f.dir.path().join("peers/unauthenticated"), "").unwrap();
     let (app, workspace) = f.open().await;
     let commit_push_pr = || GitAction::CommitPushPr {
-        message: message("Add a"),
+        message: Some(message("Add a")),
     };
     let (outcome, phases) = run(&app, &workspace, None, commit_push_pr()).await.unwrap();
     assert_eq!(failure(&outcome), (GitPhase::Pr, "gh_unauthenticated"));
@@ -611,7 +615,7 @@ async fn pull_request_actions_are_refused_before_the_commit_without_gh() {
         &workspace,
         None,
         GitAction::CommitPush {
-            message: message("Add a"),
+            message: Some(message("Add a")),
         },
     )
     .await
@@ -643,7 +647,7 @@ async fn a_rejected_push_keeps_the_commit_and_a_rerun_converges() {
         &workspace,
         None,
         GitAction::CommitPushPr {
-            message: message("Add a"),
+            message: Some(message("Add a")),
         },
     )
     .await
@@ -717,7 +721,7 @@ async fn refusals_are_decided_before_anything_runs() {
         async move { code(run(app, workspace, None, action).await.unwrap().0) }
     };
     let commit = || GitAction::Commit {
-        message: message("Nothing"),
+        message: Some(message("Nothing")),
     };
     assert_eq!(attempt(commit()).await, "nothing_to_commit");
     assert_eq!(attempt(GitAction::Push).await, "nothing_to_push");
@@ -729,7 +733,7 @@ async fn refusals_are_decided_before_anything_runs() {
     assert_eq!(attempt(GitAction::Push).await, "behind_upstream");
     assert_eq!(
         attempt(GitAction::CommitPush {
-            message: message("Ours"),
+            message: Some(message("Ours")),
         })
         .await,
         "behind_upstream"
@@ -800,7 +804,7 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let commit = || GitAction::Commit {
-        message: message("Add a"),
+        message: Some(message("Add a")),
     };
     let refused = run(&app, &workspace, None, commit()).await.unwrap_err();
     assert_eq!(
@@ -904,7 +908,7 @@ async fn the_checkout_is_released_when_the_caller_stops_waiting() {
             &workspace,
             None,
             GitAction::Commit {
-                message: message("Add a"),
+                message: Some(message("Add a")),
             },
         ),
     )
@@ -933,6 +937,444 @@ async fn the_checkout_is_released_when_the_caller_stops_waiting() {
     assert_eq!(
         git_output(&f.origin, &["log", "-1", "--format=%s", "main"]),
         "Add a"
+    );
+    app.shutdown().await.unwrap();
+}
+
+fn generation_file(f: &Fixture, name: &str, contents: &str) {
+    std::fs::write(f.dir.path().join("peers").join(name), contents).unwrap();
+}
+fn generation_calls(f: &Fixture, kind: &str) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(f.dir.path().join("peers").join(format!("{kind}.jsonl")))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+async fn selected_thread(app: &App, workspace: &WorkspaceId) -> ThreadSnapshot {
+    app.models().await.unwrap();
+    let t = app
+        .create_thread(workspace.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    let mut settings = t.settings;
+    settings.model = Some("model-two".into());
+    settings.effort = Some("medium".into());
+    app.update_settings(t.id, settings).await.unwrap()
+}
+
+#[tokio::test]
+async fn preview_uses_selected_model_and_private_split_index_without_changing_staging() {
+    let f = Fixture::new();
+    std::fs::write(f.repository.join("README.md"), "staged\n").unwrap();
+    git_output(&f.repository, &["add", "README.md"]);
+    git_output(&f.repository, &["update-index", "--split-index"]);
+    std::fs::write(f.repository.join("README.md"), "unstaged preview\n").unwrap();
+    std::fs::write(f.repository.join("new.txt"), "new preview\n").unwrap();
+    let index = std::fs::read(f.repository.join(".git/index")).unwrap();
+    let staged = git_output(&f.repository, &["diff", "--cached"]);
+    generation_file(
+        &f,
+        "commit_output",
+        r#"{"subject":"Describe the staged changes","body":"- Include the new file"}"#,
+    );
+    let (app, workspace) = f.open().await;
+    let t = selected_thread(&app, &workspace).await;
+    let job = app.begin_commit_message(t.id).await.unwrap();
+    assert_eq!(
+        app.await_commit_message(job).await.unwrap(),
+        "Describe the staged changes\n\n- Include the new file"
+    );
+    assert_eq!(
+        std::fs::read(f.repository.join(".git/index")).unwrap(),
+        index
+    );
+    assert_eq!(git_output(&f.repository, &["diff", "--cached"]), staged);
+    let calls = generation_calls(&f, "commit");
+    assert_eq!(calls.len(), 1);
+    let args = calls[0]["args"].as_array().unwrap();
+    assert!(
+        args.windows(2)
+            .any(|pair| pair[0] == "--model" && pair[1] == "model-two")
+    );
+    let prompt = calls[0]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("+unstaged preview"));
+    assert!(prompt.contains("+new preview"));
+    assert!(!prompt.contains("+staged\n"));
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn preview_supports_an_unborn_repository_without_creating_its_index() {
+    let f = Fixture::new();
+    let unborn = f.dir.path().join("unborn");
+    std::fs::create_dir(&unborn).unwrap();
+    git_output(&unborn, &["init", "-q", "-b", "main"]);
+    std::fs::write(unborn.join("first.txt"), "first content\n").unwrap();
+    generation_file(
+        &f,
+        "commit_output",
+        r#"{"subject":"Add the first file","body":""}"#,
+    );
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(unborn.clone()).await.unwrap();
+    let t = app
+        .create_thread(workspace.id, NewCheckout::Local)
+        .await
+        .unwrap();
+    let job = app.begin_commit_message(t.id).await.unwrap();
+    assert_eq!(
+        app.await_commit_message(job).await.unwrap(),
+        "Add the first file"
+    );
+    assert!(!unborn.join(".git/index").exists());
+    assert!(
+        generation_calls(&f, "commit")[0]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("+first content")
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_preview_reaps_process_group_and_manual_commit_never_waits_for_generation() {
+    let f = Fixture::new();
+    std::fs::write(f.repository.join("new.txt"), "new\n").unwrap();
+    generation_file(&f, "commit_stall", "");
+    generation_file(&f, "commit_descendant", "");
+    let (app, workspace) = f.open().await;
+    let t = selected_thread(&app, &workspace).await;
+    let job = app.begin_commit_message(t.id.clone()).await.unwrap();
+    wait_until(|| f.dir.path().join("peers/commit_child.pid").exists()).await;
+    let pids: Vec<i32> = ["commit.pid", "commit_child.pid"]
+        .into_iter()
+        .map(|file| {
+            std::fs::read_to_string(f.dir.path().join("peers").join(file))
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    tokio::time::timeout(Duration::from_secs(1), app.thread(t.id.clone()))
+        .await
+        .unwrap()
+        .unwrap();
+    let (outcome, _) = tokio::time::timeout(
+        Duration::from_secs(2),
+        run(
+            &app,
+            &workspace,
+            Some(&t.id),
+            GitAction::Commit {
+                message: Some(message("Use the edited message")),
+            },
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(outcome.failure.is_none(), "{outcome:?}");
+    assert_eq!(
+        git_output(&f.repository, &["log", "-1", "--format=%s"]),
+        "Use the edited message"
+    );
+    assert_eq!(
+        generation_calls(&f, "commit").len(),
+        1,
+        "manual submission never starts another generation"
+    );
+    assert_eq!(
+        app.await_commit_message(job).await.unwrap_err().code,
+        "cancelled"
+    );
+    wait_until(|| pids.iter().all(|pid| unsafe { libc::kill(*pid, 0) } != 0)).await;
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_the_acknowledged_job_before_await_stops_generation() {
+    let f = Fixture::new();
+    std::fs::write(f.repository.join("new.txt"), "new\n").unwrap();
+    generation_file(&f, "commit_stall", "");
+    let (app, workspace) = f.open().await;
+    let t = selected_thread(&app, &workspace).await;
+    let job = app.begin_commit_message(t.id).await.unwrap();
+    app.cancel_commit_message(job.clone()).await.unwrap();
+    assert_eq!(
+        app.await_commit_message(job).await.unwrap_err().code,
+        "cancelled"
+    );
+    app.shutdown().await.unwrap();
+    if let Ok(pid) = std::fs::read_to_string(f.dir.path().join("peers/commit.pid")) {
+        assert_ne!(unsafe { libc::kill(pid.parse().unwrap(), 0) }, 0);
+    }
+}
+
+#[tokio::test]
+async fn worktree_cleanup_cancels_a_running_commit_preview() {
+    let f = Fixture::new();
+    generation_file(&f, "commit_stall", "");
+    generation_file(&f, "commit_descendant", "");
+    let (app, workspace) = f.open().await;
+    let thread = app
+        .create_thread(
+            workspace,
+            NewCheckout::Worktree {
+                base: "main".into(),
+                from_origin: false,
+            },
+        )
+        .await
+        .unwrap();
+    let Checkout::Worktree { path, .. } = thread.checkout else {
+        panic!("expected a worktree");
+    };
+    let changed = path.join("preview.txt");
+    std::fs::write(&changed, "preview content\n").unwrap();
+    let job = app.begin_commit_message(thread.id).await.unwrap();
+    wait_until(|| f.dir.path().join("peers/commit_child.pid").exists()).await;
+    let pids: Vec<i32> = ["commit.pid", "commit_child.pid"]
+        .into_iter()
+        .map(|name| {
+            std::fs::read_to_string(f.dir.path().join("peers").join(name))
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    std::fs::remove_file(changed).unwrap();
+    app.save_settings(r#"{"storageCleanup":{"worktreeAfterDays":null,"worktreeUnchanged":true}}"#)
+        .await
+        .unwrap();
+    app.sweep_worktrees_at(u64::MAX / 2).await;
+    assert!(!path.exists(), "the unchanged worktree was removed");
+    let cancelled = tokio::time::timeout(Duration::from_secs(1), app.await_commit_message(job))
+        .await
+        .expect("cleanup must cancel generation before its timeout")
+        .unwrap_err();
+    assert_eq!(cancelled.code, "cancelled");
+    wait_until(|| pids.iter().all(|pid| unsafe { libc::kill(*pid, 0) } != 0)).await;
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn blank_combined_action_generates_from_actual_index_and_new_commit_against_recorded_base() {
+    let f = Fixture::new();
+    git_output(&f.repository, &["checkout", "-qb", "develop"]);
+    commit_in(&f.repository, "base-only.txt");
+    git_output(&f.repository, &["push", "-q", "origin", "develop"]);
+    git_output(&f.repository, &["checkout", "-qb", "feature"]);
+    git_output(
+        &f.repository,
+        &["config", "branch.feature.gh-merge-base", "develop"],
+    );
+    commit_in(&f.repository, "earlier-feature.txt");
+    std::fs::write(
+        f.repository.join("latest-feature.txt"),
+        "latest staged change\n",
+    )
+    .unwrap();
+    generation_file(
+        &f,
+        "commit_output",
+        r#"{"subject":"Add the latest feature","body":"Explain the change"}"#,
+    );
+    generation_file(
+        &f,
+        "pr_output",
+        r###"{"title":"Ship the branch feature","body":"## Summary\n- Add the branch feature\n\n## Testing\n- Not run"}"###,
+    );
+    let (app, workspace) = f.open().await;
+    let t = selected_thread(&app, &workspace).await;
+    let (outcome, phases) = run(
+        &app,
+        &workspace,
+        Some(&t.id),
+        GitAction::CommitPushPr { message: None },
+    )
+    .await
+    .unwrap();
+    assert!(outcome.failure.is_none(), "{outcome:?}");
+    assert!(outcome.warnings.is_empty());
+    assert_eq!(phases, [GitPhase::Commit, push_phase(), GitPhase::Pr]);
+    assert_eq!(outcome.commit.unwrap().subject, "Add the latest feature");
+    assert_eq!(
+        outcome.pr.unwrap().pr.title.as_deref(),
+        Some("Ship the branch feature")
+    );
+    assert_eq!(
+        git_output(&f.repository, &["log", "-1", "--format=%B"]),
+        "Add the latest feature\n\nExplain the change"
+    );
+    let commit = generation_calls(&f, "commit");
+    assert!(
+        commit[0]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("+latest staged change")
+    );
+    let pr = generation_calls(&f, "pr");
+    let prompt = pr[0]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("Base branch: develop"));
+    assert!(prompt.contains("Add the latest feature"));
+    assert!(prompt.contains("earlier-feature.txt"));
+    assert!(!prompt.contains("base-only.txt"));
+    assert!(
+        pr[0]["args"]
+            .as_array()
+            .unwrap()
+            .windows(2)
+            .any(|pair| pair[0] == "--model" && pair[1] == "model-two")
+    );
+    let calls = f.gh_calls();
+    let created = calls.iter().find(|args| args[1] == "create").unwrap();
+    assert!(!created.iter().any(|arg| arg == "--fill"));
+    assert!(
+        created
+            .windows(2)
+            .any(|pair| pair == ["--title", "Ship the branch feature"])
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.dir.path().join("peers/created_body")).unwrap(),
+        "## Summary\n- Add the branch feature\n\n## Testing\n- Not run"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn blank_commit_generation_failure_requires_a_message_and_stops_the_stack() {
+    for response in [
+        None,
+        Some(r#"{"subject":"","body":"invalid"}"#),
+        Some("not JSON"),
+    ] {
+        let f = Fixture::new();
+        git_output(&f.repository, &["checkout", "-qb", "feature"]);
+        std::fs::write(f.repository.join("new.txt"), "new\n").unwrap();
+        if let Some(response) = response {
+            generation_file(&f, "commit_output", response);
+        }
+        let before = git_output(&f.repository, &["rev-parse", "HEAD"]);
+        let (app, workspace) = f.open().await;
+        let (outcome, phases) = run(
+            &app,
+            &workspace,
+            None,
+            GitAction::CommitPushPr { message: None },
+        )
+        .await
+        .unwrap();
+        assert_eq!(failure(&outcome), (GitPhase::Commit, "commit_generation"));
+        assert!(
+            outcome
+                .failure
+                .unwrap()
+                .error
+                .message
+                .contains("Enter a commit message")
+        );
+        assert_eq!(phases, [GitPhase::Commit]);
+        assert_eq!(git_output(&f.repository, &["rev-parse", "HEAD"]), before);
+        assert!(f.gh_calls().iter().all(|call| call[1] != "create"));
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn pull_request_generation_failure_uses_fill_with_a_visible_warning() {
+    for response in [
+        None,
+        Some("not JSON"),
+        Some(r#"{"title":"","body":"invalid"}"#),
+    ] {
+        let f = Fixture::new();
+        git_output(&f.repository, &["checkout", "-qb", "feature"]);
+        commit_in(&f.repository, "feature.txt");
+        if let Some(response) = response {
+            generation_file(&f, "pr_output", response);
+        }
+        let (app, workspace) = f.open().await;
+        let (outcome, _) = run(&app, &workspace, None, GitAction::CreatePr)
+            .await
+            .unwrap();
+        assert!(outcome.failure.is_none(), "{outcome:?}");
+        assert!(outcome.pr.unwrap().created);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("Used GitHub CLI"));
+        assert!(
+            f.gh_calls()
+                .iter()
+                .any(|args| args[1] == "create" && args.iter().any(|arg| arg == "--fill"))
+        );
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn preflight_denial_of_blank_stack_never_starts_generation_or_commits() {
+    let f = Fixture::new();
+    git_output(&f.repository, &["checkout", "-qb", "feature"]);
+    std::fs::write(f.repository.join("new.txt"), "new\n").unwrap();
+    generation_file(&f, "unauthenticated", "");
+    generation_file(&f, "commit_stall", "");
+    let before = git_output(&f.repository, &["rev-parse", "HEAD"]);
+    let (app, workspace) = f.open().await;
+    let (outcome, phases) = tokio::time::timeout(
+        Duration::from_secs(2),
+        run(
+            &app,
+            &workspace,
+            None,
+            GitAction::CommitPushPr { message: None },
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(failure(&outcome), (GitPhase::Pr, "gh_unauthenticated"));
+    assert!(phases.is_empty());
+    assert!(generation_calls(&f, "commit").is_empty());
+    assert_eq!(git_output(&f.repository, &["rev-parse", "HEAD"]), before);
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stalled_preview_does_not_delay_or_reorder_a_denied_blank_stack() {
+    let f = Fixture::new();
+    git_output(&f.repository, &["checkout", "-qb", "feature"]);
+    std::fs::write(f.repository.join("new.txt"), "new\n").unwrap();
+    generation_file(&f, "commit_stall", "");
+    let before = git_output(&f.repository, &["rev-parse", "HEAD"]);
+    let (app, workspace) = f.open().await;
+    let t = selected_thread(&app, &workspace).await;
+    let job = app.begin_commit_message(t.id.clone()).await.unwrap();
+    wait_until(|| f.dir.path().join("peers/commit_ready").exists()).await;
+    generation_file(&f, "unauthenticated", "");
+    let (outcome, phases) = tokio::time::timeout(
+        Duration::from_secs(2),
+        run(
+            &app,
+            &workspace,
+            Some(&t.id),
+            GitAction::CommitPushPr { message: None },
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(failure(&outcome), (GitPhase::Pr, "gh_unauthenticated"));
+    assert!(phases.is_empty());
+    assert_eq!(
+        generation_calls(&f, "commit").len(),
+        1,
+        "preflight never starts action generation"
+    );
+    assert_eq!(git_output(&f.repository, &["rev-parse", "HEAD"]), before);
+    assert!(git_output(&f.repository, &["diff", "--cached"]).is_empty());
+    assert_eq!(
+        app.await_commit_message(job).await.unwrap_err().code,
+        "cancelled"
     );
     app.shutdown().await.unwrap();
 }

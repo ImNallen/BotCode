@@ -18,6 +18,7 @@ mod terminal;
 pub use terminal::{TerminalEvent, TerminalId};
 mod usage;
 pub use usage::{ContextUsage, LimitWindow, Slot, UsageLimits, WindowKind};
+mod text_generation;
 mod vcs;
 pub use domain::*;
 pub use runtime::{App, RuntimeConfig};

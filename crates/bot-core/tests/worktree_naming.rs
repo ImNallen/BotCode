@@ -567,7 +567,7 @@ async fn git_action_cancels_pending_name_before_it_changes_checkout() {
             t.workspace_id.clone(),
             Some(t.id.clone()),
             GitAction::Commit {
-                message: CommitMessage::try_from("fixture".to_owned()).unwrap(),
+                message: Some(CommitMessage::try_from("fixture".to_owned()).unwrap()),
             },
             |_| {},
         )

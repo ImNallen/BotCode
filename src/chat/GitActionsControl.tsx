@@ -1,6 +1,6 @@
 // Structure, labels and classes follow pingdotgg/t3code v0.0.45 components/GitActionsControl.tsx (MIT).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import {
   ChevronDownIcon,
   CloudDownloadIcon,
@@ -44,6 +44,11 @@ import {
   type GitTarget,
   type Pending,
 } from "./gitActions";
+import {
+  initialCommitDraft,
+  startCommitPreview,
+  updateCommitDraft,
+} from "./commitMessage";
 import { dismissGitRun, startGitRun, useGitRun } from "./gitRuns";
 
 const noteTone = {
@@ -111,6 +116,7 @@ export function GitActionsControl({
   });
   const run = useGitRun(checkout);
   const [pending, setPending] = useState<Pending | null>(null);
+  useEffect(() => setPending(null), [thread.id]);
   if (!status.data) return null;
 
   const model = gitControl({
@@ -259,10 +265,14 @@ export function GitActionsControl({
       </Group>
       {pending && dialog?.kind === "compose" ? (
         <CommitDialog
+          key={thread.id}
+          threadId={thread.id}
           status={status.data}
           label={commitButtonLabel(pending.target)}
           onCancel={() => setPending(null)}
-          onSubmit={(message) => advance({ ...pending, message })}
+          onSubmit={(message) =>
+            advance({ ...pending, message, composed: true })
+          }
         />
       ) : null}
       {pending && dialog?.kind === "confirm" ? (
@@ -333,27 +343,49 @@ function RunToast({
 }
 
 function CommitDialog({
+  threadId,
   status,
   label,
   onCancel,
   onSubmit,
 }: {
+  threadId: string;
   status: GitStatus;
   label: string;
   onCancel: () => void;
   onSubmit: (message: string) => void;
 }) {
-  const [message, setMessage] = useState("");
+  const [draft, dispatch] = useReducer(updateCommitDraft, initialCommitDraft);
+  const cancelPreview = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => {
+    const cancel = startCommitPreview({
+      threadId,
+      api: ipc,
+      onGenerated: (message) => dispatch({ kind: "generated", message }),
+      onFailed: () => dispatch({ kind: "failed" }),
+    });
+    cancelPreview.current = cancel;
+    return cancel;
+  }, [threadId]);
   const { branch, files } = status;
-  const canCommit = message.trim().length > 0;
+  const canCommit = files.length > 0;
   const submit = () => {
-    if (canCommit) onSubmit(message);
+    if (!canCommit) return;
+    cancelPreview.current?.();
+    onSubmit(draft.message);
+  };
+  const cancel = () => {
+    cancelPreview.current?.();
+    onCancel();
   };
   return (
-    <Dialog open onOpenChange={(open) => !open && onCancel()}>
+    <Dialog open onOpenChange={(open) => !open && cancel()}>
       <DialogHeader>
         <DialogTitle>Commit changes</DialogTitle>
-        <DialogDescription>Review and confirm your commit.</DialogDescription>
+        <DialogDescription>
+          Review and confirm your commit. Leave the message blank to
+          auto-generate one.
+        </DialogDescription>
       </DialogHeader>
       <DialogPanel>
         <div className="space-y-3 rounded-xl bg-zinc-25 p-3 text-sm ring-1 ring-black/5 dark:bg-white/[0.035] dark:ring-white/5">
@@ -422,13 +454,15 @@ function CommitDialog({
             htmlFor="git-commit-message"
             className="block text-sm font-medium"
           >
-            Commit message
+            Commit message (optional)
           </label>
           <Textarea
             id="git-commit-message"
-            required
-            value={message}
-            onChange={(event) => setMessage(event.target.value)}
+            placeholder="Leave empty to auto-generate"
+            value={draft.message}
+            onChange={(event) =>
+              dispatch({ kind: "edit", message: event.target.value })
+            }
             onKeyDown={(event) => {
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault();
@@ -437,10 +471,21 @@ function CommitDialog({
             }}
             size="sm"
           />
+          <p className="text-xs text-muted-foreground" role="status">
+            {draft.generation === "running"
+              ? "Generating a commit message. You can edit or continue now."
+              : draft.generation === "failed"
+                ? "Could not generate a message. Enter one, or leave it empty to try again when committing."
+                : draft.edited
+                  ? draft.message.trim()
+                    ? "Your message will be used."
+                    : "A message will be generated when committing."
+                  : "Generated from the changes shown above. You can edit it."}
+          </p>
         </div>
       </DialogPanel>
       <DialogFooter variant="bare">
-        <Button variant="outline" size="sm" onClick={onCancel}>
+        <Button variant="outline" size="sm" onClick={cancel}>
           Cancel
         </Button>
         <Button size="sm" disabled={!canCommit} onClick={submit}>

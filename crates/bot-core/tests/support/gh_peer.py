@@ -30,17 +30,20 @@ elif args[:2] == ['pr', 'list']:
     print(json.dumps([project(pr) for pr in prs if pr['headRefName'] == head and pr['state'] == 'OPEN']))
 elif args[:2] == ['pr', 'view']:
     print(json.dumps(project(next(pr for pr in prs if pr['url'] == args[2]))))
-elif args[:2] == ['pr', 'create'] and '--fill' in args:
+elif args[:2] == ['pr', 'create'] and ('--fill' in args or '--title' in args):
     base, head = option('--base'), option('--head')
     remote = subprocess.run(['git', 'ls-remote', 'origin', f'refs/heads/{head}'], capture_output=True, text=True)
     if not remote.stdout.strip():
         print('pull request create failed: GraphQL: Head sha can\'t be blank', file=sys.stderr)
         sys.exit(1)
     title = subprocess.run(['git', 'log', '-1', '--format=%s', remote.stdout.split()[0]], capture_output=True, text=True).stdout.strip()
+    title = option('--title') if '--title' in args else title
+    body = pathlib.Path(option('--body-file')).read_text() if '--body-file' in args else ''
+    (root / 'created_body').write_text(body)
     number = len(prs) + 1
     url = f'https://github.com/bot-code/fixture/pull/{number}'
     prs.append({'number': number, 'title': title, 'url': url, 'baseRefName': base, 'headRefName': head,
-                'isCrossRepository': False, 'state': 'OPEN'})
+                'isCrossRepository': False, 'state': 'OPEN', 'body': body})
     state.write_text(json.dumps(prs))
     print(url)
 else:
