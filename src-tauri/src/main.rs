@@ -62,7 +62,12 @@ fn main() {
             ipc::ui_state,
             ipc::set_ui_state,
             ipc::settings,
-            ipc::save_settings
+            ipc::save_settings,
+            ipc::terminal_attach,
+            ipc::terminal_detach,
+            ipc::terminal_write,
+            ipc::terminal_resize,
+            ipc::terminal_close
         ])
         .build(tauri::generate_context!())
         .expect("Z1 Code could not start");
