@@ -70,7 +70,6 @@ type SurfaceAction = {
   icon: LucideIcon;
   shortcut: string;
   onSelect: () => void;
-  /** Present while the surface cannot open: the launcher hint and the + menu reason. */
   unavailable?: { hint: string; reason: string };
 };
 
@@ -100,7 +99,6 @@ const FOLDER_TARGETS = SURFACE_TARGETS.filter(
   (target) => target.surface.kind === "files",
 );
 
-// T3's SURFACE_UNAVAILABLE_HINTS.terminal and SURFACE_DISABLED_REASONS.terminal.
 const TERMINAL_UNAVAILABLE = {
   hint: "Available when a project is open.",
   reason: "Terminal surfaces are only available from a project thread.",
@@ -465,7 +463,6 @@ function SurfaceIcon({
 }
 
 function Launcher({ actions }: { actions: readonly SurfaceAction[] }) {
-  // -1 means no highlight: it only appears on hover or arrow use.
   const [highlight, setHighlight] = useState(-1);
   const availableActions = actions.filter((action) => !action.unavailable);
   const highlightIndex =

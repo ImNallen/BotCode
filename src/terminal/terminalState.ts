@@ -14,7 +14,6 @@ export interface ThreadTerminalGroup {
 
 export type TerminalSurfaceId = `terminal:${string}`;
 
-/** A right-panel terminal tab. Its terminals never appear in the drawer. */
 export interface TerminalPanelSurface {
   id: TerminalSurfaceId;
   terminalIds: string[];
@@ -79,7 +78,6 @@ export function panelTerminalIds(state: ThreadTerminalUiState): string[] {
   return state.panelSurfaces.flatMap((surface) => surface.terminalIds);
 }
 
-/** The lowest free `term-N` across the drawer and the panel, as T3's allocatable ids are. */
 export function allocateTerminalId(state: ThreadTerminalUiState): string {
   return nextTerminalId([...state.terminalIds, ...panelTerminalIds(state)]);
 }

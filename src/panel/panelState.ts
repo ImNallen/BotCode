@@ -64,11 +64,6 @@ export function closeSurface(state: PanelState, index: number): PanelState {
   };
 }
 
-/**
- * Terminal tabs mirror the current scope's panel terminals, which the terminal
- * store owns: tabs it no longer holds close, and ones it holds appear without
- * taking over the active tab unless nothing is active.
- */
 export function reconcileTerminalSurfaces(
   state: PanelState,
   surfaceIds: readonly TerminalSurfaceId[],

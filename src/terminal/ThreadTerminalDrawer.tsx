@@ -1485,7 +1485,6 @@ export function PersistentThreadTerminalPanel({
   );
 }
 
-/** Closing a terminal tab stops every terminal in it, after T3's confirmation. */
 export function requestClosePanelSurface(
   workspaceId: string,
   threadId: string | null,
