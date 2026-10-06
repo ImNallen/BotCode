@@ -192,9 +192,6 @@ pub fn sanitize(pending: &str, data: &str) -> (String, String) {
             continue;
         }
         if c == '\u{1b}' {
-            if index + 1 == input.len() {
-                return (visible, text(index, input.len()));
-            }
             let Some(end) = escape_end(&input, index + 1) else {
                 return (visible, text(index, input.len()));
             };
