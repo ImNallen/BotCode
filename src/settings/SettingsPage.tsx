@@ -14,6 +14,11 @@ import {
   newWithoutProjectShortcut,
   pinThreadShortcut,
   settleThreadShortcut,
+  terminalCloseShortcut,
+  terminalNewShortcut,
+  terminalSplitShortcut,
+  terminalSplitVerticalShortcut,
+  terminalToggleShortcut,
 } from "../lib/shortcuts";
 
 const modifier = /Mac/.test(navigator.userAgent) ? "⌘" : "Ctrl+";
@@ -24,6 +29,11 @@ const shortcuts: Record<string, string | undefined> = {
   "close-settings": "Escape",
   "settle-thread": settleThreadShortcut,
   "pin-thread": pinThreadShortcut,
+  "toggle-terminal": terminalToggleShortcut,
+  "split-terminal": terminalSplitShortcut,
+  "split-terminal-vertical": terminalSplitVerticalShortcut,
+  "new-terminal": terminalNewShortcut,
+  "close-terminal": terminalCloseShortcut,
 };
 import { cn } from "../lib/cn";
 import { ProjectSettingRow } from "./ProjectSettingRow";
