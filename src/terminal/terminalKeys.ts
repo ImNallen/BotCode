@@ -156,6 +156,36 @@ export function terminalNavigationShortcutData(
   return null;
 }
 
+/**
+ * Option composes characters on macOS, such as $ and @ on Swedish layouts, as
+ * Ghostty's default macos-option-as-alt = false does. The surface encodes these
+ * as Alt chords, so they must instead reach its textarea, which forwards the
+ * composed text, the same path it gives AltGraph text.
+ */
+export function isMacOptionText(
+  event: KeyEventLike,
+  platform = navigator.platform,
+): boolean {
+  return (
+    isMacPlatform(platform) &&
+    event.altKey &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    (event.key === "Dead" || [...event.key].length === 1)
+  );
+}
+
+/**
+ * Command chords are app shortcuts on macOS, but the surface encodes an
+ * unhandled one as its bare letter, so Command+R would type "r" into the shell.
+ */
+export function isMacCommandChord(
+  event: KeyEventLike,
+  platform = navigator.platform,
+): boolean {
+  return isMacPlatform(platform) && event.metaKey && !event.ctrlKey;
+}
+
 /** Whether keyboard focus is inside the terminal drawer. */
 export function isTerminalFocused(): boolean {
   const activeElement = document.activeElement;

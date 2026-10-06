@@ -40,8 +40,14 @@ import { isTerminalUrl } from "../terminal-links";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { type GhosttyColor, type GhosttyTheme } from "./ghostty/core";
-import { GhosttyTerminalSurface } from "./ghostty/surface";
 import {
+  GhosttyTerminalSurface,
+  isTerminalCopyShortcut,
+  isTerminalPasteShortcut,
+} from "./ghostty/surface";
+import {
+  isMacCommandChord,
+  isMacOptionText,
   isTerminalClearShortcut,
   isTerminalFocused,
   terminalDeleteShortcutData,
@@ -455,6 +461,7 @@ function TerminalViewport({
           return false;
         }
         if (command !== null) return false;
+        if (isMacOptionText(event)) return false;
 
         const navigationData = terminalNavigationShortcutData(event);
         if (navigationData !== null) {
@@ -478,7 +485,15 @@ function TerminalViewport({
           return false;
         }
 
-        if (!isTerminalClearShortcut(event)) return true;
+        if (!isTerminalClearShortcut(event)) {
+          if (!isMacCommandChord(event) || isTerminalPasteShortcut(event)) {
+            return true;
+          }
+          return (
+            isTerminalCopyShortcut(event) &&
+            terminalRef.current?.hasSelection() === true
+          );
+        }
         event.preventDefault();
         event.stopPropagation();
         send(

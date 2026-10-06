@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import {
+  isMacCommandChord,
+  isMacOptionText,
   isTerminalClearShortcut,
   terminalDeleteShortcutData,
   terminalNavigationShortcutData,
@@ -121,4 +123,50 @@ it("translates T3's in-terminal editing keys", () => {
     ),
     null,
   );
+});
+
+it("lets macOS Option-composed text reach the textarea", () => {
+  assert.equal(
+    isMacOptionText(key("$", { altKey: true }, "Digit4"), MAC),
+    true,
+  );
+  assert.equal(
+    isMacOptionText(key("@", { altKey: true }, "Digit2"), MAC),
+    true,
+  );
+  assert.equal(
+    isMacOptionText(key("Dead", { altKey: true }, "BracketRight"), MAC),
+    true,
+  );
+  assert.equal(
+    isMacOptionText(key("ArrowLeft", { altKey: true }, "ArrowLeft"), MAC),
+    false,
+  );
+  assert.equal(
+    isMacOptionText(key("Backspace", { altKey: true }, "Backspace"), MAC),
+    false,
+  );
+  assert.equal(isMacOptionText(key("4", {}, "Digit4"), MAC), false);
+  assert.equal(
+    isMacOptionText(key("4", { altKey: true, metaKey: true }, "Digit4"), MAC),
+    false,
+  );
+  assert.equal(
+    isMacOptionText(key("4", { altKey: true }, "Digit4"), LINUX),
+    false,
+  );
+});
+
+it("treats macOS Command chords as app shortcuts", () => {
+  assert.equal(isMacCommandChord(key("r", { metaKey: true }), MAC), true);
+  assert.equal(
+    isMacCommandChord(key("r", { metaKey: true, shiftKey: true }), MAC),
+    true,
+  );
+  assert.equal(
+    isMacCommandChord(key("r", { metaKey: true, ctrlKey: true }), MAC),
+    false,
+  );
+  assert.equal(isMacCommandChord(key("r"), MAC), false);
+  assert.equal(isMacCommandChord(key("r", { metaKey: true }), LINUX), false);
 });
