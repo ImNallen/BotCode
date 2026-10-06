@@ -22,6 +22,7 @@ fn thread() -> ThreadSnapshot {
             settings: None,
             started_at_ms: Some(2000),
             completed_at_ms: Some(3000),
+            attachments: vec![],
         }],
         approvals: vec![],
         diagnostic: None,

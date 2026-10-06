@@ -137,11 +137,21 @@ async fn first_message_generates_once_keeps_folder_and_base_and_survives_restart
     .await
     .unwrap();
     let first = app
-        .submit(t.id.clone(), "first".into(), "Fix API token refresh".into())
+        .submit(
+            t.id.clone(),
+            "first".into(),
+            "Fix API token refresh".into(),
+            vec![],
+        )
         .await
         .unwrap();
     let replay = app
-        .submit(t.id.clone(), "first".into(), "Fix API token refresh".into())
+        .submit(
+            t.id.clone(),
+            "first".into(),
+            "Fix API token refresh".into(),
+            vec![],
+        )
         .await
         .unwrap();
     assert_eq!(first.turn_id, replay.turn_id);
@@ -182,9 +192,14 @@ async fn first_message_generates_once_keeps_folder_and_base_and_survives_restart
     assert!(args.iter().any(|a| a == "--ephemeral"));
     assert_eq!(args.last().unwrap(), "-");
     assert!(!Path::new(calls[0]["cwd"].as_str().unwrap()).starts_with(&f.root));
-    app.submit(t.id.clone(), "second".into(), "Now add tests".into())
-        .await
-        .unwrap();
+    app.submit(
+        t.id.clone(),
+        "second".into(),
+        "Now add tests".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
     app.shutdown().await.unwrap();
     assert_eq!(f.invocations().len(), 1);
@@ -195,7 +210,7 @@ async fn first_message_generates_once_keeps_folder_and_base_and_survives_restart
     );
     reopened.models().await.unwrap();
     reopened
-        .submit(t.id.clone(), "third".into(), "Next change".into())
+        .submit(t.id.clone(), "third".into(), "Next change".into(), vec![])
         .await
         .unwrap();
     wait(&reopened, &t.id, |t| {
@@ -241,9 +256,14 @@ async fn collisions_use_original_suffix_without_overwriting_branch() {
         let t = f.thread(&app).await;
         let suffix = checkout(&t).1.strip_prefix("botcode/").unwrap();
         let expected = format!("botcode/shared-name-{suffix}");
-        app.submit(t.id.clone(), "first".into(), "Name this work".into())
-            .await
-            .unwrap();
+        app.submit(
+            t.id.clone(),
+            "first".into(),
+            "Name this work".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
         wait(&app, &t.id, |t| checkout(t).1 == expected).await;
         assert_eq!(git(&f.root, &["rev-parse", reference]), before);
         app.shutdown().await.unwrap();
@@ -254,7 +274,7 @@ async fn name_is_ready_in_background_but_git_waits_for_first_turn_lease() {
     let f = Fixture::new(Some(r#"{"branch":"held-turn"}"#));
     let app = App::open(f.config.clone()).await.unwrap();
     let t = f.thread(&app).await;
-    app.submit(t.id.clone(), "first".into(), "hold".into())
+    app.submit(t.id.clone(), "first".into(), "hold".into(), vec![])
         .await
         .unwrap();
     wait(&app, &t.id, |t| matches!(t.session, SessionState::Running)).await;
@@ -280,9 +300,14 @@ async fn generation_failures_leave_the_user_turn_and_branch_intact() {
         let f = Fixture::new(output);
         let app = App::open(f.config.clone()).await.unwrap();
         let t = f.thread(&app).await;
-        app.submit(t.id.clone(), "first".into(), "ordinary prompt".into())
-            .await
-            .unwrap();
+        app.submit(
+            t.id.clone(),
+            "first".into(),
+            "ordinary prompt".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
         wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
         tokio::time::sleep(Duration::from_millis(150)).await;
         let unchanged = app.thread(t.id.clone()).await.unwrap();
@@ -298,9 +323,14 @@ async fn delayed_generation_cannot_rename_after_second_submit_or_manual_switch()
         f.control("naming_stall", "");
         let app = App::open(f.config.clone()).await.unwrap();
         let t = f.thread(&app).await;
-        app.submit(t.id.clone(), "first".into(), "ordinary prompt".into())
-            .await
-            .unwrap();
+        app.submit(
+            t.id.clone(),
+            "first".into(),
+            "ordinary prompt".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
         let root = f.peer.parent().unwrap();
         wait_file(&root.join("naming_ready")).await;
         wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
@@ -320,7 +350,7 @@ async fn delayed_generation_cannot_rename_after_second_submit_or_manual_switch()
             .await
             .unwrap();
         } else {
-            app.submit(t.id.clone(), "second".into(), "follow up".into())
+            app.submit(t.id.clone(), "second".into(), "follow up".into(), vec![])
                 .await
                 .unwrap();
             wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
@@ -349,9 +379,14 @@ async fn published_or_externally_switched_temporary_branches_are_preserved() {
         let app = App::open(f.config.clone()).await.unwrap();
         let t = f.thread(&app).await;
         let (path, branch) = checkout(&t);
-        app.submit(t.id.clone(), "first".into(), "ordinary prompt".into())
-            .await
-            .unwrap();
+        app.submit(
+            t.id.clone(),
+            "first".into(),
+            "ordinary prompt".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
         wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
         match guard {
             "switch" => {
@@ -410,9 +445,14 @@ async fn shutdown_reaps_stalled_generation_and_its_descendant() {
     f.control("naming_descendant", "");
     let app = App::open(f.config.clone()).await.unwrap();
     let t = f.thread(&app).await;
-    app.submit(t.id.clone(), "first".into(), "ordinary prompt".into())
-        .await
-        .unwrap();
+    app.submit(
+        t.id.clone(),
+        "first".into(),
+        "ordinary prompt".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     let root = f.peer.parent().unwrap();
     wait_file(&root.join("naming_child.pid")).await;
     let pid = |file: &str| {
@@ -444,9 +484,14 @@ async fn local_folder_and_custom_worktree_branches_do_not_generate_names() {
         .create_thread(workspace.id, NewCheckout::Local)
         .await
         .unwrap();
-    app.submit(local.id.clone(), "local".into(), "ordinary prompt".into())
-        .await
-        .unwrap();
+    app.submit(
+        local.id.clone(),
+        "local".into(),
+        "ordinary prompt".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &local.id, |t| {
         matches!(t.session, SessionState::Ready)
     })
@@ -460,9 +505,14 @@ async fn local_folder_and_custom_worktree_branches_do_not_generate_names() {
     )
     .await
     .unwrap();
-    app.submit(custom.id.clone(), "custom".into(), "ordinary prompt".into())
-        .await
-        .unwrap();
+    app.submit(
+        custom.id.clone(),
+        "custom".into(),
+        "ordinary prompt".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &custom.id, |t| {
         matches!(t.session, SessionState::Ready)
     })
@@ -477,9 +527,14 @@ async fn local_folder_and_custom_worktree_branches_do_not_generate_names() {
         )
         .await
         .unwrap();
-    app.submit(folder.id.clone(), "folder".into(), "ordinary prompt".into())
-        .await
-        .unwrap();
+    app.submit(
+        folder.id.clone(),
+        "folder".into(),
+        "ordinary prompt".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &folder.id, |t| {
         matches!(t.session, SessionState::Ready)
     })
@@ -502,6 +557,7 @@ async fn pending_generation_is_cancelled_on_cleanup_project_removal_and_provider
             } else {
                 "ordinary prompt".into()
             },
+            vec![],
         )
         .await
         .unwrap();
@@ -552,9 +608,14 @@ async fn git_action_cancels_pending_name_before_it_changes_checkout() {
     f.control("naming_delay", "1");
     let app = App::open(f.config.clone()).await.unwrap();
     let t = f.thread(&app).await;
-    app.submit(t.id.clone(), "first".into(), "ordinary prompt".into())
-        .await
-        .unwrap();
+    app.submit(
+        t.id.clone(),
+        "first".into(),
+        "ordinary prompt".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
     std::fs::write(checkout(&t).0.join("fixture.txt"), "change").unwrap();
     git(checkout(&t).0, &["config", "user.name", "Fixture"]);
@@ -588,9 +649,14 @@ async fn generated_names_are_capped_at_64_bytes_including_the_prefix() {
     let f = Fixture::new(Some(&output));
     let app = App::open(f.config.clone()).await.unwrap();
     let t = f.thread(&app).await;
-    app.submit(t.id.clone(), "first".into(), "ordinary prompt".into())
-        .await
-        .unwrap();
+    app.submit(
+        t.id.clone(),
+        "first".into(),
+        "ordinary prompt".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     let expected = format!(
         "botcode/{}",
         "abcdefghijklmnopqrstuvwxyz".repeat(4)[..56].to_owned()
@@ -629,9 +695,14 @@ async fn long_collision_names_reserve_suffix_space_and_preserve_existing_ref() {
     let t = f.thread(&app).await;
     let suffix = checkout(&t).1.strip_prefix("botcode/").unwrap();
     let expected = format!("botcode/{}-{suffix}", "a".repeat(47));
-    app.submit(t.id.clone(), "first".into(), "ordinary prompt".into())
-        .await
-        .unwrap();
+    app.submit(
+        t.id.clone(),
+        "first".into(),
+        "ordinary prompt".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     let named = wait(&app, &t.id, |t| checkout(t).1 == expected).await;
     assert!(checkout(&named).1.len() <= 64);
     assert_eq!(
@@ -640,4 +711,23 @@ async fn long_collision_names_reserve_suffix_space_and_preserve_existing_ref() {
     );
     assert_eq!(git(&f.root, &["rev-parse", &requested]), before);
     app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn an_image_only_first_message_keeps_the_temporary_branch() {
+    let f = Fixture::new(Some(r#"{"branch":"unused-name"}"#));
+    let app = App::open(f.config.clone()).await.unwrap();
+    let t = f.thread(&app).await;
+    let (_, temporary) = checkout(&t);
+    let temporary = temporary.to_owned();
+    let image = app
+        .stage_attachment("shot.png".into(), b"\x89PNG\r\n\x1a\nshot".to_vec())
+        .await
+        .unwrap();
+    app.submit(t.id.clone(), "image".into(), "".into(), vec![image])
+        .await
+        .unwrap();
+    let done = wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
+    assert_eq!(checkout(&done).1, temporary);
+    app.shutdown().await.unwrap();
+    assert!(f.invocations().is_empty());
 }

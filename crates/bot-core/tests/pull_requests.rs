@@ -487,9 +487,14 @@ async fn running_discovery_keeps_new_conversation_and_agent_completion_source() 
         .await
         .unwrap()
         .id;
-    app.submit(second.clone(), "agent-discovery".into(), "hello".into())
-        .await
-        .unwrap();
+    app.submit(
+        second.clone(),
+        "agent-discovery".into(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
     let summary = wait(&app, &second, current).await;
     assert_eq!(summary.links[0].source, PrLinkSource::AgentDiscovered);
     assert_eq!(wait(&app, &first, current).await.links[0].pr.key, key(41));

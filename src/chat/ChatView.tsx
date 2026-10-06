@@ -21,6 +21,7 @@ import { checkoutKey, ipc, setThreadSnapshot } from "../ipc";
 import type {
   ApprovalDecision,
   CheckoutRef,
+  ImageAttachment,
   Thread,
   Workspace,
   SessionSettings,
@@ -70,6 +71,14 @@ import { GitActionsControl } from "./GitActionsControl";
 import { ApprovalDrawer } from "./ApprovalDrawer";
 import { BranchPicker, startsFromOrigin } from "./BranchPicker";
 import { Composer } from "./Composer";
+import { classifyComposerAttachmentFile } from "./composerAttachmentFiles";
+import {
+  type ComposerImage,
+  finishStaging,
+  readyAttachments,
+  type SendAttempt,
+  sendAttempt,
+} from "./composerImages";
 import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import { isUsageLimitsCommand, usageNoticeKey } from "../usage/limits";
 import { Timeline } from "./Timeline";
@@ -82,6 +91,9 @@ import {
   updateTerminalState,
   useTerminalState,
 } from "../terminal/terminalStore";
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGES = 100;
 
 type DraftCheckout = {
   mode: CheckoutMode;
@@ -123,6 +135,8 @@ export function ChatView({
     }
   }, [prPanelRequest, threadId]);
   const [draft, setDraft] = useState("");
+  const [images, setImages] = useState<ComposerImage[]>([]);
+  const lastAttempt = useRef<SendAttempt | null>(null);
   const [usageNotice, setUsageNotice] = useState<{
     key: string;
     now: number;
@@ -169,6 +183,7 @@ export function ChatView({
   }, []);
   useEffect(() => {
     setDraft("");
+    setImages([]);
     setCreatedDraft(undefined);
   }, [threadId]);
   const query = useQuery({
@@ -249,7 +264,13 @@ export function ChatView({
     }
   }, [sessionKind, client]);
   const send = useMutation({
-    mutationFn: async (text: string) => {
+    mutationFn: async ({
+      text,
+      attachments,
+    }: {
+      text: string;
+      attachments: ImageAttachment[];
+    }) => {
       let target = threadId ?? createdDraft?.id;
       if (!target) {
         const created = await ipc.create(
@@ -278,12 +299,22 @@ export function ChatView({
           throw error;
         }
       }
-      await ipc.submit(target, text, crypto.randomUUID());
+      const attempt = sendAttempt(
+        lastAttempt.current,
+        target,
+        text,
+        attachments,
+        () => crypto.randomUUID(),
+      );
+      lastAttempt.current = attempt;
+      await ipc.submit(target, text, attempt.requestId, attachments);
       return target;
     },
     onSuccess: (target) => {
+      lastAttempt.current = null;
       setCreatedDraft(undefined);
       setDraft("");
+      setImages([]);
       setError(undefined);
       if (!threadId) {
         void navigate({
@@ -402,6 +433,38 @@ export function ChatView({
   const isDraft = !threadId;
   const dormant =
     thread && ["dormant", "unavailable"].includes(thread.session.kind);
+  const addImages = (files: File[]) => {
+    const accepted: ComposerImage[] = [];
+    const staging: [string, File][] = [];
+    let rejection: string | undefined;
+    for (const file of files) {
+      if (classifyComposerAttachmentFile(file) !== "image") {
+        rejection = `'${file.name}' is not a supported image type. Attach GIF, JPEG, PNG, or WebP images.`;
+      } else if (file.size > MAX_IMAGE_BYTES) {
+        rejection = `'${file.name}' is larger than 10 MiB. Attach a smaller image.`;
+      } else if (images.length + accepted.length >= MAX_IMAGES) {
+        rejection = `You can attach up to ${MAX_IMAGES} images per message.`;
+      } else {
+        const key = crypto.randomUUID();
+        accepted.push({ key, name: file.name || "image", status: "staging" });
+        staging.push([key, file]);
+      }
+    }
+    if (rejection) setError(rejection);
+    if (accepted.length === 0) return;
+    setImages((current) => [...current, ...accepted]);
+    for (const [key, file] of staging) {
+      ipc.stageAttachment(file).then(
+        (attachment) =>
+          setImages((current) => finishStaging(current, key, attachment)),
+        (error: Error) => {
+          setImages((current) => current.filter((image) => image.key !== key));
+          setError(error.message);
+        },
+      );
+    }
+  };
+  const attachments = readyAttachments(images);
   const submit = () => {
     if (isUsageLimitsCommand(draft)) {
       setUsageNotice({ key: noticeKey, now: Date.now() });
@@ -409,7 +472,8 @@ export function ChatView({
       return;
     }
     if (
-      !draft.trim() ||
+      attachments === null ||
+      (!draft.trim() && attachments.length === 0) ||
       busy ||
       send.isPending ||
       saveSettings.isPending ||
@@ -417,7 +481,7 @@ export function ChatView({
       (Boolean(threadId) && !thread)
     )
       return;
-    send.mutate(draft);
+    send.mutate({ text: draft, attachments });
   };
   const title = isDraft ? "New thread" : (thread?.title ?? "");
   const worktreeDraft =
@@ -735,11 +799,19 @@ export function ChatView({
                       value={draft}
                       focusRequest={composerFocusRequest}
                       onChange={setDraft}
+                      images={images}
+                      onAddImages={addImages}
+                      onRemoveImage={(key) =>
+                        setImages((current) =>
+                          current.filter((image) => image.key !== key),
+                        )
+                      }
                       onSubmit={submit}
                       onStop={() => stop.mutate()}
                       canSend={
                         isUsageLimitsCommand(draft) ||
-                        (Boolean(draft.trim()) &&
+                        ((Boolean(draft.trim()) || images.length > 0) &&
+                          attachments !== null &&
                           !busy &&
                           !send.isPending &&
                           !saveSettings.isPending &&

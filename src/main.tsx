@@ -13,6 +13,14 @@ const client = new QueryClient({
 configurePullRequestQueries(client);
 if (native && /Mac/.test(navigator.userAgent))
   document.documentElement.classList.add("macos-desktop");
+// With Tauri's native drop handling off, a file dropped outside the composer would open in the webview.
+for (const type of ["dragover", "drop"] as const)
+  window.addEventListener(type, (event) => {
+    if (event.defaultPrevented || !event.dataTransfer?.types.includes("Files"))
+      return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "none";
+  });
 const root = document.getElementById("root");
 if (!root) throw new Error("Bot Code root element is missing.");
 const mount = () =>

@@ -77,7 +77,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let view = app.workspace_view(workspace.id.clone(), None).await?;
     assert_eq!(view.files, vec!["README.md"]);
     let thread = app.create_thread(workspace.id, NewCheckout::Local).await?;
-    let receipt=app.submit(thread.id.clone(),"smoke-first".into(),"Do not use any tools or change files. Reply with BOT_CODE_CORE_OK followed by roughly 100 words about local applications.".into()).await?;
+    let receipt=app.submit(thread.id.clone(),"smoke-first".into(),"Do not use any tools or change files. Reply with BOT_CODE_CORE_OK followed by roughly 100 words about local applications.".into(),vec![]).await?;
     let (first, streamed) = wait(&app, thread.id.clone(), &receipt).await?;
     assert!(matches!(
         app.usage_limits(false).await?,
@@ -117,6 +117,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             thread.id.clone(),
             "smoke-second".into(),
             "Do not use tools or change files. Reply exactly BOT_CODE_RESUMED_OK.".into(),
+            vec![],
         )
         .await?;
     let (second, _) = wait(&app, thread.id, &receipt).await?;

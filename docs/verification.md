@@ -457,3 +457,21 @@ The native debug bundle used `dev.bot.code.writingverify`, `BOT_CODE_DATA_DIR=/t
 | Real Codex                | Selecting GPT-6-Luna generated a visible preview. Clearing it and submitting generated a fresh commit and a PR title and Markdown body with `## Summary` and `## Testing`. All three exec calls succeeded with `--model gpt-6-luna`. Git and the fixture contained the returned text exactly, and the remote branch matched HEAD. The native toast showed the generated PR title. |
 
 The fixture does not supply complete PR-review metadata, so the right panel showed status or metadata warnings for fixture PRs. PR-review behavior was outside this check. Light mode and minimum-size layout had no native observation. Logs, fixture data and the real-Codex comparison are under `/tmp/bot-git-writing-verification`. The isolated app was closed after verification. No changes in the working repository were committed or pushed.
+
+## Composer image attachments
+
+Verified on macOS on 2026-10-06 with `pnpm tauri dev`, an isolated `BOT_CODE_DATA_DIR` at `/tmp/botcode-img-data`, a disposable one-commit repository and real codex-cli 0.160.1. The installed app-server protocol, generated with `codex app-server generate-ts`, lists `{ "type": "localImage", "path": string }` as a `turn/start` input item. Bot Code sends the text item, then one `localImage` item per image.
+
+`cargo test -p bot-core` passed 248 tests. The attachment tests cover content sniffing, the 10 MiB limit, one file for repeated bytes, and the sweep. The runtime tests cover the `turn/start` input order, a retried submit that returns the same turn and sends once, conflicting retries, image-only messages, missing files, and attachments after reopening. `pnpm test:ui` passed 223 tests, including the paste and drop classification and the retry operation ID. `pnpm typecheck` passed.
+
+| Workflow | Observed result |
+| --- | --- |
+| Paste | A window screenshot taken with `screencapture -c` pasted as a 64px thumbnail with a remove button. The data directory held one file, `attachments/d2dc25f3….png`, 100,089 bytes. |
+| Send | The prompt "Describe the attached image in one sentence, including any text it shows." returned "The image shows a blue circle on a yellow background beside bold black text reading 'ZEBRA 7319,' displayed in a window titled 'zebra.png.'" The prompt did not name the contents. |
+| Timeline | The user message showed the image above its text. SQLite stored the turn's attachment as `{"id":"d2dc25f3…","mimeType":"image/png","name":"image.png","sizeBytes":100089}` with accepted delivery and completed execution. |
+| Quit and relaunch | The thread opened with the image still rendered from `botcode-attachment://`. |
+| Drop | Dragging a different PNG from Finder showed the drag-over ring. The drop added its thumbnail and stored a second file. The Finder file stayed in place. |
+| Remove | The remove button cleared the thumbnail and disabled Send. |
+| Drop outside the composer | Dropping the PNG on the timeline added nothing, and the page stayed in place. |
+
+A retried submit after a lost response had no native observation, because the window cannot drop a response. The runtime test covers it. An image-only message, unsupported image types, and the 10 MiB limit had no native observation. Tests cover each.

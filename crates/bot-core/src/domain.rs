@@ -222,6 +222,84 @@ pub struct Turn {
     pub started_at_ms: Option<u64>,
     #[serde(default)]
     pub completed_at_ms: Option<u64>,
+    #[serde(default)]
+    pub attachments: Vec<ImageAttachment>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageMime {
+    #[serde(rename = "image/png")]
+    Png,
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+    #[serde(rename = "image/gif")]
+    Gif,
+    #[serde(rename = "image/webp")]
+    Webp,
+}
+impl ImageMime {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Gif => "gif",
+            Self::Webp => "webp",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Gif => "image/gif",
+            Self::Webp => "image/webp",
+        }
+    }
+}
+/// The SHA-256 of an attachment's bytes as 64 lowercase hex digits. Parsing rejects anything
+/// else, so an id can never name a path outside the attachments directory.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct AttachmentId(String);
+impl AttachmentId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl std::str::FromStr for AttachmentId {
+    type Err = AppError;
+    fn from_str(s: &str) -> Result<Self> {
+        if s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            Ok(Self(s.into()))
+        } else {
+            Err(AppError::new(
+                "invalid_attachment",
+                "Invalid attachment id.",
+            ))
+        }
+    }
+}
+impl TryFrom<String> for AttachmentId {
+    type Error = AppError;
+    fn try_from(s: String) -> Result<Self> {
+        s.parse()
+    }
+}
+impl From<AttachmentId> for String {
+    fn from(id: AttachmentId) -> Self {
+        id.0
+    }
+}
+impl std::fmt::Display for AttachmentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAttachment {
+    pub id: AttachmentId,
+    pub mime_type: ImageMime,
+    pub name: String,
+    pub size_bytes: u64,
 }
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
