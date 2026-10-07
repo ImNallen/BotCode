@@ -905,6 +905,7 @@ async fn refreshed_catalog_rejects_removed_saved_model_before_acceptance() {
 #[test]
 fn legacy_snapshots_default_settings() {
     let thread = ThreadSnapshot {
+        worktree_setup: None,
         created_at_ms: None,
         latest_user_activity_at_ms: None,
         id: ThreadId::default(),
@@ -2177,6 +2178,7 @@ impl SettlementFixture for ThreadSnapshot {
 }
 fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> ThreadSnapshot {
     ThreadSnapshot {
+        worktree_setup: None,
         created_at_ms: None,
         latest_user_activity_at_ms: None,
         id: ThreadId::default(),
