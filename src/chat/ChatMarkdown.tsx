@@ -1,5 +1,4 @@
-// Root, code block and file chip classes copied from pingdotgg/t3code v0.0.45
-// components/ChatMarkdown.tsx and components/ContextChip.tsx (MIT).
+// Ported from T3 Code v0.0.45 apps/web/src/components/ChatMarkdown.tsx and components/ContextChip.tsx (MIT).
 import {
   createContext,
   memo,
@@ -14,6 +13,8 @@ import { CheckIcon, CopyIcon, GlobeIcon, WrapTextIcon } from "lucide-react";
 import { cn } from "../lib/cn";
 import { FileEntryIcon } from "../panel/FileEntryIcon";
 import { Button } from "../ui/controls";
+import type { Skill } from "../ipc";
+import { renderSkillInlineMarkdownChildren } from "./SkillInlineText";
 
 export type FileLinks = {
   resolve: (target: string) => string | null;
@@ -175,11 +176,13 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   className,
   lineBreaks = false,
   streaming = false,
+  skills,
 }: {
   text: string;
   className?: string;
   lineBreaks?: boolean;
   streaming?: boolean;
+  skills?: readonly Skill[];
 }) {
   return (
     <div
@@ -191,7 +194,19 @@ export const ChatMarkdown = memo(function ChatMarkdown({
     >
       <ReactMarkdown
         remarkPlugins={lineBreaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
-        components={components}
+        components={
+          skills
+            ? {
+                ...components,
+                p: ({ children }) => (
+                  <p>{renderSkillInlineMarkdownChildren(children, skills)}</p>
+                ),
+                li: ({ children }) => (
+                  <li>{renderSkillInlineMarkdownChildren(children, skills)}</li>
+                ),
+              }
+            : components
+        }
       >
         {text}
       </ReactMarkdown>

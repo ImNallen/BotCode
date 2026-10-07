@@ -276,6 +276,10 @@ pub async fn list_models(app: State<'_, App>) -> Result<Vec<ModelOption>> {
     app.models().await
 }
 #[tauri::command]
+pub async fn list_skills(app: State<'_, App>, cwd: String) -> Result<Vec<Skill>> {
+    Ok(app.list_skills(cwd.into()).await)
+}
+#[tauri::command]
 pub async fn collaboration_modes(app: State<'_, App>) -> Result<Vec<InteractionMode>> {
     app.collaboration_modes().await
 }

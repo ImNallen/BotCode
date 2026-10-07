@@ -27,7 +27,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { followUps, immediateIntent, type FollowUp } from "./followUps";
 import { checkFollowUp, sendFollowUpNow } from "./FollowUpSender";
-import type { Thread } from "../ipc";
+import type { Thread, Skill } from "../ipc";
 import { cn } from "../lib/cn";
 import { formatDayAwareTimestamp, formatWorkingTimer } from "../lib/time";
 import { Button } from "../ui/controls";
@@ -125,10 +125,12 @@ function CopyButton({ text }: { text: string }) {
 
 function UserRow({
   row,
+  skills,
   disabled,
   onEdit,
 }: {
   row: Extract<TimelineRow, { kind: "user" }>;
+  skills: readonly Skill[];
   disabled: boolean;
   onEdit: () => void;
 }) {
@@ -156,6 +158,7 @@ function UserRow({
           <div data-user-message-body="true" className="relative">
             <ChatMarkdown
               text={row.text}
+              skills={skills}
               className="text-message-foreground"
               lineBreaks
             />
@@ -539,6 +542,7 @@ function WholePixelRow({ children }: { children: ReactNode }) {
 
 export function Timeline({
   thread,
+  skills,
   clearance,
   reverting,
   busy,
@@ -547,6 +551,7 @@ export function Timeline({
   onRemoveQueued,
 }: {
   thread: Thread;
+  skills: readonly Skill[];
   clearance: number;
   reverting: boolean;
   busy: boolean;
@@ -617,6 +622,7 @@ export function Timeline({
                 >
                   {row.kind === "user" ? (
                     <UserRow
+                      skills={skills}
                       row={row}
                       disabled={
                         reverting || busy || Boolean(thread.pendingRevert)
@@ -680,6 +686,7 @@ export function Timeline({
               <WholePixelRow key={`queue:${row.id}`}>
                 <div className="pb-4">
                   <QueuedMessageRow
+                    skills={skills}
                     row={row}
                     next={index === 0}
                     thread={thread}
@@ -752,11 +759,13 @@ function CheckpointRow({
 
 function QueuedMessageRow({
   row,
+  skills,
   next,
   thread,
   onRemove,
 }: {
   row: FollowUp;
+  skills: readonly Skill[];
   next: boolean;
   thread: Thread;
   onRemove: (id: string) => void;
@@ -776,7 +785,9 @@ function QueuedMessageRow({
   return (
     <div className="flex flex-col items-end" data-queued-message-id={row.id}>
       <div className="max-w-[80%] rounded-2xl border border-dashed border-border p-3 text-message-foreground/80">
-        {row.text.trim() ? <ChatMarkdown text={row.text} lineBreaks /> : null}
+        {row.text.trim() ? (
+          <ChatMarkdown text={row.text} lineBreaks skills={skills} />
+        ) : null}
         {row.attachments.length ? (
           <div
             className={cn(

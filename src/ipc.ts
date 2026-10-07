@@ -17,6 +17,7 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import type { QueryClient } from "@tanstack/react-query";
 import { z } from "zod";
+import { normalizeSkillMentions } from "./chat/composerSkillTokens";
 import { savedDisposition, setReviewDisposition } from "./panel/reviews";
 import type { SetReviewDisposition } from "./panel/reviews";
 import { notificationHistory } from "./notifications/observer";
@@ -485,6 +486,17 @@ export type GitAction =
       message: string | null;
     }
   | { kind: "push" | "create_pr" | "pull" };
+const skill = z.object({
+  name: z.string(),
+  path: z.string(),
+  enabled: z.boolean(),
+  scope: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  displayName: z.string().nullable().optional(),
+  shortDescription: z.string().nullable().optional(),
+});
+export type Skill = z.infer<typeof skill>;
+
 export type CheckoutScope =
   | "workspace"
   | "file"
@@ -717,6 +729,7 @@ export const ipc = {
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),
   resume: (threadId: string) => call("open_thread", { threadId }, thread),
   models: () => call("list_models", {}, z.array(modelOption)),
+  skills: (cwd: string) => call("list_skills", { cwd }, z.array(skill)),
   collaborationModes: () =>
     call("collaboration_modes", {}, z.array(z.enum(["default", "plan"]))),
   usageLimits: (refresh = false) =>
@@ -741,7 +754,7 @@ export const ipc = {
       "submit",
       {
         threadId,
-        text,
+        text: normalizeSkillMentions(text),
         requestId,
         attachments,
         ...(expectedTurnId ? { expectedTurnId } : {}),

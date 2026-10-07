@@ -95,6 +95,7 @@ fn main() {
             ipc::stage_attachment,
             ipc::submit,
             ipc::list_models,
+            ipc::list_skills,
             ipc::collaboration_modes,
             ipc::answer_user_questions,
             ipc::usage_limits,

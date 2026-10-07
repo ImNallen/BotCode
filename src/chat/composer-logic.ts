@@ -1,5 +1,5 @@
 // Ported from T3 Code v0.0.45 apps/web/src/composer-logic.ts and packages/shared/src/composerTrigger.ts (MIT).
-export type ComposerTriggerKind = "path" | "slash-command";
+export type ComposerTriggerKind = "path" | "slash-command" | "skill";
 export type ComposerSlashCommand =
   | "model"
   | "plan"
@@ -18,6 +18,12 @@ const triggerRules: {
   pattern: RegExp;
 }[] = [
   { kind: "slash-command", scope: "line", pattern: /^\/(\S*)$/ },
+  {
+    kind: "skill",
+    scope: "token",
+    pattern:
+      /^\p{Sc}((?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?$)[a-zA-Z0-9:_-]*)$/u,
+  },
   { kind: "path", scope: "token", pattern: /^@(.*)$/ },
 ];
 

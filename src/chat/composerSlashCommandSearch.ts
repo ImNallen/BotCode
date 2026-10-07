@@ -6,8 +6,18 @@ import {
 } from "../lib/searchRanking";
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
 import { pathBasename } from "./composer-logic";
+import type { Skill } from "../ipc";
+import {
+  scoreProviderSkill,
+  searchProviderSkills,
+} from "./providerSkillSearch";
+import { formatProviderSkillDisplayName } from "./providerSkills";
 
 type SlashItem = Extract<ComposerCommandItem, { type: "slash-command" }>;
+type SlashSearchItem = Extract<
+  ComposerCommandItem,
+  { type: "slash-command" | "skill" }
+>;
 const commands: SlashItem[] = [
   {
     id: "slash:model",
@@ -49,17 +59,37 @@ export function standaloneComposerCommand(text: string) {
 export function searchSlashCommandItems(
   query: string,
   planSupported: boolean,
-): SlashItem[] {
-  const items = commands.filter(
+  skills: readonly Skill[] = [],
+): SlashSearchItem[] {
+  const items: SlashSearchItem[] = commands.filter(
     (item) =>
       planSupported || (item.command !== "plan" && item.command !== "default"),
   );
+  items.push(...skillCommandItems(skills, "", true));
   const normalized = normalizeSearchQuery(query, {
     trimLeadingPattern: /^\/+/,
   });
   if (!normalized) return items;
-  const ranked: { item: SlashItem; score: number; tieBreaker: string }[] = [];
+  const ranked: { item: SlashSearchItem; score: number; tieBreaker: string }[] =
+    [];
   for (const item of items) {
+    if (item.type === "skill") {
+      const skillQuery = normalized.startsWith("skill:")
+        ? normalized.slice(6)
+        : normalized;
+      const score =
+        normalized === "skill" || !skillQuery
+          ? 0
+          : (scoreProviderSkill(item.skill, skillQuery) ??
+            ("skill".startsWith(normalized) ? Number.MAX_SAFE_INTEGER : null));
+      if (score !== null)
+        insertRankedSearchResult(
+          ranked,
+          { item, score, tieBreaker: `2\u0000${item.skill.name}\u0000codex` },
+          Infinity,
+        );
+      continue;
+    }
     const scores = [
       scoreQueryMatch({
         value: item.command,
@@ -83,11 +113,34 @@ export function searchSlashCommandItems(
     if (scores.length)
       insertRankedSearchResult(
         ranked,
-        { item, score: Math.min(...scores), tieBreaker: item.command },
+        {
+          item,
+          score: Math.min(...scores),
+          tieBreaker: `0\u0000${item.command}`,
+        },
         Infinity,
       );
   }
   return ranked.map((result) => result.item);
+}
+
+export function skillCommandItems(
+  skills: readonly Skill[],
+  query: string,
+  slash = false,
+): Extract<ComposerCommandItem, { type: "skill" }>[] {
+  return searchProviderSkills(skills, query).map((skill) => ({
+    id: `skill:codex:${skill.name}`,
+    type: "skill",
+    skill,
+    label: slash
+      ? `/skill:${skill.name}`
+      : formatProviderSkillDisplayName(skill),
+    description:
+      skill.shortDescription ??
+      skill.description ??
+      (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
+  }));
 }
 
 export function searchComposerPaths(
