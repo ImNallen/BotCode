@@ -46,6 +46,17 @@ pub async fn read_file(
     app.read_file(workspace_id, thread_id, path).await
 }
 #[tauri::command]
+pub async fn write_file(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    path: String,
+    contents: String,
+) -> Result<()> {
+    app.write_file(workspace_id, thread_id, path, contents)
+        .await
+}
+#[tauri::command]
 pub async fn read_diff(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

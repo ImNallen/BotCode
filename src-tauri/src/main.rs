@@ -68,6 +68,7 @@ fn main() {
             ipc::ensure_scratch,
             ipc::workspace_view,
             ipc::read_file,
+            ipc::write_file,
             ipc::read_diff,
             ipc::read_turn_diff,
             ipc::revert_thread,
