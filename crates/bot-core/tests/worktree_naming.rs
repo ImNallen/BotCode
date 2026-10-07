@@ -3,7 +3,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 struct Fixture {
@@ -99,6 +99,8 @@ async fn wait(
     id: &ThreadId,
     predicate: impl Fn(&ThreadSnapshot) -> bool,
 ) -> ThreadSnapshot {
+    let started = Instant::now();
+    let mut last = None;
     for _ in 0..500 {
         let t = app.thread(id.clone()).await.unwrap();
         if predicate(&t)
@@ -112,9 +114,13 @@ async fn wait(
         {
             return t;
         }
+        last = Some(t);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("snapshot did not reach expected state")
+    panic!(
+        "snapshot did not reach expected state after {:?}; last snapshot: {last:#?}",
+        started.elapsed()
+    )
 }
 async fn wait_file(path: &Path) {
     for _ in 0..500 {
