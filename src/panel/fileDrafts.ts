@@ -78,7 +78,17 @@ export function confirmFileDraft(
       () => {
         if (drafts.get(id) === confirmed) putDraft(id, null);
       },
-      () => {},
+      () => {
+        if (drafts.get(id) !== confirmed) return;
+        // The write succeeded, so its contents stand in for the failed read
+        // and later reads stop being masked.
+        client.setQueryData(query.queryKey, () => ({
+          kind: "text" as const,
+          name: path,
+          contents,
+        }));
+        putDraft(id, null);
+      },
     );
   return true;
 }

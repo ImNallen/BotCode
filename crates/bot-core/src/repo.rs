@@ -255,7 +255,9 @@ pub(crate) fn default_branch(root: &Path) -> Option<String> {
 }
 fn relative(path: &str) -> Result<&Path> {
     let p = Path::new(path);
-    if p.as_os_str().is_empty()
+    if path
+        .split('/')
+        .any(|s| s.is_empty() || s == "." || s == "..")
         || p.components().any(|c| !matches!(c, Component::Normal(_)))
         || p.components().any(|c| c.as_os_str() == ".git")
     {
@@ -323,9 +325,8 @@ fn writable(root: &Path, path: &str) -> Result<PathBuf> {
         missing.push(existing.file_name().ok_or_else(inside)?.to_owned());
         existing.pop();
     }
-    let mut inner = existing
-        .canonicalize()
-        .map_err(|_| inside())?
+    let real_existing = existing.canonicalize().map_err(|_| inside())?;
+    let mut inner = real_existing
         .strip_prefix(&root)
         .map_err(|_| {
             AppError::new(
@@ -334,6 +335,9 @@ fn writable(root: &Path, path: &str) -> Result<PathBuf> {
             )
         })?
         .to_path_buf();
+    if !missing.is_empty() && !real_existing.is_dir() {
+        return Err(inside());
+    }
     inner.extend(missing.iter().rev());
     if inner
         .components()
