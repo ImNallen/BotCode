@@ -303,8 +303,8 @@ function TerminalViewport({
   const [menu, setMenu] = useState<TerminalMenu | null>(null);
   const handleSessionExited = useEffectEvent(() => onSessionExited());
   const openPath = useEffectEvent((text: string) => {
-    const path = fileLinks?.resolve(text);
-    if (path) fileLinks?.open(path);
+    const link = fileLinks?.resolve(text, "code");
+    if (link?.kind === "workspace") fileLinks?.openInPanel(link.path);
   });
   const showMenu = useEffectEvent((next: TerminalMenu | null) => setMenu(next));
   const dismissSelectionMenu = useEffectEvent(() =>

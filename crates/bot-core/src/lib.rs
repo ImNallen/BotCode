@@ -5,6 +5,8 @@ mod checkpoints;
 mod cleanup;
 mod codex;
 mod domain;
+mod editors;
+pub use editors::{EditorId, OpenTarget, Position, available_editors};
 mod pr_review;
 mod pull_requests;
 pub mod repo;

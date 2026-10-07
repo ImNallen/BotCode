@@ -21,6 +21,7 @@ import { normalizeSkillMentions } from "./chat/composerSkillTokens";
 import { savedDisposition, setReviewDisposition } from "./panel/reviews";
 import type { SetReviewDisposition } from "./panel/reviews";
 import { notificationHistory } from "./notifications/observer";
+import { editorId, type EditorId } from "./lib/editors";
 export const native = isTauri();
 const id = z.uuid();
 const reason = z.object({ kind: z.literal("unavailable"), reason: z.string() });
@@ -504,6 +505,25 @@ export type NewCheckout =
   | { kind: "worktree"; base: string; fromOrigin: boolean }
   | { kind: "folder"; prompt: string };
 export type CheckoutRef = { workspaceId: string; threadId?: string };
+// The core resolves every target and validates its path.
+export type OpenTarget =
+  | {
+      kind: "workspace";
+      workspace_id: string;
+      thread_id: string | null;
+      path: string;
+    }
+  | { kind: "chat_link"; thread_id: string; path: string };
+export type EditorPosition = { line: number; column: number | null };
+export const workspaceTarget = (
+  { workspaceId, threadId }: CheckoutRef,
+  path: string,
+): OpenTarget => ({
+  kind: "workspace",
+  workspace_id: workspaceId,
+  thread_id: threadId ?? null,
+  path,
+});
 export type TerminalEvent = z.infer<typeof terminalEvent>;
 export type TerminalTarget = {
   workspaceId: string;
@@ -787,6 +807,14 @@ export const ipc = {
   terminalClose: ({ workspaceId, threadId, terminalId }: TerminalTarget) =>
     call("terminal_close", { workspaceId, threadId, terminalId }, z.null()),
   openUrl: (url: string) => call("open_url", { url }, z.null()),
+  availableEditors: () => call("available_editors", {}, z.array(editorId)),
+  openInEditor: (
+    target: OpenTarget,
+    editor: EditorId,
+    position: EditorPosition | null,
+  ) => call("open_in_editor", { target, editor, position }, z.null()),
+  revealInFinder: (target: OpenTarget) =>
+    call("reveal_in_finder", { target }, z.null()),
   create: (workspaceId: string, checkout: NewCheckout) =>
     call("create_thread", { workspaceId, checkout }, thread),
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),

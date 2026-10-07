@@ -35,7 +35,10 @@ import { formatDayAwareTimestamp, formatWorkingTimer } from "../lib/time";
 import { Button } from "../ui/controls";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { attachmentUrl } from "./composerImages";
-import { ChangedFilesCard } from "./ChangedFilesTree";
+import {
+  ChangedFilesCard,
+  type FileContextMenuHandler,
+} from "./ChangedFilesTree";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import {
   deriveRows,
@@ -550,6 +553,7 @@ export function Timeline({
   busy,
   onEdit,
   onOpenTurnDiff,
+  onFileContextMenu,
   onRemoveQueued,
 }: {
   thread: Thread;
@@ -560,6 +564,7 @@ export function Timeline({
   onEdit: (turnId: string) => void;
   onRemoveQueued: (id: string) => void;
   onOpenTurnDiff: (turnId: string, filePath?: string) => void;
+  onFileContextMenu?: FileContextMenuHandler;
 }) {
   useSyncExternalStore(
     followUps.subscribe,
@@ -683,6 +688,7 @@ export function Timeline({
                       <CheckpointRow
                         row={row}
                         onOpenTurnDiff={onOpenTurnDiff}
+                        onFileContextMenu={onFileContextMenu}
                       />
                     )
                   ) : (
@@ -742,9 +748,11 @@ export function Timeline({
 function CheckpointRow({
   row,
   onOpenTurnDiff,
+  onFileContextMenu,
 }: {
   row: Extract<TimelineRow, { kind: "checkpoint" }>;
   onOpenTurnDiff: (turnId: string, filePath?: string) => void;
+  onFileContextMenu?: FileContextMenuHandler;
 }) {
   const [expanded, setExpanded] = useState(false);
   if (row.checkpoint.kind === "complete")
@@ -755,6 +763,7 @@ function CheckpointRow({
         allDirectoriesExpanded={expanded}
         onToggleAllDirectories={() => setExpanded((value) => !value)}
         onOpenTurnDiff={onOpenTurnDiff}
+        onFileContextMenu={onFileContextMenu}
       />
     ) : null;
   if (row.checkpoint.kind === "unavailable")

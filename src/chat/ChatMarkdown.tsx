@@ -6,19 +6,29 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, {
+  defaultUrlTransform,
+  type Components,
+} from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { CheckIcon, CopyIcon, GlobeIcon, WrapTextIcon } from "lucide-react";
 import { cn } from "../lib/cn";
 import { FileEntryIcon } from "../panel/FileEntryIcon";
 import { Button } from "../ui/controls";
-import type { Skill } from "../ipc";
+import { Menu, MenuItem } from "../ui/menu";
+import type { OpenTarget, Skill } from "../ipc";
+import { contextMenuPoint } from "../fileContextMenu";
+import { notifyEditorResult, useEditorActions } from "../lib/editorActions";
+import { openInEditorMenuLabel, revealInFinderLabel } from "../lib/editors";
+import type { ChatFileLink } from "./chatFileLinks";
 import { renderSkillInlineMarkdownChildren } from "./SkillInlineText";
 
 export type FileLinks = {
-  resolve: (target: string) => string | null;
-  open: (path: string) => void;
+  resolve: (target: string, source: "code" | "href") => ChatFileLink | null;
+  openInPanel: (path: string) => void;
+  target: (link: ChatFileLink) => OpenTarget;
+  absolutePath: (link: ChatFileLink) => string;
 };
 
 const FileLinkContext = createContext<FileLinks | null>(null);
@@ -33,25 +43,90 @@ export function FileLinkProvider({
   return <FileLinkContext value={value}>{children}</FileLinkContext>;
 }
 
-function FileChip({ path }: { path: string }) {
-  const links = useContext(FileLinkContext);
+function copyPath(value: string, title: string) {
+  void navigator.clipboard.writeText(value).then(
+    () => notifyEditorResult("success", `${title} copied`, value),
+    (error: unknown) =>
+      notifyEditorResult(
+        "error",
+        `Failed to copy ${title.toLowerCase()}`,
+        error instanceof Error ? error.message : "An error occurred.",
+      ),
+  );
+}
+
+function FileChip({ links, link }: { links: FileLinks; link: ChatFileLink }) {
+  const editors = useEditorActions();
+  const [menu, setMenu] = useState<{
+    point: { x: number; y: number };
+    returnFocus: HTMLElement;
+  }>();
+  const { path } = link;
   const label = path.split("/").at(-1) ?? path;
+  const position =
+    link.line === undefined
+      ? null
+      : { line: link.line, column: link.column ?? null };
+  const openInEditor = () => editors.open(links.target(link), position);
   return (
-    <button
-      type="button"
-      title={path}
-      data-slot="context-chip"
-      onClick={() => links?.open(path)}
-      className="inline-flex h-[1.41em] max-w-full items-center gap-[0.33em] rounded-[0.5em] border px-[0.5em] align-middle font-medium text-[0.86em] leading-none [&_svg]:block [&_svg]:size-[1.17em] [&_svg]:shrink-0 [&_svg]:self-center [button&,a&,[data-popup-open]&]:cursor-pointer [button&,a&]:transition-colors [button&,a&]:motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-default [--context-chip-accent:oklch(0.62_0.11_215)] [--context-chip-border:color-mix(in_oklab,var(--context-chip-accent)_34%,var(--contrast-border))] [--context-chip-border-hover:color-mix(in_oklab,var(--context-chip-accent)_48%,var(--contrast-border))] [--context-chip-foreground:color-mix(in_oklab,var(--context-chip-accent)_22%,var(--contrast-foreground))] border-(--context-chip-border) bg-(--context-chip-accent)/11 text-(--context-chip-foreground) [button:enabled&,a&]:hover:border-(--context-chip-border-hover) [button:enabled&,a&]:hover:bg-(--context-chip-accent)/17 chat-markdown-file-link select-text"
-    >
-      <FileEntryIcon path={path} />
-      <span
-        data-slot="context-chip-label"
-        className="block min-w-0 self-center truncate leading-tight"
+    <>
+      <button
+        type="button"
+        title={path}
+        data-slot="context-chip"
+        onClick={() =>
+          link.kind === "workspace" ? links.openInPanel(path) : openInEditor()
+        }
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setMenu({
+            point: contextMenuPoint(event),
+            returnFocus: event.currentTarget,
+          });
+        }}
+        className="inline-flex h-[1.41em] max-w-full items-center gap-[0.33em] rounded-[0.5em] border px-[0.5em] align-middle font-medium text-[0.86em] leading-none [&_svg]:block [&_svg]:size-[1.17em] [&_svg]:shrink-0 [&_svg]:self-center [button&,a&,[data-popup-open]&]:cursor-pointer [button&,a&]:transition-colors [button&,a&]:motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-default [--context-chip-accent:oklch(0.62_0.11_215)] [--context-chip-border:color-mix(in_oklab,var(--context-chip-accent)_34%,var(--contrast-border))] [--context-chip-border-hover:color-mix(in_oklab,var(--context-chip-accent)_48%,var(--contrast-border))] [--context-chip-foreground:color-mix(in_oklab,var(--context-chip-accent)_22%,var(--contrast-foreground))] border-(--context-chip-border) bg-(--context-chip-accent)/11 text-(--context-chip-foreground) [button:enabled&,a&]:hover:border-(--context-chip-border-hover) [button:enabled&,a&]:hover:bg-(--context-chip-accent)/17 chat-markdown-file-link select-text"
       >
-        {label}
-      </span>
-    </button>
+        <FileEntryIcon path={path} />
+        <span
+          data-slot="context-chip-label"
+          className="block min-w-0 self-center truncate leading-tight"
+        >
+          {label}
+        </span>
+      </button>
+      {menu ? (
+        <Menu
+          key={`${menu.point.x}:${menu.point.y}`}
+          open
+          point={menu.point}
+          returnFocus={menu.returnFocus}
+          onOpenChange={(open) => {
+            if (!open) setMenu(undefined);
+          }}
+          trigger={() => null}
+        >
+          {editors.preferred ? (
+            <MenuItem onClick={openInEditor}>
+              {openInEditorMenuLabel(editors.preferred)}
+            </MenuItem>
+          ) : null}
+          {editors.available.includes("file-manager") ? (
+            <MenuItem onClick={() => editors.reveal(links.target(link))}>
+              {revealInFinderLabel}
+            </MenuItem>
+          ) : null}
+          <MenuItem onClick={() => copyPath(path, "Relative path")}>
+            Copy relative path
+          </MenuItem>
+          <MenuItem
+            onClick={() => copyPath(links.absolutePath(link), "Full path")}
+          >
+            Copy full path
+          </MenuItem>
+        </Menu>
+      ) : null}
+    </>
   );
 }
 
@@ -147,14 +222,15 @@ const components: Components = {
     const inline =
       node?.position?.start.line === node?.position?.end.line && !className;
     const text = typeof children === "string" ? children : null;
-    const path = inline && text ? links?.resolve(text) : null;
-    if (path) return <FileChip path={path} />;
+    const link = inline && text && links ? links.resolve(text, "code") : null;
+    if (links && link) return <FileChip links={links} link={link} />;
     return <code className={className}>{children}</code>;
   },
   a({ href, children }) {
     const links = useContext(FileLinkContext);
-    const path = href ? links?.resolve(decodeURI(href)) : null;
-    if (path) return <FileChip path={path} />;
+    const link = href && links ? links.resolve(href, "href") : null;
+    if (links && link) return <FileChip links={links} link={link} />;
+    if (href && /^file:/i.test(href)) return <span>{children}</span>;
     return (
       <a href={href} target="_blank" rel="noopener noreferrer" title={href}>
         <span className="whitespace-nowrap">
@@ -170,6 +246,10 @@ const components: Components = {
     );
   },
 };
+
+// File URLs can become file chips, so they survive react-markdown's sanitizing.
+const keepFileUrls = (url: string) =>
+  /^file:/i.test(url) ? url : defaultUrlTransform(url);
 
 export const ChatMarkdown = memo(function ChatMarkdown({
   text,
@@ -194,6 +274,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
     >
       <ReactMarkdown
         remarkPlugins={lineBreaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
+        urlTransform={keepFileUrls}
         components={
           skills
             ? {

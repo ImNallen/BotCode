@@ -11,7 +11,8 @@ import {
   WrapTextIcon,
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
-import type { CheckoutRef, WorkspaceView } from "../ipc";
+import { workspaceTarget, type CheckoutRef, type WorkspaceView } from "../ipc";
+import { OpenInPicker } from "../chat/OpenInPicker";
 import { cn } from "../lib/cn";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import {
@@ -74,6 +75,7 @@ export function FilesSurface({
               />
             </div>
           </ScrollRow>
+          <OpenInPicker target={workspaceTarget(checkout, path)} compact />
           <SurfaceAction
             label={wordWrap ? "Disable word wrap" : "Enable word wrap"}
             pressed={wordWrap}

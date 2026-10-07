@@ -17,7 +17,12 @@ import {
   useNavigate,
   useSearch,
 } from "@tanstack/react-router";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  skipToken,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   MessageSquareDashedIcon,
@@ -30,8 +35,12 @@ import {
   ipc,
   native,
   setThreadSnapshot,
+  workspaceTarget,
   type Arrange,
+  type CheckoutRef,
 } from "./ipc";
+import { EditorToasts, useEditorActions } from "./lib/editorActions";
+import { editorById } from "./lib/editors";
 import { Sidebar, SidebarBrand } from "./Sidebar";
 import { SidebarFooter } from "./SidebarFooter";
 import { SettingsSidebar } from "./settings/SettingsPage";
@@ -331,10 +340,33 @@ export function Workbench() {
   const currentView = views.find(
     (view) => view.data?.workspace.id === workspaceId,
   )?.data;
+  const editors = useEditorActions();
+  const selectedWorkspace = list.find(
+    (workspace) => workspace.id === workspaceId,
+  );
+  const openCheckout: CheckoutRef | undefined = !workspaceId
+    ? undefined
+    : selection.thread
+      ? openSummary && {
+          workspaceId,
+          threadId:
+            openSummary.checkout.kind === "local" ? undefined : openSummary.id,
+        }
+      : selectedWorkspace?.kind === "repository"
+        ? { workspaceId }
+        : undefined;
+  const openCheckoutView = useQuery({
+    queryKey: checkoutKey("workspace", openCheckout ?? { workspaceId: "" }),
+    queryFn: openCheckout ? () => ipc.workspace(openCheckout) : skipToken,
+  });
+  const checkoutTarget =
+    openCheckout && openCheckoutView.data && !openCheckoutView.data.unavailable
+      ? workspaceTarget(openCheckout, "")
+      : null;
   const actionContext: ActionContext = {
     pageOpen,
     thread: openSummary,
-    workspace: list.find((workspace) => workspace.id === workspaceId),
+    workspace: selectedWorkspace,
     branch:
       openSummary?.checkout.kind === "worktree"
         ? openSummary.checkout.branch
@@ -345,6 +377,8 @@ export function Workbench() {
     renamePending,
     queued: !!selection.thread && followUps.rows(selection.thread).length > 0,
     archiveTarget: undefined,
+    checkoutTarget,
+    editorLabel: editors.preferred ? editorById(editors.preferred).label : null,
     newThread: () => newThread(),
     startScratch: () => void startScratch(),
     openSettings,
@@ -399,6 +433,8 @@ export function Workbench() {
           ),
         );
     },
+    openInEditor: (target) => editors.open(target),
+    revealInFinder: editors.reveal,
   };
   const onShortcut = useEffectEvent((event: KeyboardEvent) => {
     if (isCommandPaletteOpen()) {
@@ -471,6 +507,7 @@ export function Workbench() {
           } as React.CSSProperties
         }
       >
+        <EditorToasts />
         <ThreadNotificationCoordinator
           workspaces={views.flatMap((view) => (view.data ? [view.data] : []))}
           workspaceIds={list.map((workspace) => workspace.id)}

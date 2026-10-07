@@ -266,9 +266,17 @@ fn relative(path: &str) -> Result<&Path> {
     }
     Ok(p)
 }
-fn contained(root: &Path, path: &str) -> Result<PathBuf> {
+pub(crate) fn existing(path: &Path) -> Result<PathBuf> {
+    path.canonicalize().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            AppError::new("invalid_path", "This file no longer exists.")
+        }
+        _ => e.into(),
+    })
+}
+pub(crate) fn contained(root: &Path, path: &str) -> Result<PathBuf> {
     let p = root.join(relative(path)?);
-    let canonical = p.canonicalize()?;
+    let canonical = existing(&p)?;
     if !canonical.starts_with(root.canonicalize()?) {
         return Err(AppError::new(
             "invalid_path",

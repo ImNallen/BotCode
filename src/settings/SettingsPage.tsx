@@ -19,6 +19,8 @@ import {
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
 import { actionIds } from "../lib/actions";
+import { useEditorActions } from "../lib/editorActions";
+import { editorById } from "../lib/editors";
 import { shortcutLabel } from "../lib/shortcuts";
 
 import { cn } from "../lib/cn";
@@ -273,6 +275,51 @@ export function SettingsSidebar() {
   );
 }
 
+function PreferredEditorControl() {
+  const { preferences, update } = usePreferences();
+  const editors = useEditorActions();
+  const stored = preferences.preferredEditor;
+  return (
+    <Menu
+      trigger={(props) => (
+        <button
+          type="button"
+          {...props}
+          className={selectTrigger({
+            size: "sm",
+            className: "w-auto min-w-0",
+          })}
+          aria-label="Preferred editor"
+        >
+          {stored === null ? "Automatic" : editorById(stored).label}
+          <ChevronDownIcon className="size-3.5" />
+        </button>
+      )}
+    >
+      <MenuItem
+        className={selectItem}
+        role="menuitemradio"
+        aria-checked={stored === null}
+        onClick={() => update({ preferredEditor: null })}
+      >
+        Automatic
+      </MenuItem>
+      {editors.installed.map(({ id, label, Icon }) => (
+        <MenuItem
+          key={id}
+          className={selectItem}
+          role="menuitemradio"
+          aria-checked={stored === id}
+          onClick={() => update({ preferredEditor: id })}
+        >
+          <Icon aria-hidden="true" className="me-2" />
+          {label}
+        </MenuItem>
+      ))}
+    </Menu>
+  );
+}
+
 function FontSizeControl({
   value,
   min,
@@ -453,6 +500,7 @@ export function SettingsPage() {
           ))}
         </Menu>
       );
+    if (id === "preferred-editor") return <PreferredEditorControl />;
     if (id === "context-window-indicator")
       return (
         <Switch

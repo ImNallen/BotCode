@@ -167,6 +167,13 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
               "Queue follow-ups while the agent runs or steer the current run.",
           },
           {
+            id: "preferred-editor",
+            title: "Preferred editor",
+            description:
+              "Open checkouts and files in this editor. Automatic uses the first installed editor.",
+            keywords: "open in editor ide cursor vs code zed finder",
+          },
+          {
             id: "context-window-indicator",
             title: "Context window indicator",
             description:

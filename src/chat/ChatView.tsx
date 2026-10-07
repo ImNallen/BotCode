@@ -23,6 +23,7 @@ import {
   ipc,
   readThreadSnapshot,
   setThreadSnapshot,
+  workspaceTarget,
 } from "../ipc";
 import type {
   ApprovalDecision,
@@ -70,6 +71,9 @@ import {
   type ReviewDraftTarget,
 } from "../panel/reviews";
 import { FileLinkProvider, type FileLinks } from "./ChatMarkdown";
+import { parseChatFileLink } from "./chatFileLinks";
+import { OpenInPicker } from "./OpenInPicker";
+import { useFileContextMenu } from "../fileContextMenu";
 import { GitActionsControl } from "./GitActionsControl";
 import { ApprovalDrawer } from "./ApprovalDrawer";
 import { BranchPicker, startsFromOrigin } from "./BranchPicker";
@@ -314,6 +318,11 @@ export function ChatView({
       ? view.workspace.root
       : undefined;
   const skills = useCheckoutSkills(skillsRoot);
+  const checkoutOpenable = Boolean(
+    view && !view.unavailable && (threadId ? thread : !isScratch),
+  );
+  const gitThread = !isScratch && !view?.unavailable ? thread : undefined;
+  const fileContextMenu = useFileContextMenu();
   const pullRequests =
     view?.threads.find((row) => row.id === threadId)?.pullRequests.links ?? [];
   const { data: branches } = useQuery({
@@ -557,27 +566,34 @@ export function ChatView({
     },
   });
   const workspace = view?.workspace;
+  const checkoutWorkspace = checkout.workspaceId;
+  const checkoutThread = checkout.threadId;
   const fileLinks = useMemo<FileLinks>(() => {
     const files = new Set(view?.files ?? []);
     const root = view?.workspace.root;
     return {
-      resolve: (target) => {
-        let path = target
-          .trim()
-          .replace(/^file:\/\//, "")
-          .replace(/#L\d+.*$/, "")
-          .replace(/:\d+(:\d+)?$/, "");
-        if (root && path.startsWith(`${root}/`))
-          path = path.slice(root.length + 1);
-        path = path.replace(/^\.\//, "");
-        return files.has(path) ? path : null;
-      },
-      open: (path) => {
+      resolve: (target, source) =>
+        parseChatFileLink(target, {
+          files,
+          root,
+          source,
+          threadId,
+        }),
+      openInPanel: (path) => {
         setPanelOpen(true);
         setPanel((current) => openFile(current, path));
       },
+      target: (link) =>
+        link.kind === "external"
+          ? { kind: "chat_link", thread_id: link.threadId, path: link.path }
+          : workspaceTarget(
+              { workspaceId: checkoutWorkspace, threadId: checkoutThread },
+              link.path,
+            ),
+      absolutePath: (link) =>
+        link.kind === "external" || !root ? link.path : `${root}/${link.path}`,
     };
-  }, [view]);
+  }, [view, threadId, checkoutWorkspace, checkoutThread]);
   const terminalAvailable = !(isScratch && !threadId);
   const terminalScope = terminalScopeKey(workspaceId, threadId ?? null);
   const terminalState = useTerminalState(terminalScope);
@@ -1029,23 +1045,26 @@ export function ChatView({
                     : "pr-10.25 sm:pr-7.25 @3xl/header-actions:pr-8.25",
               )}
             >
+              {checkoutOpenable ? (
+                <OpenInPicker target={workspaceTarget(checkout, "")} />
+              ) : null}
               {!isScratch ? (
                 <ProjectScriptsControl
                   scripts={configQuery.data?.scripts ?? []}
                   onRun={runScript}
                 />
               ) : null}
-              {thread && !isScratch && !view?.unavailable ? (
+              {gitThread ? (
                 <GitActionsControl
                   checkout={checkout}
-                  thread={thread}
+                  thread={gitThread}
                   threads={view?.threads ?? []}
                   onError={setError}
                   onOpenPullRequests={() => {
                     const links =
                       client.getQueryData<ThreadPrSummary>([
                         "thread-prs",
-                        thread.id,
+                        gitThread.id,
                       ])?.links ?? pullRequests;
                     setPanel((current) =>
                       openSurface(current, pullRequestSurface(links)),
@@ -1111,7 +1130,17 @@ export function ChatView({
                     }}
                     onRemoveQueued={recoverQueue}
                     onOpenTurnDiff={openTurnDiff}
+                    onFileContextMenu={
+                      checkoutOpenable
+                        ? (path, event) =>
+                            fileContextMenu.show(
+                              workspaceTarget(checkout, path),
+                              event,
+                            )
+                        : undefined
+                    }
                   />
+                  {fileContextMenu.element}
                 </FileLinkProvider>
               ) : null}
             </div>
