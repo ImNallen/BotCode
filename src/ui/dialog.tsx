@@ -1,4 +1,4 @@
-// Classes copied from pingdotgg/t3code v0.0.45 components/ui/dialog.tsx and dialog-styles.ts (MIT).
+// Classes copied from pingdotgg/t3code v0.0.45 components/ui/dialog.tsx, command.tsx and dialog-styles.ts (MIT).
 import {
   type ComponentProps,
   type ReactNode,
@@ -21,7 +21,9 @@ export function Dialog({
   onOpenChange,
   className,
   children,
+  variant = "default",
 }: {
+  variant?: "default" | "command";
   open: boolean;
   onOpenChange: (open: boolean) => void;
   className?: string;
@@ -29,17 +31,23 @@ export function Dialog({
 }) {
   if (!open) return null;
   return (
-    <ModalDialog onClose={() => onOpenChange(false)} className={className}>
+    <ModalDialog
+      onClose={() => onOpenChange(false)}
+      className={className}
+      variant={variant}
+    >
       {children}
     </ModalDialog>
   );
 }
 
 function ModalDialog({
+  variant,
   onClose,
   className,
   children,
 }: {
+  variant: "default" | "command";
   onClose: () => void;
   className?: string;
   children: ReactNode;
@@ -53,15 +61,25 @@ function ModalDialog({
   return (
     <dialog
       ref={ref}
+      aria-label={variant === "command" ? "Command palette" : undefined}
+      data-command-palette={variant === "command" ? "true" : undefined}
       className="m-0 size-full max-h-none max-w-none overflow-visible border-0 bg-transparent p-0 backdrop:bg-transparent"
       onCancel={(event) => {
         event.preventDefault();
         onClose();
       }}
     >
-      <div className={DIALOG_BACKDROP_CLASS} data-slot="dialog-backdrop" />
       <div
-        className="fixed inset-0 z-50 grid grid-rows-[1fr_auto_1fr] justify-items-center p-4 max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12"
+        className={DIALOG_BACKDROP_CLASS}
+        data-slot="dialog-backdrop"
+        onPointerDown={variant === "command" ? onClose : undefined}
+      />
+      <div
+        className={
+          variant === "command"
+            ? "pointer-events-none fixed inset-0 z-50 flex flex-col items-center px-4 py-[max(--spacing(4),4vh)] sm:py-[10vh]"
+            : "fixed inset-0 z-50 grid grid-rows-[1fr_auto_1fr] justify-items-center p-4 max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12"
+        }
         data-slot="dialog-viewport"
         onClick={(event) => {
           if (event.target === event.currentTarget) onClose();
@@ -71,8 +89,11 @@ function ModalDialog({
           className={cn(
             DIALOG_POPUP_CLASS,
             "row-start-2 text-popover-foreground",
-            "max-h-full max-w-lg",
-            DIALOG_MOBILE_SHEET_CLASS,
+            variant === "command"
+              ? "pointer-events-auto max-h-105 max-w-xl text-foreground"
+              : "max-h-full max-w-lg",
+            variant === "command" && "overflow-hidden",
+            variant !== "command" && DIALOG_MOBILE_SHEET_CLASS,
             className,
           )}
           data-slot="dialog-popup"

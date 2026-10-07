@@ -31,3 +31,11 @@ export async function confirmAndDeleteThread(
   ]);
   return outcome;
 }
+
+export async function restoreThread(threadId: string, client: QueryClient) {
+  await ipc.arrange(threadId, { kind: "unarchive" });
+  await Promise.all([
+    client.invalidateQueries({ queryKey: ["thread-summaries"] }),
+    client.invalidateQueries({ queryKey: ["workspace"] }),
+  ]);
+}

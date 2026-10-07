@@ -1,4 +1,5 @@
 // Popup and item classes copied from pingdotgg/t3code v0.0.45 components/ui/menu.tsx (MIT).
+import { isCommandPaletteOpen } from "../lib/commandPaletteBus";
 import {
   type ComponentProps,
   type CSSProperties,
@@ -181,6 +182,7 @@ export function Menu({
         setOpenRef.current(false);
     };
     const escape = (event: globalThis.KeyboardEvent) => {
+      if (isCommandPaletteOpen()) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();

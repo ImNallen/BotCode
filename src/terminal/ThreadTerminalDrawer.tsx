@@ -1,6 +1,7 @@
 // Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/ThreadTerminalDrawer.tsx,
 // PersistentThreadTerminalDrawer and PersistentThreadTerminalPanel in components/ChatView.tsx and
 // lib/terminalCloseConfirm.ts (MIT).
+import { isCommandPaletteOpen } from "../lib/commandPaletteBus";
 import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -1285,6 +1286,7 @@ export function PersistentThreadTerminalDrawer({
   };
 
   const handleShortcut = useEffectEvent((event: KeyboardEvent) => {
+    if (isCommandPaletteOpen() || event.isComposing) return;
     const command = terminalShortcutCommand(event);
     if (command === null || rootRef.current?.closest("[inert]")) return;
     // A held or repeated close must not fall through to the window's own Close.
@@ -1411,6 +1413,7 @@ export function PersistentThreadTerminalPanel({
   };
 
   const handleShortcut = useEffectEvent((event: KeyboardEvent) => {
+    if (isCommandPaletteOpen() || event.isComposing) return;
     const command = terminalShortcutCommand(event);
     if (
       command === null ||

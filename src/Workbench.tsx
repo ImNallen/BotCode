@@ -4,10 +4,13 @@ import { ThreadNotificationCoordinator } from "./notifications/ThreadNotificatio
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
+  useSyncExternalStore,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import {
   Outlet,
   useLocation,
@@ -37,7 +40,22 @@ import { ChatView } from "./chat/ChatView";
 import type { Surface } from "./panel/RightPanel";
 import { Button } from "./ui/controls";
 import { storage } from "./lib/storage";
-import { isMacPlatform } from "./lib/utils";
+import {
+  actions,
+  runAction,
+  type ActionContext,
+  type SidebarRequest,
+  type ChatRequest,
+} from "./lib/actions";
+import { matchAction, matchesAction, shortcutLabel } from "./lib/shortcuts";
+import {
+  focusComposer,
+  isCommandPaletteOpen,
+  subscribeCommandPaletteOpen,
+} from "./lib/commandPaletteBus";
+import { CommandPalette } from "./command/CommandPalette";
+import { followUps } from "./chat/followUps";
+import { confirmAndDeleteThread, restoreThread } from "./threadActions";
 import { isTerminalFocused } from "./terminal/terminalKeys";
 
 const SIDEBAR_DEFAULT = 256;
@@ -111,6 +129,63 @@ export function Workbench() {
   }, [navigate, selection]);
   const client = useQueryClient();
   const [error, setError] = useState<string>();
+  const [actionStatus, setActionStatus] = useState<string>();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteBlocked, setPaletteBlocked] = useState(false);
+  const paletteFocus = useRef<HTMLElement | null>(null);
+  const restorePaletteFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (paletteOpen || !restorePaletteFocus.current) return;
+    restorePaletteFocus.current = false;
+    const previous = paletteFocus.current;
+    paletteFocus.current = null;
+    if (
+      previous?.isConnected &&
+      previous !== document.body &&
+      previous !== document.documentElement &&
+      previous.getBoundingClientRect().width > 0 &&
+      previous.getBoundingClientRect().right > 0 &&
+      getComputedStyle(previous).visibility !== "hidden" &&
+      !previous.matches(":disabled") &&
+      !previous.closest("[inert]")
+    )
+      previous.focus({ preventScroll: true });
+    else if (!pageOpen) focusComposer();
+  }, [paletteOpen, pageOpen]);
+  const openPalette = useCallback(() => {
+    const previous =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const dialogs = Array.from(
+      document.querySelectorAll<HTMLDialogElement>(
+        "dialog[open]:not([data-command-palette])",
+      ),
+    );
+    flushSync(() => {
+      for (const dialog of dialogs)
+        dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    });
+    paletteFocus.current = previous?.isConnected
+      ? previous
+      : document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setPaletteBlocked(
+      dialogs.some((dialog) => dialog.isConnected && dialog.open),
+    );
+    setPaletteOpen(true);
+  }, []);
+  const [sidebarRequest, setSidebarRequest] = useState<SidebarRequest>();
+  const [chatRequest, setChatRequest] = useState<ChatRequest>();
+  const [renamePending, setRenamePending] = useState(false);
+  const requestSequence = useRef(0);
+  useSyncExternalStore(
+    followUps.subscribe,
+    followUps.snapshot,
+    followUps.snapshot,
+  );
+  useEffect(() => subscribeCommandPaletteOpen(openPalette), [openPalette]);
   const [prPanelRequest, setPrPanelRequest] = useState<{
     threadId: string;
     surface: Surface;
@@ -157,6 +232,9 @@ export function Workbench() {
   const repositories = list.filter((w) => w.kind === "repository");
   const scratch = list.find((w) => w.kind === "scratch");
   const workspaceId = selection.workspace ?? repositories[0]?.id ?? scratch?.id;
+  useEffect(() => {
+    setChatRequest(undefined);
+  }, [workspaceId, selection.thread]);
   const startScratch = useCallback(async () => {
     try {
       const workspace = await ipc.ensureScratch();
@@ -207,95 +285,6 @@ export function Workbench() {
     });
     return () => cancelAnimationFrame(frame);
   }, [pageOpen, sidebarOpen]);
-  useEffect(() => {
-    const shortcut = (event: KeyboardEvent) => {
-      if (event.isComposing || event.defaultPrevented) return;
-      const terminalFocus = isTerminalFocused();
-      const mod = terminalFocus
-        ? isMacPlatform(navigator.platform)
-          ? event.metaKey
-          : event.ctrlKey
-        : event.metaKey || event.ctrlKey;
-      if (mod && event.key.toLowerCase() === "b") {
-        event.preventDefault();
-        setSidebarOpen((value) => !value);
-      }
-      if (mod && event.key === ",") {
-        event.preventDefault();
-        openSettings();
-      }
-      // Option+N types a dead key on macOS, so match the physical key.
-      if (
-        mod &&
-        event.altKey &&
-        event.code === "KeyN" &&
-        scratchAvailable &&
-        !terminalFocus
-      ) {
-        event.preventDefault();
-        void startScratch();
-      }
-      // As in T3, the shortcut toggles in place and never navigates.
-      if (
-        mod &&
-        event.shiftKey &&
-        event.key.toLowerCase() === "s" &&
-        !pageOpen &&
-        !terminalFocus &&
-        openSummary
-      ) {
-        event.preventDefault();
-        void arrange(openSummary.id, {
-          kind: openSummary.settledAtMs === null ? "settle" : "unsettle",
-        });
-      }
-      if (
-        mod &&
-        event.shiftKey &&
-        event.key.toLowerCase() === "p" &&
-        !pageOpen &&
-        !terminalFocus &&
-        openSummary
-      ) {
-        event.preventDefault();
-        void arrange(openSummary.id, {
-          kind: openSummary.pinnedAtMs === null ? "pin" : "unpin",
-        });
-      }
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (
-        !pageOpen ||
-        event.key !== "Escape" ||
-        event.defaultPrevented ||
-        event.isComposing
-      )
-        return;
-      if (
-        event.target instanceof Element &&
-        event.target.closest(
-          '[role="dialog"], [aria-modal="true"], [data-slot$="popup"]',
-        )
-      )
-        return;
-      event.preventDefault();
-      closePage();
-    };
-    window.addEventListener("keydown", shortcut, true);
-    window.addEventListener("keydown", escape);
-    return () => {
-      window.removeEventListener("keydown", shortcut, true);
-      window.removeEventListener("keydown", escape);
-    };
-  }, [
-    openSettings,
-    closePage,
-    pageOpen,
-    scratchAvailable,
-    startScratch,
-    openSummary,
-    arrange,
-  ]);
   const openRepository = async () => {
     try {
       const path = await open({
@@ -339,6 +328,124 @@ export function Workbench() {
     void navigate({ to: "/", search: { workspace } });
   const newThread = (workspace = workspaceId) =>
     void navigate({ to: "/", search: { workspace } });
+  const currentView = views.find(
+    (view) => view.data?.workspace.id === workspaceId,
+  )?.data;
+  const actionContext: ActionContext = {
+    pageOpen,
+    thread: openSummary,
+    workspace: list.find((workspace) => workspace.id === workspaceId),
+    branch:
+      openSummary?.checkout.kind === "worktree"
+        ? openSummary.checkout.branch
+        : (currentView?.branch ?? ""),
+    scratchAvailable,
+    terminalAvailable:
+      !!workspaceId && !(scratch?.id === workspaceId && !selection.thread),
+    renamePending,
+    queued: !!selection.thread && followUps.rows(selection.thread).length > 0,
+    archiveTarget: undefined,
+    newThread: () => newThread(),
+    startScratch: () => void startScratch(),
+    openSettings,
+    closePage,
+    toggleSidebar: () => setSidebarOpen((value) => !value),
+    openPalette,
+    openSubmenu: openPalette,
+    arrange: (id, action) => void arrange(id, action),
+    requestSidebar: (threadId, operation) => {
+      if (operation.kind === "rename") setSidebarOpen(true);
+      setSidebarRequest({
+        sequence: ++requestSequence.current,
+        threadId,
+        operation,
+      });
+    },
+    requestChat: (kind) => {
+      if (workspaceId)
+        setChatRequest({
+          sequence: ++requestSequence.current,
+          workspaceId,
+          threadId: selection.thread,
+          kind,
+        });
+    },
+    restoreArchived: (thread) => {
+      void restoreThread(thread.id, client)
+        .then(() => {
+          setError(undefined);
+          setActionStatus("Thread restored.");
+        })
+        .catch((failure: unknown) =>
+          setError(
+            failure instanceof Error ? failure.message : String(failure),
+          ),
+        );
+    },
+    deleteArchived: (thread) => {
+      void confirmAndDeleteThread(thread, client)
+        .then((outcome) => {
+          if (!outcome) return;
+          setError(undefined);
+          setActionStatus(
+            outcome.kind === "retained"
+              ? `Thread deleted. Worktree kept. ${outcome.reason}`
+              : "Thread deleted.",
+          );
+        })
+        .catch((failure: unknown) =>
+          setError(
+            failure instanceof Error ? failure.message : String(failure),
+          ),
+        );
+    },
+  };
+  const onShortcut = useEffectEvent((event: KeyboardEvent) => {
+    if (isCommandPaletteOpen()) {
+      if (!event.repeat && matchesAction(event, "palette.open")) {
+        event.preventDefault();
+        closePalette(true);
+      }
+      return;
+    }
+    const id = matchAction(event, actionContext, isTerminalFocused());
+    if (!id) return;
+    event.preventDefault();
+    runAction(id, actionContext);
+  });
+  const onPageEscape = useEffectEvent((event: KeyboardEvent) => {
+    if (
+      isCommandPaletteOpen() ||
+      event.defaultPrevented ||
+      !matchesAction(event, "page.close") ||
+      !actions["page.close"].available(actionContext)
+    )
+      return;
+    if (
+      event.target instanceof Element &&
+      event.target.closest(
+        '[role="dialog"], [aria-modal="true"], dialog, [data-slot$="popup"]',
+      )
+    )
+      return;
+    event.preventDefault();
+    runAction("page.close", actionContext);
+  });
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => onShortcut(event);
+    const escape = (event: KeyboardEvent) => onPageEscape(event);
+    window.addEventListener("keydown", shortcut, true);
+    window.addEventListener("keydown", escape);
+    return () => {
+      window.removeEventListener("keydown", shortcut, true);
+      window.removeEventListener("keydown", escape);
+    };
+  }, []);
+  const closePalette = (restoreFocus: boolean) => {
+    restorePaletteFocus.current = restoreFocus;
+    if (!restoreFocus) paletteFocus.current = null;
+    setPaletteOpen(false);
+  };
   if (!native)
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm text-muted-foreground">
@@ -350,184 +457,197 @@ export function Workbench() {
       </div>
     );
   return (
-    <div
-      data-slot="sidebar-wrapper"
-      data-sidebar-state={sidebarOpen ? "expanded" : "collapsed"}
-      className="group/sidebar-wrapper flex w-full h-dvh min-h-0"
-      style={
-        {
-          "--sidebar-width": `${sidebarWidth}px`,
-          "--workspace-titlebar-content-left":
-            "calc(var(--workspace-controls-left) + var(--workspace-titlebar-control-size) + var(--workspace-titlebar-control-gap))",
-        } as React.CSSProperties
-      }
-    >
-      <ThreadNotificationCoordinator
-        workspaces={views.flatMap((view) => (view.data ? [view.data] : []))}
-        workspaceIds={list.map((workspace) => workspace.id)}
-        visibleThread={
-          !pageOpen && selection.thread && workspaceId
-            ? { workspaceId, threadId: selection.thread }
-            : null
-        }
-        openThread={selectThread}
-      />
+    <>
       <div
-        className="group peer hidden text-sidebar-foreground md:block"
-        data-collapsible={sidebarOpen ? "" : "offcanvas"}
-        data-side="left"
-        data-slot="sidebar"
-        data-state={sidebarOpen ? "expanded" : "collapsed"}
-        data-variant="sidebar"
+        inert={paletteOpen}
+        data-slot="sidebar-wrapper"
+        data-sidebar-state={sidebarOpen ? "expanded" : "collapsed"}
+        className="group/sidebar-wrapper flex w-full h-dvh min-h-0"
+        style={
+          {
+            "--sidebar-width": `${sidebarWidth}px`,
+            "--workspace-titlebar-content-left":
+              "calc(var(--workspace-controls-left) + var(--workspace-titlebar-control-size) + var(--workspace-titlebar-control-gap))",
+          } as React.CSSProperties
+        }
       >
-        <div
-          data-slot="sidebar-gap"
-          className="relative w-(--sidebar-width) bg-transparent group-data-[collapsible=offcanvas]:w-0"
+        <ThreadNotificationCoordinator
+          workspaces={views.flatMap((view) => (view.data ? [view.data] : []))}
+          workspaceIds={list.map((workspace) => workspace.id)}
+          visibleThread={
+            !pageOpen && selection.thread && workspaceId
+              ? { workspaceId, threadId: selection.thread }
+              : null
+          }
+          openThread={selectThread}
         />
         <div
-          data-slot="sidebar-container"
-          data-app-sidebar=""
-          role="navigation"
-          aria-label={settingsOpen ? "Settings" : "Threads"}
-          className="fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] border-r"
+          className="group peer hidden text-sidebar-foreground md:block"
+          data-collapsible={sidebarOpen ? "" : "offcanvas"}
+          data-side="left"
+          data-slot="sidebar"
+          data-state={sidebarOpen ? "expanded" : "collapsed"}
+          data-variant="sidebar"
         >
           <div
-            data-sidebar="sidebar"
-            data-slot="sidebar-inner"
-            className="flex h-full w-full flex-col bg-sidebar"
+            data-slot="sidebar-gap"
+            className="relative w-(--sidebar-width) bg-transparent group-data-[collapsible=offcanvas]:w-0"
+          />
+          <div
+            data-slot="sidebar-container"
+            data-app-sidebar=""
+            role="navigation"
+            aria-label={settingsOpen ? "Settings" : "Threads"}
+            className="fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] border-r"
           >
-            <SidebarBrand onNewThread={() => newThread()} />
-            <div className="relative min-h-0 flex-1">
-              <div
-                className="absolute inset-0 flex min-h-0 flex-col"
-                inert={settingsOpen}
-                aria-hidden={settingsOpen || undefined}
-                style={{
-                  visibility: settingsOpen ? "hidden" : "visible",
-                  opacity: settingsOpen ? 0 : 1,
-                }}
-              >
-                <Sidebar
-                  workspaces={
-                    scratch ? [scratch, ...repositories] : repositories
-                  }
-                  views={views.map((query) => query.data)}
-                  workspaceId={workspaceId}
-                  threadId={selection.thread}
-                  onSelectThread={selectThread}
-                  onNewThread={newThread}
-                  onOpenRepository={() => void openRepository()}
-                  onOpenProjectSettings={(id) => openSettingsAt("projects", id)}
-                  onArrange={arrange}
-                />
-              </div>
-              {settingsOpen ? (
-                <div className="absolute inset-0 flex min-h-0 flex-col">
-                  <SettingsSidebar />
+            <div
+              data-sidebar="sidebar"
+              data-slot="sidebar-inner"
+              className="flex h-full w-full flex-col bg-sidebar"
+            >
+              <SidebarBrand onNewThread={() => newThread()} />
+              <div className="relative min-h-0 flex-1">
+                <div
+                  className="absolute inset-0 flex min-h-0 flex-col"
+                  inert={settingsOpen}
+                  aria-hidden={settingsOpen || undefined}
+                  style={{
+                    visibility: settingsOpen ? "hidden" : "visible",
+                    opacity: settingsOpen ? 0 : 1,
+                  }}
+                >
+                  <Sidebar
+                    workspaces={
+                      scratch ? [scratch, ...repositories] : repositories
+                    }
+                    views={views.map((query) => query.data)}
+                    workspaceId={workspaceId}
+                    threadId={selection.thread}
+                    onSelectThread={selectThread}
+                    onNewThread={newThread}
+                    onOpenRepository={() => void openRepository()}
+                    onOpenProjectSettings={(id) =>
+                      openSettingsAt("projects", id)
+                    }
+                    onArrange={arrange}
+                    commandRequest={sidebarRequest}
+                    onRenamePendingChange={setRenamePending}
+                  />
                 </div>
-              ) : null}
+                {settingsOpen ? (
+                  <div className="absolute inset-0 flex min-h-0 flex-col">
+                    <SettingsSidebar />
+                  </div>
+                ) : null}
+              </div>
+              <SidebarFooter
+                pageOpen={pageOpen}
+                onOpenSettings={openSettings}
+                onOpenUsage={openUsage}
+                onBack={closePage}
+              />
             </div>
-            <SidebarFooter
-              pageOpen={pageOpen}
-              onOpenSettings={openSettings}
-              onOpenUsage={openUsage}
-              onBack={closePage}
+            <SidebarRail
+              width={sidebarWidth}
+              onResize={setSidebarWidth}
+              onReset={() => {
+                void storage.removeItem(SIDEBAR_KEY);
+                setSidebarWidth(clampSidebar(SIDEBAR_DEFAULT));
+              }}
             />
           </div>
-          <SidebarRail
-            width={sidebarWidth}
-            onResize={setSidebarWidth}
-            onReset={() => {
-              void storage.removeItem(SIDEBAR_KEY);
-              setSidebarWidth(clampSidebar(SIDEBAR_DEFAULT));
-            }}
-          />
         </div>
-      </div>
-      <main
-        data-slot="sidebar-inset"
-        className="relative flex min-w-0 w-full flex-1 flex-col bg-background h-dvh min-h-0 overflow-hidden overscroll-y-none"
-      >
-        <div
-          className="absolute inset-0 flex min-h-0 min-w-0 flex-col"
-          inert={pageOpen}
-          aria-hidden={pageOpen || undefined}
-          style={{
-            visibility: pageOpen ? "hidden" : "visible",
-            opacity: pageOpen ? 0 : 1,
-          }}
+        <main
+          data-slot="sidebar-inset"
+          className="relative flex min-w-0 w-full flex-1 flex-col bg-background h-dvh min-h-0 overflow-hidden overscroll-y-none"
         >
-          {workspaces.isPending ||
-          availability.isPending ||
-          autoStartScratch ? null : workspaceId ? (
-            <ChatView
-              key={workspaceId}
-              workspaceId={workspaceId}
-              threadId={selection.thread}
-              prPanelRequest={prPanelRequest}
-              onSelectWorkspace={selectWorkspace}
-              workspaces={repositories}
-              scratch={scratch}
-              scratchAvailable={scratchAvailable}
-              onStartScratch={() => void startScratch()}
-              onOpenRepository={() => void openRepository()}
-            />
-          ) : (
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
-              <header
-                data-tauri-drag-region="deep"
-                className="flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center gap-3 pl-(--workspace-gutter-start) pr-(--workspace-gutter-end) drag-region [[data-sidebar-state=collapsed]_&]:pl-[var(--workspace-titlebar-content-left)]"
+          <div
+            className="absolute inset-0 flex min-h-0 min-w-0 flex-col"
+            inert={pageOpen}
+            aria-hidden={pageOpen || undefined}
+            style={{
+              visibility: pageOpen ? "hidden" : "visible",
+              opacity: pageOpen ? 0 : 1,
+            }}
+          >
+            {workspaces.isPending ||
+            availability.isPending ||
+            autoStartScratch ? null : workspaceId ? (
+              <ChatView
+                key={workspaceId}
+                workspaceId={workspaceId}
+                threadId={selection.thread}
+                prPanelRequest={prPanelRequest}
+                commandRequest={chatRequest}
+                onSelectWorkspace={selectWorkspace}
+                workspaces={repositories}
+                scratch={scratch}
+                scratchAvailable={scratchAvailable}
+                onStartScratch={() => void startScratch()}
+                onOpenRepository={() => void openRepository()}
               />
-              <div
-                data-slot="empty"
-                className="flex min-w-0 flex-1 flex-col items-center justify-center text-balance text-center gap-6 p-6 md:p-12 [&_[data-slot=empty-title]]:text-2xl sm:[&_[data-slot=empty-title]]:text-3xl"
-              >
-                <div className="w-full max-w-lg px-8 py-12">
-                  <div className="flex flex-col items-center text-center max-w-none">
-                    <div
-                      data-slot="empty-title"
-                      className="font-semibold text-xl"
-                    >
-                      What should we work on?
-                    </div>
-                    <div
-                      data-slot="empty-description"
-                      className="text-muted-foreground text-sm [[data-slot=empty-title]+&]:mt-1"
-                    >
-                      {scratchAvailable
-                        ? "Add a project, or start without one."
-                        : "Add a project to start your first thread."}
-                    </div>
-                    <div className="mt-6 flex justify-center gap-2">
-                      <Button size="sm" onClick={() => void openRepository()}>
-                        <PlusIcon className="size-4" />
-                        Add project
-                      </Button>
-                      {scratchAvailable ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => void startScratch()}
-                        >
-                          <MessageSquareDashedIcon className="size-4" />
-                          Start without a project
-                        </Button>
-                      ) : null}
-                    </div>
-                    {(error || workspaces.error) && (
-                      <p
-                        role="alert"
-                        className="mt-4 text-sm text-destructive-foreground"
+            ) : (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+                <header
+                  data-tauri-drag-region="deep"
+                  className="flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center gap-3 pl-(--workspace-gutter-start) pr-(--workspace-gutter-end) drag-region [[data-sidebar-state=collapsed]_&]:pl-[var(--workspace-titlebar-content-left)]"
+                />
+                <div
+                  data-slot="empty"
+                  className="flex min-w-0 flex-1 flex-col items-center justify-center text-balance text-center gap-6 p-6 md:p-12 [&_[data-slot=empty-title]]:text-2xl sm:[&_[data-slot=empty-title]]:text-3xl"
+                >
+                  <div className="w-full max-w-lg px-8 py-12">
+                    <div className="flex flex-col items-center text-center max-w-none">
+                      <div
+                        data-slot="empty-title"
+                        className="font-semibold text-xl"
                       >
-                        {error ?? workspaces.error?.message}
-                      </p>
-                    )}
+                        What should we work on?
+                      </div>
+                      <div
+                        data-slot="empty-description"
+                        className="text-muted-foreground text-sm [[data-slot=empty-title]+&]:mt-1"
+                      >
+                        {scratchAvailable
+                          ? "Add a project, or start without one."
+                          : "Add a project to start your first thread."}
+                      </div>
+                      <div className="mt-6 flex justify-center gap-2">
+                        <Button size="sm" onClick={() => void openRepository()}>
+                          <PlusIcon className="size-4" />
+                          Add project
+                        </Button>
+                        {scratchAvailable ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void startScratch()}
+                          >
+                            <MessageSquareDashedIcon className="size-4" />
+                            Start without a project
+                          </Button>
+                        ) : null}
+                      </div>
+                      {(error || workspaces.error) && (
+                        <p
+                          role="alert"
+                          className="mt-4 text-sm text-destructive-foreground"
+                        >
+                          {error ?? workspaces.error?.message}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
+            )}
+          </div>
+          {pageOpen ? (
+            <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col">
+              <Outlet />
             </div>
-          )}
-          {error && workspaceId ? (
+          ) : null}{" "}
+          {error ? (
             <div
               role="alert"
               className="pointer-events-auto absolute top-14 left-1/2 z-40 flex w-fit max-w-[min(48rem,calc(100%-2rem))] -translate-x-1/2 items-start gap-2 rounded-xl border border-error/32 alert-glass px-3.5 py-3 text-sm text-error-foreground"
@@ -543,36 +663,63 @@ export function Workbench() {
               </button>
             </div>
           ) : null}
-        </div>
-        {pageOpen ? (
-          <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col">
-            <Outlet />
-          </div>
-        ) : null}
-      </main>
-      <div
-        data-sidebar-control=""
-        className="pointer-events-none fixed left-[var(--workspace-controls-left)] top-[var(--workspace-controls-top)] z-50 ml-px flex h-[var(--workspace-topbar-height)] items-center"
-      >
-        <Button
-          ref={sidebarToggle}
-          variant="ghost"
-          size="icon"
-          aria-label="Toggle main sidebar"
-          title="Toggle main sidebar (⌘B)"
-          aria-pressed={sidebarOpen}
-          className="size-[var(--workspace-titlebar-control-size)]! [-webkit-app-region:no-drag] pointer-events-auto"
-          onClick={() => setSidebarOpen((value) => !value)}
+        </main>
+        <div
+          data-sidebar-control=""
+          className="pointer-events-none fixed left-[var(--workspace-controls-left)] top-[var(--workspace-controls-top)] z-50 ml-px flex h-[var(--workspace-topbar-height)] items-center"
         >
-          {sidebarOpen ? (
-            <PanelLeftCloseIcon className="size-4" />
-          ) : (
-            <PanelLeftIcon className="size-4" />
-          )}
-          <span className="sr-only">Toggle Sidebar</span>
-        </Button>
+          <Button
+            ref={sidebarToggle}
+            variant="ghost"
+            size="icon"
+            aria-label="Toggle main sidebar"
+            title={`Toggle main sidebar (${shortcutLabel("sidebar.toggle")})`}
+            aria-pressed={sidebarOpen}
+            className="size-[var(--workspace-titlebar-control-size)]! [-webkit-app-region:no-drag] pointer-events-auto"
+            onClick={() => setSidebarOpen((value) => !value)}
+          >
+            {sidebarOpen ? (
+              <PanelLeftCloseIcon className="size-4" />
+            ) : (
+              <PanelLeftIcon className="size-4" />
+            )}
+            <span className="sr-only">Toggle Sidebar</span>
+          </Button>
+        </div>
       </div>
-    </div>
+      {actionStatus ? (
+        <p
+          role="status"
+          className="fixed bottom-3 right-3 z-40 rounded-md border bg-popover px-3 py-2 text-sm"
+        >
+          {actionStatus}{" "}
+          <button type="button" onClick={() => setActionStatus(undefined)}>
+            Dismiss
+          </button>
+        </p>
+      ) : null}
+      {paletteOpen ? (
+        <CommandPalette
+          context={actionContext}
+          blocked={paletteBlocked}
+          workspaces={list}
+          threads={views.flatMap((view) =>
+            view.data
+              ? view.data.threads.map((thread) => ({
+                  thread,
+                  workspaceId: view.data.workspace.id,
+                  workspaceLabel: view.data.workspace.label,
+                }))
+              : [],
+          )}
+          onClose={closePalette}
+          onSelectThread={(workspace, thread) => {
+            selectThread(workspace, thread);
+            requestAnimationFrame(() => requestAnimationFrame(focusComposer));
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 

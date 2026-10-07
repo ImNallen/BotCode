@@ -5,7 +5,7 @@ import { ArchiveIcon, ArchiveXIcon, Trash2Icon } from "lucide-react";
 import { ipc, type ThreadSummary } from "../ipc";
 import { formatRelativeTimeLabel } from "../lib/time";
 import { WorkspaceBadge } from "../ProjectBadge";
-import { confirmAndDeleteThread } from "../threadActions";
+import { confirmAndDeleteThread, restoreThread } from "../threadActions";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { SettingsGroup, SettingsRow } from "./settingsLayout";
@@ -56,8 +56,7 @@ export function ArchivedThreadsPanel() {
             : undefined,
         );
       } else {
-        await ipc.arrange(thread.id, { kind: "unarchive" });
-        await client.invalidateQueries({ queryKey: ["thread-summaries"] });
+        await restoreThread(thread.id, client);
         setError(undefined);
         setStatus(undefined);
       }
