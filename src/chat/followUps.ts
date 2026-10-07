@@ -1,12 +1,15 @@
 // Ported from T3 Code v0.0.45 queuedMessageStore.ts and sendQueuedMessage.ts (MIT).
 import type { ImageAttachment, SessionSettings, Thread } from "../ipc";
 
+import type { MessageContext } from "./composerContext";
+
 export type DispatchIntent =
   | { kind: "start" }
   | { kind: "steer"; expectedTurnId: string };
 export type FollowUp = {
   id: string;
   text: string;
+  context?: MessageContext;
   attachments: ImageAttachment[];
   settings: SessionSettings;
   state:
@@ -105,7 +108,7 @@ export class FollowUpStore {
       queue.held = false;
     }
     queue.rows.push({
-      ...input,
+      ...structuredClone(input),
       settings: { ...input.settings },
       attachments: [...input.attachments],
       state: queue.held

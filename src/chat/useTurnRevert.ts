@@ -77,7 +77,7 @@ export function useTurnRevert({
       if (!thread || !turn || revert.isPending) return;
       const refusal = thread.pendingRevert
         ? null
-        : recoveryFit(composer.images, turn);
+        : recoveryFit(composer.images, turn, composer.records);
       if (refusal) {
         setPreflightError(refusal);
         return;

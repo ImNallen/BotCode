@@ -2,6 +2,9 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ImageAttachment, Thread } from "../ipc";
 
+import type { ComposerContextRecord, MessageContext } from "./composerContext";
+import { importContext } from "./composerContext";
+
 export const MAX_IMAGES = 100;
 
 export type ComposerImage =
@@ -53,8 +56,9 @@ export function sendAttempt(
   text: string,
   attachments: ImageAttachment[],
   mint: () => string,
+  context?: MessageContext,
 ): SendAttempt {
-  const key = JSON.stringify([target, text.trim(), attachments]);
+  const key = JSON.stringify([target, text.trim(), attachments, context]);
   return previous?.key === key ? previous : { key, requestId: mint() };
 }
 
@@ -73,10 +77,12 @@ export const attachmentUrl = (attachment: ImageAttachment) =>
 
 export type ComposerInput = {
   threadId: string | undefined;
+  scopeKey?: string;
   activation: number;
   generation: number;
   text: string;
   images: ComposerImage[];
+  records: ComposerContextRecord[];
   appliedRevertId: string | null;
 };
 
@@ -90,6 +96,7 @@ export function activateComposer(
     generation: 0,
     text: "",
     images: [],
+    records: [],
     appliedRevertId: null,
   };
 }
@@ -130,19 +137,28 @@ export function clearAcceptedInput(
   started: Pick<ComposerInput, "activation" | "generation">,
 ): ComposerInput {
   return acceptsCompletion(current, started, true)
-    ? { ...current, text: "", images: [], generation: current.generation + 1 }
+    ? {
+        ...current,
+        text: "",
+        images: [],
+        records: [],
+        generation: current.generation + 1,
+      }
     : current;
 }
 
 type RecoveredInput = Pick<
   NonNullable<Thread["lastRevert"]>,
-  "prompt" | "attachments"
+  "prompt" | "attachments" | "context"
 >;
 
 export function recoveryFit(
   images: ComposerImage[],
   recovered: RecoveredInput,
+  records: ComposerContextRecord[] = [],
 ): string | null {
+  if (records.length + (recovered.context?.records.length ?? 0) > 200)
+    return "Remove context chips until the restored message fits the 200-chip limit.";
   if (images.some((image) => image.status === "staging"))
     return "Wait for images to finish attaching to restore this message.";
   const ids = new Set(readyAttachments(images)?.map((image) => image.id));
@@ -158,7 +174,7 @@ export function mergeRecoveredInput(
 ): ComposerInput {
   if (
     current.appliedRevertId === result.requestId ||
-    recoveryFit(current.images, result)
+    recoveryFit(current.images, result, current.records)
   )
     return current;
   const images = [...current.images];
@@ -173,15 +189,20 @@ export function mergeRecoveredInput(
       attachment,
     });
   }
+  const recovered = importContext({
+    text: result.prompt,
+    records: result.context?.records ?? [],
+  });
   const text = !current.text
-    ? result.prompt
-    : !result.prompt || current.text === result.prompt
+    ? recovered.text
+    : !recovered.text || current.text === recovered.text
       ? current.text
-      : `${current.text}\n\n${result.prompt}`;
+      : `${current.text}\n\n${recovered.text}`;
   return {
     ...current,
     text,
     images,
+    records: [...current.records, ...recovered.records],
     appliedRevertId: result.requestId,
     generation: current.generation + 1,
   };
@@ -189,10 +210,28 @@ export function mergeRecoveredInput(
 
 export function restoreFollowUps(
   current: ComposerInput,
-  inputs: { id: string; text: string; attachments: ImageAttachment[] }[],
+  inputs: {
+    id: string;
+    text: string;
+    attachments: ImageAttachment[];
+    context?: MessageContext;
+  }[],
 ): { input: ComposerInput; error: string | null } {
+  const fragments = inputs.map((input) =>
+    importContext({ text: input.text, records: input.context?.records ?? [] }),
+  );
+  if (
+    current.records.length +
+      fragments.reduce((sum, fragment) => sum + fragment.records.length, 0) >
+    200
+  )
+    return {
+      input: current,
+      error:
+        "Remove context chips until the restored message fits the 200-chip limit.",
+    };
   const recovered = {
-    prompt: inputs
+    prompt: fragments
       .map((input) => input.text)
       .filter(Boolean)
       .join("\n\n"),
@@ -217,6 +256,10 @@ export function restoreFollowUps(
       ...current,
       text: [current.text, recovered.prompt].filter(Boolean).join("\n\n"),
       images,
+      records: [
+        ...current.records,
+        ...fragments.flatMap((fragment) => fragment.records),
+      ],
       generation: current.generation + 1,
     },
     error: null,

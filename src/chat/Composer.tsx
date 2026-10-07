@@ -20,6 +20,14 @@ import {
   SparklesIcon,
   XIcon,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { ipc } from "../ipc";
+import {
+  contextReference,
+  pullRequestReference,
+  truncateContextText,
+  type ComposerContextRecord,
+} from "./composerContext";
 import { Menu, MenuItem } from "../ui/menu";
 import type {
   Checkout,
@@ -48,10 +56,7 @@ import {
   composerSuggestionOptionId,
   type ComposerCommandItem,
 } from "./ComposerCommandMenu";
-import {
-  detectComposerTrigger,
-  serializeComposerFileLink,
-} from "./composer-logic";
+import { detectComposerTrigger } from "./composer-logic";
 import {
   searchComposerPaths,
   searchSlashCommandItems,
@@ -67,6 +72,8 @@ const contextControl =
 
 export function Composer({
   value,
+  records,
+  pullRequestScope,
   onChange,
   images,
   onAddImages,
@@ -105,7 +112,9 @@ export function Composer({
   onUsageLimits,
 }: {
   value: string;
-  onChange: (value: string) => void;
+  records: ComposerContextRecord[];
+  pullRequestScope?: { workspaceId: string; threadId: string | undefined };
+  onChange: (value: string, records?: ComposerContextRecord[]) => void;
   images: ComposerImage[];
   onAddImages: (files: File[]) => void;
   onRemoveImage: (key: string) => void;
@@ -172,14 +181,53 @@ export function Composer({
   const triggerKey = detected ? JSON.stringify(detected) : null;
   const trigger =
     !disabled && detected && dismissed !== triggerKey ? detected : null;
+  const prQuery = trigger?.kind === "pull-request" ? trigger.query : "";
+  const [debouncedPrQuery, setDebouncedPrQuery] = useState("");
+  useEffect(() => {
+    if (!prQuery) {
+      setDebouncedPrQuery("");
+      return;
+    }
+    const timer = setTimeout(() => setDebouncedPrQuery(prQuery), 180);
+    return () => clearTimeout(timer);
+  }, [prQuery]);
+  const prSearch = useQuery({
+    queryKey: [
+      "composer-prs",
+      pullRequestScope?.workspaceId,
+      pullRequestScope?.threadId,
+      debouncedPrQuery,
+    ],
+    queryFn: () =>
+      pullRequestScope
+        ? ipc.composerPullRequests(
+            pullRequestScope.workspaceId,
+            pullRequestScope.threadId,
+            debouncedPrQuery,
+          )
+        : Promise.resolve([]),
+    enabled: Boolean(pullRequestScope && trigger?.kind === "pull-request"),
+    staleTime: 30_000,
+    retry: false,
+  });
   const items =
     trigger?.kind === "path"
       ? searchComposerPaths(files, trigger.query)
       : trigger?.kind === "skill"
         ? skillCommandItems(skills, trigger.query)
-        : trigger
-          ? searchSlashCommandItems(trigger.query, planSupported, skills)
-          : [];
+        : trigger?.kind === "pull-request"
+          ? prQuery === debouncedPrQuery
+            ? (prSearch.data ?? []).slice(0, 12).map((pullRequest) => ({
+                id: `pr:${pullRequest.url}`,
+                type: "pull-request" as const,
+                pullRequest,
+                label: `#${pullRequest.number}`,
+                description: pullRequest.title,
+              }))
+            : []
+          : trigger
+            ? searchSlashCommandItems(trigger.query, planSupported, skills)
+            : [];
   const skillMenuOpen =
     trigger?.kind === "skill" || trigger?.kind === "slash-command";
   useEffect(() => {
@@ -213,16 +261,33 @@ export function Composer({
       snapshot.start !== snapshot.end
     )
       return;
+    const record: ComposerContextRecord | null =
+      item.type === "pull-request"
+        ? pullRequestReference(item.pullRequest)
+        : item.type === "skill"
+          ? {
+              version: 1,
+              contextId: crypto.randomUUID(),
+              kind: "skill",
+              label: truncateContextText(item.skill.name, 200),
+              name: item.skill.name,
+            }
+          : item.type === "path"
+            ? {
+                version: 1,
+                contextId: crypto.randomUUID(),
+                kind: "mention",
+                label: truncateContextText(item.label, 200),
+                path: item.path,
+              }
+            : null;
+    if (record && records.length >= 200) return;
     const changed = editor.current?.replaceRange({
       start: trigger.rangeStart,
       end: trigger.rangeEnd,
       expectedText: value.slice(trigger.rangeStart, trigger.rangeEnd),
-      replacement:
-        item.type === "path"
-          ? `${serializeComposerFileLink(item.path)} `
-          : item.type === "skill"
-            ? `$${item.skill.name} `
-            : "",
+      replacement: record ? `${contextReference(record)} ` : "",
+      records: record ? [record] : [],
     });
     if (!changed) return;
     setHighlighted(null);
@@ -355,10 +420,21 @@ export function Composer({
                 items={items}
                 triggerKind={trigger.kind}
                 isLoading={
-                  trigger.kind === "path" ? filesLoading : skillsLoading
+                  trigger.kind === "path"
+                    ? filesLoading
+                    : trigger.kind === "pull-request"
+                      ? Boolean(pullRequestScope) &&
+                        (prSearch.isFetching || prQuery !== debouncedPrQuery)
+                      : skillsLoading
                 }
                 emptyStateText={
-                  trigger.kind === "path" ? filesError : undefined
+                  trigger.kind === "path"
+                    ? filesError
+                    : trigger.kind === "pull-request"
+                      ? !pullRequestScope
+                        ? "Pull requests require a project."
+                        : prSearch.error?.message
+                      : undefined
                 }
                 activeItemId={active?.id ?? null}
                 onHighlightedItemChange={setHighlighted}
@@ -426,6 +502,7 @@ export function Composer({
                         <ComposerPromptEditor
                           ref={editor}
                           value={value}
+                          records={records}
                           skills={skills}
                           onChange={onChange}
                           onSelectionChange={(next) => {

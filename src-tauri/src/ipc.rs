@@ -274,10 +274,18 @@ pub async fn submit(
     request_id: String,
     text: String,
     attachments: Vec<ImageAttachment>,
+    context: Option<MessageContext>,
     expected_turn_id: Option<TurnId>,
 ) -> Result<Receipt> {
-    app.submit_to(thread_id, request_id, text, attachments, expected_turn_id)
-        .await
+    app.submit_with_context(
+        thread_id,
+        request_id,
+        text,
+        attachments,
+        context,
+        expected_turn_id,
+    )
+    .await
 }
 #[tauri::command]
 pub async fn answer_approval(
@@ -484,5 +492,15 @@ pub async fn run_project_script(
     terminal_id: TerminalId,
 ) -> Result<()> {
     app.run_project_script(workspace_id, thread_id, script_id, terminal_id)
+        .await
+}
+#[tauri::command]
+pub async fn search_composer_pull_requests(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    query: String,
+) -> Result<Vec<PullRequestContextMetadata>> {
+    app.search_composer_pull_requests(workspace_id, thread_id, query)
         .await
 }

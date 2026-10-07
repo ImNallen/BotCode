@@ -12,6 +12,7 @@ mod writing;
 use crate::pr_review::*;
 use crate::pull_requests::{PrLinkSource, PullRequestKey, ThreadPrSummary};
 use crate::{
+    MessageContext,
     attachments::{self, Attachments},
     cleanup::{self, Candidate, Sweep},
     codex::{Codex, Signal},
@@ -67,6 +68,12 @@ impl RuntimeConfig {
     }
 }
 type Reply<T> = oneshot::Sender<Result<T>>;
+struct SubmittedMessage<'a> {
+    text: &'a str,
+    attachments: Vec<ImageAttachment>,
+    context: Option<MessageContext>,
+}
+
 enum Location {
     Repository(PathBuf),
     Folder(PathBuf),
@@ -236,6 +243,7 @@ enum Command {
         String,
         String,
         Vec<ImageAttachment>,
+        Option<MessageContext>,
         Option<PathBuf>,
         Option<TurnId>,
         Reply<Receipt>,
@@ -266,6 +274,7 @@ pub struct App {
     sweeps: Arc<Mutex<()>>,
     wake: Arc<Notify>,
     gh: PathBuf,
+    network_timeout: Duration,
     codex: PathBuf,
     script_shell: PathBuf,
     log: RotatingLog,
@@ -274,6 +283,7 @@ pub struct App {
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
+        let network_timeout = config.network_timeout;
         let store = Store::open(&config.data_dir)?;
         let workspaces = store
             .workspaces()?
@@ -431,6 +441,7 @@ impl App {
             sweeps: Arc::new(Mutex::new(())),
             wake: Arc::new(Notify::new()),
             gh,
+            network_timeout,
             codex,
             script_shell,
             log,
@@ -737,6 +748,15 @@ impl App {
             .map_err(|e| AppError::new("repository", e))??;
         Ok(crate::pull_requests::current_branch(&self.gh, &root, &branch).await)
     }
+    pub async fn search_composer_pull_requests(
+        &self,
+        workspace: WorkspaceId,
+        thread: Option<ThreadId>,
+        query: String,
+    ) -> Result<Vec<crate::PullRequestContextMetadata>> {
+        let root = self.checkout(workspace, thread).await?.1.repository()?;
+        crate::composer_pull_requests::search(&self.gh, &root, &query, self.network_timeout).await
+    }
     pub async fn begin_commit_message(&self, thread: ThreadId) -> Result<String> {
         self.call(|reply| Command::BeginCommitPreview(thread, reply))
             .await
@@ -952,10 +972,34 @@ impl App {
         attachments: Vec<ImageAttachment>,
         expected_turn_id: Option<TurnId>,
     ) -> Result<Receipt> {
+        self.submit_with_context(id, request_id, text, attachments, None, expected_turn_id)
+            .await
+    }
+    pub async fn submit_with_context(
+        &self,
+        id: ThreadId,
+        request_id: String,
+        text: String,
+        attachments: Vec<ImageAttachment>,
+        context: Option<MessageContext>,
+        expected_turn_id: Option<TurnId>,
+    ) -> Result<Receipt> {
+        if let Some(context) = &context {
+            context.validate()?;
+        }
         if expected_turn_id.is_some() {
             return self
                 .call(|r| {
-                    Command::Submit(id, request_id, text, attachments, None, expected_turn_id, r)
+                    Command::Submit(
+                        id,
+                        request_id,
+                        text,
+                        attachments,
+                        context,
+                        None,
+                        expected_turn_id,
+                        r,
+                    )
                 })
                 .await;
         }
@@ -975,8 +1019,19 @@ impl App {
             }
             None => None,
         };
-        self.call(|r| Command::Submit(id, request_id, text, attachments, restored, None, r))
-            .await
+        self.call(|r| {
+            Command::Submit(
+                id,
+                request_id,
+                text,
+                attachments,
+                context,
+                restored,
+                None,
+                r,
+            )
+        })
+        .await
     }
     pub async fn answer_approval(&self, id: ApprovalId, decision: ApprovalDecision) -> Result<()> {
         self.call(|r| Command::Approval(id, decision, r)).await
@@ -2152,7 +2207,16 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
-            Command::Submit(id, request_id, text, attachments, restored, expected, reply) => {
+            Command::Submit(
+                id,
+                request_id,
+                text,
+                attachments,
+                context,
+                restored,
+                expected,
+                reply,
+            ) => {
                 if let Some(path) = restored {
                     self.held.remove(&path);
                     let config = self
@@ -2164,8 +2228,14 @@ impl Owner {
                         return;
                     }
                 }
-                let result =
-                    self.accept_submit(&id, &request_id, &text, attachments, expected.as_ref());
+                let result = self.accept_submit(
+                    &id,
+                    &request_id,
+                    &text,
+                    attachments,
+                    context,
+                    expected.as_ref(),
+                );
                 if let Ok((receipt, true)) = &result {
                     if expected.is_some() {
                         self.dispatch_steer(&id, &receipt.turn_id, &request_id);
@@ -2368,6 +2438,7 @@ impl Owner {
         request_id: &str,
         text: &str,
         attachments: Vec<ImageAttachment>,
+        context: Option<MessageContext>,
         expected: Option<&TurnId>,
     ) -> Result<(Receipt, bool)> {
         if request_id.is_empty() || request_id.len() > 200 {
@@ -2389,9 +2460,13 @@ impl Owner {
                 format!("You can attach up to {MAX_ATTACHMENTS} images per message."),
             ));
         }
-        let input = match expected {
-            Some(turn) => serde_json::to_string(&(id, text, &attachments, turn))?,
-            None => serde_json::to_string(&(id, text, &attachments))?,
+        let input = match (&context, expected) {
+            (None, Some(turn)) => serde_json::to_string(&(id, text, &attachments, turn))?,
+            (None, None) => serde_json::to_string(&(id, text, &attachments))?,
+            (Some(context), Some(turn)) => {
+                serde_json::to_string(&(id, text, &attachments, context, turn))?
+            }
+            (Some(context), None) => serde_json::to_string(&(id, text, &attachments, context))?,
         };
         if let Some(receipt) = self.store.receipt(request_id, &input)? {
             return Ok((receipt, false));
@@ -2421,7 +2496,17 @@ impl Owner {
             }
         }
         if let Some(expected) = expected {
-            return self.accept_steer(id, expected, request_id, text, attachments, &input);
+            return self.accept_steer(
+                id,
+                expected,
+                request_id,
+                SubmittedMessage {
+                    text,
+                    attachments,
+                    context,
+                },
+                &input,
+            );
         }
         if matches!(
             thread.session,
@@ -2455,6 +2540,7 @@ impl Owner {
         let turn = Turn {
             id: TurnId::default(),
             prompt: text.into(),
+            context,
             native_turn_id: None,
             delivery: Delivery::Preparing,
             execution: Execution::NotStarted,
@@ -2504,10 +2590,14 @@ impl Owner {
         id: &ThreadId,
         expected: &TurnId,
         operation: &str,
-        text: &str,
-        attachments: Vec<ImageAttachment>,
+        message: SubmittedMessage<'_>,
         input: &str,
     ) -> Result<(Receipt, bool)> {
+        let SubmittedMessage {
+            text,
+            attachments,
+            context,
+        } = message;
         let thread = self.thread(id)?;
         let turn = thread
             .turns
@@ -2567,6 +2657,7 @@ impl Owner {
             id: operation.into(),
             text: text.into(),
             attachments,
+            context,
             delivery: Delivery::Preparing,
         });
         next.record_activity(self.settlement(
@@ -2604,19 +2695,15 @@ impl Owner {
         let Item::UserInput {
             text,
             attachments,
+            context,
             delivery,
             ..
         } = item
         else {
             return;
         };
-        let mut input = Vec::new();
-        if !text.is_empty() {
-            input.push(json!({"type":"text","text":text,"text_elements":[]}));
-        }
-        input.extend(attachments.iter().map(
-            |attachment| json!({"type":"localImage","path":self.attachments.path(attachment)}),
-        ));
+        let input =
+            crate::codex::turn_input(text, context.as_ref(), attachments, &self.attachments);
         *delivery = Delivery::Sending;
         if let Err(error) = self.install(next) {
             let t = self.threads.get_mut(id).unwrap();
@@ -2966,15 +3053,12 @@ impl Owner {
                                 .find(|v| v.id == turn_id)
                                 .ok_or_else(|| AppError::new("missing_turn", "Turn not found."))?;
                             turn.delivery = Delivery::Sending;
-                            let mut input = Vec::new();
-                            if !turn.prompt.is_empty() {
-                                input.push(
-                                    json!({"type":"text","text":turn.prompt,"text_elements":[]}),
-                                );
-                            }
-                            input.extend(turn.attachments.iter().map(
-                                |a| json!({"type":"localImage","path":self.attachments.path(a)}),
-                            ));
+                            let input = crate::codex::turn_input(
+                                &turn.prompt,
+                                turn.context.as_ref(),
+                                &turn.attachments,
+                                &self.attachments,
+                            );
                             let settings = turn.settings.clone().unwrap_or_default();
                             let (approval_policy, approvals_reviewer, _) =
                                 settings.permission_mode.protocol();

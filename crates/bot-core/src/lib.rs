@@ -4,6 +4,12 @@ mod attachments;
 mod checkpoints;
 mod cleanup;
 mod codex;
+mod composer_context;
+mod composer_pull_requests;
+pub use composer_context::{
+    ComposerContextBase, ComposerContextRecord, MessageContext, OrchestrationMessageContext,
+    PullRequestContextMetadata, PullRequestContextState,
+};
 mod domain;
 mod editors;
 pub use editors::{EditorId, OpenTarget, Position, available_editors};

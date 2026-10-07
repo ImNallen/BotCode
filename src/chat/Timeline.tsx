@@ -40,6 +40,9 @@ import { cn } from "../lib/cn";
 import { formatDayAwareTimestamp, formatWorkingTimer } from "../lib/time";
 import { Button } from "../ui/controls";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
+import type { ComposerContextRecord } from "./composerContext";
+import { copyContextContent } from "./composerContextClipboard";
 import { attachmentUrl } from "./composerImages";
 import {
   ChangedFilesCard,
@@ -113,7 +116,13 @@ function Timestamp({
   );
 }
 
-function CopyButton({ text }: { text: string }) {
+function CopyButton({
+  text,
+  records,
+}: {
+  text: string;
+  records?: readonly ComposerContextRecord[];
+}) {
   const [copied, setCopied] = useState(false);
   return (
     <Button
@@ -123,7 +132,11 @@ function CopyButton({ text }: { text: string }) {
       size="xs"
       variant="ghost-muted"
       onClick={() => {
-        void navigator.clipboard.writeText(text).then(() => {
+        const copy =
+          records && records.length > 0
+            ? copyContextContent({ text, records: [...records] })
+            : navigator.clipboard.writeText(text);
+        void copy.then(() => {
           setCopied(true);
           setTimeout(() => setCopied(false), 1200);
         });
@@ -173,6 +186,7 @@ function UserRow({
           <div data-user-message-body="true" className="relative">
             <ChatMarkdown
               text={row.text}
+              records={row.records}
               skills={skills}
               className="text-message-foreground"
               lineBreaks
@@ -195,7 +209,9 @@ function UserRow({
             </p>
           ) : null}
           <div className="flex items-center gap-0.5">
-            {row.text ? <CopyButton text={row.text} /> : null}
+            {row.text ? (
+              <CopyButton text={row.text} records={row.records} />
+            ) : null}
             {row.editable ? (
               <Button
                 type="button"
@@ -218,16 +234,24 @@ function UserRow({
 
 function AssistantRow({
   row,
+  thread,
 }: {
   row: Extract<TimelineRow, { kind: "assistant" }>;
+  thread: Pick<Thread, "id" | "workspaceId">;
 }) {
   return (
     <div className="relative min-w-0 px-1 py-0.5">
       <h3 className="sr-only select-none">Codex</h3>
-      <ChatMarkdown
-        text={row.text || (row.streaming ? "" : "(empty response)")}
-        streaming={row.streaming}
-      />
+      <div
+        data-assistant-citation-source={row.id}
+        data-assistant-citation-environment={thread.workspaceId}
+        data-assistant-citation-thread={thread.id}
+      >
+        <ChatMarkdown
+          text={row.text || (row.streaming ? "" : "(empty response)")}
+          streaming={row.streaming}
+        />
+      </div>
       {row.meta ? (
         <div className="flex items-center gap-2 text-xs tabular-nums transition-opacity duration-200 opacity-0 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/assistant:opacity-100 mt-1.5">
           <CopyButton text={row.text} />
@@ -933,6 +957,7 @@ export function Timeline({
       <div className="relative h-full min-h-0">
         <div
           ref={scroller}
+          data-assistant-citation-viewport
           onScroll={(event) => {
             const element = event.currentTarget;
             const end =
@@ -971,7 +996,7 @@ export function Timeline({
                       onEdit={() => onEdit(row.turnId)}
                     />
                   ) : row.kind === "assistant" ? (
-                    <AssistantRow row={row} />
+                    <AssistantRow row={row} thread={thread} />
                   ) : row.kind === "plan" ? (
                     <ProposedPlanCard
                       text={row.text}
@@ -1080,6 +1105,11 @@ export function Timeline({
           </Button>
         </div>
       ) : null}
+      <AssistantSelectionToolbar
+        viewportRef={scroller}
+        environmentId={thread.workspaceId}
+        threadId={thread.id}
+      />
     </>
   );
 }
@@ -1144,7 +1174,12 @@ function QueuedMessageRow({
     <div className="flex flex-col items-end" data-queued-message-id={row.id}>
       <div className="max-w-[80%] rounded-2xl border border-dashed border-border p-3 text-message-foreground/80">
         {row.text.trim() ? (
-          <ChatMarkdown text={row.text} lineBreaks skills={skills} />
+          <ChatMarkdown
+            text={row.text}
+            lineBreaks
+            skills={skills}
+            records={row.context?.records}
+          />
         ) : null}
         {row.attachments.length ? (
           <div

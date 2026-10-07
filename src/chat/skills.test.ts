@@ -49,15 +49,7 @@ it("opens skills at a token boundary and leaves monetary amounts as prose", () =
       rangeEnd: text.length,
     });
   }
-  for (const token of [
-    "$5",
-    "$20k",
-    "$100M",
-    "$1e6",
-    "$5.00",
-    "cost$pot",
-    "#123",
-  ]) {
+  for (const token of ["$5", "$20k", "$100M", "$1e6", "$5.00", "cost$pot"]) {
     assert.equal(detectComposerTrigger(token, token.length), null, token);
     const doc = getSchema(composerEditorExtensions).nodeFromJSON(
       buildComposerDocument(`${token} `),
@@ -104,8 +96,8 @@ it("serializes picked skill atoms through draft, clipboard and cursor mapping as
   const doc = getSchema(composerEditorExtensions).nodeFromJSON(
     buildComposerDocument(value),
   );
-  assert.equal(doc.firstChild?.child(1).type.name, "composer-skill");
-  assert.equal(doc.firstChild?.child(1).attrs.name, poteto.name);
+  assert.equal(doc.firstChild?.child(1).type.name, "composer-context");
+  assert.equal(doc.firstChild?.child(1).attrs.record.name, poteto.name);
   assert.equal(composerDocumentMap(doc).text, value);
   assert.equal(
     doc.textBetween(0, doc.content.size, "\n", (node) => node.attrs.source),

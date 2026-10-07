@@ -3,6 +3,12 @@ import type { JSONContent } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { pathBasename } from "./composer-logic";
 import { SKILL_TOKEN_REGEX } from "./composerSkillTokens";
+import {
+  composerContextRecord,
+  truncateContextText,
+  contextReferences,
+  type ComposerContextRecord,
+} from "./composerContext";
 
 export function composerSkills(text: string) {
   return Array.from(text.matchAll(SKILL_TOKEN_REGEX), (match) => {
@@ -46,20 +52,50 @@ export function composerMentions(text: string): Mention[] {
   return mentions.sort((a, b) => a.start - b.start);
 }
 
-export function buildComposerDocument(value: string): JSONContent {
+function legacyId(kind: string, value: string) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++)
+    hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
+  return `legacy_${kind}_${(hash >>> 0).toString(16)}`;
+}
+
+export function buildComposerDocument(
+  value: string,
+  records: readonly ComposerContextRecord[] = [],
+): JSONContent {
+  const byId = new Map(records.map((record) => [record.contextId, record]));
   return {
     type: "doc",
     content: value.split("\n").map((line) => {
       const content: JSONContent[] = [];
       let cursor = 0;
       const mentions = [
+        ...contextReferences(line).map((reference) => ({
+          ...reference,
+          record: byId.get(reference.contextId) ?? null,
+        })),
         ...composerMentions(line).map((mention) => ({
           ...mention,
-          type: "composer-mention",
+          record: {
+            version: 1,
+            kind: "mention",
+            contextId: legacyId("mention", mention.path),
+            label: truncateContextText(pathBasename(mention.path), 200),
+            path: mention.path,
+          } satisfies ComposerContextRecord,
         })),
         ...composerSkills(line)
           .filter((mention) => mention.end < line.length)
-          .map((mention) => ({ ...mention, type: "composer-skill" })),
+          .map((mention) => ({
+            ...mention,
+            record: {
+              version: 1,
+              kind: "skill",
+              contextId: legacyId("skill", mention.name),
+              label: truncateContextText(mention.name, 200),
+              name: mention.name,
+            } satisfies ComposerContextRecord,
+          })),
       ].sort((a, b) => a.start - b.start);
       for (const mention of mentions) {
         if (mention.start < cursor) continue;
@@ -69,7 +105,7 @@ export function buildComposerDocument(value: string): JSONContent {
             text: line.slice(cursor, mention.start),
           });
         content.push({
-          type: mention.type,
+          type: "composer-context",
           attrs: mention,
         });
         cursor = mention.end;
@@ -91,6 +127,7 @@ type PromptSpan = {
 
 export function composerDocumentMap(doc: ProseMirrorNode) {
   let text = "";
+  const records = new Map<string, ComposerContextRecord>();
   const spans: PromptSpan[] = [];
   doc.forEach((paragraph, position, index) => {
     if (index) {
@@ -104,6 +141,10 @@ export function composerDocumentMap(doc: ProseMirrorNode) {
       text += "\n";
     }
     paragraph.forEach((node, offset) => {
+      if (node.type.name === "composer-context") {
+        const result = composerContextRecord.safeParse(node.attrs.record);
+        if (result.success) records.set(result.data.contextId, result.data);
+      }
       const source = node.isText
         ? (node.text ?? "")
         : node.type.name === "hardBreak"
@@ -122,7 +163,12 @@ export function composerDocumentMap(doc: ProseMirrorNode) {
       text += source;
     });
   });
-  return { text, spans, end: Math.max(1, doc.content.size - 1) };
+  return {
+    text,
+    records: [...records.values()],
+    spans,
+    end: Math.max(1, doc.content.size - 1),
+  };
 }
 
 export function promptCursor(doc: ProseMirrorNode, position: number): number {

@@ -3,6 +3,8 @@ import { FileEntryIcon } from "../panel/FileEntryIcon";
 import { useLayoutEffect, useRef } from "react";
 import { cn } from "../lib/cn";
 import { ComposerBanner } from "./ComposerBanner";
+import type { PullRequestContextMetadata } from "./composerContext";
+import { GitPullRequestIcon } from "lucide-react";
 import type { Skill } from "../ipc";
 import { Badge } from "../ui/badge";
 import {
@@ -22,6 +24,13 @@ import type {
 } from "./composer-logic";
 
 export type ComposerCommandItem =
+  | {
+      id: string;
+      type: "pull-request";
+      pullRequest: PullRequestContextMetadata;
+      label: string;
+      description: string;
+    }
   | {
       id: string;
       type: "skill";
@@ -86,7 +95,9 @@ export function ComposerCommandMenu(props: {
                 ? "Files and folders"
                 : props.triggerKind === "skill"
                   ? "Skills"
-                  : "Commands"
+                  : props.triggerKind === "pull-request"
+                    ? "Pull requests"
+                    : "Commands"
             }
             className="not-empty:scroll-py-2 not-empty:p-2 max-h-72 min-h-0 scroll-pb-6 overflow-y-auto"
           >
@@ -110,6 +121,9 @@ export function ComposerCommandMenu(props: {
               >
                 {item.type === "path" ? (
                   <FileEntryIcon path={item.path} />
+                ) : null}
+                {item.type === "pull-request" ? (
+                  <GitPullRequestIcon className="size-4" />
                 ) : null}
                 <span className="flex min-w-0 flex-1 items-center gap-2">
                   <span className="min-w-0 max-w-[45%] shrink-0 truncate font-sans text-xs font-medium">
@@ -140,15 +154,19 @@ export function ComposerCommandMenu(props: {
           <div className="px-5 pt-3.5 pb-7">
             <p className="text-secondary-label text-xs" role="status">
               {props.isLoading
-                ? props.triggerKind !== "path"
-                  ? "Searching workspace skills..."
-                  : "Searching workspace files..."
+                ? props.triggerKind === "pull-request"
+                  ? "Searching pull requests..."
+                  : props.triggerKind !== "path"
+                    ? "Searching workspace skills..."
+                    : "Searching workspace files..."
                 : (props.emptyStateText ??
-                  (props.triggerKind === "skill"
-                    ? "No skills found. Try / to browse provider commands."
-                    : props.triggerKind === "path"
-                      ? "No matching files or folders."
-                      : "No matching command."))}
+                  (props.triggerKind === "pull-request"
+                    ? "No matching pull requests."
+                    : props.triggerKind === "skill"
+                      ? "No skills found. Try / to browse provider commands."
+                      : props.triggerKind === "path"
+                        ? "No matching files or folders."
+                        : "No matching command."))}
             </p>
           </div>
         )}

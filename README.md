@@ -55,7 +55,11 @@ Skills refresh for the thread's checkout and when you reopen a menu after 30 sec
 
 When the installed Codex app-server advertises Plan and Default collaboration modes, the composer shows a **Build / Plan** toggle. Plan saves per conversation and uses the selected model, effort, and access settings. Codex's proposed plan appears as a collapsible card. Type feedback and send **Refine** to continue planning, or leave the prompt empty and choose **Implement** to run in Build mode. **Implement in a new thread** starts a Build conversation in the same checkout, preserving its files. Only one conversation can run in that checkout at a time. Planning questions appear above the composer when Codex requests them.
 
-Codex 0.160.1 exposes collaboration modes but no slash-command catalog, so the menu includes the four app commands above. PR and skill mention menus are not included.
+Type `#` at a word boundary for recent pull requests, `#123` to look up a number, or `#search` to search titles through GitHub CLI. Selecting a result inserts a PR context chip with its captured title, URL, and branches.
+
+Diff line numbers offer a comment control. Write a comment and choose **Add to chat** to insert its selected diff lines into the composer. Terminal selections also offer **Add to chat**. Select text in an assistant response and choose **Cite** to quote it in the composer. These context chips share the file and skill chip model. Copy and paste preserve their payloads, and drafts retain text and chips across conversation changes and renderer reloads. Queued follow-ups retain the context captured when you send them. Codex receives T3's context and assistant citation envelopes.
+
+Codex 0.160.1 exposes collaboration modes but no slash-command catalog, so the menu includes the four app commands above.
 
 To attach an image, paste it into the prompt or drop it on the composer. Bot Code accepts PNG, JPEG, GIF, and WebP images up to 10 MiB. Click the button on a thumbnail to remove that image. Codex receives each image as a local file, and the image stays in the sent message after a restart.
 
@@ -92,7 +96,7 @@ pnpm smoke
 pnpm tauri build --debug --bundles app
 ```
 
-The core tests use temporary Git repositories and a scripted JSONL provider. They cover real staged, unstaged, untracked, and rename diffs, path containment, operation deduplication, image attachments, uncertain delivery, approval routing, storage failures, interruption, stalled provider input, and subprocess cleanup. Git actions and review triage use scripted `gh` fixtures. Review checks cover complete nested pagination, failed pages, moving heads, source identity, restart, stale decisions, conflicting writes, migration, and bounded process cleanup. `pnpm test:ui` uses `node --test` for the Git action rules, review prompt/decision behavior, and React panel rendering. [The review fixture protocol](docs/review-fixtures.md) supports isolated native checks.
+The core tests use temporary Git repositories and a scripted JSONL provider. They cover real staged, unstaged, untracked, and rename diffs, path containment, operation deduplication, image attachments, uncertain delivery, approval routing, storage failures, interruption, stalled provider input, and subprocess cleanup. Git actions and review triage use scripted `gh` fixtures. Review checks cover complete nested pagination, failed pages, moving heads, source identity, restart, stale decisions, conflicting writes, migration, and bounded process cleanup. `pnpm test:ui` uses `node --test` for the Git action rules, review prompt/decision behavior, composer context and clipboard round trips, recovery, and React panel rendering. [The review fixture protocol](docs/review-fixtures.md) supports isolated native checks.
 
 The real smoke uses the installed Codex account in a disposable checkout and an isolated state directory. It observes streaming, completion, durable history, and same-native-thread continuation after reopening. It asserts the checkout remains unchanged.
 
