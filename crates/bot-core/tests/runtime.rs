@@ -905,7 +905,6 @@ async fn refreshed_catalog_rejects_removed_saved_model_before_acceptance() {
 #[test]
 fn legacy_snapshots_default_settings() {
     let thread = ThreadSnapshot {
-        worktree_setup: None,
         created_at_ms: None,
         latest_user_activity_at_ms: None,
         id: ThreadId::default(),
@@ -2178,7 +2177,6 @@ impl SettlementFixture for ThreadSnapshot {
 }
 fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> ThreadSnapshot {
     ThreadSnapshot {
-        worktree_setup: None,
         created_at_ms: None,
         latest_user_activity_at_ms: None,
         id: ThreadId::default(),
@@ -5027,6 +5025,260 @@ async fn implement_plan_in_new_thread_reuses_checkout_settings_and_operation_gua
             );
         }
     }
+    app.shutdown().await.unwrap();
+}
+
+fn legacy_items() -> serde_json::Value {
+    serde_json::json!([
+        {"kind": "other", "id": "r1", "label": "Reasoning", "text": "Plan the change"},
+        {"kind": "assistant", "id": "a1", "text": "Done", "complete": true},
+        {"kind": "other", "id": "w1", "label": "webSearch", "text": ""},
+        {"kind": "other", "id": "c1", "label": "contextCompaction", "text": ""}
+    ])
+}
+fn typed_legacy_items() -> Vec<Item> {
+    vec![
+        Item::Reasoning {
+            id: "r1".into(),
+            text: "Plan the change".into(),
+            complete: true,
+        },
+        Item::Assistant {
+            id: "a1".into(),
+            text: "Done".into(),
+            complete: true,
+        },
+        Item::ContextCompaction {
+            id: "c1".into(),
+            complete: true,
+        },
+    ]
+}
+#[test]
+fn snapshots_saved_with_other_items_load_them_as_typed_items() {
+    let mut value = serde_json::to_value(idle_thread(Some(1_000), Some(2_000))).unwrap();
+    value["turns"][0]["items"] = legacy_items();
+    let restored: ThreadSnapshot = serde_json::from_value(value).unwrap();
+    assert_eq!(restored.turns[0].items, typed_legacy_items());
+    let saved = serde_json::to_value(&restored).unwrap();
+    assert_eq!(
+        saved["turns"][0]["items"],
+        serde_json::json!([
+            {"kind": "reasoning", "id": "r1", "text": "Plan the change", "complete": true},
+            {"kind": "assistant", "id": "a1", "text": "Done", "complete": true},
+            {"kind": "context_compaction", "id": "c1", "complete": true}
+        ])
+    );
+    assert!(!saved.to_string().contains("\"other\""));
+}
+#[tokio::test]
+async fn stored_threads_with_other_items_reopen_with_typed_items() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "legacy".into(), "hello".into(), vec![])
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    app.shutdown().await.unwrap();
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    let data: String = db
+        .query_row(
+            "SELECT data FROM threads WHERE id=?1",
+            [thread.id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut stored: serde_json::Value = serde_json::from_str(&data).unwrap();
+    stored["turns"][0]["items"] = legacy_items();
+    db.execute(
+        "UPDATE threads SET data=?2 WHERE id=?1",
+        [thread.id.to_string(), stored.to_string()],
+    )
+    .unwrap();
+    drop(db);
+    let app = reopen(&f.config).await;
+    let restored = app.thread(thread.id.clone()).await.unwrap();
+    assert_eq!(restored.turns[0].items, typed_legacy_items());
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn resumed_native_history_places_items_the_turn_lacks_at_their_native_positions() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "legacy".into(), "hello".into(), vec![])
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    app.shutdown().await.unwrap();
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    let data: String = db
+        .query_row(
+            "SELECT data FROM threads WHERE id=?1",
+            [thread.id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut stored: serde_json::Value = serde_json::from_str(&data).unwrap();
+    let native_turn = stored["turns"][0]["nativeTurnId"].clone();
+    let turn_id = stored["turns"][0]["id"].clone();
+    stored["turns"][0]["items"] = serde_json::to_value([
+        Item::Assistant {
+            id: "a".into(),
+            text: "Searching".into(),
+            complete: true,
+        },
+        Item::Command {
+            id: "c".into(),
+            command: "ls".into(),
+            output: String::new(),
+            status: "completed".into(),
+        },
+        Item::Assistant {
+            id: "b".into(),
+            text: "Done".into(),
+            complete: true,
+        },
+    ])
+    .unwrap();
+    db.execute(
+        "UPDATE threads SET data=?2 WHERE id=?1",
+        [thread.id.to_string(), stored.to_string()],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::write(
+        f.peer.parent().unwrap().join("history.json"),
+        serde_json::json!([{"id": native_turn, "status": "completed", "items": [
+            {"type": "userMessage", "id": "u", "clientId": turn_id},
+            {"type": "agentMessage", "id": "a", "text": "Searching"},
+            {"type": "webSearch", "id": "w", "query": "latest Rust release"},
+            {"type": "commandExecution", "id": "c", "command": "ls", "status": "completed"},
+            {"type": "mcpToolCall", "id": "m", "server": "node_repl", "tool": "js", "status": "completed"},
+            {"type": "agentMessage", "id": "b", "text": "Done"}
+        ]}])
+        .to_string(),
+    )
+    .unwrap();
+    let app = reopen(&f.config).await;
+    app.open_thread(thread.id.clone()).await.unwrap();
+    let resumed = wait(&app, &thread.id, |t| t.turns[0].items.len() == 5).await;
+    assert_eq!(
+        resumed.turns[0]
+            .items
+            .iter()
+            .map(Item::id)
+            .collect::<Vec<_>>(),
+        ["a", "w", "c", "m", "b"]
+    );
+    app.shutdown().await.unwrap();
+}
+fn work_items(turn: &Turn) -> Vec<Item> {
+    turn.items
+        .iter()
+        .filter(|item| !matches!(item, Item::UserInput { .. }))
+        .cloned()
+        .collect()
+}
+#[tokio::test]
+async fn native_codex_items_stream_into_typed_timeline_items() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(
+        thread.id.clone(),
+        "native".into(),
+        "native-items".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let streaming = wait(&app, &thread.id, |t| {
+        t.turns[0].items.iter().any(
+            |item| matches!(item, Item::Reasoning { text, .. } if text.ends_with("Then add 333.")),
+        )
+    })
+    .await;
+    assert_eq!(
+        work_items(&streaming.turns[0]),
+        vec![
+            Item::WebSearch {
+                id: "exec-af1cec6b-7b06-458e-8d44-f38131318601".into(),
+                query: "latest Rust release site:blog.rust-lang.org".into(),
+                status: ToolStatus::Completed,
+            },
+            Item::McpToolCall {
+                id: "exec-0e668882-3b63-455d-8185-6ddafa10e7cd".into(),
+                server: "node_repl".into(),
+                tool: "js".into(),
+                title: "Evaluate 6 × 7".into(),
+                status: ToolStatus::InProgress,
+                arguments: serde_json::json!({"code": "nodeRepl.write(6*7)", "title": "Evaluate 6 × 7"}),
+                result: None,
+                error: None,
+                duration_ms: None,
+            },
+            Item::Reasoning {
+                id: "rs_0612991cf91e8829016ac65f87221c87d2beaa39e7ea874690".into(),
+                text: "**Calculating a math expression**\n\nI need to compute floor(999/3).\n\nThen add 333."
+                    .into(),
+                complete: false,
+            },
+        ]
+    );
+    std::fs::write(f.peer.parent().unwrap().join("native_items_release"), "").unwrap();
+    let finished = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(
+        serde_json::to_value(work_items(&finished.turns[0])).unwrap(),
+        serde_json::json!([
+            {"kind": "web_search", "id": "exec-af1cec6b-7b06-458e-8d44-f38131318601",
+             "query": "latest Rust release site:blog.rust-lang.org", "status": "completed"},
+            {"kind": "mcp_tool_call", "id": "exec-0e668882-3b63-455d-8185-6ddafa10e7cd",
+             "server": "node_repl", "tool": "js", "title": "Evaluate 6 × 7", "status": "completed",
+             "arguments": {"code": "nodeRepl.write(6*7)", "title": "Evaluate 6 × 7"},
+             "result": "42", "error": null, "durationMs": 56},
+            {"kind": "reasoning", "id": "rs_0612991cf91e8829016ac65f87221c87d2beaa39e7ea874690",
+             "text": "**Calculating a math expression**\n\nI need to compute floor(999/3).\n\nThen add 333.",
+             "complete": true},
+            {"kind": "reasoning", "id": "rs_0054cc89d9ce4db0016ac65f68c6848191881bf3f88b094734",
+             "text": "Raw thought", "complete": true},
+            {"kind": "context_compaction", "id": "01a116e4-b2c0-7723-a84a-19dc76d47a0e", "complete": true},
+            {"kind": "dynamic_tool_call", "id": "dynamic-1", "tool": "lookup", "status": "failed"},
+            {"kind": "collab_agent_tool_call", "id": "collab-1", "tool": "spawnAgent",
+             "prompt": "Review the diff", "status": "failed"},
+            {"kind": "sub_agent_activity", "id": "sub-1", "activity": "started",
+             "agentPath": "/root/reviewer", "agentThreadId": "child-thread"},
+            {"kind": "image_view", "id": "view-1", "path": "/fixture/screen.png"},
+            {"kind": "image_generation", "id": "gen-1", "status": "completed"},
+            {"kind": "sleep", "id": "sleep-1", "durationMs": 1500},
+            {"kind": "review_mode", "id": "review-1", "entered": true, "review": "current changes"},
+            {"kind": "hook_prompt", "id": "hook-1", "text": "Run the linter.\nThen the tests."},
+            {"kind": "function_call_output", "id": "output-1", "name": "shell"},
+            {"kind": "mcp_tool_call", "id": "computer-1", "server": "computer-use", "tool": "click",
+             "title": "Clicked in Safari", "status": "completed", "arguments": {"app": "  Safari "},
+             "result": "clicked\ndone", "error": null, "durationMs": 9},
+            {"kind": "mcp_tool_call", "id": "github-1", "server": "github", "tool": "search_issues",
+             "title": "github · search_issues", "status": "failed", "arguments": {},
+             "result": null, "error": "rate limited", "durationMs": null}
+        ])
+    );
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    let restored = app.thread(thread.id.clone()).await.unwrap();
+    assert_eq!(
+        work_items(&restored.turns[0]),
+        work_items(&finished.turns[0])
+    );
     app.shutdown().await.unwrap();
 }
 

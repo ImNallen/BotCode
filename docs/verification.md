@@ -704,6 +704,23 @@ The debug bundle used the temporary identifier `dev.bot.code.fileeditverify`, `B
 - `escape.txt`, a tracked symlink to `../outside/secret.txt`, showed "This symlink points outside the repository." with no editor, and the outside file stayed unchanged.
 - An edit followed at once by a tab switch reached disk. The run did not time the switch against the 500 ms delay, so the unit tests remain the evidence for the save on close.
 
+## Typed Codex timeline items
+
+Verified on macOS on 2026-10-07 with installed codex-cli 0.160.1. Two debug Tauri bundles ran against `BOT_CODE_DATA_DIR=/tmp/timeline-verify/data`: the parent build, under the temporary identifier `dev.bot.code.timelineverifyold`, and the head build, under `dev.bot.code.timelineverify`. A disposable one-commit repository at `/tmp/timeline-verify/repository` served as the project. `BOT_CODE_CODEX_BIN` pointed at a transparent wrapper that logged every frame to `protocol.jsonl` and set `model_auto_compact_token_limit=12000`, so real turns compacted mid-turn. Codex streams reasoning summaries only when a turn requests them, and neither Bot Code nor T3 requests them. For the reasoning checks, the wrapper therefore added `"summary": "detailed"` to `turn/start`. Turns used GPT-6.1-Sol, High effort, and Full access. Window input went through accessibility actions and events posted to the app's process. Screenshots captured the app's own window.
+
+| Check | Observed result |
+| --- | --- |
+| Parent build | A real turn ran a web search, a `node_repl` MCP call, a command, and two context compactions. The unfolded turn showed only the command. The saved snapshot held `{"kind":"other"}` items labelled `webSearch`, `mcpToolCall`, `contextCompaction`, and `Reasoning`, all with empty text. |
+| Live turn | "Thinking" with T3's shimmer appeared before the first item. During each compaction, the working header read "Compacting…" with the minimize icon. |
+| Settled turn | "Worked for 47s" folded the work. Unfolded, it showed "Searched the web 1 time and ran 1 command", a "Context compacted" divider, an "Evaluate 6 × 7" MCP row, a second divider, then the answer. |
+| Expanded rows | Inside the group, the globe row read the query `latest stable Rust release site:blog.rust-lang.org`. The MCP row opened "MCP call" with T3's projected JSON: tool `js`, server `node_repl`, status, and arguments `{"code": "nodeRepl.write(6*7)", "title": "Evaluate 6 × 7"}`. The body's scroll box hid its last lines. The app's body builder, run on the saved item, ended with `"durationMs": 72` and `"result": {"content": "42"}`. |
+| Reasoning | Codex streamed 103 summary deltas between 840.7 s and 841.9 s. A frame inside that window showed the activity row reading "Thinking" with the brain icon. The settled turn showed "Thought". Expanding it showed the streamed summary, "Calculating exclusive count", as Markdown. |
+| Parent snapshot | The head build opened the thread that the parent build had saved, with no error. Resuming from native history placed the web search and MCP call between the first message and the answer, in Codex's order. |
+
+The first head run exposed an ordering bug. Resuming native history appended items that the snapshot lacked after the final answer. Before this change, the snapshot never lacked an item, because every Codex item was saved as `other`. The merge now inserts each missing item after the item that precedes it in native history. A core test reproduces the original order, and the rebuilt bundle showed the corrected order on a fresh copy of the parent snapshot.
+
+Evidence is under `/tmp/timeline-verify`: the wrapper, `protocol.jsonl`, the probe captures, the input tool, and the screenshots under `shots`. The window kept the left sidebar, centered chat, bottom composer, compact header, and neutral colors at 1100×780. No pixel-difference measurement against T3 was made for these rows.
+
 ## Project scripts and worktree setup
 
 Verified on 2026-10-07 against T3 Code v0.0.45 at `/tmp/t3ref/t3code`. The project schema, setup runner, setup timeline card, script controls, and script ID helpers retain one-line source headers. Independent backend and UI reviews checked the integrated implementation against those sources and reported no unresolved findings after fixes.

@@ -11,19 +11,25 @@ import {
 import {
   ClockIcon,
   ArrowUpIcon,
+  BotIcon,
   BrainIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
   CopyIcon,
+  EyeIcon,
+  GlobeIcon,
   HammerIcon,
+  Minimize2Icon,
   SquarePenIcon,
   TerminalIcon,
   WrenchIcon,
   XIcon,
   Undo2Icon,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useQueryClient } from "@tanstack/react-query";
 import { followUps, immediateIntent, type FollowUp } from "./followUps";
 import { checkFollowUp, sendFollowUpNow } from "./FollowUpSender";
@@ -42,25 +48,26 @@ import {
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import {
   deriveRows,
-  liveLabel,
-  summarizeWork,
+  liveWorkEntryLabel,
+  workEntryCanExpand,
+  workEntryExpandedBody,
+  type ActivityEntry,
+  type ReasoningEntry,
   type TimelineRow,
   type WorkEntry,
-  type WorkKind,
+  type WorkIcon,
 } from "./timelineRows";
 
-const workIcons: Record<WorkKind, typeof TerminalIcon> = {
-  command: TerminalIcon,
-  file_change: SquarePenIcon,
-  tool: WrenchIcon,
-  approval: HammerIcon,
+const workIcons: Record<WorkIcon | "brain", typeof TerminalIcon> = {
+  terminal: TerminalIcon,
+  "square-pen": SquarePenIcon,
+  eye: EyeIcon,
+  globe: GlobeIcon,
+  wrench: WrenchIcon,
+  hammer: HammerIcon,
+  bot: BotIcon,
+  brain: BrainIcon,
 };
-
-function groupIcon(entries: WorkEntry[]) {
-  const kinds = new Set(entries.map((entry) => entry.kind));
-  const [only] = kinds;
-  return kinds.size === 1 && only ? workIcons[only] : HammerIcon;
-}
 
 function rowPadding(row: TimelineRow): string {
   switch (row.kind) {
@@ -71,7 +78,9 @@ function rowPadding(row: TimelineRow): string {
       return "pb-1.5";
     case "assistant":
       return row.meta ? "pb-4" : "pb-2";
-    case "reasoning":
+    case "activity-group":
+    case "thinking":
+    case "agents":
     case "plan":
     case "work":
     case "live":
@@ -79,6 +88,7 @@ function rowPadding(row: TimelineRow): string {
     case "checkpoint":
       return "pb-2";
     case "user":
+    case "context-compaction":
       return "pb-4";
   }
 }
@@ -269,47 +279,74 @@ function WorkingRow({
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+  const label = row.compacting ? (
+    <CompactingLabel />
+  ) : row.startedAtMs !== null ? (
+    <>
+      Working for{" "}
+      <span className="tabular-nums">
+        {formatWorkingTimer(row.startedAtMs, now)}
+      </span>
+    </>
+  ) : (
+    "Working..."
+  );
   return (
     <div className="border-b border-border/60 pb-2 pt-1">
       <div className="flex h-6 min-w-0 items-baseline gap-2 px-1 text-sm leading-relaxed text-muted-foreground tabular-nums">
-        <span className="relative shrink-0 overflow-hidden whitespace-nowrap">
-          {row.startedAtMs !== null ? (
-            <>
-              Working for{" "}
-              <span className="tabular-nums">
-                {formatWorkingTimer(row.startedAtMs, now)}
-              </span>
-            </>
-          ) : (
-            "Working..."
-          )}
+        <span
+          className="relative shrink-0 overflow-hidden whitespace-nowrap"
+          style={row.compacting ? animationRunning : undefined}
+        >
+          {label}
+          {row.compacting ? (
+            <ActivityShimmerOverlay>{label}</ActivityShimmerOverlay>
+          ) : null}
         </span>
       </div>
     </div>
   );
 }
 
+function CompactingLabel() {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <Minimize2Icon aria-hidden="true" className="size-3" />
+      Compacting…
+    </span>
+  );
+}
+
 function WorkEntryRow({
   entry,
+  label,
   at,
   inGroup,
 }: {
   entry: WorkEntry;
+  label: string;
   at: number | null;
   inGroup: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const Icon =
-    entry.failed && entry.kind !== "command"
+    entry.failed && entry.action === "edit"
       ? CircleAlertIcon
-      : workIcons[entry.kind];
-  const canExpand = entry.detail.trim().length > 0;
+      : workIcons[entry.icon];
+  const canExpand = workEntryCanExpand(entry, label);
+  const body = expanded ? workEntryExpandedBody(entry, label) : null;
   const toggle = () => canExpand && setExpanded((value) => !value);
   return (
     <div
       role={canExpand ? "button" : undefined}
       tabIndex={canExpand ? 0 : undefined}
-      aria-label={canExpand ? entry.label : undefined}
+      aria-label={
+        canExpand
+          ? entry.failed
+            ? `${label}, tool call failed`
+            : label
+          : undefined
+      }
       aria-expanded={canExpand ? expanded : undefined}
       onClick={toggle}
       onKeyDown={(event) => {
@@ -349,11 +386,11 @@ function WorkEntryRow({
                   "text-secondary-label",
                 )}
               >
-                {entry.label}
+                {label}
               </span>
             </p>
           </div>
-          {entry.failed && entry.kind === "command" ? (
+          {entry.failed && entry.action === "command" ? (
             <XIcon
               aria-hidden
               className="size-3 shrink-0 text-tool-error-icon/40"
@@ -376,16 +413,37 @@ function WorkEntryRow({
           </span>
         </div>
       </div>
-      {expanded ? (
+      {body ? (
         <div
           className="mt-1 ms-7 cursor-default rounded-md bg-muted/40 px-3 py-2"
           onClick={(event) => event.stopPropagation()}
         >
-          <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-secondary-label text-(length:--font-size-code,var(--text-2xs)) leading-relaxed select-text">
-            {entry.detail}
-          </pre>
+          <pre className={toolCallExpandedBodyClassName}>{body}</pre>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+const toolCallExpandedBodyClassName =
+  "max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-secondary-label text-(length:--font-size-code,var(--text-2xs)) leading-relaxed select-text";
+
+function WorkGroupEntries({ entries }: { entries: WorkEntry[] }) {
+  return (
+    <div
+      role="region"
+      aria-label="Tool calls"
+      className="scrollbar-gutter-stable max-h-[min(18rem,50dvh)] scroll-py-6 overflow-x-hidden overflow-y-auto rounded-md"
+    >
+      {entries.map((entry) => (
+        <WorkEntryRow
+          key={entry.id}
+          entry={entry}
+          label={entry.label}
+          at={null}
+          inGroup
+        />
+      ))}
     </div>
   );
 }
@@ -397,7 +455,7 @@ function WorkGroupRow({
   row: Extract<TimelineRow, { kind: "work-group" }>;
   onToggle: () => void;
 }) {
-  const Icon = groupIcon(row.entries);
+  const Icon = workIcons[row.icon];
   return (
     <>
       <button
@@ -410,77 +468,268 @@ function WorkGroupRow({
           <Icon className="size-4 shrink-0 stroke-2 opacity-70 light:brightness-60" />
         </span>
         <span className="min-w-0 flex-1 truncate text-secondary-label">
-          {summarizeWork(row.entries)}
+          {row.label}
         </span>
         <Timestamp at={row.at} />
       </button>
       {row.expanded ? (
         <div className="pb-1">
-          <div
-            role="region"
-            aria-label="Tool calls"
-            className="scrollbar-gutter-stable max-h-[min(18rem,50dvh)] scroll-py-6 overflow-x-hidden overflow-y-auto rounded-md"
-          >
-            {row.entries.map((entry) => (
-              <WorkEntryRow key={entry.id} entry={entry} at={null} inGroup />
-            ))}
-          </div>
+          <WorkGroupEntries entries={row.entries} />
         </div>
       ) : null}
     </>
   );
 }
 
-function LiveRow({ entry }: { entry: WorkEntry }) {
-  const Icon = workIcons[entry.kind];
+const animationRunning = {
+  "--visible-animation-state": "running",
+} as React.CSSProperties;
+
+function ActivityShimmerOverlay({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-6 w-full max-w-full items-center rounded-md text-left">
-      <div
-        className="relative min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed"
-        style={
-          { "--visible-animation-state": "running" } as React.CSSProperties
-        }
-      >
-        <span className="flex min-h-6 min-w-0 items-center gap-1.5 py-0.5 px-0.5 text-secondary-label">
-          <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
-            <Icon className="block size-4 shrink-0 stroke-2 opacity-70 light:brightness-60" />
-          </span>
-          <span className="min-w-0 flex-1 truncate live-tool-shine">
-            {liveLabel(entry)}
-          </span>
+    <span
+      aria-hidden
+      className="live-activity-focus pointer-events-none absolute inset-y-0 select-none"
+    >
+      <span className="live-activity-focus-counter block">
+        <span className="live-activity-focus-aligned block text-foreground">
+          {children}
         </span>
-      </div>
+      </span>
+    </span>
+  );
+}
+
+function LiveActivityRow({
+  label,
+  icon,
+  failed = false,
+  active = false,
+  shimmer = false,
+}: {
+  label: ReactNode;
+  icon: WorkIcon | "brain";
+  failed?: boolean;
+  active?: boolean;
+  shimmer?: boolean;
+}) {
+  const animated = active && !failed;
+  return (
+    <div
+      className="relative min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed"
+      style={animated ? animationRunning : undefined}
+    >
+      <LiveActivityContent
+        label={label}
+        icon={icon}
+        failed={failed}
+        active={animated && !shimmer}
+      />
+      {animated && shimmer ? (
+        <ActivityShimmerOverlay>
+          <LiveActivityContent label={label} icon={icon} highlighted />
+        </ActivityShimmerOverlay>
+      ) : null}
     </div>
   );
 }
 
-function ReasoningRow({
+function LiveActivityContent({
+  label,
+  icon,
+  failed = false,
+  active = false,
+  highlighted = false,
+}: {
+  label: ReactNode;
+  icon: WorkIcon | "brain";
+  failed?: boolean;
+  active?: boolean;
+  highlighted?: boolean;
+}) {
+  const Icon = workIcons[icon];
+  return (
+    <span
+      className={cn(
+        "flex min-h-6 min-w-0 items-center gap-1.5 py-0.5 px-0.5",
+        highlighted ? "text-foreground" : "text-secondary-label",
+      )}
+    >
+      <span
+        className={cn(
+          "flex size-6 shrink-0 items-center justify-center",
+          failed
+            ? "text-tool-error-icon/40"
+            : highlighted
+              ? "text-foreground"
+              : "text-icon-muted",
+        )}
+        role={failed ? "img" : undefined}
+        aria-label={failed ? "Tool call failed" : undefined}
+      >
+        <Icon
+          className={cn(
+            "block size-4 shrink-0 stroke-2",
+            !highlighted && "opacity-70 light:brightness-60",
+          )}
+        />
+      </span>
+      <span
+        className={cn("min-w-0 flex-1 truncate", active && "live-tool-shine")}
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
+function LiveRow({ entry }: { entry: WorkEntry }) {
+  return (
+    <div className="flex min-h-6 w-full max-w-full items-center rounded-md text-left">
+      <LiveActivityRow
+        label={liveWorkEntryLabel(entry, true)}
+        icon={entry.icon}
+        active
+      />
+    </div>
+  );
+}
+
+function ThinkingRow({
   row,
 }: {
-  row: Extract<TimelineRow, { kind: "reasoning" }>;
+  row: Extract<TimelineRow, { kind: "thinking" }>;
 }) {
-  const [expanded, setExpanded] = useState(false);
   return (
-    <div className={cn("flex flex-col", expanded && "mb-1")}>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
-        className="flex cursor-pointer select-none items-center gap-1.5 rounded-md px-0.5 py-0.5 text-start transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
-      >
-        <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
-          <BrainIcon
-            aria-hidden
-            className="block size-4 shrink-0 stroke-2 opacity-70"
-          />
-        </span>
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className="relative min-w-0 flex-1 truncate text-secondary-label text-sm leading-relaxed">
-            Thought
+    <div className="min-h-7">
+      {row.compacting ? null : (
+        <LiveActivityRow label="Thinking" icon="brain" active shimmer />
+      )}
+    </div>
+  );
+}
+
+function AgentsRow({ row }: { row: Extract<TimelineRow, { kind: "agents" }> }) {
+  return (
+    <div className="flex flex-col">
+      <LiveActivityRow label={row.label} icon="bot" active={row.live} />
+    </div>
+  );
+}
+
+function ContextCompactionRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "context-compaction" }>;
+}) {
+  return (
+    <div
+      role="separator"
+      aria-label={row.label}
+      className="mx-auto flex w-full max-w-(--chat-max-width) items-center gap-3 py-1 text-muted-foreground text-xs"
+    >
+      <span className="h-px flex-1 bg-border/70" />
+      <span className="flex shrink-0 items-center gap-1.5">
+        <Minimize2Icon aria-hidden="true" className="size-3" />
+        {row.label}
+      </span>
+      <span className="h-px flex-1 bg-border/70" />
+    </div>
+  );
+}
+
+type MarkdownNode = {
+  type: string;
+  value?: string;
+  alt?: string | null;
+  children?: MarkdownNode[];
+};
+
+function remarkThoughtPreview(fallback: string) {
+  return (tree: MarkdownNode) => {
+    const plainText = (node: MarkdownNode): string => {
+      if (node.type === "html" || node.type === "definition") return "";
+      if ("alt" in node) return node.alt ?? "";
+      if (node.value !== undefined) return node.value;
+      if (node.children) {
+        const separator = [
+          "root",
+          "blockquote",
+          "list",
+          "listItem",
+          "table",
+          "tableRow",
+        ].includes(node.type)
+          ? " "
+          : "";
+        return node.children.map(plainText).join(separator);
+      }
+      return node.type === "break" ? " " : "";
+    };
+    tree.children = [
+      {
+        type: "text",
+        value: plainText(tree).replace(/\s+/g, " ").trim() || fallback,
+      },
+    ];
+  };
+}
+
+function ReasoningTraceBlock({
+  messages,
+  live,
+  showHeader,
+}: {
+  messages: ReasoningEntry[];
+  live: boolean;
+  showHeader: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const expanded = !showHeader || open;
+  const streaming = live && messages.some((message) => message.streaming);
+  if (
+    messages.every((message) => message.text.trim().length === 0) &&
+    !streaming
+  )
+    return null;
+  const label = streaming ? "Thinking" : "Thought";
+  const collapsedPreview = messages
+    .find((message) => message.text.trim().length > 0)
+    ?.text.trim();
+  const headerText = expanded ? (
+    label
+  ) : (
+    <ReactMarkdown remarkPlugins={[remarkGfm, [remarkThoughtPreview, label]]}>
+      {collapsedPreview ?? label}
+    </ReactMarkdown>
+  );
+  return (
+    <div className="flex flex-col">
+      {showHeader ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setOpen(!expanded)}
+          className="flex min-h-6 cursor-pointer select-none items-center gap-1.5 rounded-md ps-0.5 pe-2 text-start text-sm leading-relaxed transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        >
+          <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
+            <BrainIcon
+              aria-hidden
+              className="block size-4 shrink-0 stroke-2 opacity-70"
+            />
           </span>
           <span
-            aria-hidden
+            className="relative min-w-0 flex-1 truncate text-secondary-label"
+            style={streaming ? animationRunning : undefined}
+          >
+            {headerText}
+            {streaming ? (
+              <ActivityShimmerOverlay>{headerText}</ActivityShimmerOverlay>
+            ) : null}
+          </span>
+          <span
             className="flex size-4 shrink-0 items-center justify-center"
+            aria-hidden
           >
             <ChevronRightIcon
               className={cn(
@@ -489,15 +738,83 @@ function ReasoningRow({
               )}
             />
           </span>
-        </span>
-      </button>
+        </button>
+      ) : null}
       {expanded ? (
-        <div className="mt-1 ms-7 flex max-h-96 flex-col gap-3 overflow-auto px-0.5 py-1 select-text">
-          <ChatMarkdown
-            text={row.text}
-            className="text-foreground"
-            lineBreaks
-          />
+        <div className="ms-7 flex max-h-96 flex-col gap-3 overflow-auto px-0.5 py-1 select-text">
+          {messages.map((message) => (
+            <ChatMarkdown
+              key={message.id}
+              className="text-foreground"
+              text={message.text}
+              streaming={streaming && message.streaming}
+              lineBreaks
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function activitySections(entries: ActivityEntry[]) {
+  const sections: (
+    | { kind: "work"; id: string; entries: WorkEntry[] }
+    | { kind: "reasoning"; id: string; messages: ReasoningEntry[] }
+  )[] = [];
+  for (const entry of entries) {
+    const last = sections.at(-1);
+    if (entry.kind === "work") {
+      if (last?.kind === "work") last.entries.push(entry.entry);
+      else
+        sections.push({ kind: "work", id: entry.id, entries: [entry.entry] });
+    } else if (last?.kind === "reasoning") last.messages.push(entry);
+    else sections.push({ kind: "reasoning", id: entry.id, messages: [entry] });
+  }
+  return sections;
+}
+
+function ActivityGroupRow({
+  row,
+  onToggle,
+}: {
+  row: Extract<TimelineRow, { kind: "activity-group" }>;
+  onToggle: () => void;
+}) {
+  const sections = activitySections(row.entries);
+  const hasWork = row.entries.some((entry) => entry.kind === "work");
+  const lastEntry = row.entries.at(-1);
+  return (
+    <div>
+      <button
+        type="button"
+        className="group/live-work flex min-h-6 w-full max-w-full cursor-pointer items-center rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        aria-label={row.failed ? `${row.label}, tool call failed` : undefined}
+        aria-expanded={row.expanded}
+        onClick={onToggle}
+      >
+        <LiveActivityRow
+          label={row.label}
+          icon={row.icon}
+          failed={row.failed}
+          active={row.active}
+          shimmer={row.shimmer}
+        />
+      </button>
+      {row.expanded ? (
+        <div className="mt-2">
+          {sections.map((section) =>
+            section.kind === "work" ? (
+              <WorkGroupEntries key={section.id} entries={section.entries} />
+            ) : (
+              <ReasoningTraceBlock
+                key={section.id}
+                messages={section.messages}
+                live={row.active && section.messages.at(-1) === lastEntry}
+                showHeader={hasWork}
+              />
+            ),
+          )}
         </div>
       ) : null}
     </div>
@@ -667,6 +984,7 @@ export function Timeline({
                       <div className="space-y-px">
                         <WorkEntryRow
                           entry={row.entry}
+                          label={row.entry.heading}
                           at={row.at}
                           inGroup={false}
                         />
@@ -679,10 +997,21 @@ export function Timeline({
                         setExpandedGroups((set) => toggle(set, row.id))
                       }
                     />
+                  ) : row.kind === "activity-group" ? (
+                    <ActivityGroupRow
+                      row={row}
+                      onToggle={() =>
+                        setExpandedGroups((set) => toggle(set, row.groupId))
+                      }
+                    />
                   ) : row.kind === "live" ? (
                     <LiveRow entry={row.entry} />
-                  ) : row.kind === "reasoning" ? (
-                    <ReasoningRow row={row} />
+                  ) : row.kind === "thinking" ? (
+                    <ThinkingRow row={row} />
+                  ) : row.kind === "agents" ? (
+                    <AgentsRow row={row} />
+                  ) : row.kind === "context-compaction" ? (
+                    <ContextCompactionRow row={row} />
                   ) : row.kind === "checkpoint" ? (
                     thread.checkout.kind === "folder" ? null : (
                       <CheckpointRow

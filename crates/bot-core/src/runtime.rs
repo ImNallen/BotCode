@@ -3428,6 +3428,27 @@ impl Owner {
                     })
                 }
             }
+            "item/reasoning/summaryPartAdded"
+            | "item/reasoning/summaryTextDelta"
+            | "item/reasoning/textDelta" => {
+                let item_id = required_string(p, "itemId")?;
+                if !turn.items.iter().any(|item| item.id() == item_id) {
+                    turn.items.push(Item::Reasoning {
+                        id: item_id.to_owned(),
+                        text: String::new(),
+                        complete: false,
+                    });
+                }
+                if let Some(Item::Reasoning { text, .. }) =
+                    turn.items.iter_mut().find(|item| item.id() == item_id)
+                {
+                    if method != "item/reasoning/summaryPartAdded" {
+                        text.push_str(&string(p, "delta"));
+                    } else if !text.is_empty() && !text.ends_with("\n\n") {
+                        text.push_str("\n\n");
+                    }
+                }
+            }
             "item/plan/delta" => {
                 let item_id = required_string(p, "itemId")?.to_owned();
                 let delta = string(p, "delta");
@@ -3474,7 +3495,8 @@ impl Owner {
                                 }
                             }
                         }
-                        upsert(&mut turn.items, item)
+                        let end = turn.items.len();
+                        upsert(&mut turn.items, item, end);
                     }
                 }
             }
@@ -3490,14 +3512,7 @@ impl Owner {
                 turn.delivery = Delivery::Accepted;
                 turn.execution = execution(status, p.pointer("/turn/error"));
                 if let Some(items) = p.pointer("/turn/items").and_then(Value::as_array) {
-                    for item in items {
-                        if input_matches_turn {
-                            reconcile_user_input(turn, item);
-                        }
-                        if let Some(item) = normalize_item(item, true) {
-                            upsert(&mut turn.items, item)
-                        }
-                    }
+                    merge_native_items(turn, items, input_matches_turn);
                 }
                 t.session = SessionState::Ready;
                 for approval in &mut t.approvals {
@@ -3557,18 +3572,61 @@ fn execution(status: &str, error: Option<&Value>) -> Execution {
         },
     }
 }
-fn upsert(items: &mut Vec<Item>, item: Item) {
-    if let Some(row) = items.iter_mut().find(|i| i.id() == item.id()) {
-        *row = item
-    } else {
-        items.push(item)
+fn merge_native_items(turn: &mut Turn, items: &[Value], reconcile_inputs: bool) {
+    let mut cursor = 0;
+    for native in items {
+        if reconcile_inputs && let Some(at) = reconcile_user_input(turn, native) {
+            cursor = at + 1;
+        }
+        if let Some(item) = normalize_item(native, true) {
+            cursor = upsert(&mut turn.items, item, cursor) + 1;
+        }
+    }
+}
+fn upsert(items: &mut Vec<Item>, item: Item, at: usize) -> usize {
+    let Some(position) = items.iter().position(|i| i.id() == item.id()) else {
+        items.insert(at, item);
+        return at;
+    };
+    match (&mut items[position], item) {
+        (
+            Item::Reasoning { complete, .. },
+            Item::Reasoning {
+                text,
+                complete: done,
+                ..
+            },
+        ) if text.is_empty() => *complete = done,
+        (row, item) => *row = item,
+    }
+    position
+}
+fn strings(v: &Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+// T3 CodexAdapter.ts:1028-1035
+fn tool_status(v: &Value, complete: bool) -> ToolStatus {
+    if !complete {
+        return ToolStatus::InProgress;
+    }
+    match v.get("status").and_then(Value::as_str) {
+        Some("failed" | "interrupted") => ToolStatus::Failed,
+        Some("declined") => ToolStatus::Declined,
+        _ => ToolStatus::Completed,
     }
 }
 fn normalize_item(v: &Value, complete: bool) -> Option<Item> {
     let id = v.get("id")?.as_str()?.to_owned();
     let kind = v.get("type")?.as_str()?;
     Some(match kind {
-        "userMessage" => return None,
         "agentMessage" => Item::Assistant {
             id,
             text: string(v, "text"),
@@ -3585,70 +3643,296 @@ fn normalize_item(v: &Value, complete: bool) -> Option<Item> {
             output: string(v, "aggregatedOutput"),
             status: string(v, "status"),
         },
-        "fileChange" => Item::FileChange {
-            id,
-            text: v
-                .get("changes")
-                .and_then(Value::as_array)
-                .map(|changes| {
-                    changes
-                        .iter()
-                        .map(|change| {
-                            format!("{}\n{}", string(change, "path"), string(change, "diff"))
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default(),
-            status: string(v, "status"),
-            paths: v
-                .get("changes")
-                .and_then(Value::as_array)
-                .map(|changes| {
-                    changes
-                        .iter()
-                        .map(|change| string(change, "path"))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        },
-        "reasoning" => Item::Other {
-            id,
-            label: "Reasoning".into(),
-            text: v
-                .get("summary")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default(),
-        },
-        _ => Item::Other {
-            id,
-            label: kind.into(),
-            text: v
-                .get("text")
+        "fileChange" => {
+            let changes = v.get("changes").and_then(Value::as_array);
+            let changes = changes.map(Vec::as_slice).unwrap_or_default();
+            Item::FileChange {
+                id,
+                text: changes
+                    .iter()
+                    .map(|change| format!("{}\n{}", string(change, "path"), string(change, "diff")))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                status: string(v, "status"),
+                paths: changes
+                    .iter()
+                    .map(|change| string(change, "path"))
+                    .collect(),
+            }
+        }
+        "reasoning" => {
+            let summary = strings(v, "summary");
+            let parts = if summary.is_empty() {
+                strings(v, "content")
+            } else {
+                summary
+            };
+            Item::Reasoning {
+                id,
+                text: parts.join("\n\n"),
+                complete,
+            }
+        }
+        "mcpToolCall" => Item::McpToolCall {
+            title: mcp_title(v),
+            server: string(v, "server"),
+            tool: string(v, "tool"),
+            status: tool_status(v, complete),
+            arguments: v.get("arguments").cloned().unwrap_or_default(),
+            result: v.get("result").filter(|r| !r.is_null()).map(|r| {
+                r.get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
+                    .map(|c| string(c, "text"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }),
+            error: v
+                .pointer("/error/message")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .into(),
+                .map(str::to_owned),
+            duration_ms: v.get("durationMs").and_then(Value::as_u64),
+            id,
         },
+        "dynamicToolCall" => Item::DynamicToolCall {
+            id,
+            tool: string(v, "tool"),
+            status: tool_status(v, complete),
+        },
+        "collabAgentToolCall" => Item::CollabAgentToolCall {
+            id,
+            tool: string(v, "tool"),
+            prompt: v.get("prompt").and_then(Value::as_str).map(str::to_owned),
+            status: tool_status(v, complete),
+        },
+        "subAgentActivity" => Item::SubAgentActivity {
+            id,
+            activity: serde_json::from_value(v.get("kind")?.clone()).ok()?,
+            agent_path: string(v, "agentPath"),
+            agent_thread_id: string(v, "agentThreadId"),
+        },
+        // T3 CodexAdapter.ts:782-804
+        "webSearch" => Item::WebSearch {
+            id,
+            query: [v.get("query"), v.pointer("/action/query")]
+                .into_iter()
+                .chain(
+                    v.pointer("/action/queries")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .map(Some),
+                )
+                .chain([v.pointer("/action/pattern"), v.pointer("/action/url")])
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .find(|q| !q.is_empty())
+                .unwrap_or_default()
+                .to_owned(),
+            status: tool_status(v, complete),
+        },
+        "imageView" => Item::ImageView {
+            id,
+            path: string(v, "path"),
+        },
+        "imageGeneration" => Item::ImageGeneration {
+            id,
+            status: tool_status(v, complete),
+        },
+        "contextCompaction" => Item::ContextCompaction { id, complete },
+        "hookPrompt" => Item::HookPrompt {
+            id,
+            text: v
+                .get("fragments")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|f| string(f, "text"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        },
+        "functionCallOutput" => Item::FunctionCallOutput {
+            id,
+            name: string(v, "name"),
+        },
+        "sleep" => Item::Sleep {
+            id,
+            duration_ms: v
+                .get("durationMs")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+        },
+        "enteredReviewMode" | "exitedReviewMode" => Item::ReviewMode {
+            id,
+            entered: kind == "enteredReviewMode",
+            review: string(v, "review"),
+        },
+        _ => return None,
     })
 }
-fn reconcile_user_input(turn: &mut Turn, native: &Value) {
-    if native.get("type").and_then(Value::as_str) != Some("userMessage") {
-        return;
+// T3 CodexAdapter.ts itemTitle (740-780)
+fn mcp_title(v: &Value) -> String {
+    let (server, tool) = (string(v, "server"), string(v, "tool"));
+    let name = tool
+        .split(['.', '/', ':'])
+        .next_back()
+        .and_then(|part| part.split("__").last())
+        .unwrap_or_default()
+        .trim();
+    let args = v.get("arguments");
+    let intent = (name == "js")
+        .then(|| args.and_then(|a| a.get("title")).and_then(Value::as_str))
+        .flatten()
+        .and_then(|title| bounded(title, 80));
+    intent
+        .or_else(|| computer_use_title(v, name))
+        .unwrap_or_else(|| format!("{server} · {tool}"))
+}
+// T3 CodexAdapter.ts computerUseToolTitle (691-738) and mcpToolPresentation's app name.
+fn computer_use_title(v: &Value, tool: &str) -> Option<String> {
+    let status = v.get("status").and_then(Value::as_str);
+    if item_type_words(&string(v, "server")) != "computer use" || status == Some("failed") {
+        return None;
     }
-    let Some(client) = native.get("clientId").and_then(Value::as_str) else {
-        return;
+    let args = v.get("arguments");
+    let argument_app = ["appName", "application", "app"]
+        .into_iter()
+        .find_map(|key| display_name(args?.get(key)?.as_str()?));
+    let surface = v
+        .pointer("/result/_meta/codex~1toolSurface")
+        .filter(|s| s.get("kind").and_then(Value::as_str) == Some("computerUse"));
+    let surface_app = surface.and_then(|s| {
+        let app = s.get("app")?;
+        match app.get("kind")?.as_str()? {
+            "displayName" => display_name(app.get("displayName")?.as_str()?),
+            "appId" => {
+                let name = match app.get("appId")?.as_str()?.trim().to_lowercase().as_str() {
+                    "com.apple.finder" => "Finder",
+                    "com.apple.safari" => "Safari",
+                    "com.google.chrome" => "Chrome",
+                    "com.microsoft.edgemac" => "Microsoft Edge",
+                    "org.mozilla.firefox" => "Firefox",
+                    "company.thebrowser.browser" => "Arc",
+                    _ => return None,
+                };
+                Some(name.to_owned())
+            }
+            _ => None,
+        }
+    });
+    let source = surface
+        .and_then(|_| {
+            v.pointer("/appContext/appName")
+                .and_then(Value::as_str)
+                .and_then(display_name)
+                .or_else(|| argument_app.clone())
+                .or(surface_app)
+        })
+        .filter(|name| name != "Computer Use");
+    let app = source.or(argument_app);
+    let in_progress = status == Some("inProgress");
+    let verb = |now: &str, done: &str| {
+        let label = if in_progress { now } else { done };
+        match &app {
+            Some(app) => format!("{label} in {app}"),
+            None => label.to_owned(),
+        }
     };
-    if let Some(Item::UserInput { delivery, .. }) =
-        turn.items.iter_mut().find(|item| item.id() == client)
-    {
-        *delivery = Delivery::Accepted;
+    Some(match item_type_words(tool).replace(' ', "_").as_str() {
+        "list_apps" => if in_progress {
+            "Listing apps"
+        } else {
+            "Listed apps"
+        }
+        .to_owned(),
+        "click" => verb("Clicking", "Clicked"),
+        "drag" => verb("Dragging", "Dragged"),
+        "get_app_state" | "get_state" => match (&app, in_progress) {
+            (Some(app), true) => format!("Looking at {app}"),
+            (Some(app), false) => format!("Looked at {app}"),
+            (None, true) => "Looking at the screen".into(),
+            (None, false) => "Looked at the screen".into(),
+        },
+        "perform_accessibility_action" | "perform_secondary_action" => if in_progress {
+            "Performing accessibility action"
+        } else {
+            "Performed accessibility action"
+        }
+        .to_owned(),
+        "press_key" => verb("Pressing key", "Pressed key"),
+        "scroll" => {
+            let direction = args
+                .and_then(|a| a.get("direction"))
+                .and_then(Value::as_str)
+                .and_then(|d| bounded(d, 48))
+                .map(|d| format!(" {}", d.to_lowercase()))
+                .unwrap_or_default();
+            verb(
+                &format!("Scrolling{direction}"),
+                &format!("Scrolled{direction}"),
+            )
+        }
+        "set_value" => verb("Setting value", "Set value"),
+        "type_text" => verb("Typing text", "Typed text"),
+        _ => return None,
+    })
+}
+// T3 normalizeItemType
+fn item_type_words(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return "item".into();
     }
+    let mut words = String::new();
+    let mut previous = None::<char>;
+    for c in raw.chars() {
+        if c.is_ascii_uppercase()
+            && previous.is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit())
+        {
+            words.push(' ');
+        }
+        words.push(if matches!(c, '.' | '_' | '/' | '-') {
+            ' '
+        } else {
+            c
+        });
+        previous = Some(c);
+    }
+    words
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+fn display_name(value: &str) -> Option<String> {
+    let name = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!name.is_empty() && name.chars().count() <= 160).then_some(name)
+}
+fn bounded(value: &str, max: usize) -> Option<String> {
+    let text = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    Some(if text.chars().count() <= max {
+        text
+    } else {
+        format!("{}…", text.chars().take(max - 1).collect::<String>())
+    })
+}
+fn reconcile_user_input(turn: &mut Turn, native: &Value) -> Option<usize> {
+    if native.get("type").and_then(Value::as_str) != Some("userMessage") {
+        return None;
+    }
+    let client = native.get("clientId").and_then(Value::as_str)?;
+    let position = turn.items.iter().position(|item| item.id() == client)?;
+    if let Item::UserInput { delivery, .. } = &mut turn.items[position] {
+        *delivery = Delivery::Accepted;
+        return Some(position);
+    }
+    None
 }
 fn settle_user_inputs(turn: &mut Turn, reason: &str) {
     for item in &mut turn.items {
@@ -3694,12 +3978,7 @@ fn merge_history(thread: &mut ThreadSnapshot, value: Option<&Value>) {
                 turn.execution = recovered;
             }
             if let Some(items) = items {
-                for item in items {
-                    reconcile_user_input(turn, item);
-                    if let Some(item) = normalize_item(item, true) {
-                        upsert(&mut turn.items, item)
-                    }
-                }
+                merge_native_items(turn, items, true);
             }
         }
     }
