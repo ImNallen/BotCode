@@ -424,7 +424,44 @@ const threadSummary = z.object({
   snoozedUntilMs: z.number().nullable(),
   settledAtMs: z.number().nullable(),
 });
+const searchCoverage = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("complete") }),
+  z.object({ kind: z.literal("limited"), reason: z.string() }),
+]);
+const pathSearchResult = z.object({
+  paths: z.array(z.string()),
+  generation: z.number(),
+  indexedFiles: z.number(),
+  truncated: z.boolean(),
+  indexCoverage: searchCoverage,
+});
+const contentSearchResult = z.object({
+  matches: z.array(
+    z.object({
+      path: z.string(),
+      lineNumber: z.number().int().positive(),
+      line: z.string(),
+      ranges: z.array(z.tuple([z.number(), z.number()])),
+    }),
+  ),
+  generation: z.number(),
+  indexedFiles: z.number(),
+  searchedFiles: z.number(),
+  skippedFiles: z.number(),
+  coverage: searchCoverage,
+  indexCoverage: searchCoverage,
+});
+export type PathSearchResult = z.infer<typeof pathSearchResult>;
+export type ContentSearchResult = z.infer<typeof contentSearchResult>;
+export type ContentSearchInput = {
+  query: string;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  useRegex: boolean;
+  refresh?: boolean;
+};
 const workspaceView = z.object({
+  fileCoverage: searchCoverage.default({ kind: "complete" }),
   workspace,
   branch: z.string(),
   files: z.array(z.string()),
@@ -721,6 +758,30 @@ export const ipc = {
       { workspaceId, threadId: threadId ?? null },
       workspaceView,
     ),
+  searchPaths: (
+    { workspaceId, threadId }: CheckoutRef,
+    caller: string,
+    sequence: number,
+    input: { query: string; limit: number; refresh?: boolean },
+  ) =>
+    call(
+      "search_paths",
+      { workspaceId, threadId: threadId ?? null, caller, sequence, input },
+      pathSearchResult,
+    ),
+  searchContents: (
+    { workspaceId, threadId }: CheckoutRef,
+    caller: string,
+    sequence: number,
+    input: ContentSearchInput,
+  ) =>
+    call(
+      "search_contents",
+      { workspaceId, threadId: threadId ?? null, caller, sequence, input },
+      contentSearchResult,
+    ),
+  cancelProjectSearch: (caller: string, sequence: number) =>
+    call("cancel_project_search", { caller, sequence }, z.null()),
   file: ({ workspaceId, threadId }: CheckoutRef, path: string) =>
     call("read_file", { workspaceId, threadId: threadId ?? null, path }, file),
   writeFile: (

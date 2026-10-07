@@ -15,9 +15,14 @@ mod editors;
 pub use editors::{EditorId, OpenTarget, Position, available_editors};
 mod log;
 mod pr_review;
+mod project_search;
 mod pull_requests;
 pub mod repo;
 pub use pr_review::*;
+pub use project_search::{
+    ContentMatch, ContentSearchInput, ContentSearchResult, PathSearchInput, PathSearchResult,
+    SearchCoverage,
+};
 pub use pull_requests::{
     CachedPr, LinkedPrSummary, PrFreshness, PrLifecycle, PrLinkSource, PrSnapshot, PullRequestKey,
     ThreadPrSummary,

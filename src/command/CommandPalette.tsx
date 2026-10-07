@@ -101,6 +101,8 @@ export function CommandPalette({
     flushSync(() =>
       onClose(
         ![
+          "files.search",
+          "content.search",
           "thread.rename",
           "settings.open",
           "terminal.toggle",

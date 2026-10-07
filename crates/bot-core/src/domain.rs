@@ -1124,6 +1124,8 @@ impl ChangeHint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceView {
+    #[serde(default)]
+    pub file_coverage: crate::SearchCoverage,
     pub workspace: Workspace,
     pub branch: String,
     pub files: Vec<String>,

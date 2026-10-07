@@ -66,6 +66,7 @@ export function ComposerCommandMenu(props: {
   isLoading: boolean;
   triggerKind: ComposerTriggerKind;
   emptyStateText?: string;
+  statusText?: string;
   activeItemId: string | null;
   onHighlightedItemChange: (id: string) => void;
   onSelect: (item: ComposerCommandItem) => void;
@@ -86,6 +87,11 @@ export function ComposerCommandMenu(props: {
         data-composer-command-drawer="true"
         className="flex min-h-0 w-full flex-col overflow-hidden pb-(--chat-composer-attachment-overlap) **:data-[slot=scroll-area-scrollbar]:data-[orientation=vertical]:my-4"
       >
+        {props.statusText ? (
+          <p role="status" className="px-3 py-1 text-xs text-muted-foreground">
+            {props.statusText}
+          </p>
+        ) : null}
         {props.items.length ? (
           <div
             id={props.listId}

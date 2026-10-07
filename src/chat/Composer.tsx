@@ -31,6 +31,7 @@ import {
 import { Menu, MenuItem } from "../ui/menu";
 import type {
   Checkout,
+  CheckoutRef,
   ContextUsage,
   ModelOption,
   Skill,
@@ -56,12 +57,12 @@ import {
   composerSuggestionOptionId,
   type ComposerCommandItem,
 } from "./ComposerCommandMenu";
-import { detectComposerTrigger } from "./composer-logic";
+import { detectComposerTrigger, pathBasename } from "./composer-logic";
 import {
-  searchComposerPaths,
   searchSlashCommandItems,
   skillCommandItems,
 } from "./composerSlashCommandSearch";
+import { useProjectSearch } from "../lib/projectSearch";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 
 const composerControl =
@@ -100,8 +101,7 @@ export function Composer({
   onRetryModels,
   onSettingsChange,
   settingsDisabled,
-  files,
-  filesLoading,
+  searchCheckout,
   filesError,
   skills,
   skillsLoading,
@@ -150,8 +150,7 @@ export function Composer({
   onRetryModels: () => void;
   onSettingsChange: (settings: SessionSettings) => void;
   settingsDisabled: boolean;
-  files: string[];
-  filesLoading: boolean;
+  searchCheckout: CheckoutRef | undefined;
   filesError?: string;
   skills: Skill[];
   skillsLoading: boolean;
@@ -210,9 +209,26 @@ export function Composer({
     staleTime: 30_000,
     retry: false,
   });
+  const fileSearch = useProjectSearch(
+    searchCheckout,
+    trigger?.kind === "path"
+      ? { kind: "paths", query: trigger.query, limit: 50 }
+      : null,
+  );
+  const pathResult =
+    fileSearch.response?.kind === "paths" ? fileSearch.response.value : null;
+  const pathItems: ComposerCommandItem[] = (pathResult?.paths ?? []).map(
+    (path) => ({
+      id: `path:${path}`,
+      type: "path",
+      path,
+      label: pathBasename(path),
+      description: path,
+    }),
+  );
   const items =
     trigger?.kind === "path"
-      ? searchComposerPaths(files, trigger.query)
+      ? pathItems
       : trigger?.kind === "skill"
         ? skillCommandItems(skills, trigger.query)
         : trigger?.kind === "pull-request"
@@ -235,7 +251,7 @@ export function Composer({
   }, [skillMenuOpen, onSkillsMenuOpen]);
   const active = items.find((item) => item.id === highlighted) ?? items[0];
   const selectSuggestion = (item: ComposerCommandItem) => {
-    if (item.type === "path" && !files.includes(item.path)) return;
+    if (item.type === "path" && !pathResult?.paths.includes(item.path)) return;
     if (
       item.type === "skill" &&
       !skills.some(
@@ -421,7 +437,7 @@ export function Composer({
                 triggerKind={trigger.kind}
                 isLoading={
                   trigger.kind === "path"
-                    ? filesLoading
+                    ? fileSearch.pending
                     : trigger.kind === "pull-request"
                       ? Boolean(pullRequestScope) &&
                         (prSearch.isFetching || prQuery !== debouncedPrQuery)
@@ -429,12 +445,18 @@ export function Composer({
                 }
                 emptyStateText={
                   trigger.kind === "path"
-                    ? filesError
+                    ? (fileSearch.error ?? filesError)
                     : trigger.kind === "pull-request"
                       ? !pullRequestScope
                         ? "Pull requests require a project."
                         : prSearch.error?.message
                       : undefined
+                }
+                statusText={
+                  trigger.kind === "path" &&
+                  pathResult?.indexCoverage.kind === "limited"
+                    ? pathResult.indexCoverage.reason
+                    : undefined
                 }
                 activeItemId={active?.id ?? null}
                 onHighlightedItemChange={setHighlighted}

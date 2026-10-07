@@ -42,6 +42,7 @@ function workspace(
   branch: string,
 ): WorkspaceView {
   return {
+    fileCoverage: { kind: "complete" },
     workspace: {
       id: workspaceId,
       root: "/repo",

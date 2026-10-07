@@ -280,6 +280,7 @@ pub struct App {
     log: RotatingLog,
     terminals: Terminals,
     attachments: Attachments,
+    project_search: crate::project_search::ProjectSearch,
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
@@ -381,8 +382,10 @@ impl App {
         let (done, completions) = mpsc::channel(128);
         let prs = PrWork::load(&mut store)?;
         let log = RotatingLog::open(config.data_dir.join("logs").join("codex.log"));
+        let project_search = crate::project_search::ProjectSearch::default();
         tokio::spawn(
             Owner {
+                project_search: project_search.clone(),
                 prs,
                 review_work: {
                     let mut work = ReviewWork::new();
@@ -447,6 +450,7 @@ impl App {
             log,
             terminals,
             attachments,
+            project_search,
         };
         tokio::spawn(Sweeper::from(&app).run(
             app.commands.downgrade(),
@@ -506,10 +510,15 @@ impl App {
     ) -> Result<WorkspaceView> {
         let (w, location) = self.checkout(id.clone(), thread).await?;
         let threads = self.call(|r| Command::Threads(id, r)).await?;
-        tokio::task::spawn_blocking(move || match location {
+        let root = match &location {
+            Location::Repository(root) | Location::Folder(root) => Some(root.clone()),
+            _ => None,
+        };
+        let mut view = tokio::task::spawn_blocking(move || match location {
             Location::Repository(root) => repo::inspect(Workspace { root, ..w }, threads),
             Location::Folder(root) => repo::inspect_folder(Workspace { root, ..w }, threads),
             Location::Unassigned => Ok(WorkspaceView {
+                file_coverage: crate::SearchCoverage::Complete,
                 workspace: w,
                 branch: String::new(),
                 files: vec![],
@@ -518,6 +527,7 @@ impl App {
                 unavailable: None,
             }),
             Location::Removed { branch, .. } => Ok(WorkspaceView {
+                file_coverage: crate::SearchCoverage::Complete,
                 workspace: w,
                 branch,
                 files: vec![],
@@ -527,7 +537,58 @@ impl App {
             }),
         })
         .await
-        .map_err(|e| AppError::new("repository", e))?
+        .map_err(|e| AppError::new("repository", e))??;
+        if let Some(root) = root {
+            match self.project_search.files(&root).await {
+                Ok(inventory) => {
+                    view.files = inventory.files;
+                    view.file_coverage = inventory.coverage;
+                }
+                Err(error) => {
+                    view.file_coverage = crate::SearchCoverage::Limited {
+                        reason: error.message,
+                    }
+                }
+            }
+        }
+        Ok(view)
+    }
+    async fn search_root(&self, id: WorkspaceId, thread: Option<ThreadId>) -> Result<PathBuf> {
+        match self.checkout(id, thread).await?.1 {
+            Location::Repository(root) | Location::Folder(root) => Ok(root),
+            Location::Removed { .. } => Err(worktree_removed()),
+            Location::Unassigned => Err(AppError::new(
+                "missing_folder",
+                "Start a thread to search its files.",
+            )),
+        }
+    }
+    pub async fn search_paths(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+        caller: String,
+        sequence: u64,
+        input: crate::PathSearchInput,
+    ) -> Result<crate::PathSearchResult> {
+        self.project_search
+            .paths(self.search_root(id, thread).await?, caller, sequence, input)
+            .await
+    }
+    pub async fn search_contents(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+        caller: String,
+        sequence: u64,
+        input: crate::ContentSearchInput,
+    ) -> Result<crate::ContentSearchResult> {
+        self.project_search
+            .contents(self.search_root(id, thread).await?, caller, sequence, input)
+            .await
+    }
+    pub fn cancel_project_search(&self, caller: String, sequence: u64) {
+        self.project_search.cancel(&caller, sequence);
     }
     pub async fn read_file(
         &self,
@@ -572,7 +633,9 @@ impl App {
         };
         tokio::task::spawn_blocking(move || repo::write_file(&root, &path, &contents))
             .await
-            .map_err(|e| AppError::new("repository", e))?
+            .map_err(|e| AppError::new("repository", e))??;
+        self.project_search.invalidate();
+        Ok(())
     }
     /// The canonical existing path a target names, refusing anything outside its checkout
     /// or, for chat links, not named in the thread.
@@ -1064,6 +1127,7 @@ impl App {
         self.call(|r| Command::AutoSettle(rules, r)).await
     }
     pub async fn shutdown(&self) -> Result<()> {
+        self.project_search.invalidate();
         self.close_terminals(|_| true).await?;
         self.call(Command::Shutdown).await
     }
@@ -1403,6 +1467,7 @@ struct GitCompletion {
     reply: Reply<GitOutcome>,
 }
 struct Owner {
+    project_search: crate::project_search::ProjectSearch,
     closing: bool,
     checkpoint_work: checkpoints::CheckpointWork,
     naming: naming::Naming,
@@ -1510,6 +1575,7 @@ impl Owner {
             }
         }
         self.held.remove(&root);
+        self.project_search.invalidate();
         if refresh && let Some((id, _)) = origin {
             let _ = self.refresh_prs(&id, true, PrLinkSource::BranchDiscovery);
         }
@@ -1695,6 +1761,9 @@ impl Owner {
     }
     fn release_cleanup(&mut self, candidate: &Candidate, removed: bool) {
         self.held.remove(&candidate.path);
+        if removed {
+            self.project_search.invalidate();
+        }
         if removed && let Ok(t) = self.thread(&candidate.thread) {
             let _ = self.changes.send(ChangeHint {
                 refresh_workspace: true,
@@ -1742,6 +1811,9 @@ impl Owner {
         self.store.save(t)?;
         self.dirty.remove(id);
         let hint = self.thread_hint(&self.threads[id]);
+        if hint.refresh_workspace {
+            self.project_search.invalidate();
+        }
         let _ = self.changes.send(hint);
         Ok(())
     }
@@ -2426,6 +2498,7 @@ impl Owner {
                 let _ = reply.send(self.claim_restore(&id));
             }
             Command::ReleaseRestore(path, reply) => {
+                self.project_search.invalidate();
                 self.held.remove(&path);
                 let _ = reply.send(Ok(()));
             }

@@ -1,5 +1,4 @@
-// File surface copied from pingdotgg/t3code v0.0.45 components/files/FilePreviewPanel.tsx,
-// files/FileBreadcrumbs.tsx, files/ReadOnlySourcePreview.tsx and files/fileSurfaceChrome.tsx (MIT).
+// File surface copied from pingdotgg/t3code v0.0.45 components/files/FilePreviewPanel.tsx, files/FileBreadcrumbs.tsx, files/ReadOnlySourcePreview.tsx and files/fileSurfaceChrome.tsx (MIT).
 import { Editor } from "@pierre/diffs/edit";
 import { EditProvider, File, Virtualizer } from "@pierre/diffs/react";
 import { useQuery } from "@tanstack/react-query";
@@ -10,7 +9,7 @@ import {
   LoaderCircleIcon,
   WrapTextIcon,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { workspaceTarget, type CheckoutRef, type WorkspaceView } from "../ipc";
 import { OpenInPicker } from "../chat/OpenInPicker";
 import { cn } from "../lib/cn";
@@ -28,6 +27,7 @@ import {
 } from "./fileContentRevision";
 import { fileQuery, setFileDraft, useFileDraft } from "./fileDrafts";
 import { FileEntryIcon } from "./FileEntryIcon";
+import { clampFileLine, useFileLineReveal } from "./fileLineReveal";
 import { FileExplorer } from "./FileExplorer";
 import { basename } from "./panelState";
 import { FILE_VIEW_UNSAFE_CSS } from "./surfaceCss";
@@ -43,11 +43,15 @@ export function FilesSurface({
   checkout,
   view,
   path,
+  line,
+  revealSequence,
   onOpenFile,
 }: {
   checkout: CheckoutRef;
   view: WorkspaceView | undefined;
   path: string | null;
+  line: number | null;
+  revealSequence: number;
   onOpenFile: (path: string) => void;
 }) {
   const [explorerOpen, setExplorerOpen] = useStoredState(
@@ -63,6 +67,14 @@ export function FilesSurface({
   const showExplorer = explorerOpen || path === null;
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+      {view?.fileCoverage.kind === "limited" ? (
+        <p
+          role="status"
+          className="border-b px-3 py-2 text-xs text-muted-foreground"
+        >
+          {view.fileCoverage.reason}
+        </p>
+      ) : null}
       {path ? (
         <div className={FILE_SURFACE_SUBHEADER_CLASS} data-surface-subheader>
           <ScrollRow className="min-w-0 flex-1" data-file-breadcrumbs>
@@ -100,7 +112,14 @@ export function FilesSurface({
           )}
         >
           {path ? (
-            <SourceView checkout={checkout} path={path} wordWrap={wordWrap} />
+            <SourceView
+              key={`${checkout.workspaceId}:${checkout.threadId}:${path}`}
+              checkout={checkout}
+              path={path}
+              line={line}
+              revealSequence={revealSequence}
+              wordWrap={wordWrap}
+            />
           ) : null}
         </div>
         {showExplorer ? (
@@ -129,15 +148,33 @@ export function FilesSurface({
 function SourceView({
   checkout,
   path,
+  line,
+  revealSequence,
   wordWrap,
 }: {
   checkout: CheckoutRef;
   path: string;
+  line: number | null;
+  revealSequence: number;
   wordWrap: boolean;
 }) {
   const theme = useResolvedTheme();
   const draft = useFileDraft(checkout, path);
-  const file = useQuery(fileQuery(checkout, path));
+  const file = useQuery({
+    ...fileQuery(checkout, path),
+    refetchOnMount: "always",
+  });
+  const [readSequence, setReadSequence] = useState(revealSequence);
+  useEffect(() => {
+    if (readSequence === revealSequence) return;
+    let active = true;
+    void file.refetch().then(() => {
+      if (active) setReadSequence(revealSequence);
+    });
+    return () => {
+      active = false;
+    };
+  }, [revealSequence]);
   const contents =
     draft?.contents ??
     (!file.error && file.data?.kind === "text" ? file.data.contents : null);
@@ -148,6 +185,8 @@ function SourceView({
         checkout={checkout}
         path={path}
         contents={contents}
+        line={file.isFetching || readSequence !== revealSequence ? null : line}
+        revealSequence={revealSequence}
         theme={theme}
         wordWrap={wordWrap}
       />
@@ -188,12 +227,16 @@ function EditableSource({
   checkout,
   path,
   contents,
+  line,
+  revealSequence,
   theme,
   wordWrap,
 }: {
   checkout: CheckoutRef;
   path: string;
   contents: string;
+  line: number | null;
+  revealSequence: number;
   theme: ResolvedTheme;
   wordWrap: boolean;
 }) {
@@ -209,6 +252,11 @@ function EditableSource({
     editorFile.current,
   );
   editorFile.current = { cacheKey, contents };
+  const sourceFile = useMemo(
+    () => ({ name: path, contents, cacheKey }),
+    [path, contents, cacheKey],
+  );
+  const onPostRender = useFileLineReveal(path, line, revealSequence);
   return (
     <EditProvider createEditor={(type, options) => new Editor(type, options)}>
       <Virtualizer
@@ -216,7 +264,15 @@ function EditableSource({
         config={{ overscrollSize: 600, intersectionObserverMargin: 1200 }}
       >
         <File
-          file={{ name: path, contents, cacheKey }}
+          file={sourceFile}
+          selectedLines={
+            line === null
+              ? null
+              : {
+                  start: clampFileLine(contents, line),
+                  end: clampFileLine(contents, line),
+                }
+          }
           edit
           onEditChange={({ file }) => {
             const current = editorFile.current;
@@ -227,6 +283,7 @@ function EditableSource({
           }}
           options={{
             disableFileHeader: true,
+            onPostRender,
             overflow: wordWrap ? "wrap" : "scroll",
             theme: theme === "dark" ? "pierre-dark" : "pierre-light",
             themeType: theme,

@@ -51,6 +51,7 @@ function context(): ActionContext {
     branch: "main",
     scratchAvailable: true,
     terminalAvailable: true,
+    projectSearchAvailable: true,
     renamePending: false,
     queued: false,
     archiveTarget: undefined,
@@ -264,4 +265,40 @@ it("offers editor actions only for an open checkout with an installed editor", (
   assert.deepEqual(revealed, [
     { kind: "workspace", workspace_id: "workspace", thread_id: null, path: "" },
   ]);
+});
+it("project search has T3 labels, exact platform shortcuts and checkout eligibility", () => {
+  const ctx = context();
+  const calls: string[] = [];
+  ctx.requestChat = (kind) => calls.push(kind);
+  assert.equal(actions["files.search"].title, "Go to file");
+  assert.equal(actions["content.search"].title, "Search project contents");
+  assert.equal(matchAction(key("p"), ctx, false, "MacIntel"), "files.search");
+  assert.equal(
+    matchAction(key("f", { shiftKey: true }), ctx, false, "MacIntel"),
+    "content.search",
+  );
+  assert.equal(
+    matchAction(
+      key("p", { metaKey: false, ctrlKey: true }),
+      ctx,
+      false,
+      "Linux",
+    ),
+    "files.search",
+  );
+  assert.equal(matchAction(key("p"), ctx, true, "MacIntel"), undefined);
+  assert.equal(matchAction(key("f"), ctx, false, "MacIntel"), undefined);
+  assert.ok(searchActions(ctx, "root", "quick open").includes("files.search"));
+  assert.ok(searchActions(ctx, "root", "grep").includes("content.search"));
+  runAction("files.search", ctx);
+  runAction("content.search", ctx);
+  assert.deepEqual(calls, ["files.search", "content.search"]);
+  ctx.thread = undefined;
+  assert.equal(actions["files.search"].available(ctx), true);
+  ctx.projectSearchAvailable = false;
+  assert.equal(runAction("files.search", ctx), false);
+  assert.equal(runAction("content.search", ctx), false);
+  ctx.projectSearchAvailable = true;
+  ctx.pageOpen = true;
+  assert.equal(actions["files.search"].available(ctx), false);
 });

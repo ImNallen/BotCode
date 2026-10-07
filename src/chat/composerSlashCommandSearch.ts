@@ -5,7 +5,6 @@ import {
   scoreQueryMatch,
 } from "../lib/searchRanking";
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
-import { pathBasename } from "./composer-logic";
 import type { Skill } from "../ipc";
 import {
   scoreProviderSkill,
@@ -141,46 +140,4 @@ export function skillCommandItems(
       skill.description ??
       (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
   }));
-}
-
-export function searchComposerPaths(
-  files: readonly string[],
-  query: string,
-): ComposerCommandItem[] {
-  const normalized = normalizeSearchQuery(query);
-  const ranked: {
-    item: ComposerCommandItem;
-    score: number;
-    tieBreaker: string;
-  }[] = [];
-  for (const path of files) {
-    const score = normalized
-      ? scoreQueryMatch({
-          value: path.toLowerCase(),
-          query: normalized,
-          exactBase: 0,
-          prefixBase: 2,
-          boundaryBase: 4,
-          includesBase: 6,
-          fuzzyBase: 100,
-        })
-      : 0;
-    if (score === null) continue;
-    insertRankedSearchResult(
-      ranked,
-      {
-        item: {
-          id: `path:${path}`,
-          type: "path",
-          path,
-          label: pathBasename(path),
-          description: path,
-        },
-        score,
-        tieBreaker: path,
-      },
-      50,
-    );
-  }
-  return ranked.map((result) => result.item);
 }

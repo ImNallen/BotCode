@@ -22,8 +22,10 @@ export function Dialog({
   className,
   children,
   variant = "default",
+  projectSearch,
 }: {
   variant?: "default" | "command";
+  projectSearch?: "files.search" | "content.search";
   open: boolean;
   onOpenChange: (open: boolean) => void;
   className?: string;
@@ -35,6 +37,7 @@ export function Dialog({
       onClose={() => onOpenChange(false)}
       className={className}
       variant={variant}
+      projectSearch={projectSearch}
     >
       {children}
     </ModalDialog>
@@ -43,11 +46,13 @@ export function Dialog({
 
 function ModalDialog({
   variant,
+  projectSearch,
   onClose,
   className,
   children,
 }: {
   variant: "default" | "command";
+  projectSearch?: "files.search" | "content.search";
   onClose: () => void;
   className?: string;
   children: ReactNode;
@@ -61,8 +66,19 @@ function ModalDialog({
   return (
     <dialog
       ref={ref}
-      aria-label={variant === "command" ? "Command palette" : undefined}
-      data-command-palette={variant === "command" ? "true" : undefined}
+      aria-label={
+        projectSearch === "files.search"
+          ? "File picker"
+          : projectSearch === "content.search"
+            ? "Search project contents"
+            : variant === "command"
+              ? "Command palette"
+              : undefined
+      }
+      data-command-palette={
+        variant === "command" && !projectSearch ? "true" : undefined
+      }
+      data-project-search={projectSearch}
       className="m-0 size-full max-h-none max-w-none overflow-visible border-0 bg-transparent p-0 backdrop:bg-transparent"
       onCancel={(event) => {
         event.preventDefault();

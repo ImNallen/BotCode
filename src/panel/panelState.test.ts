@@ -141,3 +141,20 @@ describe("terminal tabs", () => {
     assert.deepEqual(eligibleSurfaces(state, false), state);
   });
 });
+
+it("reopening a file replaces its target line and repeats an identical reveal", async () => {
+  const { openFile } = await import("./panelState.ts");
+  const first = openFile(emptyPanel, "target.txt", 321);
+  const second = openFile(first, "target.txt", 12);
+  assert.equal(second.surfaces.length, 1);
+  const surface = second.surfaces[0];
+  assert.ok(surface?.kind === "file");
+  assert.equal(surface.line, 12);
+  const third = openFile(second, "target.txt", 12);
+  const again = third.surfaces[0];
+  assert.ok(again?.kind === "file");
+  assert.ok(again.revealSequence > surface.revealSequence);
+  const fromExplorer = openFile(third, "target.txt");
+  assert.ok(fromExplorer.surfaces[0]?.kind === "file");
+  assert.equal(fromExplorer.surfaces[0].line, null);
+});

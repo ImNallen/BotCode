@@ -52,6 +52,7 @@ it("refreshes the active branch picker after a worktree naming event without ref
     settledAtMs: null,
   } satisfies ThreadSummary;
   const view = {
+    fileCoverage: { kind: "complete" },
     workspace: {
       id: workspaceId,
       root: "/fixture",

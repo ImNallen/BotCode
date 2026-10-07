@@ -1365,6 +1365,83 @@ async fn writes_land_in_the_thread_checkout() {
     app.shutdown().await.unwrap();
 }
 #[tokio::test]
+async fn saved_files_and_ignore_edits_refresh_project_search() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let input = PathSearchInput {
+        query: "search-target".into(),
+        limit: 50,
+        refresh: false,
+    };
+    let before = app
+        .search_paths(
+            workspace.id.clone(),
+            None,
+            "autosave".into(),
+            1,
+            input.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(before.paths.is_empty());
+    app.write_file(
+        workspace.id.clone(),
+        None,
+        "nested/search-target.txt".into(),
+        "autosave_search_sentinel\n".into(),
+    )
+    .await
+    .unwrap();
+    let saved = app
+        .search_paths(
+            workspace.id.clone(),
+            None,
+            "autosave".into(),
+            2,
+            input.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.paths, ["nested/search-target.txt"]);
+    app.write_file(
+        workspace.id.clone(),
+        None,
+        ".gitignore".into(),
+        "nested/search-target.txt\n".into(),
+    )
+    .await
+    .unwrap();
+    let ignored = app
+        .search_paths(workspace.id.clone(), None, "autosave".into(), 3, input)
+        .await
+        .unwrap();
+    assert!(ignored.paths.is_empty());
+    let contents = app
+        .search_contents(
+            workspace.id.clone(),
+            None,
+            "autosave".into(),
+            4,
+            ContentSearchInput {
+                query: "autosave_search_sentinel".into(),
+                case_sensitive: false,
+                whole_word: false,
+                use_regex: false,
+                refresh: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(contents.matches.is_empty());
+    assert_eq!(
+        app.workspace_view(workspace.id, None).await.unwrap().files,
+        [".gitignore", "README.md"]
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
 async fn worktree_views_inspect_the_thread_checkout() {
     let f = Fixture::new();
     f.commit();

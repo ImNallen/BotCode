@@ -181,6 +181,9 @@ impl Owner {
             setup.completed_at_ms = Some(now_ms());
         }
         let finished = !setup.active();
+        if finished && prior_state != setup.state {
+            self.project_search.invalidate();
+        }
         if prior_state != setup.state || prior_output != setup.output {
             self.install(thread)?;
         }
