@@ -15,6 +15,8 @@ The dev server uses port 1420. If another dev build holds that port, `pnpm tauri
 
 Open a Git repository and start a conversation. To work outside a repository, choose **Start without a project** or press Command+Option+N, and Bot Code runs that conversation in its own folder under `scratch` in the data directory. Send with Enter. Shift+Enter adds a line. The right-panel toggle in the header opens Files, Diff, and Reviews tabs. Approvals offer Approve, Decline, or Cancel turn. Stop is available after Codex acknowledges the running turn.
 
+To edit a file, open it in the Files tab and type. Bot Code saves the file 500 ms after you stop typing, and a dot on the tab shows that a save is waiting. If Codex writes the same file before your edit saves, your text replaces its change, as in T3 Code. Binary files, non-UTF-8 files, and files over 1 MB stay read-only. Bot Code refuses to write outside the thread's checkout or inside `.git`, including through symlinks.
+
 Command+K opens T3's command palette in chat, Settings, and Usage. Search thread titles across projects or message text in conversations already loaded in this session. Start a query with `>` to search actions only. Arrow keys select a result, Enter opens or runs it, and Escape closes the palette. A focused terminal keeps Command+K for clearing its output.
 
 The palette offers the existing thread and panel controls, including new threads, Settings, pin, settle, snooze, wake, rename, copy, archive, and confirmed deletion. Pin and settle act in place, as their shortcuts do. Archived threads stay out of ordinary search and can be restored from their own submenu. Actions appear only when their current context supports them. Palette entries and shortcut matching share one action table.

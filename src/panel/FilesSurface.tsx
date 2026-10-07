@@ -1,6 +1,7 @@
 // File surface copied from pingdotgg/t3code v0.0.45 components/files/FilePreviewPanel.tsx,
 // files/FileBreadcrumbs.tsx, files/ReadOnlySourcePreview.tsx and files/fileSurfaceChrome.tsx (MIT).
-import { File, Virtualizer } from "@pierre/diffs/react";
+import { Editor } from "@pierre/diffs/edit";
+import { EditProvider, File, Virtualizer } from "@pierre/diffs/react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeftIcon,
@@ -9,8 +10,8 @@ import {
   LoaderCircleIcon,
   WrapTextIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
-import { checkoutKey, ipc, type CheckoutRef, type WorkspaceView } from "../ipc";
+import { useMemo, useRef, useState } from "react";
+import type { CheckoutRef, WorkspaceView } from "../ipc";
 import { cn } from "../lib/cn";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import {
@@ -20,11 +21,17 @@ import {
   SurfaceAction,
   useStoredState,
 } from "./chrome";
+import {
+  fileEditorCacheKey,
+  type EditorFileIdentity,
+} from "./fileContentRevision";
+import { fileQuery, setFileDraft, useFileDraft } from "./fileDrafts";
 import { FileEntryIcon } from "./FileEntryIcon";
 import { FileExplorer } from "./FileExplorer";
 import { basename } from "./panelState";
 import { FILE_VIEW_UNSAFE_CSS } from "./surfaceCss";
-import { useResolvedTheme } from "./useResolvedTheme";
+import { useFileSaveCoordinator } from "./useFileSaveCoordinator";
+import { useResolvedTheme, type ResolvedTheme } from "./useResolvedTheme";
 
 const FILE_SURFACE_SUBHEADER_CLASS =
   "flex h-10 min-h-10 shrink-0 items-center gap-2 border-b border-border/60 bg-background px-3 in-data-[preview-panel-mode=inline]:mb-3 in-data-[preview-panel-mode=inline]:h-7 in-data-[preview-panel-mode=inline]:min-h-7 in-data-[preview-panel-mode=inline]:border-b-transparent";
@@ -127,10 +134,22 @@ function SourceView({
   wordWrap: boolean;
 }) {
   const theme = useResolvedTheme();
-  const file = useQuery({
-    queryKey: [...checkoutKey("file", checkout), path],
-    queryFn: () => ipc.file(checkout, path),
-  });
+  const draft = useFileDraft(checkout, path);
+  const file = useQuery(fileQuery(checkout, path));
+  const contents =
+    draft?.contents ??
+    (!file.error && file.data?.kind === "text" ? file.data.contents : null);
+  if (contents !== null)
+    return (
+      <EditableSource
+        key={`${path}:${theme}`}
+        checkout={checkout}
+        path={path}
+        contents={contents}
+        theme={theme}
+        wordWrap={wordWrap}
+      />
+    );
   if (file.isPending)
     return (
       <div
@@ -146,41 +165,75 @@ function SourceView({
     : file.data.kind === "unavailable"
       ? file.data.reason
       : null;
-  if (failure !== null || file.data?.kind !== "text")
-    return (
-      <div
-        role="alert"
-        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-xs leading-relaxed"
-      >
-        <p className="text-destructive">{failure}</p>
-        <button
-          type="button"
-          onClick={() => void file.refetch()}
-          className="rounded-md border border-input px-2.5 py-1 text-xs text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          Try again
-        </button>
-      </div>
-    );
-  const text = file.data.contents;
   return (
-    <Virtualizer
-      key={`${path}:${theme}:${text.length}`}
-      className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"
-      config={{ overscrollSize: 600, intersectionObserverMargin: 1200 }}
+    <div
+      role="alert"
+      className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-xs leading-relaxed"
     >
-      <File
-        file={{ name: path, contents: text }}
-        options={{
-          disableFileHeader: true,
-          overflow: wordWrap ? "wrap" : "scroll",
-          theme: theme === "dark" ? "pierre-dark" : "pierre-light",
-          themeType: theme,
-          unsafeCSS: FILE_VIEW_UNSAFE_CSS,
-        }}
-        className="min-h-full"
-      />
-    </Virtualizer>
+      <p className="text-destructive">{failure}</p>
+      <button
+        type="button"
+        onClick={() => void file.refetch()}
+        className="rounded-md border border-input px-2.5 py-1 text-xs text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        Try again
+      </button>
+    </div>
+  );
+}
+
+function EditableSource({
+  checkout,
+  path,
+  contents,
+  theme,
+  wordWrap,
+}: {
+  checkout: CheckoutRef;
+  path: string;
+  contents: string;
+  theme: ResolvedTheme;
+  wordWrap: boolean;
+}) {
+  const saveCoordinator = useFileSaveCoordinator(checkout, path);
+  // Written during render because the editor adopts a changed file, and
+  // reports that adoption as an edit, in File's layout effect, which runs
+  // before this component's effects.
+  const editorFile = useRef<EditorFileIdentity | undefined>(undefined);
+  const cacheKey = fileEditorCacheKey(
+    checkout,
+    path,
+    contents,
+    editorFile.current,
+  );
+  editorFile.current = { cacheKey, contents };
+  return (
+    <EditProvider createEditor={(type, options) => new Editor(type, options)}>
+      <Virtualizer
+        className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"
+        config={{ overscrollSize: 600, intersectionObserverMargin: 1200 }}
+      >
+        <File
+          file={{ name: path, contents, cacheKey }}
+          edit
+          onEditChange={({ file }) => {
+            const current = editorFile.current;
+            if (!current || file.contents === current.contents) return;
+            editorFile.current = { ...current, contents: file.contents };
+            setFileDraft(checkout, path, file.contents);
+            saveCoordinator.change(file.contents);
+          }}
+          options={{
+            disableFileHeader: true,
+            overflow: wordWrap ? "wrap" : "scroll",
+            theme: theme === "dark" ? "pierre-dark" : "pierre-light",
+            themeType: theme,
+            unsafeCSS: FILE_VIEW_UNSAFE_CSS,
+          }}
+          className="min-h-full"
+        />
+      </Virtualizer>
+    </EditProvider>
   );
 }
 

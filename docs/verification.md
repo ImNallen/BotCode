@@ -691,3 +691,15 @@ The actual native bundle used identifier `dev.bot.code.skillsverify`, disposable
 Independent review found the unsupported-name selection bug and an incorrect slash-menu loading label. Both were fixed before the final native run. The original skill metadata is retained; only names that cannot round-trip through T3's `$name` grammar are excluded from selectable rows. T3's provider ranking was compared after import/type and formatting adaptation. Ported components retain source headers and T3's class strings. Existing file and Plan behavior remains outside this change's feature scope.
 
 Evidence is under `/tmp/botcode-skills`, including generated protocol bindings, the initial live response, test/build logs, design comparisons, review findings, and `native/protocol.jsonl`. Native accessibility observations and screenshots are in the tool transcript. No new pixel-difference measurement or other-platform verification is claimed. The isolated app was stopped after verification. All project changes remain uncommitted.
+
+## Editable files with autosave
+
+Verified on macOS on 2026-10-07 against T3 Code v0.0.45. `pnpm test:ui` (306 tests), `pnpm build`, Prettier for the changed frontend files, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test -p bot-core` (325 tests) passed. The UI tests port T3's nine `FileSaveCoordinator` cases and its hook's StrictMode cases, and they check the overlay against a real `QueryClient`. The core tests write through real paths and real `git diff`. They refuse a file symlink, a folder symlink, and a dangling symlink that lead outside the repository, and they check that nothing outside changed. A mutation run confirmed that the `.git` check catches `new/.GIT/config` only when the comparison ignores letter case.
+
+The debug bundle used the temporary identifier `dev.bot.code.fileeditverify`, `BOT_CODE_DATA_DIR=/tmp/botcode-file-edit/data`, and the disposable repository `/tmp/botcode-file-edit/repository`. `BOT_CODE_CODEX_BIN` selected a scripted app-server peer that prepends `agent line` to `notes.txt` and reports a file change. One prompt makes it write at once. Another makes it wait for a signal file. The repository was added through the native folder picker. At 1100×780:
+
+- Typing ` edited` in `notes.txt` showed the tab's dot. The dot cleared after the save, and `git diff` showed `-gamma` and `+gamma edited`.
+- An edit started at 14.464 s, and the peer wrote the file at 14.606 s, during the unsaved edit. The editor kept the typed text. The autosave replaced the Codex write, and the final file had no `agent line`.
+- With no unsaved edit, a Codex write appeared in the editor without a dot. The file's modification time equaled the peer's write time, so loading the new contents wrote nothing back.
+- `escape.txt`, a tracked symlink to `../outside/secret.txt`, showed "This symlink points outside the repository." with no editor, and the outside file stayed unchanged.
+- An edit followed at once by a tab switch reached disk. The run did not time the switch against the 500 ms delay, so the unit tests remain the evidence for the save on close.

@@ -571,6 +571,16 @@ export const ipc = {
     ),
   file: ({ workspaceId, threadId }: CheckoutRef, path: string) =>
     call("read_file", { workspaceId, threadId: threadId ?? null, path }, file),
+  writeFile: (
+    { workspaceId, threadId }: CheckoutRef,
+    path: string,
+    contents: string,
+  ) =>
+    call(
+      "write_file",
+      { workspaceId, threadId: threadId ?? null, path, contents },
+      z.null(),
+    ),
   diff: (
     { workspaceId, threadId }: CheckoutRef,
     path: string,

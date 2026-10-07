@@ -105,6 +105,182 @@ fn refuses_traversal_external_symlinks_binary_and_large_text() {
         FileView::Unavailable { .. }
     ));
 }
+fn refusal(result: Result<()>) -> (String, String) {
+    let e = result.unwrap_err();
+    (e.code, e.message)
+}
+fn inside() -> (String, String) {
+    (
+        "invalid_path".into(),
+        "Choose a file inside the repository.".into(),
+    )
+}
+fn outside() -> (String, String) {
+    (
+        "invalid_path".into(),
+        "This symlink points outside the repository.".into(),
+    )
+}
+#[test]
+fn writes_tracked_files_in_place_through_in_repo_symlinks_and_new_parents() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join("a.txt"), "base\n").unwrap();
+    std::fs::write(root.join("b.txt"), "b\n").unwrap();
+    std::fs::set_permissions(root.join("a.txt"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(root, &["add", "a.txt", "b.txt"]);
+    git(
+        root,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    );
+    let canonical = repo::open(root).unwrap();
+    repo::write_file(&canonical, "a.txt", "edited\n").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "edited\n"
+    );
+    assert_eq!(
+        std::fs::metadata(root.join("a.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
+    let diff = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--name-only"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(diff.stdout).unwrap(), "a.txt\n");
+    std::os::unix::fs::symlink("b.txt", root.join("link")).unwrap();
+    repo::write_file(&canonical, "link", "through link\n").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("b.txt")).unwrap(),
+        "through link\n"
+    );
+    assert!(root.join("link").symlink_metadata().unwrap().is_symlink());
+    repo::write_file(&canonical, "new/deeper/c.txt", "c\n").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("new/deeper/c.txt")).unwrap(),
+        "c\n"
+    );
+    let limit = "x".repeat(1_000_000);
+    repo::write_file(&canonical, "limit.txt", &limit).unwrap();
+    assert!(matches!(
+        repo::read_file(&canonical, "limit.txt").unwrap(),
+        FileView::Text { contents, .. } if contents == limit
+    ));
+}
+#[test]
+fn write_refuses_paths_outside_the_repository_and_inside_git() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    let canonical = repo::open(root).unwrap();
+    let config = std::fs::read(root.join(".git/config")).unwrap();
+    for path in ["", "../x", "/abs/path", ".git/config", "./a.txt"] {
+        assert_eq!(
+            refusal(repo::write_file(&canonical, path, "x")),
+            inside(),
+            "{path}"
+        );
+    }
+    assert!(!dir.path().parent().unwrap().join("x").exists());
+    assert!(!Path::new("/abs/path").exists());
+    for path in [".GIT/config", "new/.GIT/config"] {
+        assert_eq!(
+            refusal(repo::write_file(&canonical, path, "x")),
+            inside(),
+            "{path}"
+        );
+    }
+    assert!(!root.join("new").exists());
+    std::os::unix::fs::symlink(".git/config", root.join("config")).unwrap();
+    assert_eq!(
+        refusal(repo::write_file(&canonical, "config", "x")),
+        inside()
+    );
+    std::os::unix::fs::symlink(".git/hooks", root.join("hooks")).unwrap();
+    assert_eq!(
+        refusal(repo::write_file(&canonical, "hooks/pre-commit", "x")),
+        inside()
+    );
+    assert_eq!(std::fs::read(root.join(".git/config")).unwrap(), config);
+    assert!(!root.join(".git/hooks/pre-commit").exists());
+    std::fs::create_dir(root.join("folder")).unwrap();
+    assert_eq!(
+        refusal(repo::write_file(&canonical, "folder", "x")),
+        inside()
+    );
+    assert!(root.join("folder").is_dir());
+    std::fs::write(root.join("big.txt"), "small\n").unwrap();
+    assert_eq!(
+        refusal(repo::write_file(
+            &canonical,
+            "big.txt",
+            &"x".repeat(1_000_001)
+        )),
+        (
+            "file_unavailable".into(),
+            "This file exceeds the 1 MB text limit.".into()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("big.txt")).unwrap(),
+        "small\n"
+    );
+}
+#[test]
+fn write_refuses_symlinks_that_escape_the_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    let canonical = repo::open(root).unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let outside_file = elsewhere.path().join("outside.txt");
+    std::fs::write(&outside_file, "outside\n").unwrap();
+    std::os::unix::fs::symlink(&outside_file, root.join("escape-file")).unwrap();
+    assert_eq!(
+        refusal(repo::write_file(&canonical, "escape-file", "x")),
+        outside()
+    );
+    assert_eq!(std::fs::read_to_string(&outside_file).unwrap(), "outside\n");
+    std::os::unix::fs::symlink(elsewhere.path(), root.join("escape")).unwrap();
+    assert_eq!(
+        refusal(repo::write_file(&canonical, "escape/new.txt", "x")),
+        outside()
+    );
+    assert_eq!(
+        refusal(repo::write_file(&canonical, "escape/sub/new.txt", "x")),
+        outside()
+    );
+    assert_eq!(
+        refusal(repo::write_file(&canonical, "escape/outside.txt", "x")),
+        outside()
+    );
+    assert_eq!(std::fs::read_to_string(&outside_file).unwrap(), "outside\n");
+    assert!(!elsewhere.path().join("new.txt").exists());
+    assert!(!elsewhere.path().join("sub").exists());
+    let dangling = elsewhere.path().join("missing/target.txt");
+    std::os::unix::fs::symlink(&dangling, root.join("dangling")).unwrap();
+    assert_eq!(
+        refusal(repo::write_file(&canonical, "dangling", "x")),
+        inside()
+    );
+    assert!(!elsewhere.path().join("missing").exists());
+}
 
 #[test]
 fn historical_large_blob_is_unavailable_and_absent_sides_still_work() {

@@ -540,6 +540,27 @@ impl App {
             .await
             .map_err(|e| AppError::new("repository", e))?
     }
+    pub async fn write_file(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+        path: String,
+        contents: String,
+    ) -> Result<()> {
+        let root = match self.checkout(id, thread).await?.1 {
+            Location::Repository(root) | Location::Folder(root) => root,
+            Location::Unassigned => {
+                return Err(AppError::new(
+                    "missing_folder",
+                    "Start a thread to see its files.",
+                ));
+            }
+            Location::Removed { .. } => return Err(worktree_removed()),
+        };
+        tokio::task::spawn_blocking(move || repo::write_file(&root, &path, &contents))
+            .await
+            .map_err(|e| AppError::new("repository", e))?
+    }
     pub async fn read_diff(
         &self,
         id: WorkspaceId,
