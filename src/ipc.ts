@@ -55,6 +55,7 @@ const imageAttachment = z.object({
   name: z.string(),
   sizeBytes: z.number(),
 });
+const toolStatus = z.enum(["inProgress", "completed", "failed", "declined"]);
 const item = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("user_input"),
@@ -90,10 +91,80 @@ const item = z.discriminatedUnion("kind", [
     paths: z.array(z.string()),
   }),
   z.object({
-    kind: z.literal("other"),
+    kind: z.literal("reasoning"),
     id: z.string(),
-    label: z.string(),
     text: z.string(),
+    complete: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal("mcp_tool_call"),
+    id: z.string(),
+    server: z.string(),
+    tool: z.string(),
+    title: z.string(),
+    status: toolStatus,
+    arguments: z.json(),
+    result: z.string().nullable(),
+    error: z.string().nullable(),
+    durationMs: z.number().nullable(),
+  }),
+  z.object({
+    kind: z.literal("dynamic_tool_call"),
+    id: z.string(),
+    tool: z.string(),
+    status: toolStatus,
+  }),
+  z.object({
+    kind: z.literal("collab_agent_tool_call"),
+    id: z.string(),
+    tool: z.string(),
+    prompt: z.string().nullable(),
+    status: toolStatus,
+  }),
+  z.object({
+    kind: z.literal("sub_agent_activity"),
+    id: z.string(),
+    activity: z.enum(["started", "interacted", "interrupted", "completed"]),
+    agentPath: z.string(),
+    agentThreadId: z.string(),
+  }),
+  z.object({
+    kind: z.literal("web_search"),
+    id: z.string(),
+    query: z.string(),
+    status: toolStatus,
+  }),
+  z.object({ kind: z.literal("image_view"), id: z.string(), path: z.string() }),
+  z.object({
+    kind: z.literal("image_generation"),
+    id: z.string(),
+    status: toolStatus,
+  }),
+  z.object({
+    kind: z.literal("context_compaction"),
+    id: z.string(),
+    complete: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal("hook_prompt"),
+    id: z.string(),
+    text: z.string(),
+  }),
+  z.object({
+    kind: z.literal("function_call_output"),
+    id: z.string(),
+    name: z.string(),
+  }),
+  z.object({
+    kind: z.literal("sleep"),
+    id: z.string(),
+    durationMs: z.number(),
+  }),
+  z.object({
+    kind: z.literal("review_mode"),
+    id: z.string(),
+    entered: z.boolean(),
+    review: z.string(),
   }),
 ]);
 const approval = z.object({

@@ -120,6 +120,52 @@ for line in sys.stdin:
             event('item/completed', {'threadId': current_thread, 'turnId': active, 'item': plan})
             (root / 'history.json').write_text(json.dumps([{'id': active, 'status': 'completed', 'items': [plan]}]))
             finish()
+        elif prompt == 'native-items':
+            def item(method, value):
+                event(method, {'threadId': current_thread, 'turnId': active, 'item': value})
+            def reasoning(method, item_id, **fields):
+                event('item/reasoning/' + method, {'threadId': current_thread, 'turnId': active, 'itemId': item_id, **fields})
+            search = {'type': 'webSearch', 'id': 'exec-af1cec6b-7b06-458e-8d44-f38131318601', 'query': '', 'action': None, 'results': None}
+            item('item/started', search)
+            item('item/completed', {**search, 'query': 'latest Rust release site:blog.rust-lang.org', 'action': {'type': 'search', 'query': 'latest Rust release site:blog.rust-lang.org', 'queries': None}, 'results': [{'type': 'text_result', 'domain': 'blog.rust-lang.org', 'ref_id': 'turn0search0', 'title': 'Announcing Rust 1.97.0 | Rust Blog', 'url': 'https://blog.rust-lang.org/2026/07/09/Rust-1.97.0/'}]})
+            mcp = {'type': 'mcpToolCall', 'id': 'exec-0e668882-3b63-455d-8185-6ddafa10e7cd', 'server': 'node_repl', 'tool': 'js', 'status': 'inProgress', 'arguments': {'code': 'nodeRepl.write(6*7)', 'title': 'Evaluate 6 × 7'}, 'appContext': None, 'mcpAppUi': None, 'pluginId': None, 'readOnlyHint': True, 'result': None, 'error': None, 'durationMs': None}
+            item('item/started', mcp)
+            summary_id = 'rs_0612991cf91e8829016ac65f87221c87d2beaa39e7ea874690'
+            item('item/started', {'type': 'reasoning', 'id': summary_id, 'summary': [], 'content': []})
+            reasoning('summaryPartAdded', summary_id, summaryIndex=0)
+            reasoning('summaryTextDelta', summary_id, delta='**Calculating a math expression**\n\nI', summaryIndex=0)
+            reasoning('summaryTextDelta', summary_id, delta=' need to compute floor(999/3).', summaryIndex=0)
+            reasoning('summaryPartAdded', summary_id, summaryIndex=1)
+            reasoning('summaryTextDelta', summary_id, delta='Then add 333.', summaryIndex=1)
+            release = root / 'native_items_release'
+            deadline = time.time() + 10
+            while not release.exists() and time.time() < deadline:
+                time.sleep(0.01)
+            item('item/completed', {**mcp, 'status': 'completed', 'result': {'content': [{'type': 'text', 'text': '42'}], 'structuredContent': None, '_meta': {'codex/nodeReplExecutionDurationMs': 0}}, 'durationMs': 56})
+            item('item/completed', {'type': 'reasoning', 'id': summary_id, 'summary': ['**Calculating a math expression**\n\nI need to compute floor(999/3).', 'Then add 333.'], 'content': []})
+            raw_id = 'rs_0054cc89d9ce4db0016ac65f68c6848191881bf3f88b094734'
+            item('item/started', {'type': 'reasoning', 'id': raw_id, 'summary': [], 'content': []})
+            reasoning('textDelta', raw_id, delta='Raw thought', contentIndex=0)
+            item('item/completed', {'type': 'reasoning', 'id': raw_id, 'summary': [], 'content': []})
+            compaction = {'type': 'contextCompaction', 'id': '01a116e4-b2c0-7723-a84a-19dc76d47a0e'}
+            item('item/started', compaction)
+            item('item/completed', compaction)
+            for value in [
+                {'type': 'dynamicToolCall', 'id': 'dynamic-1', 'namespace': None, 'tool': 'lookup', 'arguments': {}, 'status': 'failed', 'contentItems': None, 'success': False, 'durationMs': 3},
+                {'type': 'collabAgentToolCall', 'id': 'collab-1', 'tool': 'spawnAgent', 'status': 'interrupted', 'senderThreadId': current_thread, 'receiverThreadIds': ['child-thread'], 'prompt': 'Review the diff', 'model': None, 'reasoningEffort': None, 'agentsStates': {}},
+                {'type': 'subAgentActivity', 'id': 'sub-1', 'kind': 'started', 'agentThreadId': 'child-thread', 'agentPath': '/root/reviewer'},
+                {'type': 'imageView', 'id': 'view-1', 'path': '/fixture/screen.png'},
+                {'type': 'imageGeneration', 'id': 'gen-1', 'status': 'completed', 'revisedPrompt': None, 'result': '', 'failure': None},
+                {'type': 'sleep', 'id': 'sleep-1', 'durationMs': 1500},
+                {'type': 'enteredReviewMode', 'id': 'review-1', 'review': 'current changes'},
+                {'type': 'hookPrompt', 'id': 'hook-1', 'fragments': [{'text': 'Run the linter.', 'hookRunId': 'h1'}, {'text': 'Then the tests.', 'hookRunId': 'h2'}]},
+                {'type': 'functionCallOutput', 'id': 'output-1', 'name': 'shell', 'namespace': None, 'output': 'ok'},
+                {**mcp, 'id': 'computer-1', 'server': 'computer-use', 'tool': 'click', 'status': 'completed', 'arguments': {'app': '  Safari '}, 'result': {'content': [{'type': 'image', 'data': ''}, {'type': 'text', 'text': 'clicked'}, {'type': 'text', 'text': 'done'}], 'structuredContent': None, '_meta': None}, 'durationMs': 9},
+                {**mcp, 'id': 'github-1', 'server': 'github', 'tool': 'search_issues', 'status': 'failed', 'arguments': {}, 'error': {'message': 'rate limited'}},
+                {'type': 'futureThing', 'id': 'future-1'},
+            ]:
+                item('item/completed', value)
+            finish()
         elif prompt in ('ask-plan', 'ask-plan-empty-options'):
             callbacks = {'question-route'}
             emit({'id': 'question-route', 'method': 'item/tool/requestUserInput', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'question-item', 'isBlocking': True, 'autoResolutionMs': None, 'questions': [{'id': 'scope', 'header': 'Scope', 'question': 'Which workflow should be implemented?', 'isOther': True, 'isSecret': False, 'options': [{'label': 'Composer', 'description': 'Implement the composer'}]}, {'id': 'notes', 'header': 'Notes', 'question': 'Any constraints?', 'isOther': False, 'isSecret': False, 'options': [] if prompt == 'ask-plan-empty-options' else None}]}})
