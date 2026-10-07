@@ -1,4 +1,5 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/RightPanelTabs.tsx, preview/PreviewPanelShell.tsx and preview/RightPanelResizeHandle.tsx (MIT).
+import { isCommandPaletteOpen } from "../lib/commandPaletteBus";
 import {
   FileDiffIcon,
   GitPullRequestIcon,
@@ -487,6 +488,7 @@ function Launcher({ actions }: { actions: readonly SurfaceAction[] }) {
   shortcutActionsRef.current = availableActions;
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (isCommandPaletteOpen()) return;
       const action = actionForKey(event, shortcutActionsRef.current);
       if (!action) return;
       if (document.querySelector(LAUNCHER_SHORTCUT_BLOCKING_LAYERS)) return;

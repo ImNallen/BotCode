@@ -1,5 +1,6 @@
 // Ported from pingdotgg/t3code v0.0.45 apps/web/src/keybindings.ts, lib/terminalFocus.ts and the
 // terminal rows of packages/shared/src/keybindings.ts DEFAULT_KEYBINDINGS (MIT).
+import { actionIds, matchesAction } from "../lib/actions";
 import { isMacPlatform } from "../lib/utils";
 
 type KeyEventLike = Pick<
@@ -20,74 +21,37 @@ const TERMINAL_LINE_START = "\u0001";
 const TERMINAL_LINE_END = "\u0005";
 const TERMINAL_DELETE_TO_LINE_START = "\u0015";
 
-const TERMINAL_BINDINGS: ReadonlyArray<{
-  key: string;
-  shift: boolean;
-  command: TerminalCommand;
-}> = [
-  { key: "j", shift: false, command: "terminal.toggle" },
-  { key: "d", shift: false, command: "terminal.split" },
-  { key: "d", shift: true, command: "terminal.splitVertical" },
-  { key: "n", shift: false, command: "terminal.new" },
-  { key: "w", shift: false, command: "terminal.close" },
-];
-
 function normalizeEventKey(key: string): string {
   const normalized = key.toLowerCase();
   if (normalized === "esc") return "escape";
   return normalized;
 }
 
-function resolveEventKey(event: KeyEventLike): string {
-  const layoutKey = normalizeEventKey(event.key);
-  if (/^[a-z]$/.test(layoutKey)) return layoutKey;
-  // Non-Latin layouts and Option-modified keys fall back to the physical key.
-  return event.code.match(/^Key([A-Z])$/)?.[1]?.toLowerCase() ?? layoutKey;
-}
-
 export function terminalShortcutCommand(
   event: KeyEventLike,
   platform = navigator.platform,
 ): TerminalCommand | null {
-  if (event.type !== undefined && event.type !== "keydown") return null;
-  const mac = isMacPlatform(platform);
-  if (event.altKey || event.metaKey !== mac || event.ctrlKey === mac)
-    return null;
-  const key = resolveEventKey(event);
-  return (
-    TERMINAL_BINDINGS.find(
-      (binding) => binding.key === key && binding.shift === event.shiftKey,
-    )?.command ?? null
-  );
+  for (const id of actionIds) {
+    if (
+      (id === "terminal.toggle" ||
+        id === "terminal.split" ||
+        id === "terminal.splitVertical" ||
+        id === "terminal.new" ||
+        id === "terminal.close") &&
+      matchesAction(event, id, platform)
+    )
+      return id;
+  }
+  return null;
 }
 
 export function isTerminalClearShortcut(
   event: KeyEventLike,
   platform = navigator.platform,
 ): boolean {
-  if (event.type !== undefined && event.type !== "keydown") {
-    return false;
-  }
-
-  const key = event.key.toLowerCase();
-
-  if (
-    key === "l" &&
-    event.ctrlKey &&
-    !event.metaKey &&
-    !event.altKey &&
-    !event.shiftKey
-  ) {
-    return true;
-  }
-
   return (
-    isMacPlatform(platform) &&
-    key === "k" &&
-    event.metaKey &&
-    !event.ctrlKey &&
-    !event.altKey &&
-    !event.shiftKey
+    matchesAction(event, "terminal.clear", platform) ||
+    matchesAction(event, "terminal.clearControl", platform)
   );
 }
 

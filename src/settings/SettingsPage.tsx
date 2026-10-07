@@ -18,31 +18,9 @@ import {
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
-import {
-  newWithoutProjectShortcut,
-  pinThreadShortcut,
-  settleThreadShortcut,
-  terminalCloseShortcut,
-  terminalNewShortcut,
-  terminalSplitShortcut,
-  terminalSplitVerticalShortcut,
-  terminalToggleShortcut,
-} from "../lib/shortcuts";
+import { actionIds } from "../lib/actions";
+import { shortcutLabel } from "../lib/shortcuts";
 
-const modifier = /Mac/.test(navigator.userAgent) ? "⌘" : "Ctrl+";
-const shortcuts: Record<string, string | undefined> = {
-  "toggle-sidebar": `${modifier}B`,
-  "new-without-project": newWithoutProjectShortcut,
-  "open-settings": `${modifier},`,
-  "close-settings": "Escape",
-  "settle-thread": settleThreadShortcut,
-  "pin-thread": pinThreadShortcut,
-  "toggle-terminal": terminalToggleShortcut,
-  "split-terminal": terminalSplitShortcut,
-  "split-terminal-vertical": terminalSplitVerticalShortcut,
-  "new-terminal": terminalNewShortcut,
-  "close-terminal": terminalCloseShortcut,
-};
 import { cn } from "../lib/cn";
 import { ProjectSettingRow } from "./ProjectSettingRow";
 import { usePreferences } from "./preferences";
@@ -491,7 +469,8 @@ export function SettingsPage() {
           Restore defaults
         </Button>
       );
-    const shortcut = shortcuts[id];
+    const actionId = actionIds.find((actionId) => actionId === id);
+    const shortcut = actionId ? shortcutLabel(actionId) : undefined;
     if (shortcut)
       return (
         <kbd className="rounded-md border border-border bg-muted px-2 py-1 font-mono text-xs">

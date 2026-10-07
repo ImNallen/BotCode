@@ -1,10 +1,12 @@
-const mac = /Mac/.test(navigator.userAgent);
-
-export const newWithoutProjectShortcut = mac ? "⌥⌘N" : "Ctrl+Alt+N";
-export const settleThreadShortcut = mac ? "⇧⌘S" : "Ctrl+Shift+S";
-export const pinThreadShortcut = mac ? "⇧⌘P" : "Ctrl+Shift+P";
-export const terminalToggleShortcut = mac ? "⌘J" : "Ctrl+J";
-export const terminalSplitShortcut = mac ? "⌘D" : "Ctrl+D";
-export const terminalSplitVerticalShortcut = mac ? "⇧⌘D" : "Ctrl+Shift+D";
-export const terminalNewShortcut = mac ? "⌘N" : "Ctrl+N";
-export const terminalCloseShortcut = mac ? "⌘W" : "Ctrl+W";
+import { shortcutLabel } from "./actions";
+export { matchesAction, matchAction, shortcutLabel } from "./actions";
+export const newWithoutProjectShortcut = shortcutLabel("thread.scratch");
+export const settleThreadShortcut = shortcutLabel("thread.settle");
+export const pinThreadShortcut = shortcutLabel("thread.pin");
+export const terminalToggleShortcut = shortcutLabel("terminal.toggle");
+export const terminalSplitShortcut = shortcutLabel("terminal.split");
+export const terminalSplitVerticalShortcut = shortcutLabel(
+  "terminal.splitVertical",
+);
+export const terminalNewShortcut = shortcutLabel("terminal.new");
+export const terminalCloseShortcut = shortcutLabel("terminal.close");
