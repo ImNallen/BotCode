@@ -43,6 +43,7 @@ function snapshot(id: string): Thread {
     id,
     workspaceId: "workspace",
     title: "Loaded conversation",
+    worktreeSetup: null,
     nativeThreadId: null,
     revision: 1,
     session: { kind: "ready" },

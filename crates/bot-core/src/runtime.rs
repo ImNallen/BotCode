@@ -1,3 +1,5 @@
+mod project;
+use crate::project::ProjectConfig;
 mod checkpoints;
 mod collaboration;
 mod naming;
@@ -178,6 +180,7 @@ fn not_repository() -> AppError {
     )
 }
 enum Command {
+    RetrySetup(ThreadId, Reply<ThreadSnapshot>),
     BeginCommitPreview(ThreadId, Reply<String>),
     AwaitCommitPreview(String, Reply<String>),
     CancelCommitPreview(String, Reply<()>),
@@ -217,6 +220,7 @@ enum Command {
         WorkspaceId,
         Checkout,
         SessionSettings,
+        ProjectConfig,
         Reply<ThreadSnapshot>,
     ),
     CreateExisting(WorkspaceId, ThreadId, Reply<ThreadSnapshot>),
@@ -263,6 +267,7 @@ pub struct App {
     wake: Arc<Notify>,
     gh: PathBuf,
     codex: PathBuf,
+    script_shell: PathBuf,
     log: RotatingLog,
     terminals: Terminals,
     attachments: Attachments,
@@ -355,6 +360,7 @@ impl App {
         let worktrees = config.data_dir.join("worktrees");
         let gh = config.gh_binary.clone();
         let codex = config.codex_binary.clone();
+        let script_shell = crate::project::shell(config.shell.as_deref());
         let terminals = Terminals::new(config.shell.clone());
         let settings = config.data_dir.join("settings.json");
         let auto_settle = settings::auto_settle(&settings);
@@ -426,6 +432,7 @@ impl App {
             wake: Arc::new(Notify::new()),
             gh,
             codex,
+            script_shell,
             log,
             terminals,
             attachments,
@@ -784,6 +791,7 @@ impl App {
                 .await;
         }
         let (w, _) = self.checkout(id.clone(), None).await?;
+        let config = crate::project::read(&w.root)?;
         let checkout = match (w.kind, checkout) {
             (WorkspaceKind::Repository, NewCheckout::Local) => Checkout::Local,
             (WorkspaceKind::Repository, NewCheckout::Worktree { base, from_origin }) => {
@@ -811,7 +819,56 @@ impl App {
                 ));
             }
         };
-        self.call(|r| Command::Create(id, checkout, SessionSettings::default(), r))
+        self.call(|r| Command::Create(id, checkout, SessionSettings::default(), config, r))
+            .await
+    }
+    pub async fn project_config(&self, id: WorkspaceId) -> Result<ProjectConfig> {
+        let (workspace, _) = self.checkout(id, None).await?;
+        crate::project::read(&workspace.root)
+    }
+    pub async fn retry_worktree_setup(&self, id: ThreadId) -> Result<ThreadSnapshot> {
+        self.call(|r| Command::RetrySetup(id, r)).await
+    }
+    pub async fn run_project_script(
+        &self,
+        workspace: WorkspaceId,
+        thread: Option<ThreadId>,
+        script_id: String,
+        terminal: TerminalId,
+    ) -> Result<()> {
+        let (w, location) = self.checkout(workspace.clone(), thread.clone()).await?;
+        let cwd = location.repository()?;
+        let script = crate::project::read(&w.root)?
+            .scripts
+            .into_iter()
+            .find(|s| s.id == script_id)
+            .ok_or_else(|| {
+                AppError::new("missing_script", "This project script no longer exists.")
+            })?;
+        let subscription = self
+            .terminal_attach(
+                workspace.clone(),
+                thread.clone(),
+                terminal.clone(),
+                100,
+                30,
+                |_| {},
+            )
+            .await?;
+        self.terminal_detach(subscription);
+        let q = crate::project::quote;
+        let worktree_env = if cwd != w.root {
+            format!("T3CODE_WORKTREE_PATH={} ", q(&cwd.to_string_lossy()))
+        } else {
+            String::new()
+        };
+        let command = format!(
+            " T3CODE_PROJECT_ROOT={} {worktree_env}{} -c {}\n",
+            q(&w.root.to_string_lossy()),
+            q(&self.script_shell.to_string_lossy()),
+            q(&script.command)
+        );
+        self.terminal_write(workspace, thread, terminal, command)
             .await
     }
     pub async fn thread(&self, id: ThreadId) -> Result<ThreadSnapshot> {
@@ -1335,9 +1392,12 @@ impl Owner {
         workspace_id: WorkspaceId,
         checkout: Checkout,
         settings: SessionSettings,
+        config: Option<ProjectConfig>,
     ) -> Result<ThreadSnapshot> {
         self.workspace(&workspace_id)?;
+        let setup = config.and_then(|config| project::setup_for(&checkout, config));
         let t = ThreadSnapshot {
+            worktree_setup: setup,
             created_at_ms: Some(now_ms()),
             latest_user_activity_at_ms: None,
             id: ThreadId::default(),
@@ -1409,6 +1469,12 @@ impl Owner {
     ) -> Result<PathBuf> {
         self.checkout(id, thread).and_then(|(_, location)| {
             let root = location.repository()?;
+            if self.setup_busy(&root) {
+                return Err(AppError::new(
+                    "setup_busy",
+                    "Worktree setup is still running.",
+                ));
+            }
             if let Some(held) = self.held.get(&root) {
                 return Err(held.refusal());
             }
@@ -1458,7 +1524,8 @@ impl Owner {
             matches!(
                 t.session,
                 SessionState::Connecting | SessionState::Running | SessionState::Interrupting
-            ) || self.held.contains_key(t.root(w))
+            ) || self.setup_busy(t.root(w))
+                || self.held.contains_key(t.root(w))
         }) || self.held.contains_key(&w.root)
             || self.leases.values().any(owns)
             || self.pending.iter().any(|job| owns(job.thread()));
@@ -1526,7 +1593,8 @@ impl Owner {
         !matches!(
             t.session,
             SessionState::Connecting | SessionState::Running | SessionState::Interrupting
-        ) && !t.input_open()
+        ) && !self.setup_busy(root)
+            && !t.input_open()
             && t.pending_revert.is_none()
             && !self.leases.contains_key(root)
             && !self.pending.iter().any(|job| job.thread() == &t.id)
@@ -1705,6 +1773,7 @@ impl Owner {
                     if let Err(error)=self.complete(done).await {self.lose(&error.message).await;}
                 }
                 _=tick.tick()=>{
+                    self.poll_setups();
                     self.expire_commit_previews();
                     self.retry_checkpoint_saves();
                     self.apply_ready_names();
@@ -1956,12 +2025,23 @@ impl Owner {
                         workspace_id,
                         source.checkout.clone(),
                         source.settings.clone(),
+                        None,
                     )
                 })();
                 let _ = reply.send(result);
             }
-            Command::Create(workspace_id, checkout, settings, reply) => {
-                let _ = reply.send(self.new_thread(workspace_id, checkout, settings));
+            Command::RetrySetup(id, reply) => {
+                let result = self.retry_setup(&id);
+                let _ = reply.send(result);
+            }
+            Command::Create(workspace_id, checkout, settings, config, reply) => {
+                let result = self
+                    .new_thread(workspace_id, checkout, settings, Some(config))
+                    .and_then(|t| {
+                        self.begin_setup(&t.id);
+                        self.thread(&t.id).cloned()
+                    });
+                let _ = reply.send(result);
             }
             Command::Snapshot(id, resume, reply) => {
                 if resume && self.thread(&id).is_ok_and(|thread| thread.archived()) {
@@ -2075,13 +2155,25 @@ impl Owner {
             Command::Submit(id, request_id, text, attachments, restored, expected, reply) => {
                 if let Some(path) = restored {
                     self.held.remove(&path);
+                    let config = self
+                        .thread(&id)
+                        .and_then(|t| crate::project::read(&self.workspaces[&t.workspace_id].root));
+                    if let Err(error) = config.and_then(|config| self.initialize_setup(&id, config))
+                    {
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
                 }
                 let result =
                     self.accept_submit(&id, &request_id, &text, attachments, expected.as_ref());
                 if let Ok((receipt, true)) = &result {
                     if expected.is_some() {
                         self.dispatch_steer(&id, &receipt.turn_id, &request_id);
-                    } else {
+                    } else if !self.threads[&id]
+                        .worktree_setup
+                        .as_ref()
+                        .is_some_and(crate::project::WorktreeSetup::blocks)
+                    {
                         self.capture_before(id, receipt.turn_id.clone());
                     }
                 }
@@ -2398,7 +2490,13 @@ impl Owner {
         let hint = self.thread_hint(&t);
         let _ = self.changes.send(hint);
         self.threads.insert(t.id.clone(), t);
-        self.start_name(id);
+        if !self.threads[id]
+            .worktree_setup
+            .as_ref()
+            .is_some_and(crate::project::WorktreeSetup::blocks)
+        {
+            self.start_name(id);
+        }
         Ok((receipt, true))
     }
     fn accept_steer(

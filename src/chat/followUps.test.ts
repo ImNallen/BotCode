@@ -21,6 +21,7 @@ function fixture(): Thread {
     id: threadId,
     workspaceId: "018ba719-19f4-4fdb-bd79-aa4a676ea055",
     title: "Follow-ups",
+    worktreeSetup: null,
     nativeThreadId: "native-thread",
     revision: 1,
     session: { kind: "running" },

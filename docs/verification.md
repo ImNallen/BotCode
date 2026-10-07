@@ -721,6 +721,26 @@ The first head run exposed an ordering bug. Resuming native history appended ite
 
 Evidence is under `/tmp/timeline-verify`: the wrapper, `protocol.jsonl`, the probe captures, the input tool, and the screenshots under `shots`. The window kept the left sidebar, centered chat, bottom composer, compact header, and neutral colors at 1100×780. No pixel-difference measurement against T3 was made for these rows.
 
+## Project scripts and worktree setup
+
+Verified on 2026-10-07 against T3 Code v0.0.45 at `/tmp/t3ref/t3code`. The project schema, setup runner, setup timeline card, script controls, and script ID helpers retain one-line source headers. Independent backend and UI reviews checked the integrated implementation against those sources and reported no unresolved findings after fixes.
+
+All 287 `pnpm test:ui` tests, `pnpm build`, `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and all 327 `cargo test -p bot-core` tests passed. The debug Tauri app bundle also built. One existing store migration test encountered a file-lock race in the first full core run; subsequent full runs passed without changing that test. A real Git regression verifies that a failed submodule update still runs setup and that retry cannot replay a completed script.
+
+The actual Tauri bundle used temporary identifier `dev.bot.code.projectsetupverify`, seven disposable repositories under `/tmp/botcode-project-setup/native`, and `BOT_CODE_DATA_DIR=/tmp/botcode-project-setup/native/data`. Native interaction used CUA at 1100×780. The repository's scripted app-server peer recorded turn dispatch times; no real account turn was sent. Local submodule fixtures used `GIT_ALLOW_PROTOCOL=file` only in the isolated verifier environment. The repository's Tauri configuration was unchanged.
+
+| Native workflow | Observed result |
+| --- | --- |
+| Synchronous setup | A script wrote a marker and environment variables, then slept for 16 seconds. Its card showed live output while the first turn waited. Provider dispatch occurred after the completion receipt. The marker appeared once in the new worktree. |
+| Asynchronous setup | The same sleeping script showed live output while the agent reply was already visible. Provider dispatch preceded setup completion. The marker appeared once in the new worktree. |
+| Failure, crash, and retry | An exit-7 script showed T3's warning state, retained its output, and offered Retry. The isolated app was killed and relaunched with the same data directory. The failed card survived; Retry succeeded after repairing the fixture. It recorded exactly two attempts. Previously completed scripts still had one marker each. |
+| Manual scripts | The primary header button opened a right-panel terminal tab with `SCRIPT_TAB_OK`. The checkout marker and captured `T3CODE_PROJECT_ROOT` and `T3CODE_WORKTREE_PATH` matched the intended repository and worktree. |
+| Script shortcut | The recorder saved Ctrl+Shift+R as `script.run-dev.run`. Pressing it from the composer opened another terminal tab and ran the script once. Pressing it under Settings did not run the script. |
+| Malformed configuration | Invalid JSONC produced a visible `Invalid t3.json` error, disabled draft submission, and created no conversation. |
+| Submodule modes | Recursive initialized the top-level and nested fixtures. Top-level initialized only the top-level fixture. None initialized neither. Setup scripts completed in all three worktrees. |
+
+Native accessibility observations and screenshots are in the tool transcript. Suite and bundle logs, provider timestamps, SQLite assertions, shortcut assertions, and crash evidence are under `/tmp/botcode-project-setup/evidence`. `native-assertions.json` checks setup ordering, marker counts, retry, malformed config, submodule modes, and manual checkout selection. `shortcut-assertions.json` checks the saved binding and Settings isolation. The isolated app was stopped afterward.
+
 ## Codex crash recovery
 
 Verified on 2026-10-07 with installed Codex 0.160.1. All 358 `cargo test -p bot-core` tests, all 324 `pnpm test:ui` tests, `cargo fmt --check`, workspace Clippy with `-D warnings`, the production frontend build, and the debug Tauri app bundle passed. The fixture's crash mode drives seven runtime tests: a crash mid-turn, a crash with pending approvals and user-input questions, a crash before the `turn/start` acknowledgement, a crash while a steering follow-up is sending, a steer written to a killed Codex, a leader exit while a descendant keeps stdout open, and repeated crashes during restart.

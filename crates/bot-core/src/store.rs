@@ -427,7 +427,8 @@ mod tests {
                 .unwrap(),
             3
         );
-        drop(store);
+        let inherited = store._lock.try_clone().unwrap();
+        store.close().unwrap();
         let db = Connection::open(dir.path().join("z1.sqlite")).unwrap();
         db.execute_batch("PRAGMA user_version=99;").unwrap();
         drop(db);
@@ -435,6 +436,7 @@ mod tests {
             Store::open(dir.path()).err().unwrap().code,
             "unsupported_schema"
         );
+        drop(inherited);
         let db = Connection::open(dir.path().join("z1.sqlite")).unwrap();
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))

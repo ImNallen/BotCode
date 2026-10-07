@@ -41,6 +41,7 @@ const answer: Item = {
 
 function thread(items: Item[], running = false): Thread {
   return {
+    worktreeSetup: null,
     id: "018ba719-19f4-4fdb-bd79-aa4a676ea054",
     workspaceId: "018ba719-19f4-4fdb-bd79-aa4a676ea055",
     title: "Timeline items",

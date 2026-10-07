@@ -303,7 +303,45 @@ const turnDiff = z.discriminatedUnion("kind", [
   }),
   reason,
 ]);
+export const projectScript = z.object({
+  id: z.string(),
+  name: z.string(),
+  command: z.string(),
+  icon: z.string(),
+  runOnWorktreeCreate: z.boolean(),
+  async: z.boolean(),
+  previewUrl: z.string().nullable(),
+  autoOpenPreview: z.boolean(),
+});
+export const projectConfig = z.object({
+  scripts: z.array(projectScript),
+  defaultThreadEnvMode: z.enum(["worktree", "local"]).nullable(),
+  worktreeSubmodules: z.enum(["recursive", "top-level", "none"]),
+  iconPath: z.string().nullable(),
+});
+export const worktreeSetup = z.object({
+  id: z.string(),
+  script: projectScript.nullable(),
+  cwd: z.string(),
+  state: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("pending") }),
+    z.object({ kind: z.literal("running") }),
+    z.object({ kind: z.literal("succeeded") }),
+    z.object({
+      kind: z.literal("failed"),
+      reason: z.string(),
+      exitCode: z.number().nullable(),
+    }),
+    z.object({ kind: z.literal("interrupted"), reason: z.string() }),
+  ]),
+  output: z.array(z.string()),
+  startedAtMs: z.number().nullable(),
+  completedAtMs: z.number().nullable(),
+});
+export type ProjectScript = z.infer<typeof projectScript>;
+export type WorktreeSetup = z.infer<typeof worktreeSetup>;
 const thread = z.object({
+  worktreeSetup: worktreeSetup.nullable().default(null),
   placement: z
     .object({ kind: z.enum(["auto", "kept", "pinned", "settled", "archived"]) })
     .optional(),
@@ -640,6 +678,21 @@ async function call<S extends z.ZodType>(
   }
 }
 export const ipc = {
+  projectConfig: (workspaceId: string) =>
+    call("project_config", { workspaceId }, projectConfig),
+  retryWorktreeSetup: (threadId: string) =>
+    call("retry_worktree_setup", { threadId }, thread),
+  runProjectScript: (
+    workspaceId: string,
+    threadId: string | null,
+    scriptId: string,
+    terminalId: string,
+  ) =>
+    call(
+      "run_project_script",
+      { workspaceId, threadId, scriptId, terminalId },
+      z.null(),
+    ),
   threadPullRequests: (threadId: string, refresh = false) =>
     call("list_thread_pull_requests", { threadId, refresh }, threadPrSummary),
   linkPullRequest: (threadId: string, url: string) =>

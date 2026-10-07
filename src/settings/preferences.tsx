@@ -51,6 +51,7 @@ export const notificationModeSchema = z.enum([
 export type NotificationMode = z.infer<typeof notificationModeSchema>;
 
 const schema = z.object({
+  newThreadCheckoutConfigured: z.boolean().default(false),
   notificationMode: notificationModeSchema,
   inAppNotificationsEnabled: z.boolean(),
   appearance: z.enum(["system", "light", "dark"]),
@@ -72,6 +73,7 @@ export const checkoutModeLabels = {
 } as const satisfies Record<Preferences["newThreadCheckout"], string>;
 export type CheckoutMode = keyof typeof checkoutModeLabels;
 const defaults: Preferences = {
+  newThreadCheckoutConfigured: false,
   notificationMode: "off",
   inAppNotificationsEnabled: false,
   appearance: "system",
@@ -141,6 +143,7 @@ function readPreferences(): PreferenceState {
         inAppNotificationsEnabled: z.unknown().optional(),
         favoriteModels: z.unknown().optional(),
         newThreadCheckout: z.unknown().optional(),
+        newThreadCheckoutConfigured: z.unknown().optional(),
         newWorktreesStartFromOrigin: z.unknown().optional(),
         sidebarAutoSettleAfterDays: z.unknown().optional(),
         projectOverrides: z.unknown().optional(),
@@ -245,6 +248,8 @@ function readPreferences(): PreferenceState {
         contextWindowMeter: contextWindowMeter.success
           ? contextWindowMeter.data
           : defaults.contextWindowMeter,
+        newThreadCheckoutConfigured:
+          object.newThreadCheckoutConfigured === true,
         newThreadCheckout: newThreadCheckout.success
           ? newThreadCheckout.data
           : defaults.newThreadCheckout,
@@ -285,7 +290,15 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState(readPreferences);
   const current = useRef(state.preferences);
   const update = (patch: Partial<Preferences>) => {
-    const parsed = schema.safeParse({ ...current.current, ...patch });
+    const parsed = schema.safeParse({
+      ...current.current,
+      ...patch,
+      newThreadCheckoutConfigured:
+        patch.newThreadCheckoutConfigured ??
+        (patch.newThreadCheckout !== undefined
+          ? true
+          : current.current.newThreadCheckoutConfigured),
+    });
     if (!parsed.success) return;
     current.current = parsed.data;
     setState((state) => ({ ...state, preferences: parsed.data }));

@@ -3,6 +3,7 @@ import type { ChatRequest } from "../lib/actions";
 import {
   type ComponentProps,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -122,6 +123,11 @@ import {
   useTerminalState,
 } from "../terminal/terminalStore";
 
+import { resolveThreadEnvMode } from "./projectScripts";
+import { ProjectScriptsControl } from "./ProjectScriptsControl";
+import type { ProjectScript } from "../ipc";
+import { createPanelTerminal } from "../terminal/terminalStore";
+
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 type DraftCheckout = {
@@ -206,11 +212,23 @@ export function ChatView({
     interactionMode: "default",
   });
   const { preferences } = usePreferences();
-  const newThreadCheckout = projectSetting(
+  const configQuery = useQuery({
+    queryKey: ["project-config", workspaceId],
+    queryFn: () => ipc.projectConfig(workspaceId),
+    enabled: !isScratch,
+    refetchInterval: 5000,
+  });
+  const checkoutPreference = projectSetting(
     preferences,
     workspaceId,
     "newThreadCheckout",
-  ).value;
+  );
+  const newThreadCheckout = resolveThreadEnvMode({
+    preference: checkoutPreference.value,
+    configured: preferences.newThreadCheckoutConfigured,
+    overridden: checkoutPreference.overridden,
+    projectDefault: configQuery.data?.defaultThreadEnvMode,
+  });
   const newWorktreesStartFromOrigin = projectSetting(
     preferences,
     workspaceId,
@@ -222,7 +240,7 @@ export function ChatView({
     fromOrigin: newWorktreesStartFromOrigin,
   });
   const [draftCheckout, setDraftCheckout] = useState(draftDefaults);
-  useEffect(
+  useLayoutEffect(
     () => setDraftCheckout(draftDefaults()),
     [threadId, newThreadCheckout, newWorktreesStartFromOrigin],
   );
@@ -580,6 +598,24 @@ export function ChatView({
   const terminalScope = terminalScopeKey(workspaceId, threadId ?? null);
   const terminalState = useTerminalState(terminalScope);
   const terminalOpen = terminalState.terminalOpen;
+  const runScript = (script: ProjectScript) => {
+    const surfaceId = createPanelTerminal(terminalScope);
+    setPanelOpen(true);
+    setMaximized(false);
+    setPanel((current) =>
+      openSurface(current, { kind: "terminal", id: surfaceId }),
+    );
+    void ipc
+      .runProjectScript(
+        workspaceId,
+        threadId ?? null,
+        script.id,
+        surfaceId.slice("terminal:".length),
+      )
+      .catch((error) =>
+        setError(error instanceof Error ? error.message : String(error)),
+      );
+  };
   const consumedCommand = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!commandRequest || consumedCommand.current === commandRequest.sequence)
@@ -727,6 +763,13 @@ export function ChatView({
   };
   const attachments = readyAttachments(images);
   const submit = () => {
+    if (!threadId && !isScratch) {
+      if (configQuery.isPending) return;
+      if (configQuery.error) {
+        setError(configQuery.error.message);
+        return;
+      }
+    }
     const command = standaloneComposerCommand(draft);
     if (planSupported && (command === "plan" || command === "default")) {
       if (
@@ -991,48 +1034,55 @@ export function ChatView({
                 </h2>
               </WorkspaceBreadcrumbItem>
             </WorkspaceBreadcrumb>
-            {checkoutOpenable || gitThread ? (
-              <div
-                data-chat-header-actions
-                className={cn(
-                  "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
-                  panelOpen
-                    ? "pr-0"
-                    : terminalAvailable
-                      ? "pr-19.25 sm:pr-15.25 @3xl/header-actions:pr-16.25"
-                      : "pr-10.25 sm:pr-7.25 @3xl/header-actions:pr-8.25",
-                )}
-              >
-                {checkoutOpenable ? (
-                  <OpenInPicker target={workspaceTarget(checkout, "")} />
-                ) : null}
-                {gitThread ? (
-                  <GitActionsControl
-                    checkout={checkout}
-                    thread={gitThread}
-                    threads={view?.threads ?? []}
-                    onError={setError}
-                    onOpenPullRequests={() => {
-                      const links =
-                        client.getQueryData<ThreadPrSummary>([
-                          "thread-prs",
-                          gitThread.id,
-                        ])?.links ?? pullRequests;
-                      setPanel((current) =>
-                        openSurface(current, pullRequestSurface(links)),
-                      );
-                      setPanelOpen(true);
-                    }}
-                  />
-                ) : null}
-              </div>
-            ) : null}
+            <div
+              data-chat-header-actions
+              className={cn(
+                "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
+                panelOpen
+                  ? "pr-0"
+                  : terminalAvailable
+                    ? "pr-19.25 sm:pr-15.25 @3xl/header-actions:pr-16.25"
+                    : "pr-10.25 sm:pr-7.25 @3xl/header-actions:pr-8.25",
+              )}
+            >
+              {checkoutOpenable ? (
+                <OpenInPicker target={workspaceTarget(checkout, "")} />
+              ) : null}
+              {!isScratch ? (
+                <ProjectScriptsControl
+                  scripts={configQuery.data?.scripts ?? []}
+                  onRun={runScript}
+                />
+              ) : null}
+              {gitThread ? (
+                <GitActionsControl
+                  checkout={checkout}
+                  thread={gitThread}
+                  threads={view?.threads ?? []}
+                  onError={setError}
+                  onOpenPullRequests={() => {
+                    const links =
+                      client.getQueryData<ThreadPrSummary>([
+                        "thread-prs",
+                        gitThread.id,
+                      ])?.links ?? pullRequests;
+                    setPanel((current) =>
+                      openSurface(current, pullRequestSurface(links)),
+                    );
+                    setPanelOpen(true);
+                  }}
+                />
+              ) : null}
+            </div>
           </div>
         </header>
         <div className="flex min-h-0 min-w-0 flex-1">
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col">
-              {error || thread?.diagnostic || query.error ? (
+              {error ||
+              configQuery.error ||
+              thread?.diagnostic ||
+              query.error ? (
                 <div className="pointer-events-auto mx-auto w-fit max-w-[min(48rem,calc(100%-2rem))] pt-3">
                   <div
                     role="alert"
@@ -1042,7 +1092,10 @@ export function ChatView({
                     <div className="flex gap-2 items-start">
                       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                         <div className="line-clamp-3 text-error-foreground/80">
-                          {error ?? query.error?.message ?? thread?.diagnostic}
+                          {error ??
+                            configQuery.error?.message ??
+                            query.error?.message ??
+                            thread?.diagnostic}
                         </div>
                       </div>
                       {error ? (
@@ -1212,6 +1265,9 @@ export function ChatView({
                           !reverting &&
                           !send.isPending &&
                           !saveSettings.isPending &&
+                          (Boolean(threadId) ||
+                            isScratch ||
+                            (!configQuery.isPending && !configQuery.error)) &&
                           (!threadId || Boolean(thread)))
                       }
                       running={busy || queued.length > 0}
