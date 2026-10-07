@@ -16,10 +16,7 @@ import {
   editorCursor,
   promptCursor,
 } from "./composerDocument";
-import {
-  searchComposerPaths,
-  searchSlashCommandItems,
-} from "./composerSlashCommandSearch";
+import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 import {
   buildPlanImplementationPrompt,
   resolvePlanFollowUpSubmission,
@@ -89,16 +86,6 @@ it("keeps external links and scoped package prose as ordinary text", () => {
     composerMentions('@"folder/My file.ts" ')[0]?.path,
     "folder/My file.ts",
   );
-});
-
-it("searches only supplied checkout files and supports subsequence search", () => {
-  const files = ["src/My file.ts", "README.md", "src/composer.tsx"];
-  assert.equal(searchComposerPaths(files, "my")[0]?.id, "path:src/My file.ts");
-  assert.equal(
-    searchComposerPaths(files, "cmps")[0]?.id,
-    "path:src/composer.tsx",
-  );
-  assert.deepEqual(searchComposerPaths(files, "another-checkout"), []);
 });
 
 it("gates mode commands on live support and ranks command names before descriptions", () => {

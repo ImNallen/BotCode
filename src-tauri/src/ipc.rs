@@ -37,6 +37,34 @@ pub async fn workspace_view(
     app.workspace_view(workspace_id, thread_id).await
 }
 #[tauri::command]
+pub async fn search_paths(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    caller: String,
+    sequence: u64,
+    input: PathSearchInput,
+) -> Result<PathSearchResult> {
+    app.search_paths(workspace_id, thread_id, caller, sequence, input)
+        .await
+}
+#[tauri::command]
+pub async fn search_contents(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    caller: String,
+    sequence: u64,
+    input: ContentSearchInput,
+) -> Result<ContentSearchResult> {
+    app.search_contents(workspace_id, thread_id, caller, sequence, input)
+        .await
+}
+#[tauri::command]
+pub fn cancel_project_search(app: State<'_, App>, caller: String, sequence: u64) {
+    app.cancel_project_search(caller, sequence);
+}
+#[tauri::command]
 pub async fn read_file(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

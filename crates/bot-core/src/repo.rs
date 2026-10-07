@@ -3,8 +3,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::Command,
 };
-const TEXT_LIMIT: usize = 1_000_000;
-const FILE_LIMIT: usize = 40_000;
+pub(crate) const TEXT_LIMIT: usize = 1_000_000;
 fn command(root: &Path) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(root).envs(vcs::NON_INTERACTIVE);
@@ -367,26 +366,6 @@ pub fn write_file(root: &Path, path: &str, contents: &str) -> Result<()> {
 }
 pub fn inspect(workspace: Workspace, threads: Vec<ThreadSummary>) -> Result<WorkspaceView> {
     let root = &workspace.root;
-    let files = git(
-        root,
-        &[
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ],
-    )?;
-    let mut paths: Vec<String> = files
-        .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
-        .map(|p| String::from_utf8_lossy(p).into_owned())
-        .collect();
-    paths.sort();
-    paths.dedup();
-    if paths.len() > FILE_LIMIT {
-        return Err(too_large());
-    }
     let bytes = git(
         root,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -419,45 +398,21 @@ pub fn inspect(workspace: Workspace, threads: Vec<ThreadSummary>) -> Result<Work
         .map(|v| String::from_utf8_lossy(&v).trim().to_string())
         .unwrap_or_default();
     Ok(WorkspaceView {
+        file_coverage: crate::SearchCoverage::Complete,
         workspace,
         branch,
-        files: paths,
+        files: vec![],
         changes,
         threads,
         unavailable: None,
     })
 }
-fn too_large() -> AppError {
-    AppError::new(
-        "repository_too_large",
-        "This first version supports up to 40,000 files.",
-    )
-}
 pub fn inspect_folder(workspace: Workspace, threads: Vec<ThreadSummary>) -> Result<WorkspaceView> {
-    let mut files = Vec::new();
-    let mut pending = vec![PathBuf::new()];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(workspace.root.join(&dir))? {
-            let entry = entry?;
-            if entry.file_name() == ".git" {
-                continue;
-            }
-            let path = dir.join(entry.file_name());
-            if entry.file_type()?.is_dir() {
-                pending.push(path);
-            } else {
-                files.push(path.to_string_lossy().into_owned());
-                if files.len() > FILE_LIMIT {
-                    return Err(too_large());
-                }
-            }
-        }
-    }
-    files.sort();
     Ok(WorkspaceView {
+        file_coverage: crate::SearchCoverage::Complete,
         workspace,
         branch: String::new(),
-        files,
+        files: vec![],
         changes: vec![],
         threads,
         unavailable: None,

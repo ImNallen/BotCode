@@ -7,6 +7,8 @@ import {
   CopyIcon,
   FolderIcon,
   FolderTreeIcon,
+  FileSearchIcon,
+  TextSearchIcon,
   GitBranchIcon,
   HashIcon,
   MessageSquareDashedIcon,
@@ -46,7 +48,7 @@ export type ChatRequest = {
   sequence: number;
   workspaceId: string;
   threadId: string | undefined;
-  kind: "terminal.toggle" | "panel.toggle";
+  kind: "terminal.toggle" | "panel.toggle" | "files.search" | "content.search";
 };
 export type PalettePage =
   | "root"
@@ -61,6 +63,7 @@ export type ActionContext = {
   branch: string;
   scratchAvailable: boolean;
   terminalAvailable: boolean;
+  projectSearchAvailable: boolean;
   renamePending: boolean;
   queued: boolean;
   archiveTarget: ThreadSummary | undefined;
@@ -224,6 +227,28 @@ const definitions = {
     allowTerminal: true,
     available: () => true,
     run: (c) => c.toggleSidebar(),
+  },
+  "files.search": {
+    icon: FileSearchIcon,
+    title: "Go to file",
+    keywords: "open file file picker find file quick open",
+    shortcutDescription: "Find and open a file in the current checkout.",
+    group: "Navigation",
+    palette: "root",
+    binding: { key: "p", modifier: "mod" },
+    available: (c) => !c.pageOpen && c.projectSearchAvailable,
+    run: (c) => c.requestChat("files.search"),
+  },
+  "content.search": {
+    icon: TextSearchIcon,
+    title: "Search project contents",
+    keywords: "search project find in files grep content search text search",
+    shortcutDescription: "Search file contents in the current checkout.",
+    group: "Navigation",
+    palette: "root",
+    binding: { key: "f", modifier: "mod", shift: true },
+    available: (c) => !c.pageOpen && c.projectSearchAvailable,
+    run: (c) => c.requestChat("content.search"),
   },
   "panel.toggle": {
     icon: PanelRightIcon,

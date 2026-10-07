@@ -22,20 +22,31 @@ export function openSurface(state: PanelState, surface: Surface): PanelState {
   const index = state.surfaces.findIndex((entry) =>
     sameSurface(entry, surface),
   );
-  if (index >= 0) return { ...state, active: index };
+  if (index >= 0)
+    return {
+      surfaces: state.surfaces.map((entry, position) =>
+        position === index && surface.kind === "file" ? surface : entry,
+      ),
+      active: index,
+    };
   return {
     surfaces: [...state.surfaces, surface],
     active: state.surfaces.length,
   };
 }
 
-export function openFile(state: PanelState, path: string): PanelState {
+let fileRevealSequence = 0;
+export function openFile(
+  state: PanelState,
+  path: string,
+  line: number | null = null,
+): PanelState {
   return openSurface(
     {
       surfaces: state.surfaces.filter((entry) => entry.kind !== "files"),
       active: null,
     },
-    { kind: "file", path },
+    { kind: "file", path, line, revealSequence: ++fileRevealSequence },
   );
 }
 

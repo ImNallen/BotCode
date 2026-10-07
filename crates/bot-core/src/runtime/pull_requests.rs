@@ -412,6 +412,7 @@ impl Owner {
             .unwrap_or(0)
     }
     pub(super) fn checkout_changed(&mut self, root: &Path) {
+        self.project_search.invalidate();
         self.invalidate_names(root);
         *self
             .prs

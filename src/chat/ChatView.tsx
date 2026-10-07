@@ -1,4 +1,7 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/ChatView.tsx, chat/ChatHeader.tsx, chat/PanelLayoutControls.tsx and DraftHeroHeadline.tsx at 6b286ae8a (MIT).
+import { Dialog } from "../ui/dialog";
+import { ProjectFilePicker } from "../search/ProjectFilePicker";
+import { ProjectContentSearchDialog } from "../search/ProjectContentSearchDialog";
 import type { ChatRequest } from "../lib/actions";
 import {
   type ComponentProps,
@@ -661,6 +664,28 @@ export function ChatView({
         setError(error instanceof Error ? error.message : String(error)),
       );
   };
+  const [searchDialog, setSearchDialog] = useState<
+    "files.search" | "content.search" | null
+  >(null);
+  const searchFocus = useRef<HTMLElement | null>(null);
+  const closeSearch = () => {
+    setSearchDialog(null);
+    requestAnimationFrame(() => {
+      if (document.querySelector("dialog[open][data-project-search]")) return;
+      const previous = searchFocus.current;
+      searchFocus.current = null;
+      if (
+        previous?.isConnected &&
+        previous.getBoundingClientRect().width > 0 &&
+        !previous.matches(":disabled")
+      )
+        previous.focus({ preventScroll: true });
+      else setComposerFocusRequest((value) => value + 1);
+    });
+  };
+  useEffect(() => {
+    setSearchDialog(null);
+  }, [workspaceId, threadId, checkout.threadId]);
   const consumedCommand = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!commandRequest || consumedCommand.current === commandRequest.sequence)
@@ -674,6 +699,21 @@ export function ChatView({
     if (commandRequest.kind === "panel.toggle") {
       setPanelOpen((value) => !value);
       setMaximized(false);
+    } else if (
+      commandRequest.kind === "files.search" ||
+      commandRequest.kind === "content.search"
+    ) {
+      if (!view || view.unavailable || (isScratch && !threadId)) return;
+      if (searchDialog === commandRequest.kind) {
+        closeSearch();
+        return;
+      }
+      const previous =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      searchFocus.current = previous?.isConnected ? previous : null;
+      setSearchDialog(commandRequest.kind);
     } else if (terminalAvailable)
       updateTerminalState(terminalScope, toggleTerminalOpen);
   }, [commandRequest, workspaceId, threadId, terminalAvailable, terminalScope]);
@@ -1310,8 +1350,11 @@ export function ChatView({
                         )
                       }
                       onSubmit={submit}
-                      files={view?.files ?? []}
-                      filesLoading={workspaceQuery.isPending}
+                      searchCheckout={
+                        view && !view.unavailable && !(isScratch && !threadId)
+                          ? checkout
+                          : undefined
+                      }
                       skills={skills.skills}
                       skillsLoading={skills.loading}
                       onSkillsMenuOpen={skills.refreshIfStale}
@@ -1451,6 +1494,43 @@ export function ChatView({
           }
           onSelectTurn={selectTurnDiff}
         />
+      ) : null}
+      {searchDialog ? (
+        <Dialog
+          open
+          variant="command"
+          projectSearch={searchDialog}
+          className={
+            searchDialog === "content.search"
+              ? "h-[min(44rem,80vh)] max-h-[80vh]"
+              : "max-h-[min(42rem,80vh)]"
+          }
+          onOpenChange={(open) => {
+            if (!open) closeSearch();
+          }}
+        >
+          {searchDialog === "files.search" ? (
+            <ProjectFilePicker
+              checkout={checkout}
+              projectName={label}
+              onOpenFile={(path) => {
+                closeSearch();
+                setPanel((current) => openFile(current, path));
+                setPanelOpen(true);
+              }}
+            />
+          ) : (
+            <ProjectContentSearchDialog
+              checkout={checkout}
+              projectName={label}
+              onOpenFile={(path, line) => {
+                closeSearch();
+                setPanel((current) => openFile(current, path, line));
+                setPanelOpen(true);
+              }}
+            />
+          )}
+        </Dialog>
       ) : null}
       {thread && visibleEditTarget ? (
         <EditFromHereDialog

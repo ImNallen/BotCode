@@ -374,6 +374,7 @@ export function Workbench() {
     scratchAvailable,
     terminalAvailable:
       !!workspaceId && !(scratch?.id === workspaceId && !selection.thread),
+    projectSearchAvailable: checkoutTarget !== null,
     renamePending,
     queued: !!selection.thread && followUps.rows(selection.thread).length > 0,
     archiveTarget: undefined,
@@ -396,6 +397,19 @@ export function Workbench() {
       });
     },
     requestChat: (kind) => {
+      if (kind === "files.search" || kind === "content.search") {
+        const dialogs = Array.from(
+          document.querySelectorAll<HTMLDialogElement>("dialog[open]"),
+        );
+        flushSync(() => {
+          for (const dialog of dialogs)
+            dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+        });
+        if (dialogs.some((dialog) => dialog.isConnected && dialog.open)) {
+          setError("Finish the current operation before searching files.");
+          return;
+        }
+      }
       if (workspaceId)
         setChatRequest({
           sequence: ++requestSequence.current,
@@ -441,6 +455,28 @@ export function Workbench() {
       if (!event.repeat && matchesAction(event, "palette.open")) {
         event.preventDefault();
         closePalette(true);
+      }
+      return;
+    }
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[open]");
+    if (dialog) {
+      if (
+        !event.repeat &&
+        matchesAction(event, "palette.open") &&
+        !isTerminalFocused()
+      ) {
+        event.preventDefault();
+        openPalette();
+      } else if (dialog.dataset.projectSearch) {
+        const id = matchAction(event, actionContext, false);
+        if (id === "files.search" || id === "content.search") {
+          event.preventDefault();
+          const current = dialog.dataset.projectSearch;
+          flushSync(() =>
+            dialog.dispatchEvent(new Event("cancel", { cancelable: true })),
+          );
+          if (current !== id) runAction(id, actionContext);
+        }
       }
       return;
     }

@@ -60,7 +60,7 @@ export type Surface =
   | { kind: "diff" }
   | { kind: "pull_requests" }
   | { kind: "pull_request"; key: PullRequestKey }
-  | { kind: "file"; path: string }
+  | { kind: "file"; path: string; line: number | null; revealSequence: number }
   | { kind: "terminal"; id: TerminalSurfaceId };
 
 export type PanelState = { surfaces: Surface[]; active: number | null };
@@ -107,7 +107,7 @@ const TERMINAL_UNAVAILABLE = {
 };
 
 const LAUNCHER_SHORTCUT_BLOCKING_LAYERS =
-  '[data-slot="menu-popup"],[role="dialog"]';
+  '[data-slot="menu-popup"],[role="dialog"],[aria-modal="true"],dialog[open]';
 
 function actionForKey(
   event: KeyboardEvent,
@@ -446,6 +446,10 @@ export function RightPanel({
                 checkout={checkout}
                 view={view}
                 path={active.kind === "file" ? active.path : null}
+                line={active.kind === "file" ? active.line : null}
+                revealSequence={
+                  active.kind === "file" ? active.revealSequence : 0
+                }
                 onOpenFile={handleOpenFile}
               />
             )}
