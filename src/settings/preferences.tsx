@@ -8,6 +8,7 @@ import {
 } from "react";
 import { z } from "zod";
 import { ipc, native } from "../ipc";
+import { editorId } from "../lib/editors";
 import { serial } from "../lib/serial";
 
 const favoriteModelSchema = z.object({
@@ -56,6 +57,8 @@ const schema = z.object({
   promptFontSize: z.number().int().min(12).max(20),
   codeFontSize: z.number().int().min(11).max(20),
   followUpBehavior: z.enum(["queue", "steer"]),
+  // Null picks the first installed editor.
+  preferredEditor: editorId.nullable(),
   contextWindowMeter: z.boolean(),
   favoriteModels: z.array(favoriteModelSchema),
   ...projectSchema.shape,
@@ -75,6 +78,7 @@ const defaults: Preferences = {
   promptFontSize: 14,
   codeFontSize: 13,
   followUpBehavior: "queue",
+  preferredEditor: null,
   contextWindowMeter: true,
   favoriteModels: [],
   ...builtInProject,
@@ -131,6 +135,7 @@ function readPreferences(): PreferenceState {
         promptFontSize: z.unknown().optional(),
         codeFontSize: z.unknown().optional(),
         followUpBehavior: z.unknown().optional(),
+        preferredEditor: z.unknown().optional(),
         contextWindowMeter: z.unknown().optional(),
         notificationMode: z.unknown().optional(),
         inAppNotificationsEnabled: z.unknown().optional(),
@@ -219,6 +224,10 @@ function readPreferences(): PreferenceState {
         followUpBehavior: schema.shape.followUpBehavior
           .catch("queue")
           .parse(object.followUpBehavior),
+        preferredEditor: editorId
+          .nullable()
+          .catch(null)
+          .parse(object.preferredEditor ?? null),
         notificationMode: notificationModeSchema
           .catch("off")
           .parse(object.notificationMode),

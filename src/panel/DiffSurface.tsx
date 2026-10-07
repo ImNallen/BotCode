@@ -15,10 +15,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   checkoutKey,
   ipc,
+  workspaceTarget,
   type CheckoutRef,
   type WorkspaceView,
   type Thread,
 } from "../ipc";
+import { useFileContextMenu } from "../fileContextMenu";
 import { cn } from "../lib/cn";
 import { Menu, MenuSeparator, MenuSub } from "../ui/menu";
 import { formatDayAwareTimestamp } from "../lib/time";
@@ -247,6 +249,7 @@ export function DiffSurface({
 }) {
   const theme = useResolvedTheme();
   const client = useQueryClient();
+  const fileContextMenu = useFileContextMenu();
   const [scope, setScope] = useStoredState<Scope>("z1.diffScope", parseScope);
   const turns = completedCheckpointTurns(thread);
   const selectedTurn = selectedCheckpointTurn(thread, turnSelection);
@@ -523,6 +526,19 @@ export function DiffSurface({
                 if (name && filesByPath.has(name))
                   setPathExpanded(name, !expandedPaths.has(name));
               }}
+              onContextMenuCapture={(event) => {
+                if (view?.unavailable) return;
+                const header = event.nativeEvent
+                  .composedPath()
+                  .find(
+                    (node): node is HTMLElement =>
+                      node instanceof HTMLElement &&
+                      node.hasAttribute("data-diffs-header"),
+                  );
+                const name = header?.querySelector("[data-title]")?.textContent;
+                if (!name || !filesByPath.has(name)) return;
+                fileContextMenu.show(workspaceTarget(checkout, name), event);
+              }}
             >
               <CodeView<undefined>
                 key={scopeKey}
@@ -560,6 +576,7 @@ export function DiffSurface({
           </div>
         )}
       </div>
+      {fileContextMenu.element}
     </div>
   );
 }

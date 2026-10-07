@@ -1,5 +1,5 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/chat/ChangedFilesTree.tsx (MIT).
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState, type MouseEvent } from "react";
 import type { TurnDiffFile } from "../ipc";
 import {
   buildTurnDiffTree,
@@ -24,12 +24,18 @@ const hasNonZeroStat = (stat: { additions: number; deletions: number }) =>
 
 const EMPTY_DIRECTORY_OVERRIDES: Record<string, boolean> = {};
 
+export type FileContextMenuHandler = (
+  path: string,
+  event: MouseEvent<HTMLElement>,
+) => void;
+
 export const ChangedFilesCard = memo(function ChangedFilesCard(props: {
   turnId: string;
   files: ReadonlyArray<TurnDiffFile>;
   allDirectoriesExpanded: boolean;
   onToggleAllDirectories: () => void;
   onOpenTurnDiff: (turnId: string, filePath?: string) => void;
+  onFileContextMenu?: FileContextMenuHandler;
 }) {
   const {
     turnId,
@@ -37,6 +43,7 @@ export const ChangedFilesCard = memo(function ChangedFilesCard(props: {
     allDirectoriesExpanded,
     onToggleAllDirectories,
     onOpenTurnDiff,
+    onFileContextMenu,
   } = props;
   const summaryStat = useMemo(() => summarizeTurnDiffStats(files), [files]);
   const hasDirectories = files.some((file) => /[/\\]/.test(file.path));
@@ -103,6 +110,7 @@ export const ChangedFilesCard = memo(function ChangedFilesCard(props: {
         files={files}
         allDirectoriesExpanded={allDirectoriesExpanded}
         onOpenTurnDiff={onOpenTurnDiff}
+        onFileContextMenu={onFileContextMenu}
       />
     </div>
   );
@@ -113,8 +121,15 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
   files: ReadonlyArray<TurnDiffFile>;
   allDirectoriesExpanded: boolean;
   onOpenTurnDiff: (turnId: string, filePath?: string) => void;
+  onFileContextMenu?: FileContextMenuHandler;
 }) {
-  const { files, allDirectoriesExpanded, onOpenTurnDiff, turnId } = props;
+  const {
+    files,
+    allDirectoriesExpanded,
+    onOpenTurnDiff,
+    onFileContextMenu,
+    turnId,
+  } = props;
   const treeNodes = useMemo(() => buildTurnDiffTree(files), [files]);
   const directoryPathsKey = useMemo(
     () => collectDirectoryPaths(treeNodes).join("\u0000"),
@@ -208,6 +223,11 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
         className="group flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
         style={{ paddingLeft: `${leftPadding}px` }}
         onClick={() => onOpenTurnDiff(turnId, node.path)}
+        onContextMenu={
+          onFileContextMenu
+            ? (event) => onFileContextMenu(node.path, event)
+            : undefined
+        }
       >
         {hasDirectoryNodes || depth > 0 ? (
           <span aria-hidden="true" className="size-3.5 shrink-0" />
