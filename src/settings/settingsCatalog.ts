@@ -8,6 +8,7 @@ import {
   Settings2Icon,
 } from "lucide-react";
 import { z } from "zod";
+import { actionIds, actions } from "../lib/actions";
 import type { ProjectSetting } from "./preferences";
 import type { SettingsScope } from "./settingsScope";
 
@@ -292,98 +293,18 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
     title: "Keyboard shortcuts",
     icon: KeyboardIcon,
     scoped: false,
-    groups: [
-      {
-        id: "navigation",
-        title: "Navigation",
-        rows: [
-          {
-            id: "toggle-sidebar",
-            title: "Toggle sidebar",
-            description: "Show or hide the main sidebar.",
-          },
-          {
-            id: "new-without-project",
-            title: "New thread without a project",
-            description:
-              "Start a thread in its own folder instead of a project.",
-            keywords: "scratch no project",
-          },
-          {
-            id: "open-settings",
-            title: "Open settings",
-            description:
-              "Open General settings from anywhere in the workbench.",
-          },
-          {
-            id: "close-settings",
-            title: "Back to conversation",
-            description:
-              "Leave settings. Search and open menus handle Escape first.",
-          },
-        ],
-      },
-      {
-        id: "threads",
-        title: "Threads",
-        rows: [
-          {
-            id: "settle-thread",
-            title: "Settle thread",
-            description:
-              "Move the open thread to the Settled shelf, or back to the active list.",
-            keywords: "settled un-settle archive",
-          },
-          {
-            id: "pin-thread",
-            title: "Pin thread",
-            description:
-              "Keep the open thread at the top of the sidebar, or unpin it.",
-            keywords: "pinned unpin",
-          },
-        ],
-      },
-      {
-        id: "terminal",
-        title: "Terminal",
-        rows: [
-          {
-            id: "toggle-terminal",
-            title: "Toggle terminal drawer",
-            description:
-              "Show or hide the terminal under the conversation, including from inside the terminal.",
-            keywords: "shell console",
-          },
-          {
-            id: "split-terminal",
-            title: "Split terminal horizontally",
-            description:
-              "Add a terminal beside the focused one, up to four side by side.",
-            keywords: "shell console",
-          },
-          {
-            id: "split-terminal-vertical",
-            title: "Split terminal vertically",
-            description:
-              "Add a terminal below the focused one, up to four stacked.",
-            keywords: "shell console stacked",
-          },
-          {
-            id: "new-terminal",
-            title: "New terminal",
-            description: "Open another terminal in its own tab.",
-            keywords: "shell console tab",
-          },
-          {
-            id: "close-terminal",
-            title: "Close terminal",
-            description:
-              "Close the focused terminal after confirmation and stop its process.",
-            keywords: "shell console kill",
-          },
-        ],
-      },
-    ],
+    groups: ["Navigation", "Threads", "Terminal"].map((group) => ({
+      id: group.toLowerCase(),
+      title: group,
+      rows: actionIds
+        .filter((id) => actions[id].group === group && actions[id].binding)
+        .map((id) => ({
+          id,
+          title: actions[id].title,
+          description: actions[id].shortcutDescription ?? "",
+          keywords: actions[id].keywords,
+        })),
+    })),
   },
   archived: {
     title: "Archived",

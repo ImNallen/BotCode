@@ -12,6 +12,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -59,6 +60,7 @@ import {
   MenuSub,
   MenuSeparator,
 } from "./ui/menu";
+import { canParkThread, type SidebarRequest } from "./lib/actions";
 import { confirmAndDeleteThread } from "./threadActions";
 import { resolveSnoozePresets, snoozeWakeLabel } from "./lib/snooze";
 
@@ -182,7 +184,11 @@ export function Sidebar({
   onOpenRepository,
   onOpenProjectSettings,
   onArrange,
+  commandRequest,
+  onRenamePendingChange,
 }: {
+  commandRequest?: SidebarRequest;
+  onRenamePendingChange?: (pending: boolean) => void;
   workspaces: Workspace[];
   views: (WorkspaceView | undefined)[];
   workspaceId: string | undefined;
@@ -203,6 +209,9 @@ export function Sidebar({
   const [renaming, setRenaming] = useState<{ id: string; title: string }>();
   const [savingRename, setSavingRename] = useState(false);
   const saving = useRef(false);
+  useEffect(() => {
+    onRenamePendingChange?.(savingRename);
+  }, [savingRename, onRenamePendingChange]);
   const editRename = (value: { id: string; title: string } | undefined) => {
     if (!saving.current) setRenaming(value);
   };
@@ -381,6 +390,82 @@ export function Sidebar({
     }
     if (openThread.current === row.thread.id) forward?.();
   };
+  const copy = (value: string) => {
+    void navigator.clipboard
+      .writeText(value)
+      .then(() => {
+        setActionError(undefined);
+        setActionStatus(undefined);
+      })
+      .catch((error: unknown) =>
+        setActionError(error instanceof Error ? error.message : String(error)),
+      );
+  };
+  const consumedCommand = useRef<number | undefined>(undefined);
+  const handleCommand = useEffectEvent((request: SidebarRequest) => {
+    if (consumedCommand.current === request.sequence) return;
+    consumedCommand.current = request.sequence;
+    const row = rows.find(
+      (row) =>
+        row.thread.id === request.threadId && row.thread.archivedAtMs === null,
+    );
+    if (!row || threadId !== request.threadId) return;
+    const operation = request.operation;
+    if (
+      (operation.kind === "archive" || operation.kind === "delete") &&
+      !canParkThread(row.thread, followUps.rows(row.thread.id).length > 0)
+    ) {
+      setActionError(
+        "This thread has running work, an approval, or queued messages. Finish them before archiving or deleting it.",
+      );
+      return;
+    }
+    switch (operation.kind) {
+      case "rename":
+        if (saving.current) return;
+        setQuery("");
+        setScopeId(null);
+        void storage.removeItem(SCOPE_KEY);
+        setSnoozedExpanded(true);
+        setSettledExpanded(true);
+        setSettledPage({ scopeId: undefined, count: rows.length });
+        editRename({ id: row.thread.id, title: row.thread.title });
+        return;
+      case "snooze": {
+        if (row.thread.awaitingApproval) return;
+        const preset = resolveSnoozePresets(new Date()).find(
+          (preset) => preset.id === operation.preset,
+        );
+        if (preset) void park(row, { kind: "snooze", untilMs: preset.untilMs });
+        return;
+      }
+      case "wake":
+        void onArrange(row.thread.id, { kind: "wake" });
+        return;
+      case "archive":
+        void park(row, { kind: "archive" });
+        return;
+      case "delete":
+        void park(row, "delete");
+        return;
+      case "copyPath":
+        copy(
+          row.thread.checkout.kind === "local"
+            ? row.workspace.root
+            : row.thread.checkout.path,
+        );
+        return;
+      case "copyBranch":
+        if (row.workspace.kind === "repository" && row.branch) copy(row.branch);
+        return;
+      case "copyId":
+        copy(row.thread.id);
+        return;
+    }
+  });
+  useEffect(() => {
+    if (commandRequest) handleCommand(commandRequest);
+  }, [commandRequest]);
   return (
     <RenameContext.Provider
       value={{ renaming, setRenaming: editRename, saveRename, savingRename }}
@@ -662,19 +747,7 @@ export function Sidebar({
           }
           savingRename={savingRename}
           onDelete={() => void park(menuRow, "delete")}
-          onCopy={(value) => {
-            void navigator.clipboard
-              .writeText(value)
-              .then(() => {
-                setActionError(undefined);
-                setActionStatus(undefined);
-              })
-              .catch((error: unknown) =>
-                setActionError(
-                  error instanceof Error ? error.message : String(error),
-                ),
-              );
-          }}
+          onCopy={copy}
         />
       ) : null}
     </RenameContext.Provider>
@@ -1295,7 +1368,10 @@ function ThreadTitle({
       disabled={editor.savingRename}
       value={editor.renaming.title}
       aria-label="Thread title"
-      onFocus={(event) => event.currentTarget.select()}
+      onFocus={(event) => {
+        event.currentTarget.select();
+        event.currentTarget.scrollIntoView({ block: "nearest" });
+      }}
       onChange={(event) =>
         editor.setRenaming({ id: thread.id, title: event.target.value })
       }

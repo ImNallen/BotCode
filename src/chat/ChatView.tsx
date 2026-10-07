@@ -1,4 +1,5 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/ChatView.tsx, chat/ChatHeader.tsx, chat/PanelLayoutControls.tsx and DraftHeroHeadline.tsx at 6b286ae8a (MIT).
+import type { ChatRequest } from "../lib/actions";
 import {
   type ComponentProps,
   useEffect,
@@ -128,6 +129,7 @@ export function ChatView({
   workspaceId,
   threadId,
   prPanelRequest,
+  commandRequest,
   workspaces,
   scratch,
   scratchAvailable,
@@ -137,6 +139,7 @@ export function ChatView({
 }: {
   workspaceId: string;
   threadId: string | undefined;
+  commandRequest?: ChatRequest;
   prPanelRequest?: { threadId: string; surface: Surface; nonce: number };
   workspaces: Workspace[];
   scratch: Workspace | undefined;
@@ -555,6 +558,23 @@ export function ChatView({
   const terminalScope = terminalScopeKey(workspaceId, threadId ?? null);
   const terminalState = useTerminalState(terminalScope);
   const terminalOpen = terminalState.terminalOpen;
+  const consumedCommand = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!commandRequest || consumedCommand.current === commandRequest.sequence)
+      return;
+    consumedCommand.current = commandRequest.sequence;
+    if (
+      commandRequest.workspaceId !== workspaceId ||
+      commandRequest.threadId !== threadId
+    )
+      return;
+    if (commandRequest.kind === "panel.toggle") {
+      setPanelOpen((value) => !value);
+      setMaximized(false);
+    } else if (terminalAvailable)
+      updateTerminalState(terminalScope, toggleTerminalOpen);
+  }, [commandRequest, workspaceId, threadId, terminalAvailable, terminalScope]);
+
   const reconciledPanel = reconcileTerminalSurfaces(
     panel,
     terminalAvailable
