@@ -29,6 +29,7 @@ import type {
   Thread,
   Workspace,
   SessionSettings,
+  UserQuestionAnswers,
 } from "../ipc";
 import { cn } from "../lib/cn";
 import { workingSessions } from "../lib/sessions";
@@ -95,6 +96,12 @@ import { sendFollowUpNow } from "./FollowUpSender";
 import { EditFromHereDialog } from "./EditFromHereDialog";
 import { useTurnRevert } from "./useTurnRevert";
 import { DraftHeadline } from "./DraftHeadline";
+import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+import {
+  resolvePlanFollowUpSubmission,
+  buildPlanImplementationPrompt,
+} from "./proposedPlan";
+import { standaloneComposerCommand } from "./composerSlashCommandSearch";
 import {
   selectedCheckpointTurn,
   type TurnDiffSelection,
@@ -188,6 +195,7 @@ export function ChatView({
     model: null,
     effort: null,
     permissionMode: "approval-required",
+    interactionMode: "default",
   });
   const { preferences } = usePreferences();
   const newThreadCheckout = projectSetting(
@@ -274,10 +282,11 @@ export function ChatView({
     setPanelCheckout(checkout.threadId);
     setPanel(closeFiles);
   }
-  const { data: view } = useQuery({
+  const workspaceQuery = useQuery({
     queryKey: checkoutKey("workspace", checkout),
     queryFn: () => ipc.workspace(checkout),
   });
+  const view = workspaceQuery.data;
   const pullRequests =
     view?.threads.find((row) => row.id === threadId)?.pullRequests.links ?? [];
   const { data: branches } = useQuery({
@@ -303,6 +312,19 @@ export function ChatView({
     queryFn: ipc.models,
     retry: false,
   });
+  const collaborationModes = useQuery({
+    queryKey: ["collaboration-modes"],
+    queryFn: ipc.collaborationModes,
+    retry: false,
+  });
+  const planSupported =
+    collaborationModes.data?.includes("plan") === true &&
+    collaborationModes.data.includes("default");
+  const implementationTarget = useRef<{
+    sourceId: string;
+    text: string;
+    target: string;
+  } | null>(null);
   const saveSettings = useMutation({
     mutationFn: async (next: SessionSettings) => {
       if (!threadId) {
@@ -334,12 +356,34 @@ export function ChatView({
       text,
       attachments,
       started,
+      settings: submittedSettings,
+      newThreadSource,
     }: {
       text: string;
       attachments: ImageAttachment[];
       started: ComposerInput;
+      settings: SessionSettings;
+      newThreadSource?: Thread;
     }) => {
       let target = threadId ?? createdDraft?.id;
+      if (newThreadSource) {
+        const existing = implementationTarget.current;
+        if (existing?.sourceId === newThreadSource.id && existing.text === text)
+          target = existing.target;
+        else {
+          const created = await ipc.create(newThreadSource.workspaceId, {
+            kind: "existing",
+            threadId: newThreadSource.id,
+          });
+          target = created.id;
+          implementationTarget.current = {
+            sourceId: newThreadSource.id,
+            text,
+            target,
+          };
+          setThreadSnapshot(client, created);
+        }
+      }
       if (!target) {
         const created = await ipc.create(
           workspaceId,
@@ -359,8 +403,12 @@ export function ChatView({
           setCreatedDraft(created);
         void client.invalidateQueries({ queryKey: ["workspace"] });
       }
-      if (!threadId) {
-        const updated = await ipc.settings(target, draftSettings);
+      if (
+        !threadId ||
+        newThreadSource ||
+        JSON.stringify(submittedSettings) !== JSON.stringify(thread?.settings)
+      ) {
+        const updated = await ipc.settings(target, submittedSettings);
         setThreadSnapshot(client, updated);
       }
       const attempt = sendAttempt(
@@ -375,16 +423,20 @@ export function ChatView({
       await ipc.submit(target, text, attempt.requestId, attachments);
       return target;
     },
-    onSuccess: (target, { started }) => {
+    onSuccess: (target, { started, newThreadSource }) => {
       void client.invalidateQueries({ queryKey: ["thread", target] });
       void client.invalidateQueries({ queryKey: ["workspace"] });
       if (!acceptsCompletion(composerRef.current, started)) return;
       lastAttempt.current = null;
+      if (newThreadSource) implementationTarget.current = null;
       if (acceptsCompletion(composerRef.current, started, true))
         setCreatedDraft(undefined);
       setComposer((current) => clearAcceptedInput(current, started));
       setError(undefined);
-      if (!threadId && acceptsCompletion(composerRef.current, started, true)) {
+      if (
+        (!threadId || newThreadSource) &&
+        acceptsCompletion(composerRef.current, started, true)
+      ) {
         void navigate({
           to: "/",
           search: (previous) => ({
@@ -395,8 +447,14 @@ export function ChatView({
         });
       }
     },
-    onError: (e, { started }) => {
+    onError: (e, { started, text, newThreadSource }) => {
       if (!acceptsCompletion(composerRef.current, started)) return;
+      if (!newThreadSource && !started.text.trim() && text.trim())
+        setComposer((current) =>
+          acceptsCompletion(current, started, true)
+            ? { ...current, text, generation: current.generation + 1 }
+            : current,
+        );
       setError(e.message);
       refresh();
     },
@@ -404,6 +462,17 @@ export function ChatView({
   const approve = useMutation({
     mutationFn: (input: { id: string; decision: ApprovalDecision }) =>
       ipc.approval(input.id, input.decision),
+    onSuccess: refresh,
+    onError: (e) => setError(e.message),
+  });
+  const answerQuestions = useMutation({
+    mutationFn: ({
+      requestId,
+      answers,
+    }: {
+      requestId: string;
+      answers: UserQuestionAnswers;
+    }) => ipc.answerUserQuestions(requestId, answers),
     onSuccess: refresh,
     onError: (e) => setError(e.message),
   });
@@ -514,10 +583,30 @@ export function ChatView({
       : "queue";
   const pending = thread?.approvals.filter((a) => a.state === "pending") ?? [];
   const approval = pending[0];
+  const questionRequest = thread?.userQuestions.find(
+    (request) => request.state === "pending" || request.state === "answering",
+  );
+  const latestTurn = thread?.turns.at(-1);
+  const proposedPlan =
+    latestTurn?.execution.kind === "completed"
+      ? latestTurn.items.findLast(
+          (item) => item.kind === "plan" && item.complete && item.text.trim(),
+        )
+      : undefined;
+  const showPlanFollowUp = Boolean(
+    planSupported &&
+    settings.interactionMode === "plan" &&
+    proposedPlan &&
+    !busy &&
+    !approval &&
+    !questionRequest &&
+    !queued.length &&
+    !images.length,
+  );
   const noticeKey = usageNoticeKey(
     threadId ?? `draft:${workspaceId}`,
     thread?.turns.at(-1)?.id ?? null,
-    approval?.id ?? null,
+    approval?.id ?? questionRequest?.id ?? null,
   );
   const reviewDraftTarget = useRef<ReviewDraftTarget>({
     workspaceId,
@@ -596,6 +685,23 @@ export function ChatView({
   };
   const attachments = readyAttachments(images);
   const submit = () => {
+    const command = standaloneComposerCommand(draft);
+    if (planSupported && (command === "plan" || command === "default")) {
+      if (
+        busy ||
+        send.isPending ||
+        saveSettings.isPending ||
+        approval ||
+        questionRequest
+      )
+        return;
+      saveSettings.mutate({
+        ...settings,
+        interactionMode: command === "plan" ? "plan" : "default",
+      });
+      setDraft("");
+      return;
+    }
     if (isUsageLimitsCommand(draft)) {
       setUsageNotice({ key: noticeKey, now: Date.now() });
       setDraft("");
@@ -603,7 +709,7 @@ export function ChatView({
     }
     if (
       attachments === null ||
-      (!draft.trim() && attachments.length === 0) ||
+      (!draft.trim() && attachments.length === 0 && !showPlanFollowUp) ||
       reverting ||
       send.isPending ||
       saveSettings.isPending ||
@@ -619,8 +725,38 @@ export function ChatView({
         sendFollowUpNow(client, thread, id);
       return;
     }
-    if (approval) return;
-    send.mutate({ text: draft, attachments, started: composer });
+    if (approval || questionRequest) return;
+    const submission =
+      showPlanFollowUp && proposedPlan && "text" in proposedPlan
+        ? resolvePlanFollowUpSubmission({
+            draftText: draft,
+            planMarkdown: proposedPlan.text,
+          })
+        : { text: draft, interactionMode: settings.interactionMode };
+    send.mutate({
+      text: submission.text,
+      attachments,
+      started: composer,
+      settings: { ...settings, interactionMode: submission.interactionMode },
+    });
+  };
+  const implementInNewThread = () => {
+    if (
+      !showPlanFollowUp ||
+      !thread ||
+      !proposedPlan ||
+      !("text" in proposedPlan) ||
+      send.isPending ||
+      saveSettings.isPending
+    )
+      return;
+    send.mutate({
+      text: buildPlanImplementationPrompt(proposedPlan.text),
+      attachments: [],
+      started: composer,
+      settings: { ...settings, interactionMode: "default" },
+      newThreadSource: thread,
+    });
   };
   const title = isDraft ? "New thread" : (thread?.title ?? "");
   const worktreeDraft =
@@ -631,6 +767,7 @@ export function ChatView({
     send.isPending ||
     saveSettings.isPending ||
     Boolean(approval) ||
+    Boolean(questionRequest) ||
     (Boolean(threadId) && !thread);
   const context: ComponentProps<typeof Composer>["context"] = isScratch
     ? undefined
@@ -987,6 +1124,19 @@ export function ChatView({
                         )
                       }
                       onSubmit={submit}
+                      files={view?.files ?? []}
+                      filesLoading={workspaceQuery.isPending}
+                      filesError={
+                        workspaceQuery.error?.message ??
+                        view?.unavailable ??
+                        undefined
+                      }
+                      planSupported={planSupported}
+                      showPlanFollowUp={showPlanFollowUp}
+                      onImplementInNewThread={implementInNewThread}
+                      onUsageLimits={() =>
+                        setUsageNotice({ key: noticeKey, now: Date.now() })
+                      }
                       onStop={() => {
                         recoverQueue();
                         stop.mutate();
@@ -994,7 +1144,9 @@ export function ChatView({
                       followUpBehavior={effectiveFollowUpBehavior}
                       canSend={
                         isUsageLimitsCommand(draft) ||
-                        ((Boolean(draft.trim()) || images.length > 0) &&
+                        ((showPlanFollowUp ||
+                          Boolean(draft.trim()) ||
+                          images.length > 0) &&
                           attachments !== null &&
                           !reverting &&
                           !send.isPending &&
@@ -1013,7 +1165,22 @@ export function ChatView({
                           : "Ask for changes or send follow-ups"
                       }
                       approval={
-                        approval ? (
+                        questionRequest ? (
+                          <ComposerPendingUserInputPanel
+                            key={questionRequest.id}
+                            request={questionRequest}
+                            busy={
+                              answerQuestions.isPending ||
+                              questionRequest.state === "answering"
+                            }
+                            onAnswer={(answers) =>
+                              answerQuestions.mutate({
+                                requestId: questionRequest.id,
+                                answers,
+                              })
+                            }
+                          />
+                        ) : approval ? (
                           <ApprovalDrawer
                             approval={approval}
                             pendingCount={pending.length}

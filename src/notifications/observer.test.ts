@@ -26,6 +26,7 @@ function summary(
     checkout: { kind: "local" },
     latestTurn: null,
     pendingApprovalIds: [],
+    pendingUserQuestionIds: [],
     awaitingApproval: false,
     createdAtMs: null,
     archivedAtMs: null,

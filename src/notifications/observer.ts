@@ -12,11 +12,13 @@ type History = { revision: number; consumed: Set<string> };
 function events(
   summary: ThreadSummary,
 ): Pick<ThreadAlert, "eventKey" | "kind">[] {
-  const result: Pick<ThreadAlert, "eventKey" | "kind">[] =
-    summary.pendingApprovalIds.map((id) => ({
-      eventKey: `approval:${id}`,
-      kind: "approval",
-    }));
+  const result: Pick<ThreadAlert, "eventKey" | "kind">[] = [
+    ...summary.pendingApprovalIds,
+    ...summary.pendingUserQuestionIds,
+  ].map((id) => ({
+    eventKey: `approval:${id}`,
+    kind: "approval",
+  }));
   const turn = summary.latestTurn;
   if (turn?.completedAtMs !== null && turn?.completedAtMs !== undefined) {
     if (turn.execution.kind === "completed")

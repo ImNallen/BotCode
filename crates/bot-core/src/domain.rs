@@ -69,6 +69,7 @@ id!(WorkspaceId);
 id!(ThreadId);
 id!(TurnId);
 id!(ApprovalId);
+id!(UserQuestionRequestId);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -135,6 +136,11 @@ pub enum Item {
         text: String,
         complete: bool,
     },
+    Plan {
+        id: String,
+        text: String,
+        complete: bool,
+    },
     Command {
         id: String,
         command: String,
@@ -159,6 +165,7 @@ impl Item {
         match self {
             Self::UserInput { id, .. }
             | Self::Assistant { id, .. }
+            | Self::Plan { id, .. }
             | Self::Command { id, .. }
             | Self::FileChange { id, .. }
             | Self::Other { id, .. } => id,
@@ -191,12 +198,21 @@ impl PermissionMode {
         }
     }
 }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionMode {
+    #[default]
+    Default,
+    Plan,
+}
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSettings {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: PermissionMode,
+    #[serde(default)]
+    pub interaction_mode: InteractionMode,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -447,6 +463,51 @@ pub enum ApprovalDecision {
     Decline,
     Cancel,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserQuestionState {
+    Pending,
+    Answering,
+    Answered,
+    Expired,
+    Uncertain,
+}
+impl UserQuestionState {
+    pub fn open(self) -> bool {
+        matches!(self, Self::Pending | Self::Answering)
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestionOption {
+    pub label: String,
+    pub description: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub is_other: bool,
+    pub is_secret: bool,
+    pub options: Option<Vec<UserQuestionOption>>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestionRequest {
+    pub id: UserQuestionRequestId,
+    pub turn_id: TurnId,
+    pub item_id: String,
+    pub questions: Vec<UserQuestion>,
+    pub state: UserQuestionState,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserQuestionAnswer {
+    pub answers: Vec<String>,
+}
+pub type UserQuestionAnswers = std::collections::BTreeMap<String, UserQuestionAnswer>;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Checkout {
@@ -470,6 +531,7 @@ pub enum NewCheckout {
     Local,
     Worktree { base: String, from_origin: bool },
     Folder { prompt: String },
+    Existing { thread_id: ThreadId },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -591,6 +653,8 @@ pub struct ThreadSnapshot {
     pub checkout: Checkout,
     pub turns: Vec<Turn>,
     pub approvals: Vec<Approval>,
+    #[serde(default)]
+    pub user_questions: Vec<UserQuestionRequest>,
     pub diagnostic: Option<String>,
     #[serde(default, alias = "settlement")]
     pub placement: Placement,
@@ -636,6 +700,13 @@ impl ThreadSnapshot {
             }
         }
     }
+    pub fn input_open(&self) -> bool {
+        self.approval_open()
+            || self
+                .user_questions
+                .iter()
+                .any(|request| request.state.open())
+    }
     pub fn approval_open(&self) -> bool {
         self.approvals.iter().any(|approval| {
             matches!(
@@ -644,10 +715,9 @@ impl ThreadSnapshot {
             )
         })
     }
-    // Ports threadRaisedHandWhileSnoozed (client-runtime state/threadSettled.ts). Bot Code has no
-    // user-input requests, and a failed turn is its session error.
+    // Ports threadRaisedHandWhileSnoozed (client-runtime state/threadSettled.ts).
     fn raised_hand(&self, snooze: &Snooze) -> bool {
-        self.approval_open()
+        self.input_open()
             || self.turns.last().is_some_and(|turn| {
                 matches!(
                     turn.execution,
@@ -700,7 +770,7 @@ impl ThreadSnapshot {
             ));
         }
         if matches!(action, Arrange::Archive) {
-            if self.approval_open()
+            if self.input_open()
                 || matches!(
                     self.session,
                     SessionState::Connecting | SessionState::Running | SessionState::Interrupting
@@ -752,7 +822,7 @@ impl ThreadSnapshot {
             }
             Arrange::Settle => {
                 if !matches!(self.placement, Placement::Settled { .. }) {
-                    if self.approval_open() {
+                    if self.input_open() {
                         return Err(AppError::new(
                             "settle_blocked",
                             "Answer the pending approval before settling this thread.",
@@ -774,7 +844,7 @@ impl ThreadSnapshot {
                         "Choose a wake time in the future.",
                     ));
                 }
-                if self.approval_open() {
+                if self.input_open() {
                     return Err(AppError::new(
                         "snooze_blocked",
                         "Answer the pending approval before snoozing this thread.",
@@ -810,6 +880,12 @@ impl ThreadSnapshot {
                 .filter(|approval| approval.state == ApprovalState::Pending)
                 .map(|approval| approval.id.clone())
                 .collect(),
+            pending_user_question_ids: self
+                .user_questions
+                .iter()
+                .filter(|request| request.state == UserQuestionState::Pending)
+                .map(|request| request.id.clone())
+                .collect(),
             title: self.title.clone(),
             session: self.session.clone(),
             checkout: self.checkout.clone(),
@@ -822,7 +898,11 @@ impl ThreadSnapshot {
             awaiting_approval: self
                 .approvals
                 .iter()
-                .any(|approval| approval.state == ApprovalState::Pending),
+                .any(|approval| approval.state == ApprovalState::Pending)
+                || self
+                    .user_questions
+                    .iter()
+                    .any(|request| request.state == UserQuestionState::Pending),
             pinned_at_ms: match self.placement {
                 Placement::Pinned { at_ms, .. } if settled_at_ms.is_none() => Some(at_ms),
                 _ => None,
@@ -846,6 +926,8 @@ pub struct ThreadSummary {
     pub revision: u64,
     pub latest_turn: Option<LatestTurnSummary>,
     pub pending_approval_ids: Vec<ApprovalId>,
+    #[serde(default)]
+    pub pending_user_question_ids: Vec<UserQuestionRequestId>,
     #[serde(default)]
     pub pull_requests: crate::ThreadPrSummary,
     pub id: ThreadId,

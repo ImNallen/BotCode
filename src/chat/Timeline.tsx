@@ -34,6 +34,7 @@ import { Button } from "../ui/controls";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { attachmentUrl } from "./composerImages";
 import { ChangedFilesCard } from "./ChangedFilesTree";
+import { ProposedPlanCard } from "./ProposedPlanCard";
 import {
   deriveRows,
   liveLabel,
@@ -66,6 +67,7 @@ function rowPadding(row: TimelineRow): string {
     case "assistant":
       return row.meta ? "pb-4" : "pb-2";
     case "reasoning":
+    case "plan":
     case "work":
     case "live":
     case "error":
@@ -623,6 +625,11 @@ export function Timeline({
                     />
                   ) : row.kind === "assistant" ? (
                     <AssistantRow row={row} />
+                  ) : row.kind === "plan" ? (
+                    <ProposedPlanCard
+                      text={row.text}
+                      streaming={row.streaming}
+                    />
                   ) : row.kind === "fold" ? (
                     <FoldRow
                       row={row}

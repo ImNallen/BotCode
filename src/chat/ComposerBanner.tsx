@@ -259,6 +259,7 @@ function Dismiss({
 }
 
 export const ComposerBanner = {
+  Surface,
   Attachment,
   Dock,
   Column,

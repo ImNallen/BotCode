@@ -421,6 +421,9 @@ impl Owner {
             .map(|a| a.id.clone())
             .collect();
         next.approvals.retain(|a| retained.contains(&a.turn_id));
+        next.user_questions
+            .retain(|request| retained.contains(&request.turn_id));
+        self.question_routes.retain(|_, route| route.thread != *id);
         next.native_thread_id = native;
         next.session = if next.native_thread_id.is_some() {
             SessionState::Dormant

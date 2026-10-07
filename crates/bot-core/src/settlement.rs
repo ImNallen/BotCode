@@ -22,7 +22,7 @@ pub fn settlement_at(input: SettlementInput<'_>) -> Option<u64> {
         _ => {}
     }
     if input.blocked
-        || thread.approval_open()
+        || thread.input_open()
         || matches!(
             thread.session,
             SessionState::Connecting | SessionState::Running | SessionState::Interrupting

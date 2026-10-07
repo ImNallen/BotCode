@@ -51,6 +51,13 @@ for line in sys.stdin:
     params = request.get('params', {})
     if method == 'initialize':
         result(request, {'userAgent': 'Bot Code fixture'})
+    elif method == 'collaborationMode/list':
+        if (root / 'collaboration').exists():
+            result(request, {'data': [{'name': 'Plan', 'mode': 'plan', 'model': None, 'reasoning_effort': 'medium'}, {'name': 'Default', 'mode': 'default', 'model': None, 'reasoning_effort': None}]})
+        elif (root / 'collaboration_malformed').exists():
+            result(request, {'data': [{'mode': 'future', 'reasoning_effort': None}]})
+        else:
+            emit({'id': request['id'], 'error': {'code': -32601, 'message': 'Method not found'}})
     elif method == 'model/list':
         if (root / 'models_error').exists():
             emit({'id': request['id'], 'error': {'message': 'Catalog unavailable'}})
@@ -104,6 +111,18 @@ for line in sys.stdin:
                 callbacks = {'route-one', 'route-two'}
                 for callback in sorted(callbacks):
                     emit({'id': callback, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'same-parent-item', 'command': None if prompt == 'missing-command' else 'echo ' + callback, 'cwd': '/fixture', 'reason': 'Fixture approval'}})
+        elif prompt == 'propose-plan':
+            plan = {'id': 'proposed-plan', 'type': 'plan', 'text': '# Fixture plan\n\nImplement the requested composer workflow.'}
+            event('item/started', {'threadId': current_thread, 'turnId': active, 'item': {'id': plan['id'], 'type': 'plan', 'text': ''}})
+            event('item/plan/delta', {'threadId': current_thread, 'turnId': active, 'itemId': plan['id'], 'delta': '# Fixture plan\n\n'})
+            event('item/plan/delta', {'threadId': current_thread, 'turnId': active, 'itemId': plan['id'], 'delta': 'Implement the requested composer workflow.'})
+            time.sleep(0.15)
+            event('item/completed', {'threadId': current_thread, 'turnId': active, 'item': plan})
+            (root / 'history.json').write_text(json.dumps([{'id': active, 'status': 'completed', 'items': [plan]}]))
+            finish()
+        elif prompt in ('ask-plan', 'ask-plan-empty-options'):
+            callbacks = {'question-route'}
+            emit({'id': 'question-route', 'method': 'item/tool/requestUserInput', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'question-item', 'isBlocking': True, 'autoResolutionMs': None, 'questions': [{'id': 'scope', 'header': 'Scope', 'question': 'Which workflow should be implemented?', 'isOther': True, 'isSecret': False, 'options': [{'label': 'Composer', 'description': 'Implement the composer'}]}, {'id': 'notes', 'header': 'Notes', 'question': 'Any constraints?', 'isOther': False, 'isSecret': False, 'options': [] if prompt == 'ask-plan-empty-options' else None}]}})
         elif prompt == 'hold':
             pass
         elif prompt == 'late-approval':

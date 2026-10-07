@@ -651,6 +651,7 @@ async fn model_catalog_settings_and_protocol_modes() {
             model: Some("model-one".into()),
             effort: Some("ultra".into()),
             permission_mode: mode,
+            interaction_mode: InteractionMode::Default,
         };
         let saved = app
             .update_settings(thread.id.clone(), settings.clone())
@@ -705,6 +706,7 @@ async fn settings_persist_reset_defaults_and_reject_busy_or_invalid_choices() {
         model: Some("model-one".into()),
         effort: Some("ultra".into()),
         permission_mode: PermissionMode::Auto,
+        interaction_mode: InteractionMode::Default,
     };
     app.update_settings(id.clone(), selected).await.unwrap();
     assert_eq!(
@@ -838,6 +840,7 @@ async fn catalog_refresh_failure_preserves_effort_reset() {
             model: Some("model-one".into()),
             effort: Some("ultra".into()),
             permission_mode: PermissionMode::ApprovalRequired,
+            interaction_mode: InteractionMode::Default,
         },
     )
     .await
@@ -883,6 +886,7 @@ async fn refreshed_catalog_rejects_removed_saved_model_before_acceptance() {
             model: Some("model-one".into()),
             effort: Some("ultra".into()),
             permission_mode: PermissionMode::ApprovalRequired,
+            interaction_mode: InteractionMode::Default,
         },
     )
     .await
@@ -928,6 +932,7 @@ fn legacy_snapshots_default_settings() {
             checkpoint: TurnCheckpoint::default(),
         }],
         approvals: vec![],
+        user_questions: vec![],
         diagnostic: None,
         placement: Placement::Kept,
         snooze: None,
@@ -1006,6 +1011,7 @@ async fn first_usage_limits_read_launches_codex_and_reads_the_codex_bucket() {
         vec![
             "initialize",
             "initialized",
+            "collaborationMode/list",
             "account/read",
             "account/rateLimits/read"
         ]
@@ -2144,6 +2150,7 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
             checkpoint: TurnCheckpoint::default(),
         }],
         approvals: vec![],
+        user_questions: vec![],
         diagnostic: None,
         placement: Placement::Auto,
         snooze: None,
@@ -4484,4 +4491,488 @@ fn app_snapshot_after_close(db: &rusqlite::Connection, id: &ThreadId) -> ThreadS
         )
         .unwrap();
     serde_json::from_str(&text).unwrap()
+}
+
+#[test]
+fn old_session_settings_restore_build_and_empty_questions() {
+    let settings: SessionSettings = serde_json::from_value(serde_json::json!({
+        "model": null, "effort": null, "permissionMode": "approval-required"
+    }))
+    .unwrap();
+    assert_eq!(settings.interaction_mode, InteractionMode::Default);
+    let mut saved = serde_json::to_value(idle_thread(Some(1000), Some(2000))).unwrap();
+    saved.as_object_mut().unwrap().remove("userQuestions");
+    saved["settings"]
+        .as_object_mut()
+        .unwrap()
+        .remove("interactionMode");
+    let restored: ThreadSnapshot = serde_json::from_value(saved).unwrap();
+    assert!(restored.user_questions.is_empty());
+    assert_eq!(restored.settings.interaction_mode, InteractionMode::Default);
+}
+
+#[tokio::test]
+async fn collaboration_modes_require_real_supported_catalog() {
+    for malformed in [false, true] {
+        let f = Fixture::new();
+        if malformed {
+            std::fs::write(f.peer.parent().unwrap().join("collaboration_malformed"), "").unwrap();
+        }
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        assert!(app.collaboration_modes().await.unwrap().is_empty());
+        assert_eq!(
+            app.update_settings(
+                thread.id.clone(),
+                SessionSettings {
+                    interaction_mode: InteractionMode::Plan,
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "plan_unavailable"
+        );
+        app.submit(
+            thread.id.clone(),
+            "legacy-build".into(),
+            "hello".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
+        wait(&app, &thread.id, |t| {
+            matches!(t.turns[0].execution, Execution::Completed)
+        })
+        .await;
+        let calls = f.calls();
+        let params = &calls
+            .iter()
+            .find(|call| call["method"] == "turn/start")
+            .unwrap()["params"];
+        assert!(params.get("collaborationMode").is_none());
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn collaboration_plan_and_build_send_captured_settings_and_clear_sticky_mode() {
+    let f = Fixture::new();
+    std::fs::write(f.peer.parent().unwrap().join("collaboration"), "").unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    assert_eq!(
+        app.collaboration_modes().await.unwrap(),
+        vec![InteractionMode::Plan, InteractionMode::Default]
+    );
+    let plan = SessionSettings {
+        interaction_mode: InteractionMode::Plan,
+        permission_mode: PermissionMode::FullAccess,
+        ..Default::default()
+    };
+    app.update_settings(thread.id.clone(), plan.clone())
+        .await
+        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "plan-mode".into(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let snapshot = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(snapshot.turns[0].settings.as_ref(), Some(&plan));
+    let build = SessionSettings {
+        model: Some("model-one".into()),
+        effort: Some("ultra".into()),
+        interaction_mode: InteractionMode::Default,
+        ..Default::default()
+    };
+    app.update_settings(thread.id.clone(), build.clone())
+        .await
+        .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "build-mode".into(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let snapshot = wait(&app, &thread.id, |t| {
+        t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(snapshot.turns[0].settings.as_ref(), Some(&plan));
+    assert_eq!(snapshot.turns[1].settings.as_ref(), Some(&build));
+    let calls = f.calls();
+    let turns: Vec<_> = calls
+        .iter()
+        .filter(|call| call["method"] == "turn/start")
+        .collect();
+    assert_eq!(
+        turns[0]["params"]["collaborationMode"],
+        serde_json::json!({"mode":"plan","settings":{"model":"model-one","reasoning_effort":"low","developer_instructions":null}})
+    );
+    assert_eq!(turns[0]["params"]["effort"], "low");
+    assert_eq!(
+        turns[1]["params"]["collaborationMode"],
+        serde_json::json!({"mode":"default","settings":{"model":"model-one","reasoning_effort":"ultra","developer_instructions":null}})
+    );
+    assert!(calls.iter().any(|call| call["method"] == "initialize"
+        && call["params"]["capabilities"]["experimentalApi"] == true));
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn plan_items_stream_complete_persist_and_resume_from_native_history() {
+    let f = Fixture::new();
+    std::fs::write(f.peer.parent().unwrap().join("collaboration"), "").unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.collaboration_modes().await.unwrap();
+    app.update_settings(
+        thread.id.clone(),
+        SessionSettings {
+            interaction_mode: InteractionMode::Plan,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "stream-plan".into(),
+        "propose-plan".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let streaming = wait(&app, &thread.id, |t| t.turns[0].items.iter().any(|item| matches!(item, Item::Plan { text, complete: false, .. } if text.contains("composer workflow")))).await;
+    assert!(matches!(streaming.turns[0].execution, Execution::Running));
+    let finished = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert!(finished.turns[0].items.iter().any(|item| matches!(item, Item::Plan { text, complete: true, .. } if text == "# Fixture plan\n\nImplement the requested composer workflow.")));
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    let restored = app.thread(thread.id.clone()).await.unwrap();
+    assert!(
+        restored.turns[0]
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Plan { complete: true, .. }))
+    );
+    let mut history: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(f.peer.parent().unwrap().join("history.json")).unwrap(),
+    )
+    .unwrap();
+    history[0]["items"][0]["text"] = "# Restored native plan".into();
+    std::fs::write(
+        f.peer.parent().unwrap().join("history.json"),
+        history.to_string(),
+    )
+    .unwrap();
+    app.open_thread(thread.id.clone()).await.unwrap();
+    wait(&app, &thread.id, |t| t.turns[0].items.iter().any(|item| matches!(item, Item::Plan { text, complete: true, .. } if text == "# Restored native plan"))).await;
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn plan_questions_are_distinct_answerable_requests_and_block_steering() {
+    for prompt in ["ask-plan", "ask-plan-empty-options"] {
+        let f = Fixture::new();
+        std::fs::write(f.peer.parent().unwrap().join("collaboration"), "").unwrap();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        app.collaboration_modes().await.unwrap();
+        app.update_settings(
+            thread.id.clone(),
+            SessionSettings {
+                interaction_mode: InteractionMode::Plan,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let turn = app
+            .submit(thread.id.clone(), prompt.into(), prompt.into(), vec![])
+            .await
+            .unwrap();
+        let pending = wait(&app, &thread.id, |t| !t.user_questions.is_empty()).await;
+        assert!(pending.approvals.is_empty());
+        assert!(pending.input_open());
+        let request = &pending.user_questions[0];
+        assert_eq!(request.state, UserQuestionState::Pending);
+        assert_eq!(
+            request.questions[1].options.as_ref().map(Vec::len),
+            (prompt == "ask-plan-empty-options").then_some(0)
+        );
+        let rows = app
+            .list_thread_summaries(thread.workspace_id.clone())
+            .await
+            .unwrap();
+        let summary = rows.iter().find(|row| row.id == thread.id).unwrap();
+        assert!(summary.awaiting_approval);
+        assert_eq!(summary.pending_user_question_ids, vec![request.id.clone()]);
+        assert_eq!(
+            app.submit_to(
+                thread.id.clone(),
+                "question-steer".into(),
+                "followup".into(),
+                vec![],
+                Some(turn.turn_id)
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "busy"
+        );
+        assert_eq!(
+            app.arrange(
+                thread.id.clone(),
+                Arrange::Snooze {
+                    until_ms: now_ms() + 60_000
+                }
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "snooze_blocked"
+        );
+        assert_eq!(
+            app.answer_user_questions(request.id.clone(), Default::default())
+                .await
+                .unwrap_err()
+                .code,
+            "invalid_answers"
+        );
+        let answers = [
+            (
+                "scope".into(),
+                UserQuestionAnswer {
+                    answers: vec!["Composer".into()],
+                },
+            ),
+            (
+                "notes".into(),
+                UserQuestionAnswer {
+                    answers: vec!["Preserve T3 styles".into()],
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        app.answer_user_questions(request.id.clone(), answers)
+            .await
+            .unwrap();
+        let answered = wait(&app, &thread.id, |t| {
+            t.user_questions[0].state == UserQuestionState::Answered
+                && matches!(t.turns[0].execution, Execution::Completed)
+        })
+        .await;
+        assert!(!answered.input_open());
+        let calls = f.calls();
+        let response = calls
+            .iter()
+            .find(|call| call["id"] == "question-route" && call.get("method").is_none())
+            .unwrap();
+        assert_eq!(
+            response["result"]["answers"]["notes"]["answers"],
+            serde_json::json!(["Preserve T3 styles"])
+        );
+        assert_eq!(
+            app.answer_user_questions(request.id.clone(), Default::default())
+                .await
+                .unwrap_err()
+                .code,
+            "question_expired"
+        );
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn pending_plan_questions_expire_after_interrupt_and_restart() {
+    for interrupt in [false, true] {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        app.submit(
+            thread.id.clone(),
+            "question-expiry".into(),
+            "ask-plan".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
+        let pending = wait(&app, &thread.id, |t| !t.user_questions.is_empty()).await;
+        let request = pending.user_questions[0].id.clone();
+        if interrupt {
+            app.interrupt(thread.id.clone()).await.unwrap();
+            wait(&app, &thread.id, |t| {
+                t.user_questions[0].state == UserQuestionState::Expired
+            })
+            .await;
+        }
+        app.shutdown().await.unwrap();
+        let app = reopen(&f.config).await;
+        let restored = app.thread(thread.id).await.unwrap();
+        assert_eq!(restored.user_questions[0].state, UserQuestionState::Expired);
+        assert_eq!(
+            app.answer_user_questions(request, Default::default())
+                .await
+                .unwrap_err()
+                .code,
+            "question_expired"
+        );
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn implement_plan_in_new_thread_reuses_checkout_settings_and_operation_guards() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let scratch = app.ensure_scratch().await.unwrap();
+    app.models().await.unwrap();
+    for (workspace_id, checkout) in [
+        (workspace.id.clone(), NewCheckout::Local),
+        (
+            workspace.id.clone(),
+            NewCheckout::Worktree {
+                base: "main".into(),
+                from_origin: false,
+            },
+        ),
+        (
+            scratch.id.clone(),
+            NewCheckout::Folder {
+                prompt: "Implement shared scratch plan".into(),
+            },
+        ),
+    ] {
+        let source = app
+            .create_thread(workspace_id.clone(), checkout)
+            .await
+            .unwrap();
+        let settings = SessionSettings {
+            model: Some("model-one".into()),
+            effort: Some("ultra".into()),
+            permission_mode: PermissionMode::FullAccess,
+            ..Default::default()
+        };
+        app.update_settings(source.id.clone(), settings.clone())
+            .await
+            .unwrap();
+        let target = app
+            .create_thread(
+                workspace_id.clone(),
+                NewCheckout::Existing {
+                    thread_id: source.id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_ne!(target.id, source.id);
+        assert_eq!(target.checkout, source.checkout);
+        assert_eq!(target.settings, settings);
+        assert!(target.turns.is_empty());
+        assert!(target.native_thread_id.is_none());
+        let wrong_workspace = if workspace_id == workspace.id {
+            scratch.id.clone()
+        } else {
+            workspace.id.clone()
+        };
+        assert_eq!(
+            app.create_thread(
+                wrong_workspace,
+                NewCheckout::Existing {
+                    thread_id: source.id.clone()
+                }
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "invalid_checkout"
+        );
+        app.submit(
+            source.id.clone(),
+            format!("hold-{}", source.id),
+            "hold".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
+        wait(&app, &source.id, |t| {
+            matches!(t.session, SessionState::Running)
+        })
+        .await;
+        assert_eq!(
+            app.create_thread(
+                workspace_id.clone(),
+                NewCheckout::Existing {
+                    thread_id: source.id.clone()
+                }
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "busy"
+        );
+        assert_eq!(
+            app.submit(
+                target.id.clone(),
+                format!("shared-{}", target.id),
+                "hello".into(),
+                vec![]
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "checkout_busy"
+        );
+        app.interrupt(source.id.clone()).await.unwrap();
+        wait(&app, &source.id, |t| {
+            matches!(t.turns[0].execution, Execution::Interrupted)
+        })
+        .await;
+        if let Checkout::Worktree { path, .. } = &source.checkout {
+            app.switch_branch(
+                workspace_id.clone(),
+                Some(target.id.clone()),
+                "shared-manual".into(),
+                true,
+            )
+            .await
+            .unwrap();
+            for id in [&source.id, &target.id] {
+                assert!(
+                    matches!(app.thread(id.clone()).await.unwrap().checkout, Checkout::Worktree { branch, .. } if branch == "shared-manual")
+                );
+            }
+            std::fs::remove_dir_all(path).unwrap();
+            assert_eq!(
+                app.create_thread(
+                    workspace_id,
+                    NewCheckout::Existing {
+                        thread_id: source.id
+                    }
+                )
+                .await
+                .unwrap_err()
+                .code,
+                "missing_checkout"
+            );
+        }
+    }
+    app.shutdown().await.unwrap();
 }

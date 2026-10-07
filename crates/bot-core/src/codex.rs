@@ -156,6 +156,15 @@ impl Codex {
         })?
     }
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        self.request_with_timeout(method, params, std::time::Duration::from_secs(20))
+            .await
+    }
+    pub async fn request_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
         let id = self.sequence.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
@@ -166,7 +175,7 @@ impl Codex {
             self.pending.lock().await.remove(&id);
             return Err(e);
         }
-        match tokio::time::timeout(std::time::Duration::from_secs(20), rx).await {
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(v)) => v,
             _ => {
                 self.pending.lock().await.remove(&id);

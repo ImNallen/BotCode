@@ -285,6 +285,7 @@ describe("codexBusy", () => {
       revision: 0,
       latestTurn: null,
       pendingApprovalIds: [],
+      pendingUserQuestionIds: [],
       id,
       title: id,
       pullRequests: {

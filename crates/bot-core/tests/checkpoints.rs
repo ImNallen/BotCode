@@ -1100,6 +1100,7 @@ for line in sys.stdin:
  r=json.loads(line);m=r.get('method');p=r.get('params',{})
  with (root/'calls.jsonl').open('a') as out: out.write(json.dumps(r)+'\n')
  if m=='initialize': result(r,{'userAgent':'checkpoint fixture'})
+ elif m=='collaborationMode/list': emit({'id':r['id'],'error':{'code':-32601,'message':'Method not found'}})
  elif m=='account/read': result(r,{'account':None})
  elif m=='account/rateLimits/read': result(r,{'rateLimits':None})
  elif m=='thread/start':

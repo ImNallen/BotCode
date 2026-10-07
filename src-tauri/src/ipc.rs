@@ -276,6 +276,18 @@ pub async fn list_models(app: State<'_, App>) -> Result<Vec<ModelOption>> {
     app.models().await
 }
 #[tauri::command]
+pub async fn collaboration_modes(app: State<'_, App>) -> Result<Vec<InteractionMode>> {
+    app.collaboration_modes().await
+}
+#[tauri::command]
+pub async fn answer_user_questions(
+    app: State<'_, App>,
+    request_id: UserQuestionRequestId,
+    answers: UserQuestionAnswers,
+) -> Result<()> {
+    app.answer_user_questions(request_id, answers).await
+}
+#[tauri::command]
 pub async fn usage_limits(app: State<'_, App>, refresh: bool) -> Result<UsageLimits> {
     app.usage_limits(refresh).await
 }

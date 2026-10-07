@@ -739,3 +739,36 @@ async fn an_image_only_first_message_keeps_the_temporary_branch() {
     app.shutdown().await.unwrap();
     assert!(f.invocations().is_empty());
 }
+
+#[tokio::test]
+async fn shared_worktree_threads_keep_their_actual_branch_without_auto_renaming() {
+    let f = Fixture::new(Some(r#"{"branch":"composer-plan"}"#));
+    let app = App::open(f.config.clone()).await.unwrap();
+    let source = f.thread(&app).await;
+    let sibling = app
+        .create_thread(
+            source.workspace_id.clone(),
+            NewCheckout::Existing {
+                thread_id: source.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    app.submit(
+        source.id.clone(),
+        "shared-source".into(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let completed = wait(&app, &source.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(completed.checkout, sibling.checkout);
+    let (path, branch) = checkout(&completed);
+    assert_eq!(git(path, &["branch", "--show-current"]), branch);
+    app.shutdown().await.unwrap();
+    assert!(f.invocations().is_empty());
+}

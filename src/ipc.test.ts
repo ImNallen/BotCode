@@ -28,6 +28,7 @@ it("refreshes the active branch picker after a worktree naming event without ref
     revision: 0,
     latestTurn: null,
     pendingApprovalIds: [],
+    pendingUserQuestionIds: [],
     id: threadId,
     title: "Fix login redirect",
     session: { kind: "ready" },
