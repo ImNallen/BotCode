@@ -532,3 +532,8 @@ pub async fn search_composer_pull_requests(
     app.search_composer_pull_requests(workspace_id, thread_id, query)
         .await
 }
+
+#[tauri::command]
+pub fn provider_capabilities(app: State<'_, App>) -> ProviderCapabilities {
+    app.provider_capabilities()
+}

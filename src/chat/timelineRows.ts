@@ -1,11 +1,28 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/chat/MessagesTimeline.logic.ts, MessagesTimeline.tsx, agentSpawnSummary.ts, packages/client-runtime/src/work-log/presentation.ts and apps/server/src/orchestration/ActivityPayloadProjection.ts (MIT).
-import type { ImageAttachment, Item, Thread } from "../ipc";
+import type { Approval, ImageAttachment, Item, Thread } from "../ipc";
 import type { ComposerContextRecord } from "./composerContext";
 import { formatDuration } from "../lib/time";
 
 type Turn = Thread["turns"][number];
 type McpItem = Extract<Item, { kind: "mcp_tool_call" }>;
 type ToolStatus = McpItem["status"];
+
+function pendingApprovalLabel(action: Approval["action"]): string {
+  switch (action.kind) {
+    case "command":
+      return action.command;
+    case "file_change":
+      return "File change approval";
+    case "permission":
+      return "App permission approval";
+    case "mcp_elicitation":
+      return "App access approval";
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
 
 export type WorkAction =
   | "command"
@@ -697,10 +714,7 @@ export function deriveRows(
         },
       );
       for (const approval of pending) {
-        const label =
-          approval.action.kind === "command"
-            ? approval.action.command
-            : "File change approval";
+        const label = pendingApprovalLabel(approval.action);
         rows.push({
           kind: "live",
           id: `approval:${approval.id}`,

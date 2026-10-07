@@ -308,22 +308,28 @@ pub enum PermissionMode {
     Auto,
     FullAccess,
 }
-impl PermissionMode {
-    pub fn protocol(self) -> (&'static str, &'static str, &'static str) {
-        match self {
-            Self::ApprovalRequired => ("untrusted", "user", "read-only"),
-            Self::AutoAcceptEdits => ("on-request", "user", "workspace-write"),
-            Self::Auto => ("on-request", "auto_review", "workspace-write"),
-            Self::FullAccess => ("never", "user", "danger-full-access"),
-        }
-    }
-    pub fn sandbox_policy(self) -> serde_json::Value {
-        match self {
-            Self::ApprovalRequired => serde_json::json!({"type":"readOnly"}),
-            Self::AutoAcceptEdits | Self::Auto => serde_json::json!({"type":"workspaceWrite"}),
-            Self::FullAccess => serde_json::json!({"type":"dangerFullAccess"}),
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionModeOption {
+    pub value: PermissionMode,
+    pub label: String,
+    pub description: String,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalKind {
+    Command,
+    FileChange,
+    Permission,
+    McpElicitation,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCapabilities {
+    pub provider: String,
+    pub permission_modes: Vec<PermissionModeOption>,
+    pub default_permission_mode: PermissionMode,
+    pub supported_approval_kinds: Vec<ApprovalKind>,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -573,7 +579,11 @@ impl ApprovalState {
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum ApprovalAction {
     Command {
         command: String,
@@ -584,6 +594,33 @@ pub enum ApprovalAction {
         text: String,
         reason: String,
     },
+    Permission {
+        detail: String,
+        reason: String,
+    },
+    McpElicitation {
+        detail: String,
+        reason: String,
+        app_name: String,
+    },
+}
+impl ApprovalAction {
+    pub fn reviewable(&self) -> bool {
+        match self {
+            Self::Command { command, .. } => !command.trim().is_empty(),
+            Self::FileChange { text, .. } => !text.trim().is_empty(),
+            Self::Permission { detail, .. } | Self::McpElicitation { detail, .. } => {
+                !detail.trim().is_empty()
+            }
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalOption {
+    pub decision: ApprovalDecision,
+    pub label: String,
+    pub warning: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -591,12 +628,16 @@ pub struct Approval {
     pub id: ApprovalId,
     pub turn_id: TurnId,
     pub action: ApprovalAction,
+    #[serde(default)]
+    pub options: Vec<ApprovalOption>,
     pub state: ApprovalState,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
     Accept,
+    AcceptForSession,
+    AcceptAlways,
     Decline,
     Cancel,
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { Item, Thread } from "../ipc";
+import type { Approval, Item, Thread } from "../ipc";
 import { Timeline } from "./Timeline";
 import {
   deriveRows,
@@ -90,6 +90,40 @@ function only<K extends TimelineRow["kind"]>(rows: TimelineRow[], kind: K) {
   assert.ok(row);
   return row;
 }
+
+it("labels pending approvals by their typed kind in the timeline", () => {
+  const cases: Array<[Approval["action"], string]> = [
+    [
+      { kind: "command", command: "echo reviewed", cwd: "/tmp", reason: "" },
+      "echo reviewed",
+    ],
+    [
+      { kind: "file_change", text: "+change", reason: "" },
+      "File change approval",
+    ],
+    [
+      { kind: "permission", detail: "Network access", reason: "" },
+      "App permission approval",
+    ],
+    [
+      {
+        kind: "mcp_elicitation",
+        detail: "Allow the app?",
+        reason: "",
+        appName: "Fixture App",
+      },
+      "App access approval",
+    ],
+  ];
+  for (const [action, expected] of cases) {
+    const pending = thread([], true);
+    pending.approvals = [
+      { id: "approval", turnId, action, options: [], state: "pending" },
+    ];
+    const rows = deriveRows(pending, new Set(), new Set());
+    assert.equal(only(rows, "live").entry.label, expected);
+  }
+});
 
 it("folds a settled web search and MCP call behind Worked for and labels the unfolded group as T3", () => {
   const settled = thread([webSearch, mcpCall, answer]);

@@ -756,3 +756,28 @@ The actual native bundle used disposable repository `/tmp/botcode-crash/repo` an
 | Log | `logs/codex.log` held all 732 stderr lines of the killed process and rotated into three older 1 MiB files. |
 
 The first native run found two defects that the tests had missed. Resume replaced a lost turn with Codex's `interrupted` status, so the timeline read "You stopped", and stderr showed raw ANSI color codes. Both were fixed and checked again in the native window.
+
+## Approval workflows and permission defaults
+
+Verified on 2026-10-07 against T3 Code v0.0.45 and installed Codex 0.160.1. Crash supervision from merged PR #61 was already present before this work began. All 369 `pnpm test:ui` tests, all 388 `cargo test -p bot-core` tests, `pnpm build`, `cargo fmt --check`, and `cargo clippy --workspace --all-targets -- -D warnings` passed. The debug Tauri app bundle also built.
+
+The fake Codex peer covers command and file approvals, managed-network requests without a command, reason and write-root fallbacks, permission profiles, MCP forms and persistence, nullable MCP turn IDs, legacy approvals, unsupported token refresh and tool calls, malformed requests, and stale callbacks after a crash. It validates the exact response before completing each turn. Session tests require a matching request to skip approval and a changed command to prompt again. The mode tests check policy, sandbox and reviewer at thread start, resume and turn start, including when leaving Auto.
+
+Native interaction used CUA and the actual 1100×780 Tauri window. The temporary bundle identifier was `dev.bot.code.approvalsverify`; the repository's Tauri configuration was unchanged. The disposable repository was `/tmp/botcode-approvals/native/repository`. Real and scripted provider runs used separate `BOT_CODE_DATA_DIR` values under `/tmp/botcode-approvals/native/real-data` and `/tmp/botcode-approvals/native/fake-data`. A transparent wrapper recorded the real provider protocol, with account responses redacted.
+
+| Native workflow | Observed result |
+| --- | --- |
+| Supervised network escalation | The exact `curl -I --max-time 15 https://example.com` command first failed DNS inside the sandbox. Its network escalation displayed the command and reason. **Always allow this session** returned `acceptForSession`; the escalated command reached HTTP 200 and the turn completed with `NETWORK_ONE_DONE`. |
+| Identical session request | A second turn executed the same escalated command, reached HTTP 200 and completed with `NETWORK_TWO_DONE`. No approval request appeared in that turn's protocol. |
+| Auto-accept edits | A real `apply_patch` call created `mode-edits.txt` with the requested contents, without an approval prompt. |
+| Auto and Full access | Real network commands completed without a user prompt. The captured resume and turn parameters matched T3's automatic reviewer and workspace sandbox for Auto, then user reviewer and unrestricted sandbox for Full access. |
+| Defaults and persistence | A fresh draft started in Full access. All-project Auto-accept edits and project Auto defaults saved. Layers displayed both values; project reset restored inheritance. A fresh project draft used Auto. An explicit draft choice survived Settings and browsing a saved thread. The saved Supervised conversation retained its mode after restarting the app. |
+| Permission profiles | The scripted peer's network and filesystem prompts displayed the complete profile in the scrollable composer drawer. Approval returned the original profile with turn scope and completed each turn. |
+| MCP consent | A null-turn request displayed the app name and consent message. Approval completed its turn. Session consent skipped the next identical request. A schema-supported **Always allow** choice returned both the selected form fields and persistence metadata. |
+| Legacy root access | A legacy patch request with empty changes displayed its requested write root, accepted approval and completed. |
+| Pending permission crash | Killing the scripted provider removed the prompt and persisted it as expired. The turn kept the crash reason. The next message restarted the provider and completed; no reply was sent to the expired callback. |
+| Final layout and labels | The sidebar, centered chat, bottom composer and neutral palette remained intact. Native checks found and fixed the timeline's old file-change fallback for the new kinds. The final bundle displayed App permission approval and App access approval in both the timeline and drawer. |
+
+Native screenshots and accessibility observations are in the tool transcript. Build and suite logs, the protocol capture, scripted replies and `native-assertions.json` are under `/tmp/botcode-approvals/evidence`. `check-native.py` checks the captured mode parameters, HTTP results, identical-command session skip, saved defaults, exact MCP and legacy replies, and crash expiration and recovery. The isolated verifier app and its providers were stopped afterward. Real Codex established network escalation and all four modes; the scripted peer established the new permission and MCP request shapes in the native UI.
+
+To repeat, build a temporary app bundle with a distinct identifier, launch it with a disposable repository and isolated `BOT_CODE_DATA_DIR`, and select Supervised. Send the exact harmless network command above, approve its escalation for the session, and repeat it in a second turn. Use `BOT_CODE_CODEX_BIN` to point at a disposable copy of `crates/bot-core/tests/support/codex_peer.py` for the `approval-kind-*` scenarios. Keep the peer's marker files and logs outside the working repository.

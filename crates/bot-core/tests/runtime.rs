@@ -281,13 +281,15 @@ async fn missing_command_cannot_be_approved_and_late_file_details_become_reviewa
     .await
     .unwrap();
     let snapshot = wait(&app, &thread.id, |t| t.approvals.len() == 2).await;
-    assert_eq!(
-        app.answer_approval(snapshot.approvals[0].id.clone(), ApprovalDecision::Accept)
-            .await
-            .unwrap_err()
-            .code,
-        "approval_details_missing"
-    );
+    for decision in [ApprovalDecision::Accept, ApprovalDecision::AcceptForSession] {
+        assert_eq!(
+            app.answer_approval(snapshot.approvals[0].id.clone(), decision)
+                .await
+                .unwrap_err()
+                .code,
+            "approval_details_missing"
+        );
+    }
     for a in snapshot.approvals {
         app.answer_approval(a.id, ApprovalDecision::Decline)
             .await
@@ -2343,6 +2345,7 @@ fn auto_settle_waits_for_running_sessions_and_open_approvals_and_respects_overri
                 cwd: "/".into(),
                 reason: String::new(),
             },
+            options: vec![],
             state,
         });
         assert_eq!(thread.settlement_for_test(later, DEFAULT_LIMIT), settled);
@@ -2650,6 +2653,7 @@ fn pending_approval(thread: &ThreadSnapshot) -> Approval {
             cwd: "/".into(),
             reason: String::new(),
         },
+        options: vec![],
         state: ApprovalState::Pending,
     }
 }
@@ -5851,7 +5855,14 @@ async fn crash_mid_turn_reports_stderr_and_resumes_the_native_thread_without_rep
 
 #[tokio::test]
 async fn crash_expires_pending_approvals_and_user_questions() {
-    for prompt in ["approval", "ask-plan"] {
+    for prompt in [
+        "approval",
+        "ask-plan",
+        "approval-kind-permission-network",
+        "approval-kind-mcp-null-turn",
+        "approval-kind-legacy-command",
+        "approval-kind-legacy-file",
+    ] {
         let f = Fixture::new();
         std::fs::write(peer_file(&f, "collaboration"), "").unwrap();
         let app = App::open(f.config.clone()).await.unwrap();
@@ -5872,7 +5883,7 @@ async fn crash_expires_pending_approvals_and_user_questions() {
             .await
             .unwrap();
         let pending = wait(&app, &thread.id, |t| {
-            t.approvals.len() == 2 || !t.user_questions.is_empty()
+            !t.approvals.is_empty() || !t.user_questions.is_empty()
         })
         .await;
         assert!(pending.input_open());
@@ -5893,13 +5904,15 @@ async fn crash_expires_pending_approvals_and_user_questions() {
                     .state,
                 ApprovalState::Expired
             );
-            assert_eq!(
-                app.answer_approval(approval.id.clone(), ApprovalDecision::Accept)
-                    .await
-                    .unwrap_err()
-                    .code,
-                "approval_expired"
-            );
+            for decision in [ApprovalDecision::Accept, ApprovalDecision::AcceptForSession] {
+                assert_eq!(
+                    app.answer_approval(approval.id.clone(), decision)
+                        .await
+                        .unwrap_err()
+                        .code,
+                    "approval_expired"
+                );
+            }
         }
         for request in &pending.user_questions {
             assert_eq!(lost.user_questions[0].id, request.id);
@@ -6185,4 +6198,462 @@ async fn steer_written_to_a_killed_codex_reports_the_crash() {
         assert_eq!(lost.diagnostic.as_deref(), Some(KILLED));
         app.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn approval_protocol_replies_match_each_typed_request_kind() {
+    use serde_json::json;
+    let cases = [
+        (
+            "reason-only",
+            ApprovalDecision::Accept,
+            ApprovalKind::Command,
+        ),
+        (
+            "managed-network",
+            ApprovalDecision::Accept,
+            ApprovalKind::Command,
+        ),
+        (
+            "file-change",
+            ApprovalDecision::Accept,
+            ApprovalKind::FileChange,
+        ),
+        (
+            "permission-network",
+            ApprovalDecision::Accept,
+            ApprovalKind::Permission,
+        ),
+        (
+            "permission-filesystem",
+            ApprovalDecision::Accept,
+            ApprovalKind::Permission,
+        ),
+        (
+            "permission-extensions",
+            ApprovalDecision::Accept,
+            ApprovalKind::Permission,
+        ),
+        (
+            "mcp-null-turn",
+            ApprovalDecision::Accept,
+            ApprovalKind::McpElicitation,
+        ),
+        (
+            "mcp-session",
+            ApprovalDecision::AcceptForSession,
+            ApprovalKind::McpElicitation,
+        ),
+        (
+            "mcp-always",
+            ApprovalDecision::AcceptAlways,
+            ApprovalKind::McpElicitation,
+        ),
+        (
+            "mcp-optional",
+            ApprovalDecision::Accept,
+            ApprovalKind::McpElicitation,
+        ),
+        (
+            "mcp-camel-form",
+            ApprovalDecision::Accept,
+            ApprovalKind::McpElicitation,
+        ),
+        (
+            "legacy-command",
+            ApprovalDecision::Accept,
+            ApprovalKind::Command,
+        ),
+        (
+            "legacy-file",
+            ApprovalDecision::Accept,
+            ApprovalKind::FileChange,
+        ),
+        (
+            "legacy-file-root",
+            ApprovalDecision::Accept,
+            ApprovalKind::FileChange,
+        ),
+        (
+            "legacy-file-reason",
+            ApprovalDecision::Accept,
+            ApprovalKind::FileChange,
+        ),
+    ];
+    for (scenario, decision, kind) in cases {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        app.submit(
+            thread.id.clone(),
+            scenario.into(),
+            format!("approval-kind-{scenario}"),
+            vec![],
+        )
+        .await
+        .unwrap();
+        let pending = wait(&app, &thread.id, |thread| thread.approvals.len() == 1).await;
+        let approval = &pending.approvals[0];
+        let actual_kind = match &approval.action {
+            ApprovalAction::Command { command, .. } => {
+                if scenario == "managed-network" {
+                    assert!(command.contains("registry.npmjs.org"));
+                }
+                ApprovalKind::Command
+            }
+            ApprovalAction::FileChange { text, .. } => {
+                assert!(text.contains(match scenario {
+                    "legacy-file-root" => "/fixture/external",
+                    "legacy-file-reason" => "Legacy patch needs external access",
+                    _ => "+new",
+                }));
+                ApprovalKind::FileChange
+            }
+            ApprovalAction::Permission { detail, .. } => {
+                assert!(detail.contains(if scenario == "permission-network" {
+                    "enabled"
+                } else {
+                    "fileSystem"
+                }));
+                ApprovalKind::Permission
+            }
+            ApprovalAction::McpElicitation { app_name, .. } => {
+                assert_eq!(app_name, "Fixture App");
+                assert_eq!(
+                    serde_json::to_value(&approval.action).unwrap()["appName"],
+                    json!("Fixture App")
+                );
+                ApprovalKind::McpElicitation
+            }
+        };
+        assert_eq!(actual_kind, kind, "{scenario}");
+        assert!(
+            approval
+                .options
+                .iter()
+                .any(|option| option.decision == decision),
+            "{scenario}"
+        );
+        if decision != ApprovalDecision::AcceptAlways {
+            assert_eq!(
+                app.answer_approval(approval.id.clone(), ApprovalDecision::AcceptAlways)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "approval_choice"
+            );
+        }
+        app.answer_approval(approval.id.clone(), decision)
+            .await
+            .unwrap();
+        let completed = wait(&app, &thread.id, |thread| {
+            matches!(
+                thread.turns[0].execution,
+                Execution::Completed | Execution::Failed { .. }
+            )
+        })
+        .await;
+        assert!(
+            matches!(completed.turns[0].execution, Execution::Completed),
+            "{scenario}: {:?}",
+            std::fs::read_to_string(peer_file(&f, "approval_mismatch.json"))
+        );
+        assert_eq!(completed.approvals[0].state, ApprovalState::Answered);
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn approval_denials_and_session_grants_use_each_protocols_response_shape() {
+    use serde_json::json;
+    for (scenario, decision, expected) in [
+        (
+            "file-change",
+            ApprovalDecision::AcceptForSession,
+            json!({"decision":"acceptForSession"}),
+        ),
+        (
+            "permission-network",
+            ApprovalDecision::AcceptForSession,
+            json!({"permissions":{"network":{"enabled":true},"fileSystem":null},"scope":"session"}),
+        ),
+        (
+            "permission-filesystem",
+            ApprovalDecision::Decline,
+            json!({"permissions":{},"scope":"turn"}),
+        ),
+        (
+            "permission-network",
+            ApprovalDecision::Cancel,
+            json!({"permissions":{},"scope":"turn"}),
+        ),
+        (
+            "mcp-null-turn",
+            ApprovalDecision::Decline,
+            json!({"action":"decline"}),
+        ),
+        (
+            "mcp-null-turn",
+            ApprovalDecision::Cancel,
+            json!({"action":"cancel"}),
+        ),
+        (
+            "legacy-command",
+            ApprovalDecision::AcceptForSession,
+            json!({"decision":"approved_for_session"}),
+        ),
+        (
+            "legacy-file",
+            ApprovalDecision::Decline,
+            json!({"decision":{"denied":{"rejection":"Declined by the user."}}}),
+        ),
+        (
+            "legacy-command",
+            ApprovalDecision::Cancel,
+            json!({"decision":"abort"}),
+        ),
+    ] {
+        let f = Fixture::new();
+        std::fs::write(
+            peer_file(&f, "approval_expected.json"),
+            expected.to_string(),
+        )
+        .unwrap();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        app.submit(
+            thread.id.clone(),
+            scenario.into(),
+            format!("approval-kind-{scenario}"),
+            vec![],
+        )
+        .await
+        .unwrap();
+        let pending = wait(&app, &thread.id, |thread| thread.approvals.len() == 1).await;
+        app.answer_approval(pending.approvals[0].id.clone(), decision)
+            .await
+            .unwrap();
+        let completed = wait(&app, &thread.id, |thread| {
+            matches!(
+                thread.turns[0].execution,
+                Execution::Completed | Execution::Failed { .. }
+            )
+        })
+        .await;
+        assert!(
+            matches!(completed.turns[0].execution, Execution::Completed),
+            "{scenario}: {decision:?} {:?}",
+            std::fs::read_to_string(peer_file(&f, "approval_mismatch.json"))
+        );
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn unsupported_elicitations_and_refused_methods_finish_without_pending_callbacks() {
+    for scenario in [
+        "mcp-required",
+        "mcp-malformed",
+        "mcp-null-schema",
+        "mcp-url",
+        "token-refresh",
+        "tool-call",
+        "stale-turn",
+        "malformed",
+    ] {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        app.submit(
+            thread.id.clone(),
+            scenario.into(),
+            format!("approval-kind-{scenario}"),
+            vec![],
+        )
+        .await
+        .unwrap();
+        let completed = wait(&app, &thread.id, |thread| {
+            matches!(
+                thread.turns[0].execution,
+                Execution::Completed | Execution::Failed { .. }
+            )
+        })
+        .await;
+        assert!(
+            matches!(completed.turns[0].execution, Execution::Completed),
+            "{scenario}: {:?}",
+            std::fs::read_to_string(peer_file(&f, "approval_mismatch.json"))
+        );
+        assert!(completed.approvals.is_empty(), "{scenario}");
+        assert!(!completed.input_open(), "{scenario}");
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn session_approval_skips_identical_requests_but_changed_commands_still_prompt() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(
+        thread.id.clone(),
+        "first".into(),
+        "approval-kind-command-session".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let pending = wait(&app, &thread.id, |thread| thread.approvals.len() == 1).await;
+    app.answer_approval(
+        pending.approvals[0].id.clone(),
+        ApprovalDecision::AcceptForSession,
+    )
+    .await
+    .unwrap();
+    wait(&app, &thread.id, |thread| {
+        matches!(thread.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    app.submit(
+        thread.id.clone(),
+        "identical".into(),
+        "approval-kind-command-session".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let identical = wait(&app, &thread.id, |thread| {
+        thread.turns.len() == 2 && matches!(thread.turns[1].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(identical.approvals.len(), 1);
+    app.submit(
+        thread.id.clone(),
+        "changed".into(),
+        "approval-kind-command-changed".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let changed = wait(&app, &thread.id, |thread| thread.approvals.len() == 2).await;
+    assert_eq!(changed.approvals[1].state, ApprovalState::Pending);
+    app.answer_approval(changed.approvals[1].id.clone(), ApprovalDecision::Accept)
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |thread| {
+        matches!(thread.turns[2].execution, Execution::Completed)
+    })
+    .await;
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn provider_capabilities_advertise_semantic_modes_and_supported_approval_kinds() {
+    let f = Fixture::new();
+    let app = App::open(f.config).await.unwrap();
+    let capabilities = app.provider_capabilities();
+    assert_eq!(capabilities.provider, "codex");
+    assert_eq!(
+        capabilities.default_permission_mode,
+        PermissionMode::FullAccess
+    );
+    assert_eq!(
+        SessionSettings::default().permission_mode,
+        PermissionMode::ApprovalRequired
+    );
+    assert_eq!(
+        capabilities
+            .permission_modes
+            .iter()
+            .map(|mode| mode.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Supervised", "Auto-accept edits", "Auto", "Full access"]
+    );
+    assert_eq!(
+        capabilities.supported_approval_kinds,
+        vec![
+            ApprovalKind::Command,
+            ApprovalKind::FileChange,
+            ApprovalKind::Permission,
+            ApprovalKind::McpElicitation
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(capabilities).unwrap()["defaultPermissionMode"],
+        "full-access"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn file_root_escalation_is_reviewable_and_later_patch_replaces_context() {
+    for scenario in ["file-root", "file-root-late", "file-no-details"] {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        app.submit(
+            thread.id.clone(),
+            scenario.into(),
+            format!("approval-kind-{scenario}"),
+            vec![],
+        )
+        .await
+        .unwrap();
+        let pending = wait(&app, &thread.id, |thread| thread.approvals.len() == 1).await;
+        let ApprovalAction::FileChange { text, .. } = &pending.approvals[0].action else {
+            panic!("Expected file approval");
+        };
+        let decision = if scenario == "file-no-details" {
+            assert!(text.is_empty());
+            for decision in [ApprovalDecision::Accept, ApprovalDecision::AcceptForSession] {
+                assert_eq!(
+                    app.answer_approval(pending.approvals[0].id.clone(), decision)
+                        .await
+                        .unwrap_err()
+                        .code,
+                    "approval_details_missing"
+                );
+            }
+            ApprovalDecision::Decline
+        } else {
+            assert_eq!(text, "Write access under /fixture/external");
+            if scenario == "file-root-late" {
+                std::fs::write(peer_file(&f, "file_patch_release"), "").unwrap();
+                let patched = wait(&app, &thread.id, |thread| matches!(&thread.approvals[0].action, ApprovalAction::FileChange { text, .. } if text.contains("exact later patch"))).await;
+                let ApprovalAction::FileChange { text, .. } = &patched.approvals[0].action else {
+                    unreachable!()
+                };
+                assert!(!text.contains("Write access under"));
+                assert!(text.contains("/fixture/external/test.txt"));
+            }
+            ApprovalDecision::Accept
+        };
+        app.answer_approval(pending.approvals[0].id.clone(), decision)
+            .await
+            .unwrap();
+        let completed = wait(&app, &thread.id, |thread| {
+            matches!(
+                thread.turns[0].execution,
+                Execution::Completed | Execution::Failed { .. }
+            )
+        })
+        .await;
+        assert!(
+            matches!(completed.turns[0].execution, Execution::Completed),
+            "{scenario}"
+        );
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[test]
+fn historical_approval_without_options_still_deserializes() {
+    let approval: Approval = serde_json::from_value(serde_json::json!({
+        "id": ApprovalId::default(), "turnId": TurnId::default(),
+        "action": {"kind":"command","command":"echo old","cwd":"/fixture","reason":""},
+        "state":"answered"
+    }))
+    .unwrap();
+    assert!(approval.options.is_empty());
+    assert_eq!(approval.state, ApprovalState::Answered);
 }

@@ -1,3 +1,5 @@
+// Ported from T3 Code v0.0.45 apps/server/src/provider/Layers/CodexSessionRuntime.ts.
+pub(crate) mod approvals;
 mod turn_input;
 use crate::{domain::*, log::RotatingLog};
 use serde_json::{Value, json};
@@ -19,6 +21,64 @@ use tokio::{
     time::{Instant, timeout, timeout_at},
 };
 pub(crate) use turn_input::turn_input;
+pub(crate) fn permission_protocol(
+    mode: PermissionMode,
+) -> (&'static str, &'static str, &'static str) {
+    match mode {
+        PermissionMode::ApprovalRequired => ("untrusted", "user", "read-only"),
+        PermissionMode::AutoAcceptEdits => ("on-request", "user", "workspace-write"),
+        PermissionMode::Auto => ("on-request", "auto_review", "workspace-write"),
+        PermissionMode::FullAccess => ("never", "user", "danger-full-access"),
+    }
+}
+pub(crate) fn sandbox_policy(mode: PermissionMode) -> Value {
+    match mode {
+        PermissionMode::ApprovalRequired => json!({"type":"readOnly"}),
+        PermissionMode::AutoAcceptEdits | PermissionMode::Auto => json!({"type":"workspaceWrite"}),
+        PermissionMode::FullAccess => json!({"type":"dangerFullAccess"}),
+    }
+}
+pub(crate) fn capabilities() -> ProviderCapabilities {
+    ProviderCapabilities {
+        provider: "codex".into(),
+        permission_modes: [
+            (
+                PermissionMode::ApprovalRequired,
+                "Supervised",
+                "Ask before commands and file changes.",
+            ),
+            (
+                PermissionMode::AutoAcceptEdits,
+                "Auto-accept edits",
+                "Auto-approve edits, ask before other actions.",
+            ),
+            (
+                PermissionMode::Auto,
+                "Auto",
+                "Supported providers approve routine actions; others still ask.",
+            ),
+            (
+                PermissionMode::FullAccess,
+                "Full access",
+                "Allow commands and edits without prompts.",
+            ),
+        ]
+        .into_iter()
+        .map(|(value, label, description)| PermissionModeOption {
+            value,
+            label: label.into(),
+            description: description.into(),
+        })
+        .collect(),
+        default_permission_mode: PermissionMode::FullAccess,
+        supported_approval_kinds: vec![
+            ApprovalKind::Command,
+            ApprovalKind::FileChange,
+            ApprovalKind::Permission,
+            ApprovalKind::McpElicitation,
+        ],
+    }
+}
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>;
 type Status = watch::Receiver<Option<ExitStatus>>;
 type Tail = Arc<std::sync::Mutex<VecDeque<String>>>;
@@ -220,6 +280,10 @@ impl Codex {
     }
     pub async fn respond(&self, id: Value, result: Value) -> Result<()> {
         self.write(json!({"id":id,"result":result})).await
+    }
+    pub async fn invalid_request(&self, id: Value, message: &str) -> Result<()> {
+        self.write(json!({"id":id,"error":{"code":-32602,"message":message}}))
+            .await
     }
     pub async fn refuse(&self, id: Value, method: &str) -> Result<()> {
         self.write(json!({"id":id,"error":{"code":-32601,"message":format!("Bot Code does not yet support {method}")}})).await

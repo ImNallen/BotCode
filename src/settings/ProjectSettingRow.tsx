@@ -1,8 +1,14 @@
-// Rows follow pingdotgg/t3code v0.0.45 settings/ProjectDefaultsSettings.tsx and SettingsPanels.tsx,
-// with the popover from SettingInheritance.tsx and classes from ui/popover.tsx and ui/input.tsx (MIT).
+// Ported from T3 Code v0.0.45 settings/ProjectDefaultsSettings.tsx, SettingsPanels.tsx and SettingInheritance.tsx, with ui/popover.tsx and ui/input.tsx classes (MIT).
 import { useEffect, useState, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon, LayersIcon } from "lucide-react";
 import { cn } from "../lib/cn";
+import type { ProviderCapabilities } from "../ipc";
+import {
+  PermissionModeOptions,
+  permissionModeIcons,
+  resolvePermissionMode,
+  useProviderCapabilities,
+} from "../chat/permissionModes";
 import { Button, Switch, selectItem, selectTrigger } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import {
@@ -79,11 +85,15 @@ function AutoSettleDaysInput({
 
 const controls: {
   [K in ProjectSetting]: {
-    format: (value: ProjectValues[K]) => string;
+    format: (
+      value: ProjectValues[K],
+      capabilities: ProviderCapabilities | undefined,
+    ) => string;
     control: (
       value: ProjectValues[K],
       set: (value: ProjectValues[K]) => void,
       disabled: boolean,
+      capabilities: ProviderCapabilities | undefined,
     ) => ReactNode;
     // Whether No project can override it. New thread defaults cannot, because
     // those threads start in their own folder.
@@ -96,6 +106,55 @@ const controls: {
     ) => ReactNode;
   };
 } = {
+  defaultPermissionMode: {
+    scratch: true,
+    format: (preferred, capabilities) => {
+      const value = resolvePermissionMode({ preferred, capabilities });
+      return (
+        capabilities?.permissionModes.find((option) => option.value === value)
+          ?.label ?? "Loading permissions..."
+      );
+    },
+    control: (preferred, set, disabled, capabilities) => {
+      const value = resolvePermissionMode({ preferred, capabilities });
+      const selected = capabilities?.permissionModes.find(
+        (option) => option.value === value,
+      );
+      const Icon = selected ? permissionModeIcons[selected.value] : undefined;
+      return (
+        <Menu
+          align="end"
+          trigger={(props) => (
+            <button
+              type="button"
+              {...props}
+              disabled={disabled || !selected}
+              aria-label="Default permissions"
+              className={selectTrigger()}
+            >
+              {Icon ? (
+                <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+              ) : null}
+              <span className="min-w-0 flex-1 truncate text-left">
+                {selected?.label ?? "Loading permissions..."}
+              </span>
+              <ChevronDownIcon
+                aria-hidden
+                className="-me-1 size-3 shrink-0 opacity-50"
+              />
+            </button>
+          )}
+        >
+          <PermissionModeOptions
+            options={capabilities?.permissionModes ?? []}
+            selected={value}
+            disabled={disabled}
+            onSelect={set}
+          />
+        </Menu>
+      );
+    },
+  },
   newThreadCheckout: {
     scratch: false,
     format: (mode) => checkoutModeLabels[mode],
@@ -261,15 +320,57 @@ function SettingInheritance({
   );
 }
 
-export function ProjectSettingRow<K extends ProjectSetting>({
-  id,
-  setting,
-  scope,
-}: {
+type ProjectSettingRowProps<K extends ProjectSetting = ProjectSetting> = {
   id: string;
   setting: K;
   scope: SettingsScope | undefined;
-}) {
+};
+
+export function ProjectSettingRow<K extends ProjectSetting>(
+  props: ProjectSettingRowProps<K>,
+) {
+  return props.setting === "defaultPermissionMode" ? (
+    <PermissionSettingRow id={props.id} scope={props.scope} />
+  ) : (
+    <ScopedProjectSettingRow {...props} />
+  );
+}
+
+function PermissionSettingRow({
+  id,
+  scope,
+}: Omit<ProjectSettingRowProps, "setting">) {
+  const query = useProviderCapabilities();
+  return (
+    <>
+      <ScopedProjectSettingRow
+        id={id}
+        setting="defaultPermissionMode"
+        scope={scope}
+        capabilities={query.data}
+      />
+      {query.error && !query.data ? (
+        <div role="alert" className="px-4 pb-3 text-sm text-muted-foreground">
+          <p>{query.error.message}</p>
+          <button
+            type="button"
+            className="mt-1 font-medium text-foreground hover:underline"
+            onClick={() => void query.refetch()}
+          >
+            Retry permissions
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function ScopedProjectSettingRow<K extends ProjectSetting>({
+  id,
+  setting,
+  scope,
+  capabilities,
+}: ProjectSettingRowProps<K> & { capabilities?: ProviderCapabilities }) {
   const { preferences, update, patchProject } = usePreferences();
   const { format, control, scratch, detail } = controls[setting];
   const target = writeTarget(scope, scratch);
@@ -296,7 +397,7 @@ export function ProjectSettingRow<K extends ProjectSetting>({
         id={id}
         title={labels.title}
         description="Threads without a project start in their own folder."
-        control={control(value, write, true)}
+        control={control(value, write, true, capabilities)}
         disabled
       />
     );
@@ -316,7 +417,7 @@ export function ProjectSettingRow<K extends ProjectSetting>({
           ? [
               {
                 label: "This project",
-                value: overridden ? format(value) : "Inherits",
+                value: overridden ? format(value, capabilities) : "Inherits",
                 set: overridden,
                 effective: overridden,
               },
@@ -324,7 +425,7 @@ export function ProjectSettingRow<K extends ProjectSetting>({
           : []),
         {
           label: "All projects",
-          value: format(allValue),
+          value: format(allValue, capabilities),
           set: true,
           effective: !overridden,
         },
@@ -337,7 +438,7 @@ export function ProjectSettingRow<K extends ProjectSetting>({
         id={id}
         title={labels.title}
         description={scoped ? labels.project : labels.all}
-        control={control(value, write, false)}
+        control={control(value, write, false, capabilities)}
         inheritance={inheritance}
         resetAction={
           scoped ? (

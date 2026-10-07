@@ -16,6 +16,47 @@ import {
 } from "./ipc.ts";
 import { usageLimitsQuery } from "./usage/limits.ts";
 
+it("reads the provider's permission subset and rejects unknown semantic modes", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { crypto: globalThis.crypto },
+  });
+  const capabilities = {
+    provider: "future-provider",
+    permissionModes: [
+      {
+        value: "approval-required",
+        label: "Supervised",
+        description: "Ask before actions.",
+      },
+    ],
+    defaultPermissionMode: "approval-required",
+    supportedApprovalKinds: ["command"],
+  };
+  try {
+    mockIPC((command) => {
+      assert.equal(command, "provider_capabilities");
+      return capabilities;
+    });
+    assert.deepEqual(await ipc.providerCapabilities(), capabilities);
+    mockIPC(() => ({
+      ...capabilities,
+      defaultPermissionMode: "danger-full-access",
+    }));
+    const rejected = await ipc.providerCapabilities().then(
+      () => false,
+      () => true,
+    );
+    assert.equal(rejected, true);
+  } finally {
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
 it("refreshes the active branch picker after a worktree naming event without refreshing another workspace", async () => {
   const workspaceId = "67ce24cf-70e2-44b3-99f4-53bd8d155d19";
   const otherWorkspaceId = "ba2baf88-7534-4d53-947c-bc2e432a549d";
