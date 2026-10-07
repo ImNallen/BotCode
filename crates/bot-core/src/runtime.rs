@@ -1,6 +1,7 @@
 mod checkpoints;
 mod collaboration;
 mod naming;
+mod restarts;
 mod thread_actions;
 use thread_actions::DeleteCompletion;
 mod pr_review;
@@ -14,6 +15,7 @@ use crate::{
     codex::{Codex, Signal},
     domain::*,
     editors::{self, EditorId, OpenTarget, Position},
+    log::RotatingLog,
     repo, settings, skills,
     store::Store,
     terminal::{
@@ -29,7 +31,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, Notify, broadcast, mpsc, oneshot, watch};
 
@@ -261,6 +263,7 @@ pub struct App {
     wake: Arc<Notify>,
     gh: PathBuf,
     codex: PathBuf,
+    log: RotatingLog,
     terminals: Terminals,
     attachments: Attachments,
 }
@@ -317,19 +320,7 @@ impl App {
                     turn.checkpoint = TurnCheckpoint::Unavailable { before: Some(before.clone()), reason: "The application closed before this turn's final checkpoint was recorded.".into() };
                 }
             }
-            for approval in &mut thread.approvals {
-                if matches!(
-                    approval.state,
-                    ApprovalState::Pending | ApprovalState::Answering
-                ) {
-                    approval.state = ApprovalState::Expired
-                }
-            }
-            for request in &mut thread.user_questions {
-                if request.state.open() {
-                    request.state = UserQuestionState::Expired;
-                }
-            }
+            thread.expire_open_requests();
             thread.revision += 1;
             store.save(thread)?;
         }
@@ -373,6 +364,7 @@ impl App {
         let (provider_events, signals) = mpsc::channel(512);
         let (done, completions) = mpsc::channel(128);
         let prs = PrWork::load(&mut store)?;
+        let log = RotatingLog::open(config.data_dir.join("logs").join("codex.log"));
         tokio::spawn(
             Owner {
                 prs,
@@ -401,13 +393,14 @@ impl App {
                 auto_settle,
                 leases: HashMap::new(),
                 held: HashMap::new(),
-                routes: HashMap::new(),
-                question_routes: HashMap::new(),
+                callbacks: HashMap::new(),
                 collaboration_modes: vec![],
                 collaboration_waiters: vec![],
                 provider: None,
                 epoch: 0,
                 launching: false,
+                restarts: restarts::Restarts::default(),
+                log: log.clone(),
                 pending: vec![],
                 models: None,
                 model_waiters: vec![],
@@ -433,6 +426,7 @@ impl App {
             wake: Arc::new(Notify::new()),
             gh,
             codex,
+            log,
             terminals,
             attachments,
         };
@@ -849,7 +843,7 @@ impl App {
         self.call(Command::Models).await
     }
     pub async fn list_skills(&self, cwd: PathBuf) -> Vec<skills::Skill> {
-        skills::list(&self.codex, &cwd).await
+        skills::list(&self.codex, &cwd, self.log.clone()).await
     }
     pub async fn collaboration_modes(&self) -> Result<Vec<InteractionMode>> {
         self.call(Command::CollaborationModes).await
@@ -1261,6 +1255,28 @@ enum Completion {
         result: Result<Value>,
     },
 }
+impl Completion {
+    fn process_died(&self) -> bool {
+        let error = match self {
+            Self::Models { result, .. } => result.as_ref().err(),
+            Self::Limits { result, .. } => result.as_ref().err(),
+            Self::Launched { result, .. } => result.as_ref().err(),
+            Self::Prepared { result, .. }
+            | Self::Started { result, .. }
+            | Self::Steered { result, .. }
+            | Self::Interrupted { result, .. } => result.as_ref().err(),
+            Self::Answered { result, .. } | Self::UserQuestionsAnswered { result, .. } => {
+                result.as_ref().err()
+            }
+        };
+        error.is_some_and(|error| error.code == "provider_lost")
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Callback {
+    Approval(ApprovalId),
+    UserInput(UserQuestionRequestId),
+}
 #[derive(Clone)]
 struct Route {
     thread: ThreadId,
@@ -1293,13 +1309,14 @@ struct Owner {
     auto_settle: settings::AutoSettle,
     leases: HashMap<PathBuf, ThreadId>,
     held: HashMap<PathBuf, Hold>,
-    routes: HashMap<ApprovalId, Route>,
-    question_routes: HashMap<UserQuestionRequestId, Route>,
+    callbacks: HashMap<Callback, Route>,
     collaboration_modes: Vec<collaboration::ModePreset>,
     collaboration_waiters: Vec<Reply<Vec<InteractionMode>>>,
     provider: Option<Codex>,
     epoch: u64,
     launching: bool,
+    restarts: restarts::Restarts,
+    log: RotatingLog,
     pending: Vec<Prepare>,
     models: Option<Vec<ModelOption>>,
     model_waiters: Vec<Reply<Vec<ModelOption>>>,
@@ -1460,7 +1477,7 @@ impl Owner {
         self.forget_pr_threads(&removed);
         self.threads.retain(|id, _| !removed.contains(id));
         self.dirty.retain(|id| !removed.contains(id));
-        self.routes
+        self.callbacks
             .retain(|_, route| !removed.contains(&route.thread));
         self.workspaces.remove(id);
         Ok(())
@@ -1654,9 +1671,9 @@ impl Owner {
                 Some(signal)=signals.recv()=>{
                     match signal {
                         Signal::Frame{epoch,value} if epoch==self.epoch=>{
-                            if let Err(error)=self.frame(value).await {self.lose(&error.message).await;}
+                            if let Err(error)=self.frame(value).await && error.code!="provider_lost" {self.lose(&error.message).await;}
                         }
-                        Signal::Exited{epoch,reason} if epoch==self.epoch=>self.lose(&reason).await,
+                        Signal::Exited{epoch,exit} if epoch==self.epoch=>self.lose_with(&exit.headline(),&exit.reason()).await,
                         _=>{}
                     }
                 }
@@ -2072,7 +2089,8 @@ impl Owner {
             }
             Command::Approval(id, decision, reply) => {
                 let result = (|| -> Result<()> {
-                    let route = self.routes.get(&id).cloned().ok_or_else(|| {
+                    let callback = Callback::Approval(id.clone());
+                    let route = self.callbacks.get(&callback).cloned().ok_or_else(|| {
                         AppError::new(
                             "approval_expired",
                             "This approval no longer has a live callback.",
@@ -2107,7 +2125,7 @@ impl Owner {
                     }
                     approval.state = ApprovalState::Answering;
                     self.install(thread)?;
-                    self.routes.remove(&id);
+                    self.callbacks.remove(&callback);
                     let done = self.done.clone();
                     let epoch = self.epoch;
                     tokio::spawn(async move {
@@ -2322,23 +2340,13 @@ impl Owner {
                 "Wait for the current operation to finish.",
             ));
         }
-        let previous_overrides = thread.turns.iter().any(|turn| {
-            turn.settings
-                .as_ref()
-                .is_some_and(|settings| settings.model.is_some() || settings.effort.is_some())
-        });
-        if self.models.is_some() || thread.settings.interaction_mode == InteractionMode::Plan {
-            self.validate_settings(&thread.settings)?;
-        }
-        if thread.native_thread_id.is_some()
-            && previous_overrides
-            && (self.resolve_model(&thread.settings).is_none()
-                || self.resolve_effort(&thread.settings).is_none())
-        {
-            return Err(AppError::new(
-                "models_unavailable",
-                "Load the model list before continuing this conversation.",
-            ));
+        // Without a provider the catalogs are unknown; turn start checks them after the relaunch.
+        if self.provider.is_some() {
+            self.startable(
+                &thread.settings,
+                thread.native_thread_id.is_some(),
+                &thread.turns,
+            )?;
         }
         let root = thread
             .root(&self.workspaces[&thread.workspace_id])
@@ -2599,6 +2607,26 @@ impl Owner {
         }
         Ok(())
     }
+    fn startable(&self, settings: &SessionSettings, native: bool, previous: &[Turn]) -> Result<()> {
+        if self.models.is_some() || settings.interaction_mode == InteractionMode::Plan {
+            self.validate_settings(settings)?;
+        }
+        let previous_overrides = previous.iter().any(|turn| {
+            turn.settings
+                .as_ref()
+                .is_some_and(|settings| settings.model.is_some() || settings.effort.is_some())
+        });
+        if native
+            && previous_overrides
+            && (self.resolve_model(settings).is_none() || self.resolve_effort(settings).is_none())
+        {
+            return Err(AppError::new(
+                "models_unavailable",
+                "Load the model list before continuing this conversation.",
+            ));
+        }
+        Ok(())
+    }
     fn resolve_model<'a>(&'a self, settings: &'a SessionSettings) -> Option<&'a str> {
         settings.model.as_deref().or_else(|| {
             self.models
@@ -2628,8 +2656,24 @@ impl Owner {
         let binary = self.config.codex_binary.clone();
         let signals = self.provider_events.clone();
         let done = self.done.clone();
+        let delay = self.restarts.delay(Instant::now());
+        if !delay.is_zero() {
+            self.log.line(
+                "bot-code",
+                &format!(
+                    "restarting Codex in {}s after {} consecutive failures",
+                    restarts::whole_seconds(delay),
+                    self.restarts.failures()
+                ),
+            );
+        }
+        let log = self.log.clone();
         tokio::spawn(async move {
-            let result = match Codex::launch(binary, epoch, signals).await {
+            tokio::time::sleep(delay).await;
+            if done.is_closed() {
+                return;
+            }
+            let result = match Codex::launch(binary, epoch, signals, log).await {
                 Ok(provider) => match provider.initialize().await {
                     Ok(()) => Ok(collaboration::discover(provider).await),
                     Err(e) => {
@@ -2711,8 +2755,15 @@ impl Owner {
             if let Prepare::Revert(id) = &job {
                 self.waiting_revert_provider(id.clone());
             }
-            self.pending.push(job);
             self.launch();
+            if let Prepare::Submit(id, _) | Prepare::Resume(id) = &job
+                && let Some(notice) = self.restarts.notice(Instant::now())
+                && let Some(t) = self.threads.get_mut(id)
+            {
+                t.diagnostic = Some(notice);
+                self.dirty.insert(id.clone());
+            }
+            self.pending.push(job);
             return;
         }
         if let Prepare::Revert(id) = job {
@@ -2741,6 +2792,10 @@ impl Owner {
         });
     }
     async fn complete(&mut self, done: Completion) -> Result<()> {
+        // The dead process's Exited signal follows and reports the loss with its status and stderr.
+        if done.process_died() {
+            return Ok(());
+        }
         match done {
             Completion::Models { epoch, result } if epoch == self.epoch => {
                 self.listing_models = false;
@@ -2754,31 +2809,36 @@ impl Owner {
             Completion::Limits { epoch, result } if epoch == self.epoch => {
                 self.settle_limits(result);
             }
-            Completion::Launched { epoch, result } if epoch == self.epoch => {
-                self.launching = false;
-                match result {
-                    Ok(session) => {
-                        self.collaboration_modes = session.modes;
-                        self.models = session.models;
-                        self.provider = Some(session.provider);
-                        let modes = self
-                            .collaboration_modes
-                            .iter()
-                            .filter_map(|preset| preset.mode)
-                            .collect::<Vec<_>>();
-                        for reply in std::mem::take(&mut self.collaboration_waiters) {
-                            let _ = reply.send(Ok(modes.clone()));
-                        }
-                        self.read_limits();
-                        if !self.model_waiters.is_empty() {
-                            self.list_models();
-                        }
-                        for job in std::mem::take(&mut self.pending) {
-                            self.prepare(job)
-                        }
+            Completion::Launched { epoch, result } if epoch == self.epoch => match result {
+                Ok(session) => {
+                    self.launching = false;
+                    self.restarts.ready(Instant::now());
+                    self.collaboration_modes = session.modes;
+                    self.models = session.models;
+                    self.provider = Some(session.provider);
+                    let modes = self
+                        .collaboration_modes
+                        .iter()
+                        .filter_map(|preset| preset.mode)
+                        .collect::<Vec<_>>();
+                    for reply in std::mem::take(&mut self.collaboration_waiters) {
+                        let _ = reply.send(Ok(modes.clone()));
                     }
-                    Err(e) => self.lose(&e.message).await,
+                    self.read_limits();
+                    if !self.model_waiters.is_empty() {
+                        self.list_models();
+                    }
+                    for job in std::mem::take(&mut self.pending) {
+                        self.prepare(job)
+                    }
                 }
+                Err(e) => self.lose(&e.message).await,
+            },
+            Completion::Launched {
+                result: Ok(session),
+                ..
+            } => {
+                tokio::spawn(async move { session.provider.terminate().await });
             }
             Completion::Prepared { epoch, job, result } if epoch == self.epoch => {
                 let id = job.thread().clone();
@@ -2823,12 +2883,18 @@ impl Owner {
                             let sandbox_policy = settings.permission_mode.sandbox_policy();
                             let model = self.resolve_model(&settings).map(str::to_owned);
                             let effort = self.resolve_effort(&settings).map(str::to_owned);
-                            let collaboration = collaboration::turn_mode(
-                                &self.collaboration_modes,
-                                &settings,
-                                model.as_deref(),
-                                effort.as_deref(),
-                            );
+                            let t = &self.threads[&id];
+                            let previous = t.turns.iter().position(|v| v.id == turn_id);
+                            let collaboration = self
+                                .startable(&settings, true, &t.turns[..previous.unwrap_or(0)])
+                                .and_then(|()| {
+                                    collaboration::turn_mode(
+                                        &self.collaboration_modes,
+                                        &settings,
+                                        model.as_deref(),
+                                        effort.as_deref(),
+                                    )
+                                });
                             self.commit(&id)?;
                             let provider = self.provider.clone().ok_or_else(|| {
                                 AppError::new("provider_lost", "Codex is unavailable.")
@@ -2909,7 +2975,14 @@ impl Owner {
                         }
                     }
                     Err(e)
-                        if matches!(e.code.as_str(), "plan_unavailable" | "models_unavailable") =>
+                        if matches!(
+                            e.code.as_str(),
+                            "plan_unavailable"
+                                | "models_unavailable"
+                                | "invalid_model"
+                                | "invalid_effort"
+                                | "invalid_settings"
+                        ) =>
                     {
                         row.delivery = Delivery::NotSent {
                             reason: e.message.clone(),
@@ -3064,6 +3137,22 @@ impl Owner {
         Ok(())
     }
     async fn lose(&mut self, reason: &str) {
+        self.lose_with(reason, reason).await
+    }
+    /// `headline` is the short banner text; `reason` is recorded on the work that was lost.
+    async fn lose_with(&mut self, headline: &str, reason: &str) {
+        if self.provider.is_some() || self.launching {
+            if !self.closing {
+                self.restarts.lost(Instant::now());
+            }
+            self.log.line(
+                "bot-code",
+                &format!(
+                    "provider lost: {}",
+                    reason.lines().next().unwrap_or_default()
+                ),
+            );
+        }
         self.cancel_names();
         self.cancel_commit_previews(None);
         if let Some(provider) = self.provider.take() {
@@ -3072,21 +3161,20 @@ impl Owner {
         self.epoch += 1;
         self.launching = false;
         self.pending.clear();
-        self.fail_reverts(reason);
+        self.fail_reverts(headline);
         self.models = None;
         self.listing_models = false;
         for reply in std::mem::take(&mut self.model_waiters) {
-            let _ = reply.send(Err(AppError::new("provider_lost", reason)));
+            let _ = reply.send(Err(AppError::new("provider_lost", headline)));
         }
         self.reading_limits = false;
         if !self.limit_waiters.is_empty() {
-            self.settle_limits(Err(AppError::new("provider_lost", reason)));
+            self.settle_limits(Err(AppError::new("provider_lost", headline)));
         }
-        self.routes.clear();
-        self.question_routes.clear();
+        self.callbacks.clear();
         self.collaboration_modes.clear();
         for reply in std::mem::take(&mut self.collaboration_waiters) {
-            let _ = reply.send(Err(AppError::new("provider_lost", reason)));
+            let _ = reply.send(Err(AppError::new("provider_lost", headline)));
         }
         self.leases.clear();
         let ids: Vec<_> = self.threads.keys().cloned().collect();
@@ -3102,10 +3190,25 @@ impl Owner {
             if !affected {
                 continue;
             }
+            let lost_work = t.expire_open_requests()
+                || t.turns.iter().any(|turn| {
+                    turn.execution.active()
+                        || turn.items.iter().any(|item| {
+                            matches!(
+                                item,
+                                Item::UserInput {
+                                    delivery: Delivery::Preparing | Delivery::Sending,
+                                    ..
+                                }
+                            )
+                        })
+                });
             t.session = SessionState::Unavailable {
-                reason: reason.into(),
+                reason: headline.into(),
             };
-            t.diagnostic = Some(reason.into());
+            if lost_work {
+                t.diagnostic = Some(headline.into());
+            }
             for turn in &mut t.turns {
                 settle_user_inputs(
                     turn,
@@ -3117,7 +3220,7 @@ impl Owner {
                 ) {
                     turn.checkpoint = TurnCheckpoint::Unavailable {
                         before: turn.checkpoint.before().cloned(),
-                        reason: format!("Checkpoint capture did not finish. {reason}"),
+                        reason: format!("Checkpoint capture did not finish. {headline}"),
                     };
                 }
                 if turn.execution.active() {
@@ -3133,19 +3236,6 @@ impl Owner {
                             reason: reason.into(),
                         }
                     }
-                }
-            }
-            for approval in &mut t.approvals {
-                if matches!(
-                    approval.state,
-                    ApprovalState::Pending | ApprovalState::Answering
-                ) {
-                    approval.state = ApprovalState::Expired
-                }
-            }
-            for request in &mut t.user_questions {
-                if request.state.open() {
-                    request.state = UserQuestionState::Expired;
                 }
             }
             let _ = self.commit(&id);
@@ -3200,8 +3290,8 @@ impl Owner {
                     questions,
                     state: UserQuestionState::Pending,
                 };
-                self.question_routes.insert(
-                    pending.id.clone(),
+                self.callbacks.insert(
+                    Callback::UserInput(pending.id.clone()),
                     Route {
                         thread: id.clone(),
                         request: request.clone(),
@@ -3246,8 +3336,8 @@ impl Owner {
                     action,
                     state: ApprovalState::Pending,
                 };
-                self.routes.insert(
-                    approval.id.clone(),
+                self.callbacks.insert(
+                    Callback::Approval(approval.id.clone()),
                     Route {
                         thread: id.clone(),
                         request: request.clone(),
@@ -3385,8 +3475,8 @@ impl Owner {
                             for approval in &mut t.approvals {
                                 if approval.turn_id == turn.id
                                     && self
-                                        .routes
-                                        .get(&approval.id)
+                                        .callbacks
+                                        .get(&Callback::Approval(approval.id.clone()))
                                         .is_some_and(|route| route.item_id == item.id())
                                     && approval.state == ApprovalState::Pending
                                     && let ApprovalAction::FileChange { text: details, .. } =
@@ -3420,13 +3510,15 @@ impl Owner {
                 for approval in &mut t.approvals {
                     if approval.turn_id == turn.id && approval.state == ApprovalState::Pending {
                         approval.state = ApprovalState::Expired;
-                        self.routes.remove(&approval.id);
+                        self.callbacks
+                            .remove(&Callback::Approval(approval.id.clone()));
                     }
                 }
                 for request in &mut t.user_questions {
                     if request.turn_id == turn.id && request.state == UserQuestionState::Pending {
                         request.state = UserQuestionState::Expired;
-                        self.question_routes.remove(&request.id);
+                        self.callbacks
+                            .remove(&Callback::UserInput(request.id.clone()));
                     }
                 }
                 self.capture_after(&id, completed_turn)?;
@@ -3859,6 +3951,7 @@ fn merge_history(thread: &mut ThreadSnapshot, value: Option<&Value>) {
     let Some(turns) = value.and_then(Value::as_array) else {
         return;
     };
+    let mut confirmed = HashSet::new();
     for native in turns {
         let native_id = string(native, "id");
         let items = native.get("items").and_then(Value::as_array);
@@ -3873,10 +3966,14 @@ fn merge_history(thread: &mut ThreadSnapshot, value: Option<&Value>) {
                 })
         });
         if let Some(turn) = row {
+            confirmed.insert(turn.id.clone());
             turn.native_turn_id = Some(native_id);
             turn.delivery = Delivery::Accepted;
             let recovered = execution(&string(native, "status"), native.get("error"));
-            if !matches!(recovered, Execution::Running) {
+            // Codex reloads a turn whose process died as interrupted; the local loss reason is the truth.
+            let crashed = matches!(turn.execution, Execution::Lost { .. })
+                && recovered == Execution::Interrupted;
+            if !matches!(recovered, Execution::Running) && !crashed {
                 turn.execution = recovered;
             }
             if let Some(items) = items {
@@ -3884,11 +3981,9 @@ fn merge_history(thread: &mut ThreadSnapshot, value: Option<&Value>) {
             }
         }
     }
-    if thread
-        .turns
-        .iter()
-        .any(|turn| matches!(turn.execution, Execution::Lost { .. }))
-    {
+    if thread.turns.iter().any(|turn| {
+        matches!(turn.execution, Execution::Lost { .. }) && !confirmed.contains(&turn.id)
+    }) {
         thread.diagnostic=Some("Some previous execution could not be confirmed from the returned native history. No prompt was replayed.".into());
     }
 }

@@ -720,3 +720,19 @@ Verified on macOS on 2026-10-07 with installed codex-cli 0.160.1. Two debug Taur
 The first head run exposed an ordering bug. Resuming native history appended items that the snapshot lacked after the final answer. Before this change, the snapshot never lacked an item, because every Codex item was saved as `other`. The merge now inserts each missing item after the item that precedes it in native history. A core test reproduces the original order, and the rebuilt bundle showed the corrected order on a fresh copy of the parent snapshot.
 
 Evidence is under `/tmp/timeline-verify`: the wrapper, `protocol.jsonl`, the probe captures, the input tool, and the screenshots under `shots`. The window kept the left sidebar, centered chat, bottom composer, compact header, and neutral colors at 1100×780. No pixel-difference measurement against T3 was made for these rows.
+
+## Codex crash recovery
+
+Verified on 2026-10-07 with installed Codex 0.160.1. All 358 `cargo test -p bot-core` tests, all 324 `pnpm test:ui` tests, `cargo fmt --check`, workspace Clippy with `-D warnings`, the production frontend build, and the debug Tauri app bundle passed. The fixture's crash mode drives seven runtime tests: a crash mid-turn, a crash with pending approvals and user-input questions, a crash before the `turn/start` acknowledgement, a crash while a steering follow-up is sending, a steer written to a killed Codex, a leader exit while a descendant keeps stdout open, and repeated crashes during restart.
+
+The actual native bundle used disposable repository `/tmp/botcode-crash/repo` and `BOT_CODE_DATA_DIR=/tmp/botcode-crash/data2`. It ran with `RUST_LOG=info`, because Codex writes nothing to stderr by default.
+
+| Check | Observed result |
+| --- | --- |
+| `kill -9` mid-turn | Thread A waited on a command approval in the local checkout. Thread B streamed an essay in a worktree. Both showed "Codex stopped unexpectedly (killed by signal 9)" with the last 12 stderr lines. B kept its partial text. A's approval became expired. |
+| Next message | Each thread's next prompt completed with the requested reply. Thread A kept native thread `01a11702-f451…`. Neither crashed prompt was sent again. |
+| Resume | Opening a crashed thread resumed it and kept the crash reason, also after a full app restart. |
+| Repeated crashes | Three consecutive kills logged restarts after 1 and 2 seconds. Idle threads gained no banner, and their earlier lost turns did not change. |
+| Log | `logs/codex.log` held all 732 stderr lines of the killed process and rotated into three older 1 MiB files. |
+
+The first native run found two defects that the tests had missed. Resume replaced a lost turn with Codex's `interrupted` status, so the timeline read "You stopped", and stderr showed raw ANSI color codes. Both were fixed and checked again in the native window.
