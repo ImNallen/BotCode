@@ -5711,3 +5711,42 @@ async fn crash_while_steering_is_sending_reports_the_crash() {
         app.shutdown().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn steer_written_to_a_killed_codex_reports_the_crash() {
+    for _ in 0..4 {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        let original = app
+            .submit(thread.id.clone(), "original".into(), "hold".into(), vec![])
+            .await
+            .unwrap();
+        wait(&app, &thread.id, |t| {
+            matches!(t.session, SessionState::Running)
+        })
+        .await;
+        unsafe { libc::kill(peer_pid(&f, "pid"), libc::SIGKILL) };
+        // The owner may already have handled the exit and refused the steer.
+        let _ = app
+            .submit_to(
+                thread.id.clone(),
+                "follow".into(),
+                "late".into(),
+                vec![],
+                Some(original.turn_id.clone()),
+            )
+            .await;
+        let lost = wait(&app, &thread.id, |t| {
+            matches!(t.turns[0].execution, Execution::Lost { .. })
+        })
+        .await;
+        assert!(
+            lost_reason(&lost.turns[0]).starts_with(KILLED),
+            "{}",
+            lost_reason(&lost.turns[0])
+        );
+        assert_eq!(lost.diagnostic.as_deref(), Some(KILLED));
+        app.shutdown().await.unwrap();
+    }
+}

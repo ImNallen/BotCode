@@ -1671,7 +1671,7 @@ impl Owner {
                 Some(signal)=signals.recv()=>{
                     match signal {
                         Signal::Frame{epoch,value} if epoch==self.epoch=>{
-                            if let Err(error)=self.frame(value).await {self.lose(&error.message).await;}
+                            if let Err(error)=self.frame(value).await && error.code!="provider_lost" {self.lose(&error.message).await;}
                         }
                         Signal::Exited{epoch,exit} if epoch==self.epoch=>self.lose_with(&exit.headline(),&exit.reason()).await,
                         _=>{}

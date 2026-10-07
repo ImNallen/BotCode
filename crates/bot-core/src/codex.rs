@@ -155,7 +155,7 @@ impl Codex {
     async fn write(&self, value: Value) -> Result<()> {
         let mut bytes = serde_json::to_vec(&value)?;
         bytes.push(b'\n');
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let written = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             let mut sink = self.stdin.lock().await;
             sink.write_all(&bytes).await?;
             sink.flush().await?;
@@ -167,7 +167,19 @@ impl Codex {
                 "provider_timeout",
                 "Codex stopped reading its input. Delivery is uncertain.",
             )
-        })?
+        })?;
+        if let Err(error) = written {
+            // A write to an exited Codex fails with a broken pipe; its Exited signal reports the loss.
+            let mut status = self.status.clone();
+            if timeout(Duration::from_secs(1), exited(&mut status))
+                .await
+                .is_ok()
+            {
+                return Err(AppError::new("provider_lost", "Codex exited."));
+            }
+            return Err(error);
+        }
+        Ok(())
     }
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
         self.request_with_timeout(method, params, std::time::Duration::from_secs(20))
