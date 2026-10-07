@@ -246,8 +246,10 @@ pub async fn submit(
     request_id: String,
     text: String,
     attachments: Vec<ImageAttachment>,
+    expected_turn_id: Option<TurnId>,
 ) -> Result<Receipt> {
-    app.submit(thread_id, request_id, text, attachments).await
+    app.submit_to(thread_id, request_id, text, attachments, expected_turn_id)
+        .await
 }
 #[tauri::command]
 pub async fn answer_approval(

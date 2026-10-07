@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -18,6 +19,7 @@ import {
   checkoutKey,
   invalidateCheckouts,
   ipc,
+  readThreadSnapshot,
   setThreadSnapshot,
 } from "../ipc";
 import type {
@@ -81,12 +83,15 @@ import {
   clearAcceptedInput,
   mergeRecoveredInput,
   recoveryFit,
+  restoreFollowUps,
   MAX_IMAGES,
   type ComposerInput,
 } from "./composerImages";
 import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import { isUsageLimitsCommand, usageNoticeKey } from "../usage/limits";
 import { Timeline } from "./Timeline";
+import { followUps, immediateIntent } from "./followUps";
+import { sendFollowUpNow } from "./FollowUpSender";
 import { EditFromHereDialog } from "./EditFromHereDialog";
 import { useTurnRevert } from "./useTurnRevert";
 import { DraftHeadline } from "./DraftHeadline";
@@ -154,6 +159,12 @@ export function ChatView({
   const composerRef = useRef(composer);
   composerRef.current = composer;
   const { text: draft, images } = composer;
+  useSyncExternalStore(
+    followUps.subscribe,
+    followUps.snapshot,
+    followUps.snapshot,
+  );
+  const queued = threadId ? followUps.rows(threadId) : [];
   const setDraft = (update: string | ((text: string) => string)) =>
     setComposer((current) => ({
       ...current,
@@ -216,13 +227,7 @@ export function ChatView({
   }, [threadId]);
   const query = useQuery({
     queryKey: ["thread", threadId],
-    queryFn: async () => {
-      const incoming = await ipc.thread(threadId ?? "");
-      const current = client.getQueryData<Thread>(["thread", threadId]);
-      return current && current.revision > incoming.revision
-        ? current
-        : incoming;
-    },
+    queryFn: () => readThreadSnapshot(client, threadId ?? ""),
     enabled: Boolean(threadId),
   });
   const thread = threadId ? query.data : undefined;
@@ -402,6 +407,26 @@ export function ChatView({
     onSuccess: refresh,
     onError: (e) => setError(e.message),
   });
+  const recoverQueue = (id?: string) => {
+    if (!threadId) return;
+    if (!id) followUps.hold(threadId);
+    const rows = followUps
+      .rows(threadId)
+      .filter(
+        (row) =>
+          (!id || row.id === id) &&
+          ["waiting", "held", "preparing"].includes(row.state.kind),
+      );
+    if (!rows.length) return;
+    const recovered = restoreFollowUps(composerRef.current, rows);
+    if (recovered.error) {
+      setError(recovered.error);
+      return;
+    }
+    setComposer(recovered.input);
+    for (const row of rows) followUps.remove(threadId, row.id);
+    setComposerFocusRequest((current) => current + 1);
+  };
   const stop = useMutation({
     mutationFn: () => ipc.interrupt(threadId ?? ""),
     onSuccess: refresh,
@@ -480,6 +505,13 @@ export function ChatView({
           turn.checkpoint.kind === "before",
       )
     : false;
+  const effectiveFollowUpBehavior =
+    preferences.followUpBehavior === "steer" &&
+    !queued.length &&
+    thread &&
+    immediateIntent(thread)?.kind === "steer"
+      ? "steer"
+      : "queue";
   const pending = thread?.approvals.filter((a) => a.state === "pending") ?? [];
   const approval = pending[0];
   const noticeKey = usageNoticeKey(
@@ -572,14 +604,22 @@ export function ChatView({
     if (
       attachments === null ||
       (!draft.trim() && attachments.length === 0) ||
-      busy ||
       reverting ||
       send.isPending ||
       saveSettings.isPending ||
-      approval ||
       (Boolean(threadId) && !thread)
     )
       return;
+    if (thread && (busy || queued.length)) {
+      const id = crypto.randomUUID();
+      followUps.enqueue(thread, { id, text: draft, attachments, settings });
+      setComposer((current) => clearAcceptedInput(current, composer));
+      setError(undefined);
+      if (busy && effectiveFollowUpBehavior === "steer")
+        sendFollowUpNow(client, thread, id);
+      return;
+    }
+    if (approval) return;
     send.mutate({ text: draft, attachments, started: composer });
   };
   const title = isDraft ? "New thread" : (thread?.title ?? "");
@@ -843,7 +883,14 @@ export function ChatView({
                     clearance={clearance}
                     reverting={revert.isPending}
                     busy={busy}
-                    onEdit={openEdit}
+                    onEdit={(turnId) => {
+                      if (threadId) {
+                        recoverQueue();
+                        followUps.hold(threadId);
+                      }
+                      openEdit(turnId);
+                    }}
+                    onRemoveQueued={recoverQueue}
                     onOpenTurnDiff={openTurnDiff}
                   />
                 </FileLinkProvider>
@@ -940,18 +987,21 @@ export function ChatView({
                         )
                       }
                       onSubmit={submit}
-                      onStop={() => stop.mutate()}
+                      onStop={() => {
+                        recoverQueue();
+                        stop.mutate();
+                      }}
+                      followUpBehavior={effectiveFollowUpBehavior}
                       canSend={
                         isUsageLimitsCommand(draft) ||
                         ((Boolean(draft.trim()) || images.length > 0) &&
                           attachments !== null &&
-                          !busy &&
                           !reverting &&
                           !send.isPending &&
                           !saveSettings.isPending &&
                           (!threadId || Boolean(thread)))
                       }
-                      running={busy}
+                      running={busy || queued.length > 0}
                       canStop={canStop}
                       stopping={
                         stop.isPending ||
@@ -990,7 +1040,7 @@ export function ChatView({
                           ? (thread?.context ?? null)
                           : null
                       }
-                      disabled={Boolean(approval)}
+                      disabled={false}
                       context={context}
                       settings={settings}
                       models={models.data ?? []}

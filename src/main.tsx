@@ -7,6 +7,7 @@ import { loadStorage } from "./lib/storage";
 import { router } from "./router";
 import { loadPreferences, PreferencesProvider } from "./settings/preferences";
 import "./styles.css";
+import { FollowUpSender } from "./chat/FollowUpSender";
 const client = new QueryClient({
   defaultOptions: { queries: { retry: false, staleTime: 1500 } },
 });
@@ -28,6 +29,7 @@ const mount = () =>
     <StrictMode>
       <QueryClientProvider client={client}>
         <PreferencesProvider>
+          <FollowUpSender />
           <RouterProvider router={router} />
         </PreferencesProvider>
       </QueryClientProvider>

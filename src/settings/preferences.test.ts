@@ -93,3 +93,54 @@ it("starts notifications off and restores each stored mode independently from in
     );
   }
 });
+
+it("defaults follow-ups to Queue, persists Steer and restores Queue with defaults", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  let stored: unknown = {};
+  let observed: string | undefined;
+  let reset: (() => void) | undefined;
+  let update: ReturnType<typeof usePreferences>["update"] | undefined;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: () => JSON.stringify(stored),
+      setItem: (_key: string, text: string) => {
+        stored = JSON.parse(text);
+      },
+    },
+  });
+  function Inspect() {
+    const state = usePreferences();
+    observed = state.preferences.followUpBehavior;
+    reset = state.reset;
+    update = state.update;
+    return null;
+  }
+  const render = () =>
+    renderToStaticMarkup(
+      createElement(PreferencesProvider, { children: createElement(Inspect) }),
+    );
+  try {
+    render();
+    assert.equal(observed, "queue");
+    stored = { followUpBehavior: "invalid" };
+    render();
+    assert.equal(observed, "queue");
+    assert.ok(update);
+    update({ followUpBehavior: "steer" });
+    render();
+    assert.equal(observed, "steer");
+    assert.ok(reset);
+    reset();
+    render();
+    assert.equal(observed, "queue");
+    assert.ok(
+      categories.general.groups
+        .flatMap((group) => group.rows)
+        .some((row) => row.id === "follow-up-behavior"),
+    );
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});

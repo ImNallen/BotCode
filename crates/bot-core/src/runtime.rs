@@ -221,6 +221,7 @@ enum Command {
         String,
         Vec<ImageAttachment>,
         Option<PathBuf>,
+        Option<TurnId>,
         Reply<Receipt>,
     ),
     Approval(ApprovalId, ApprovalDecision, Reply<()>),
@@ -279,6 +280,10 @@ impl App {
                 SessionState::Draft
             };
             for turn in &mut thread.turns {
+                settle_user_inputs(
+                    turn,
+                    "The application closed before follow-up delivery was confirmed.",
+                );
                 if turn.execution.active() {
                     turn.execution=Execution::Lost{reason:"The application closed before execution completed. Resume checks native history; this prompt will not be sent again.".into()};
                     if matches!(turn.delivery, Delivery::Sending) {
@@ -320,7 +325,14 @@ impl App {
                 thread
                     .turns
                     .iter()
-                    .flat_map(|turn| &turn.attachments)
+                    .flat_map(|turn| {
+                        turn.attachments.iter().chain(turn.items.iter().flat_map(
+                            |item| match item {
+                                Item::UserInput { attachments, .. } => attachments.as_slice(),
+                                _ => &[],
+                            },
+                        ))
+                    })
                     .chain(
                         thread
                             .last_revert
@@ -774,6 +786,24 @@ impl App {
         text: String,
         attachments: Vec<ImageAttachment>,
     ) -> Result<Receipt> {
+        self.submit_to(id, request_id, text, attachments, None)
+            .await
+    }
+    pub async fn submit_to(
+        &self,
+        id: ThreadId,
+        request_id: String,
+        text: String,
+        attachments: Vec<ImageAttachment>,
+        expected_turn_id: Option<TurnId>,
+    ) -> Result<Receipt> {
+        if expected_turn_id.is_some() {
+            return self
+                .call(|r| {
+                    Command::Submit(id, request_id, text, attachments, None, expected_turn_id, r)
+                })
+                .await;
+        }
         let restored = match self.call(|r| Command::ClaimRestore(id.clone(), r)).await? {
             Some(Restore { root, path, branch }) => {
                 let target = path.clone();
@@ -790,7 +820,7 @@ impl App {
             }
             None => None,
         };
-        self.call(|r| Command::Submit(id, request_id, text, attachments, restored, r))
+        self.call(|r| Command::Submit(id, request_id, text, attachments, restored, None, r))
             .await
     }
     pub async fn answer_approval(&self, id: ApprovalId, decision: ApprovalDecision) -> Result<()> {
@@ -1102,6 +1132,13 @@ enum Completion {
         epoch: u64,
         thread: ThreadId,
         turn: TurnId,
+        result: Result<Value>,
+    },
+    Steered {
+        epoch: u64,
+        thread: ThreadId,
+        turn: TurnId,
+        operation: String,
         result: Result<Value>,
     },
     Answered {
@@ -1854,13 +1891,18 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
-            Command::Submit(id, request_id, text, attachments, restored, reply) => {
+            Command::Submit(id, request_id, text, attachments, restored, expected, reply) => {
                 if let Some(path) = restored {
                     self.held.remove(&path);
                 }
-                let result = self.accept_submit(&id, &request_id, &text, attachments);
+                let result =
+                    self.accept_submit(&id, &request_id, &text, attachments, expected.as_ref());
                 if let Ok((receipt, true)) = &result {
-                    self.capture_before(id, receipt.turn_id.clone());
+                    if expected.is_some() {
+                        self.dispatch_steer(&id, &receipt.turn_id, &request_id);
+                    } else {
+                        self.capture_before(id, receipt.turn_id.clone());
+                    }
                 }
                 let _ = reply.send(result.map(|(receipt, _)| receipt));
             }
@@ -2052,6 +2094,7 @@ impl Owner {
         request_id: &str,
         text: &str,
         attachments: Vec<ImageAttachment>,
+        expected: Option<&TurnId>,
     ) -> Result<(Receipt, bool)> {
         if request_id.is_empty() || request_id.len() > 200 {
             return Err(AppError::new(
@@ -2072,7 +2115,10 @@ impl Owner {
                 format!("You can attach up to {MAX_ATTACHMENTS} images per message."),
             ));
         }
-        let input = serde_json::to_string(&(id, text, &attachments))?;
+        let input = match expected {
+            Some(turn) => serde_json::to_string(&(id, text, &attachments, turn))?,
+            None => serde_json::to_string(&(id, text, &attachments))?,
+        };
         if let Some(receipt) = self.store.receipt(request_id, &input)? {
             return Ok((receipt, false));
         }
@@ -2082,6 +2128,26 @@ impl Owner {
                 "thread_archived",
                 "Unarchive this thread first.",
             ));
+        }
+        for attachment in &attachments {
+            let name = attachment.name.trim();
+            if name.is_empty() || name.chars().count() > attachments::MAX_NAME_CHARS {
+                return Err(AppError::new(
+                    "invalid_attachments",
+                    "Image names must be 1 to 255 characters.",
+                ));
+            }
+            let staged = std::fs::metadata(self.attachments.path(attachment))
+                .is_ok_and(|m| m.is_file() && m.len() == attachment.size_bytes);
+            if !staged {
+                return Err(AppError::new(
+                    "missing_attachment",
+                    format!("'{name}' is no longer available. Attach the image again."),
+                ));
+            }
+        }
+        if let Some(expected) = expected {
+            return self.accept_steer(id, expected, request_id, text, attachments, &input);
         }
         if matches!(
             thread.session,
@@ -2118,23 +2184,6 @@ impl Owner {
         }
         if self.leases.contains_key(&root) {
             return Err(turn_running());
-        }
-        for attachment in &attachments {
-            let name = attachment.name.trim();
-            if name.is_empty() || name.chars().count() > attachments::MAX_NAME_CHARS {
-                return Err(AppError::new(
-                    "invalid_attachments",
-                    "Image names must be 1 to 255 characters.",
-                ));
-            }
-            let staged = std::fs::metadata(self.attachments.path(attachment))
-                .is_ok_and(|m| m.is_file() && m.len() == attachment.size_bytes);
-            if !staged {
-                return Err(AppError::new(
-                    "missing_attachment",
-                    format!("'{name}' is no longer available. Attach the image again."),
-                ));
-            }
         }
         let mut t = thread.clone();
         t.record_activity(self.settlement(&t, self.auto_settle.rules(&t.workspace_id), now_ms()));
@@ -2179,6 +2228,160 @@ impl Owner {
         self.threads.insert(t.id.clone(), t);
         self.start_name(id);
         Ok((receipt, true))
+    }
+    fn accept_steer(
+        &mut self,
+        id: &ThreadId,
+        expected: &TurnId,
+        operation: &str,
+        text: &str,
+        attachments: Vec<ImageAttachment>,
+        input: &str,
+    ) -> Result<(Receipt, bool)> {
+        let thread = self.thread(id)?;
+        let turn = thread
+            .turns
+            .last()
+            .ok_or_else(|| AppError::new("stale_turn", "The targeted turn has ended."))?;
+        if turn.id != *expected
+            || !matches!(turn.execution, Execution::Running)
+            || !matches!(turn.delivery, Delivery::Accepted)
+            || !matches!(thread.session, SessionState::Running)
+            || turn.native_turn_id.is_none()
+            || thread.native_thread_id.is_none()
+        {
+            return Err(AppError::new(
+                "stale_turn",
+                "The targeted turn is no longer running. This message was not sent.",
+            ));
+        }
+        if thread.pending_revert.is_some() || thread.approval_open() {
+            return Err(AppError::new(
+                "busy",
+                "Resolve the pending approval or revert before sending now.",
+            ));
+        }
+        if thread
+            .turns
+            .iter()
+            .flat_map(|turn| &turn.items)
+            .any(|item| {
+                matches!(
+                    item,
+                    Item::UserInput {
+                        delivery: Delivery::Preparing
+                            | Delivery::Sending
+                            | Delivery::Uncertain { .. },
+                        ..
+                    }
+                )
+            })
+        {
+            return Err(AppError::new(
+                "steer_pending",
+                "A previous follow-up still needs delivery confirmation.",
+            ));
+        }
+        if self.provider.is_none() {
+            return Err(AppError::new("provider_lost", "Codex is unavailable."));
+        }
+        let root = thread.root(&self.workspaces[&thread.workspace_id]);
+        if self.leases.get(root) != Some(id) || self.held.contains_key(root) {
+            return Err(AppError::new(
+                "checkout_busy",
+                "The running turn no longer owns this checkout.",
+            ));
+        }
+        let mut next = thread.clone();
+        next.turns.last_mut().unwrap().items.push(Item::UserInput {
+            id: operation.into(),
+            text: text.into(),
+            attachments,
+            delivery: Delivery::Preparing,
+        });
+        next.record_activity(self.settlement(
+            &next,
+            self.auto_settle.rules(&next.workspace_id),
+            now_ms(),
+        ));
+        next.latest_user_activity_at_ms = Some(now_ms());
+        next.last_revert = None;
+        next.snooze = None;
+        next.revision += 1;
+        let receipt = Receipt {
+            turn_id: expected.clone(),
+        };
+        self.store.accept(&next, operation, input, &receipt)?;
+        self.dirty.remove(id);
+        let _ = self.changes.send(self.thread_hint(&next));
+        self.threads.insert(id.clone(), next);
+        self.cancel_name(id);
+        Ok((receipt, true))
+    }
+    fn dispatch_steer(&mut self, id: &ThreadId, turn_id: &TurnId, operation: &str) {
+        let mut next = self.threads[id].clone();
+        let turn = next
+            .turns
+            .iter_mut()
+            .find(|turn| &turn.id == turn_id)
+            .unwrap();
+        let native_turn = turn.native_turn_id.clone().unwrap();
+        let item = turn
+            .items
+            .iter_mut()
+            .find(|item| item.id() == operation)
+            .unwrap();
+        let Item::UserInput {
+            text,
+            attachments,
+            delivery,
+            ..
+        } = item
+        else {
+            return;
+        };
+        let mut input = Vec::new();
+        if !text.is_empty() {
+            input.push(json!({"type":"text","text":text,"text_elements":[]}));
+        }
+        input.extend(attachments.iter().map(
+            |attachment| json!({"type":"localImage","path":self.attachments.path(attachment)}),
+        ));
+        *delivery = Delivery::Sending;
+        if let Err(error) = self.install(next) {
+            let t = self.threads.get_mut(id).unwrap();
+            if let Some(Item::UserInput { delivery, .. }) = t
+                .turns
+                .iter_mut()
+                .flat_map(|turn| &mut turn.items)
+                .find(|item| item.id() == operation)
+            {
+                *delivery = Delivery::NotSent {
+                    reason: format!("Follow-up was not dispatched. {}", error.message),
+                };
+            }
+            self.dirty.insert(id.clone());
+            return;
+        }
+        let provider = self.provider.clone().unwrap();
+        let native = self.threads[id].native_thread_id.clone().unwrap();
+        let done = self.done.clone();
+        let epoch = self.epoch;
+        let thread = id.clone();
+        let turn = turn_id.clone();
+        let operation = operation.to_owned();
+        tokio::spawn(async move {
+            let result = provider.request("turn/steer", json!({"threadId":native,"expectedTurnId":native_turn,"clientUserMessageId":operation,"input":input})).await;
+            let _ = done
+                .send(Completion::Steered {
+                    epoch,
+                    thread,
+                    turn,
+                    operation,
+                    result,
+                })
+                .await;
+        });
     }
     fn validate_settings(&self, settings: &SessionSettings) -> Result<()> {
         for value in [&settings.model, &settings.effort].into_iter().flatten() {
@@ -2552,6 +2755,63 @@ impl Owner {
                 }
                 self.commit(&thread)?;
             }
+            Completion::Steered {
+                epoch,
+                thread,
+                turn,
+                operation,
+                result,
+            } if epoch == self.epoch => {
+                let Some(t) = self.threads.get_mut(&thread) else {
+                    return Ok(());
+                };
+                let Some(row) = t.turns.iter_mut().find(|row| row.id == turn) else {
+                    return Ok(());
+                };
+                let Some(Item::UserInput { delivery, .. }) =
+                    row.items.iter_mut().find(|item| item.id() == operation)
+                else {
+                    return Ok(());
+                };
+                if matches!(delivery, Delivery::Accepted) {
+                    return Ok(());
+                }
+                let native_turn = row.native_turn_id.clone();
+                let uncertain = match result {
+                    Ok(value)
+                        if value.get("turnId").and_then(Value::as_str)
+                            == native_turn.as_deref() =>
+                    {
+                        *delivery = Delivery::Accepted;
+                        false
+                    }
+                    Ok(_) => {
+                        *delivery = Delivery::Uncertain {
+                            reason: "Codex did not acknowledge the targeted turn.".into(),
+                        };
+                        true
+                    }
+                    Err(error) if error.code == "provider" => {
+                        *delivery = Delivery::NotSent {
+                            reason: error.message,
+                        };
+                        false
+                    }
+                    Err(error) => {
+                        *delivery = Delivery::Uncertain {
+                            reason: error.message,
+                        };
+                        true
+                    }
+                };
+                self.commit(&thread)?;
+                if uncertain {
+                    self.lose(
+                        "Follow-up delivery is uncertain. It will not be sent again automatically.",
+                    )
+                    .await;
+                }
+            }
             Completion::Answered { epoch, id, result } if epoch == self.epoch => {
                 if let Some(t) = self
                     .threads
@@ -2630,6 +2890,10 @@ impl Owner {
             };
             t.diagnostic = Some(reason.into());
             for turn in &mut t.turns {
+                settle_user_inputs(
+                    turn,
+                    "Codex stopped before follow-up delivery was confirmed.",
+                );
                 if matches!(
                     turn.checkpoint,
                     TurnCheckpoint::Pending | TurnCheckpoint::Before { .. }
@@ -2786,6 +3050,8 @@ impl Owner {
         if turn.native_turn_id.is_none() {
             turn.native_turn_id = native_turn.map(str::to_owned)
         }
+        let input_matches_turn =
+            native_turn.is_some() && native_turn == turn.native_turn_id.as_deref();
         match method {
             "turn/started" => {
                 if !current_turn || !turn.execution.active() {
@@ -2821,6 +3087,9 @@ impl Owner {
             "item/started" | "item/completed" => {
                 if let Some(value) = p.get("item") {
                     required_string(value, "id")?;
+                    if input_matches_turn {
+                        reconcile_user_input(turn, value);
+                    }
                     if let Some(item) = normalize_item(value, method == "item/completed") {
                         if let Item::FileChange { text, .. } = &item {
                             for approval in &mut t.approvals {
@@ -2855,6 +3124,9 @@ impl Owner {
                 turn.execution = execution(status, p.pointer("/turn/error"));
                 if let Some(items) = p.pointer("/turn/items").and_then(Value::as_array) {
                     for item in items {
+                        if input_matches_turn {
+                            reconcile_user_input(turn, item);
+                        }
                         if let Some(item) = normalize_item(item, true) {
                             upsert(&mut turn.items, item)
                         }
@@ -2987,6 +3259,38 @@ fn normalize_item(v: &Value, complete: bool) -> Option<Item> {
         },
     })
 }
+fn reconcile_user_input(turn: &mut Turn, native: &Value) {
+    if native.get("type").and_then(Value::as_str) != Some("userMessage") {
+        return;
+    }
+    let Some(client) = native.get("clientId").and_then(Value::as_str) else {
+        return;
+    };
+    if let Some(Item::UserInput { delivery, .. }) =
+        turn.items.iter_mut().find(|item| item.id() == client)
+    {
+        *delivery = Delivery::Accepted;
+    }
+}
+fn settle_user_inputs(turn: &mut Turn, reason: &str) {
+    for item in &mut turn.items {
+        if let Item::UserInput { delivery, .. } = item {
+            match delivery {
+                Delivery::Preparing => {
+                    *delivery = Delivery::NotSent {
+                        reason: reason.into(),
+                    }
+                }
+                Delivery::Sending => {
+                    *delivery = Delivery::Uncertain {
+                        reason: reason.into(),
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
 fn merge_history(thread: &mut ThreadSnapshot, value: Option<&Value>) {
     let Some(turns) = value.and_then(Value::as_array) else {
         return;
@@ -2994,17 +3298,15 @@ fn merge_history(thread: &mut ThreadSnapshot, value: Option<&Value>) {
     for native in turns {
         let native_id = string(native, "id");
         let items = native.get("items").and_then(Value::as_array);
-        let client_id = items
-            .and_then(|items| {
-                items
-                    .iter()
-                    .find(|v| v.get("type").and_then(Value::as_str) == Some("userMessage"))
-            })
-            .and_then(|v| v.get("clientId"))
-            .and_then(Value::as_str);
         let row = thread.turns.iter_mut().find(|turn| {
             turn.native_turn_id.as_deref() == Some(&native_id)
-                || client_id == Some(&turn.id.to_string())
+                || items.is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("userMessage")
+                            && item.get("clientId").and_then(Value::as_str)
+                                == Some(&turn.id.to_string())
+                    })
+                })
         });
         if let Some(turn) = row {
             turn.native_turn_id = Some(native_id);
@@ -3015,6 +3317,7 @@ fn merge_history(thread: &mut ThreadSnapshot, value: Option<&Value>) {
             }
             if let Some(items) = items {
                 for item in items {
+                    reconcile_user_input(turn, item);
                     if let Some(item) = normalize_item(item, true) {
                         upsert(&mut turn.items, item)
                     }

@@ -186,3 +186,39 @@ export function mergeRecoveredInput(
     generation: current.generation + 1,
   };
 }
+
+export function restoreFollowUps(
+  current: ComposerInput,
+  inputs: { id: string; text: string; attachments: ImageAttachment[] }[],
+): { input: ComposerInput; error: string | null } {
+  const recovered = {
+    prompt: inputs
+      .map((input) => input.text)
+      .filter(Boolean)
+      .join("\n\n"),
+    attachments: inputs.flatMap((input) => input.attachments),
+  };
+  const error = recoveryFit(current.images, recovered);
+  if (error) return { input: current, error };
+  const images = [...current.images];
+  const ids = new Set(readyAttachments(images)?.map((image) => image.id));
+  for (const attachment of recovered.attachments) {
+    if (ids.has(attachment.id)) continue;
+    ids.add(attachment.id);
+    images.push({
+      key: `queue:${attachment.id}`,
+      name: attachment.name,
+      status: "ready",
+      attachment,
+    });
+  }
+  return {
+    input: {
+      ...current,
+      text: [current.text, recovered.prompt].filter(Boolean).join("\n\n"),
+      images,
+      generation: current.generation + 1,
+    },
+    error: null,
+  };
+}

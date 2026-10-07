@@ -23,6 +23,8 @@ export type TimelineRow =
       text: string;
       attachments: ImageAttachment[];
       at: number | null;
+      editable: boolean;
+      delivery: Extract<Item, { kind: "user_input" }>["delivery"] | null;
     }
   | {
       kind: "checkpoint";
@@ -120,6 +122,7 @@ function workEntry(item: Item): WorkEntry | null {
           }
         : null;
     case "assistant":
+    case "user_input":
       return null;
   }
 }
@@ -153,10 +156,24 @@ export function summarizeWork(entries: WorkEntry[]): string {
 type Entry =
   | { kind: "assistant"; id: string; text: string; streaming: boolean }
   | { kind: "reasoning"; id: string; text: string }
-  | { kind: "work"; id: string; entry: WorkEntry };
+  | { kind: "work"; id: string; entry: WorkEntry }
+  | Extract<TimelineRow, { kind: "user" }>;
 
 function entries(turn: Turn): Entry[] {
   return turn.items.flatMap((item): Entry[] => {
+    if (item.kind === "user_input")
+      return [
+        {
+          kind: "user",
+          id: `input:${item.id}`,
+          turnId: turn.id,
+          text: item.text,
+          attachments: item.attachments,
+          at: null,
+          editable: false,
+          delivery: item.delivery,
+        },
+      ];
     if (item.kind === "assistant")
       return [
         {
@@ -216,7 +233,8 @@ function pushVisible(
       continue;
     }
     flush();
-    if (entry.kind === "assistant")
+    if (entry.kind === "user") rows.push(entry);
+    else if (entry.kind === "assistant")
       rows.push({
         kind: "assistant",
         id: entry.id,
@@ -245,6 +263,8 @@ export function deriveRows(
       text: turn.prompt,
       attachments: turn.attachments,
       at: turn.startedAtMs,
+      editable: true,
+      delivery: null,
     });
     const list = entries(turn);
     if (isRunning(turn)) {
@@ -298,7 +318,7 @@ export function deriveRows(
       const hidden = new Set(
         list
           .filter((entry, index) => {
-            if (entry === terminal) return false;
+            if (entry === terminal || entry.kind === "user") return false;
             if (index < boundary || entry.kind === "reasoning") return true;
             return (
               trailing.length === 1 &&

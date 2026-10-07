@@ -124,6 +124,12 @@ impl Execution {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Item {
+    UserInput {
+        id: String,
+        text: String,
+        attachments: Vec<ImageAttachment>,
+        delivery: Delivery,
+    },
     Assistant {
         id: String,
         text: String,
@@ -151,7 +157,8 @@ pub enum Item {
 impl Item {
     pub fn id(&self) -> &str {
         match self {
-            Self::Assistant { id, .. }
+            Self::UserInput { id, .. }
+            | Self::Assistant { id, .. }
             | Self::Command { id, .. }
             | Self::FileChange { id, .. }
             | Self::Other { id, .. } => id,

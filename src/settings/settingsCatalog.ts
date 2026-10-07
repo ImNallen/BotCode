@@ -160,6 +160,12 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
               "Choose Supervised, Auto-accept edits, Auto, or Full access in each conversation composer.",
           },
           {
+            id: "follow-up-behavior",
+            title: "Follow-up behavior",
+            description:
+              "Queue follow-ups while the agent runs or steer the current run.",
+          },
+          {
             id: "context-window-indicator",
             title: "Context window indicator",
             description:
@@ -240,7 +246,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "restore",
             title: "Restore defaults",
             description:
-              "Reset appearance, font sizes, the context window indicator, notifications, storage cleanup, new thread defaults and auto-settle, including project overrides, on this device.",
+              "Reset appearance, font sizes, follow-up behavior, the context window indicator, notifications, storage cleanup, new thread defaults and auto-settle, including project overrides, on this device.",
           },
         ],
       },
