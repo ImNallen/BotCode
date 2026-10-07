@@ -11,7 +11,13 @@ import StarterKit from "@tiptap/starter-kit";
 import { Slice } from "@tiptap/pm/model";
 import { closeHistory } from "@tiptap/pm/history";
 import { FileEntryIcon } from "../panel/FileEntryIcon";
-import { useImperativeHandle, useLayoutEffect, useRef, type Ref } from "react";
+import {
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type Ref,
+} from "react";
 import { cn } from "../lib/cn";
 import { pathBasename } from "./composer-logic";
 import {
@@ -120,12 +126,46 @@ export function ComposerPromptEditor(props: {
   const latest = useRef(props);
   latest.current = props;
   const composing = useRef(false);
+  const editorAttributes = useMemo(
+    () => ({
+      class: cn(
+        "composer-tiptap -m-1 block max-h-52 min-h-19.5 overflow-y-auto p-1 whitespace-pre-wrap wrap-break-word bg-transparent leading-relaxed text-foreground focus:outline-none",
+        props.approvalState && "min-h-10",
+      ),
+      role: "textbox",
+      "aria-label": "Message",
+      "aria-multiline": "true",
+      "data-testid": "composer-editor",
+      "data-composer-rich-text": "false",
+      "aria-placeholder": props.placeholder,
+      "data-placeholder": props.placeholder,
+      ...(props.disabled ? { "aria-readonly": "true" } : {}),
+      ...(props.suggestionListId
+        ? {
+            "aria-autocomplete": "list",
+            "aria-haspopup": "listbox",
+            "aria-controls": props.suggestionListId,
+            ...(props.activeSuggestionId
+              ? { "aria-activedescendant": props.activeSuggestionId }
+              : {}),
+          }
+        : {}),
+    }),
+    [
+      props.disabled,
+      props.approvalState,
+      props.placeholder,
+      props.suggestionListId,
+      props.activeSuggestionId,
+    ],
+  );
   const editor = useEditor({
     extensions: composerEditorExtensions,
     content: buildComposerDocument(props.value),
     editable: !props.disabled,
     autofocus: props.autoFocus ? "end" : false,
     editorProps: {
+      attributes: editorAttributes,
       handleKeyDown: (_view, event) => {
         if (event.isComposing || event.keyCode === 229 || composing.current)
           return false;
@@ -252,42 +292,9 @@ export function ComposerPromptEditor(props: {
   useLayoutEffect(() => {
     if (!editor) return;
     editor.setEditable(!props.disabled, false);
-    editor.setOptions({
-      editorProps: {
-        attributes: {
-          class: cn(
-            "composer-tiptap -m-1 block max-h-52 min-h-19.5 overflow-y-auto p-1 whitespace-pre-wrap wrap-break-word bg-transparent leading-relaxed text-foreground focus:outline-none",
-            props.approvalState && "min-h-10",
-          ),
-          role: "textbox",
-          "aria-label": "Message",
-          "aria-multiline": "true",
-          "data-testid": "composer-editor",
-          "data-composer-rich-text": "false",
-          "aria-placeholder": props.placeholder,
-          "data-placeholder": props.placeholder,
-          ...(props.disabled ? { "aria-readonly": "true" } : {}),
-          ...(props.suggestionListId
-            ? {
-                "aria-autocomplete": "list",
-                "aria-haspopup": "listbox",
-                "aria-controls": props.suggestionListId,
-                ...(props.activeSuggestionId
-                  ? { "aria-activedescendant": props.activeSuggestionId }
-                  : {}),
-              }
-            : {}),
-        },
-      },
-    });
-  }, [
-    editor,
-    props.disabled,
-    props.approvalState,
-    props.placeholder,
-    props.suggestionListId,
-    props.activeSuggestionId,
-  ]);
+    if (editor.isInitialized)
+      editor.view.setProps({ attributes: editorAttributes });
+  }, [editor, editorAttributes, props.disabled]);
   return (
     <>
       <EditorContent editor={editor} />
