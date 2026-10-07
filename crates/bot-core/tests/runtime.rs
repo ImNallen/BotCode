@@ -5626,3 +5626,88 @@ async fn repeated_crashes_back_off_and_never_rewrite_settled_turns() {
     assert!(!done.input_open());
     app.shutdown().await.unwrap();
 }
+
+// Each pending reply races the exit signal, so a few rounds make a lost race visible.
+#[tokio::test]
+async fn crash_before_turn_start_ack_reports_the_crash() {
+    for _ in 0..4 {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        app.submit(
+            thread.id.clone(),
+            "unacknowledged".into(),
+            "crash-before-ack".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
+        let lost = wait(&app, &thread.id, |t| !t.turns[0].execution.active()).await;
+        let reason = lost_reason(&lost.turns[0]);
+        assert!(reason.starts_with(KILLED), "{reason}");
+        assert!(
+            reason.contains("fixture stderr: panic before ack"),
+            "{reason}"
+        );
+        assert!(matches!(
+            &lost.turns[0].delivery,
+            Delivery::Uncertain { reason } if reason.starts_with(KILLED)
+        ));
+        assert_eq!(lost.diagnostic.as_deref(), Some(KILLED));
+        assert_eq!(method_count(&f, "turn/start"), 1);
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn crash_while_steering_is_sending_reports_the_crash() {
+    for _ in 0..4 {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        let original = app
+            .submit(thread.id.clone(), "original".into(), "hold".into(), vec![])
+            .await
+            .unwrap();
+        wait(&app, &thread.id, |t| {
+            matches!(t.session, SessionState::Running)
+        })
+        .await;
+        app.submit_to(
+            thread.id.clone(),
+            "follow".into(),
+            "no-response-steer".into(),
+            vec![],
+            Some(original.turn_id.clone()),
+        )
+        .await
+        .unwrap();
+        wait(&app, &thread.id, |t| {
+            matches!(steering_delivery(t, "follow"), Some(Delivery::Sending))
+        })
+        .await;
+        for _ in 0..200 {
+            if method_count(&f, "turn/steer") == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        unsafe { libc::kill(peer_pid(&f, "pid"), libc::SIGKILL) };
+        let lost = wait(&app, &thread.id, |t| {
+            matches!(t.turns[0].execution, Execution::Lost { .. })
+        })
+        .await;
+        assert!(
+            lost_reason(&lost.turns[0]).starts_with(KILLED),
+            "{}",
+            lost_reason(&lost.turns[0])
+        );
+        assert_eq!(lost.diagnostic.as_deref(), Some(KILLED));
+        assert!(matches!(
+            steering_delivery(&lost, "follow"),
+            Some(Delivery::Uncertain { .. })
+        ));
+        assert_eq!(method_count(&f, "turn/steer"), 1);
+        app.shutdown().await.unwrap();
+    }
+}

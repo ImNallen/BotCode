@@ -1255,6 +1255,23 @@ enum Completion {
         result: Result<Value>,
     },
 }
+impl Completion {
+    fn process_died(&self) -> bool {
+        let error = match self {
+            Self::Models { result, .. } => result.as_ref().err(),
+            Self::Limits { result, .. } => result.as_ref().err(),
+            Self::Launched { result, .. } => result.as_ref().err(),
+            Self::Prepared { result, .. }
+            | Self::Started { result, .. }
+            | Self::Steered { result, .. }
+            | Self::Interrupted { result, .. } => result.as_ref().err(),
+            Self::Answered { result, .. } | Self::UserQuestionsAnswered { result, .. } => {
+                result.as_ref().err()
+            }
+        };
+        error.is_some_and(|error| error.code == "provider_lost")
+    }
+}
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Callback {
     Approval(ApprovalId),
@@ -2653,6 +2670,9 @@ impl Owner {
         let log = self.log.clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
+            if done.is_closed() {
+                return;
+            }
             let result = match Codex::launch(binary, epoch, signals, log).await {
                 Ok(provider) => match provider.initialize().await {
                     Ok(()) => Ok(collaboration::discover(provider).await),
@@ -2772,6 +2792,10 @@ impl Owner {
         });
     }
     async fn complete(&mut self, done: Completion) -> Result<()> {
+        // The dead process's Exited signal follows and reports the loss with its status and stderr.
+        if done.process_died() {
+            return Ok(());
+        }
         match done {
             Completion::Models { epoch, result } if epoch == self.epoch => {
                 self.listing_models = false;
@@ -2785,35 +2809,31 @@ impl Owner {
             Completion::Limits { epoch, result } if epoch == self.epoch => {
                 self.settle_limits(result);
             }
-            Completion::Launched { epoch, result } if epoch == self.epoch => {
-                match result {
-                    Ok(session) => {
-                        self.launching = false;
-                        self.restarts.ready(Instant::now());
-                        self.collaboration_modes = session.modes;
-                        self.models = session.models;
-                        self.provider = Some(session.provider);
-                        let modes = self
-                            .collaboration_modes
-                            .iter()
-                            .filter_map(|preset| preset.mode)
-                            .collect::<Vec<_>>();
-                        for reply in std::mem::take(&mut self.collaboration_waiters) {
-                            let _ = reply.send(Ok(modes.clone()));
-                        }
-                        self.read_limits();
-                        if !self.model_waiters.is_empty() {
-                            self.list_models();
-                        }
-                        for job in std::mem::take(&mut self.pending) {
-                            self.prepare(job)
-                        }
+            Completion::Launched { epoch, result } if epoch == self.epoch => match result {
+                Ok(session) => {
+                    self.launching = false;
+                    self.restarts.ready(Instant::now());
+                    self.collaboration_modes = session.modes;
+                    self.models = session.models;
+                    self.provider = Some(session.provider);
+                    let modes = self
+                        .collaboration_modes
+                        .iter()
+                        .filter_map(|preset| preset.mode)
+                        .collect::<Vec<_>>();
+                    for reply in std::mem::take(&mut self.collaboration_waiters) {
+                        let _ = reply.send(Ok(modes.clone()));
                     }
-                    // The process died; its Exited signal follows with the exit status and stderr.
-                    Err(e) if e.code == "provider_lost" => {}
-                    Err(e) => self.lose(&e.message).await,
+                    self.read_limits();
+                    if !self.model_waiters.is_empty() {
+                        self.list_models();
+                    }
+                    for job in std::mem::take(&mut self.pending) {
+                        self.prepare(job)
+                    }
                 }
-            }
+                Err(e) => self.lose(&e.message).await,
+            },
             Completion::Launched {
                 result: Ok(session),
                 ..

@@ -723,7 +723,7 @@ Evidence is under `/tmp/timeline-verify`: the wrapper, `protocol.jsonl`, the pro
 
 ## Codex crash recovery
 
-Verified on 2026-10-07 with installed Codex 0.160.1. All 337 `cargo test -p bot-core` tests, all 283 `pnpm test:ui` tests, `cargo fmt --check`, workspace Clippy with `-D warnings`, the production frontend build, and the debug Tauri app bundle passed. The fixture's crash mode drives four runtime tests: a crash mid-turn, a crash with pending approvals and user-input questions, a leader exit while a descendant keeps stdout open, and repeated crashes during restart.
+Verified on 2026-10-07 with installed Codex 0.160.1. All 339 `cargo test -p bot-core` tests, all 283 `pnpm test:ui` tests, `cargo fmt --check`, workspace Clippy with `-D warnings`, the production frontend build, and the debug Tauri app bundle passed. The fixture's crash mode drives six runtime tests: a crash mid-turn, a crash with pending approvals and user-input questions, a crash before the `turn/start` acknowledgement, a crash while a steering follow-up is sending, a leader exit while a descendant keeps stdout open, and repeated crashes during restart.
 
 The actual native bundle used disposable repository `/tmp/botcode-crash/repo` and `BOT_CODE_DATA_DIR=/tmp/botcode-crash/data2`. It ran with `RUST_LOG=info`, because Codex writes nothing to stderr by default.
 

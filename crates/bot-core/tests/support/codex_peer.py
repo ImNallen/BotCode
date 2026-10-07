@@ -119,6 +119,9 @@ for line in sys.stdin:
         if prompt == 'lose':
             sys.exit(0)
         active = 'native-' + params['clientUserMessageId']
+        if prompt == 'crash-before-ack':
+            print(f'fixture stderr: panic before ack {active}', file=sys.stderr, flush=True)
+            os.kill(os.getpid(), signal.SIGKILL)
         if prompt != 'late-response':
             result(request, {'turn': {'id': active, 'status': 'inProgress', 'items': []}})
         event('turn/started', {'threadId': current_thread, 'turn': {'id': active}})
