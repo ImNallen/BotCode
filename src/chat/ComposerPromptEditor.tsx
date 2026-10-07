@@ -17,6 +17,8 @@ import {
   useMemo,
   useRef,
   type Ref,
+  createContext,
+  useContext,
 } from "react";
 import { cn } from "../lib/cn";
 import { pathBasename } from "./composer-logic";
@@ -26,6 +28,53 @@ import {
   editorCursor,
   promptCursor,
 } from "./composerDocument";
+import type { Skill } from "../ipc";
+import { ContextChip, ContextChipLabel } from "./ContextChip";
+import { SkillChipIcon } from "./SkillInlineText";
+import { formatProviderSkillDisplayName } from "./providerSkills";
+
+const SkillCatalog = createContext<readonly Skill[]>([]);
+
+function SkillNodeView({ node }: NodeViewProps) {
+  const skills = useContext(SkillCatalog);
+  const name = typeof node.attrs.name === "string" ? node.attrs.name : "";
+  const skill = skills.find((skill) => skill.name === name) ?? { name };
+  return (
+    <NodeViewWrapper
+      as="span"
+      className="relative inline-flex select-none items-center align-middle leading-none data-[composer-chip-selected]:after:pointer-events-none data-[composer-chip-selected]:after:absolute data-[composer-chip-selected]:after:inset-0 data-[composer-chip-selected]:after:rounded-sm data-[composer-chip-selected]:after:bg-[Highlight] data-[composer-chip-selected]:after:opacity-30 data-[composer-chip-selected]:after:content-['']"
+    >
+      <ContextChip
+        kind="skill"
+        contentEditable={false}
+        spellCheck={false}
+        data-composer-skill-chip="true"
+        title={`$${name}`}
+        aria-label={`$${name}`}
+      >
+        <SkillChipIcon />
+        <ContextChipLabel>
+          {formatProviderSkillDisplayName(skill)}
+        </ContextChipLabel>
+      </ContextChip>
+    </NodeViewWrapper>
+  );
+}
+
+const ComposerSkill = Node.create({
+  name: "composer-skill",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  addAttributes: () => ({ name: { default: "" }, source: { default: "" } }),
+  parseHTML: () => [{ tag: "span[data-composer-skill]" }],
+  renderHTML: ({ HTMLAttributes }) => [
+    "span",
+    { "data-composer-skill": "", ...HTMLAttributes },
+  ],
+  addNodeView: () => ReactNodeViewRenderer(SkillNodeView),
+});
 
 function MentionNodeView({ node }: NodeViewProps) {
   const path = typeof node.attrs.path === "string" ? node.attrs.path : "";
@@ -90,6 +139,7 @@ export const composerEditorExtensions = [
     undoRedo: { newGroupDelay: 500 },
   }),
   ComposerMention,
+  ComposerSkill,
 ];
 
 export type ComposerSnapshot = {
@@ -112,6 +162,7 @@ export type ComposerEditorHandle = {
 export function ComposerPromptEditor(props: {
   ref: Ref<ComposerEditorHandle>;
   value: string;
+  skills: readonly Skill[];
   onChange: (value: string) => void;
   onSelectionChange: (snapshot: ComposerSnapshot) => void;
   onKeyDown: (event: KeyboardEvent) => boolean;
@@ -297,7 +348,9 @@ export function ComposerPromptEditor(props: {
   }, [editor, editorAttributes, props.disabled]);
   return (
     <>
-      <EditorContent editor={editor} />
+      <SkillCatalog value={props.skills}>
+        <EditorContent editor={editor} />
+      </SkillCatalog>
       {!props.value && props.placeholder ? (
         <div
           aria-hidden="true"

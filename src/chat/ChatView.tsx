@@ -98,6 +98,7 @@ import { EditFromHereDialog } from "./EditFromHereDialog";
 import { useTurnRevert } from "./useTurnRevert";
 import { DraftHeadline } from "./DraftHeadline";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+import { useCheckoutSkills } from "./useCheckoutSkills";
 import {
   resolvePlanFollowUpSubmission,
   buildPlanImplementationPrompt,
@@ -290,6 +291,11 @@ export function ChatView({
     queryFn: () => ipc.workspace(checkout),
   });
   const view = workspaceQuery.data;
+  const skillsRoot =
+    view && !view.unavailable && (!threadId || thread)
+      ? view.workspace.root
+      : undefined;
+  const skills = useCheckoutSkills(skillsRoot);
   const pullRequests =
     view?.threads.find((row) => row.id === threadId)?.pullRequests.links ?? [];
   const { data: branches } = useQuery({
@@ -1037,6 +1043,7 @@ export function ChatView({
                 <FileLinkProvider value={fileLinks}>
                   <Timeline
                     thread={thread}
+                    skills={skills.skills}
                     clearance={clearance}
                     reverting={revert.isPending}
                     busy={busy}
@@ -1146,6 +1153,9 @@ export function ChatView({
                       onSubmit={submit}
                       files={view?.files ?? []}
                       filesLoading={workspaceQuery.isPending}
+                      skills={skills.skills}
+                      skillsLoading={skills.loading}
+                      onSkillsMenuOpen={skills.refreshIfStale}
                       filesError={
                         workspaceQuery.error?.message ??
                         view?.unavailable ??

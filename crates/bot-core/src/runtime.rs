@@ -13,7 +13,7 @@ use crate::{
     cleanup::{self, Candidate, Sweep},
     codex::{Codex, Signal},
     domain::*,
-    repo, settings,
+    repo, settings, skills,
     store::Store,
     terminal::{
         MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey, TerminalSize, Terminals,
@@ -259,6 +259,7 @@ pub struct App {
     sweeps: Arc<Mutex<()>>,
     wake: Arc<Notify>,
     gh: PathBuf,
+    codex: PathBuf,
     terminals: Terminals,
     attachments: Attachments,
 }
@@ -361,6 +362,7 @@ impl App {
         }
         let worktrees = config.data_dir.join("worktrees");
         let gh = config.gh_binary.clone();
+        let codex = config.codex_binary.clone();
         let terminals = Terminals::new(config.shell.clone());
         let settings = config.data_dir.join("settings.json");
         let auto_settle = settings::auto_settle(&settings);
@@ -429,6 +431,7 @@ impl App {
             sweeps: Arc::new(Mutex::new(())),
             wake: Arc::new(Notify::new()),
             gh,
+            codex,
             terminals,
             attachments,
         };
@@ -780,6 +783,9 @@ impl App {
     }
     pub async fn models(&self) -> Result<Vec<ModelOption>> {
         self.call(Command::Models).await
+    }
+    pub async fn list_skills(&self, cwd: PathBuf) -> Vec<skills::Skill> {
+        skills::list(&self.codex, &cwd).await
     }
     pub async fn collaboration_modes(&self) -> Result<Vec<InteractionMode>> {
         self.call(Command::CollaborationModes).await

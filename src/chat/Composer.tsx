@@ -25,6 +25,7 @@ import type {
   Checkout,
   ContextUsage,
   ModelOption,
+  Skill,
   SessionSettings,
 } from "../ipc";
 import { cn } from "../lib/cn";
@@ -54,6 +55,7 @@ import {
 import {
   searchComposerPaths,
   searchSlashCommandItems,
+  skillCommandItems,
 } from "./composerSlashCommandSearch";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 
@@ -94,6 +96,9 @@ export function Composer({
   files,
   filesLoading,
   filesError,
+  skills,
+  skillsLoading,
+  onSkillsMenuOpen,
   planSupported,
   showPlanFollowUp,
   onImplementInNewThread,
@@ -139,6 +144,9 @@ export function Composer({
   files: string[];
   filesLoading: boolean;
   filesError?: string;
+  skills: Skill[];
+  skillsLoading: boolean;
+  onSkillsMenuOpen: () => void;
   planSupported: boolean;
   showPlanFollowUp: boolean;
   onImplementInNewThread: () => void;
@@ -167,12 +175,29 @@ export function Composer({
   const items =
     trigger?.kind === "path"
       ? searchComposerPaths(files, trigger.query)
-      : trigger
-        ? searchSlashCommandItems(trigger.query, planSupported)
-        : [];
+      : trigger?.kind === "skill"
+        ? skillCommandItems(skills, trigger.query)
+        : trigger
+          ? searchSlashCommandItems(trigger.query, planSupported, skills)
+          : [];
+  const skillMenuOpen =
+    trigger?.kind === "skill" || trigger?.kind === "slash-command";
+  useEffect(() => {
+    if (skillMenuOpen) onSkillsMenuOpen();
+  }, [skillMenuOpen, onSkillsMenuOpen]);
   const active = items.find((item) => item.id === highlighted) ?? items[0];
   const selectSuggestion = (item: ComposerCommandItem) => {
     if (item.type === "path" && !files.includes(item.path)) return;
+    if (
+      item.type === "skill" &&
+      !skills.some(
+        (skill) =>
+          skill.name === item.skill.name &&
+          skill.path === item.skill.path &&
+          skill.enabled,
+      )
+    )
+      return;
     if (
       !trigger ||
       (item.type === "slash-command" &&
@@ -193,7 +218,11 @@ export function Composer({
       end: trigger.rangeEnd,
       expectedText: value.slice(trigger.rangeStart, trigger.rangeEnd),
       replacement:
-        item.type === "path" ? `${serializeComposerFileLink(item.path)} ` : "",
+        item.type === "path"
+          ? `${serializeComposerFileLink(item.path)} `
+          : item.type === "skill"
+            ? `$${item.skill.name} `
+            : "",
     });
     if (!changed) return;
     setHighlighted(null);
@@ -325,7 +354,9 @@ export function Composer({
                 listId={listId}
                 items={items}
                 triggerKind={trigger.kind}
-                isLoading={trigger.kind === "path" && filesLoading}
+                isLoading={
+                  trigger.kind === "path" ? filesLoading : skillsLoading
+                }
                 emptyStateText={
                   trigger.kind === "path" ? filesError : undefined
                 }
@@ -395,6 +426,7 @@ export function Composer({
                         <ComposerPromptEditor
                           ref={editor}
                           value={value}
+                          skills={skills}
                           onChange={onChange}
                           onSelectionChange={(next) => {
                             setSelection(next);

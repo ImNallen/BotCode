@@ -41,13 +41,7 @@ it("detects triggers at the caret with T3 line and token boundaries", () => {
     rangeStart: 6,
     rangeEnd: 9,
   });
-  for (const text of [
-    "email@host",
-    "See /plan",
-    "$skill",
-    "#123",
-    "/plan prompt",
-  ])
+  for (const text of ["email@host", "See /plan", "#123", "/plan prompt"])
     assert.equal(detectComposerTrigger(text, text.length), null);
   assert.equal(detectComposerTrigger("\n@file", 0), null);
 });
@@ -109,17 +103,21 @@ it("searches only supplied checkout files and supports subsequence search", () =
 
 it("gates mode commands on live support and ranks command names before descriptions", () => {
   assert.deepEqual(
-    searchSlashCommandItems("", false).map((item) => item.command),
+    searchSlashCommandItems("", false).map((item) =>
+      item.type === "slash-command" ? item.command : null,
+    ),
     ["model", "usage-limits"],
   );
   assert.deepEqual(
-    searchSlashCommandItems("", true).map((item) => item.command),
+    searchSlashCommandItems("", true).map((item) =>
+      item.type === "slash-command" ? item.command : null,
+    ),
     ["model", "plan", "default", "usage-limits"],
   );
-  assert.equal(searchSlashCommandItems("/plan", true)[0]?.command, "plan");
+  assert.equal(searchSlashCommandItems("/plan", true)[0]?.id, "slash:plan");
   assert.equal(
-    searchSlashCommandItems("limits", true)[0]?.command,
-    "usage-limits",
+    searchSlashCommandItems("limits", true)[0]?.id,
+    "slash:usage-limits",
   );
 });
 

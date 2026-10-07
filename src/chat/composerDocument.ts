@@ -2,6 +2,15 @@
 import type { JSONContent } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { pathBasename } from "./composer-logic";
+import { SKILL_TOKEN_REGEX } from "./composerSkillTokens";
+
+export function composerSkills(text: string) {
+  return Array.from(text.matchAll(SKILL_TOKEN_REGEX), (match) => {
+    const start = match.index + (match[1]?.length ?? 0);
+    const end = match.index + match[0].length;
+    return { start, end, name: match[2] ?? "", source: text.slice(start, end) };
+  });
+}
 
 const fileLink = /(^|\s)\[((?:\\.|[^\]\\]){0,512})\]\(([^)\s]+)\)(?=\s|$)/g;
 const quotedMention = /(^|\s)@"((?:\\.|[^"\\])*)"(?=\s|$)/g;
@@ -43,7 +52,16 @@ export function buildComposerDocument(value: string): JSONContent {
     content: value.split("\n").map((line) => {
       const content: JSONContent[] = [];
       let cursor = 0;
-      for (const mention of composerMentions(line)) {
+      const mentions = [
+        ...composerMentions(line).map((mention) => ({
+          ...mention,
+          type: "composer-mention",
+        })),
+        ...composerSkills(line)
+          .filter((mention) => mention.end < line.length)
+          .map((mention) => ({ ...mention, type: "composer-skill" })),
+      ].sort((a, b) => a.start - b.start);
+      for (const mention of mentions) {
         if (mention.start < cursor) continue;
         if (mention.start > cursor)
           content.push({
@@ -51,8 +69,8 @@ export function buildComposerDocument(value: string): JSONContent {
             text: line.slice(cursor, mention.start),
           });
         content.push({
-          type: "composer-mention",
-          attrs: { path: mention.path, source: mention.source },
+          type: mention.type,
+          attrs: mention,
         });
         cursor = mention.end;
       }

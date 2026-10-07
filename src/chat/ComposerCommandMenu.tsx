@@ -3,12 +3,32 @@ import { FileEntryIcon } from "../panel/FileEntryIcon";
 import { useLayoutEffect, useRef } from "react";
 import { cn } from "../lib/cn";
 import { ComposerBanner } from "./ComposerBanner";
+import type { Skill } from "../ipc";
+import { Badge } from "../ui/badge";
+import {
+  BlocksIcon,
+  FolderIcon,
+  PackageIcon,
+  SettingsIcon,
+  UserRoundIcon,
+} from "lucide-react";
+import {
+  formatProviderSkillDisplayName,
+  resolveProviderSkillSourceKind,
+} from "./providerSkills";
 import type {
   ComposerSlashCommand,
   ComposerTriggerKind,
 } from "./composer-logic";
 
 export type ComposerCommandItem =
+  | {
+      id: string;
+      type: "skill";
+      skill: Skill;
+      label: string;
+      description: string;
+    }
   | {
       id: string;
       type: "path";
@@ -62,7 +82,11 @@ export function ComposerCommandMenu(props: {
             id={props.listId}
             role="listbox"
             aria-label={
-              props.triggerKind === "path" ? "Files and folders" : "Commands"
+              props.triggerKind === "path"
+                ? "Files and folders"
+                : props.triggerKind === "skill"
+                  ? "Skills"
+                  : "Commands"
             }
             className="not-empty:scroll-py-2 not-empty:p-2 max-h-72 min-h-0 scroll-pb-6 overflow-y-auto"
           >
@@ -89,11 +113,25 @@ export function ComposerCommandMenu(props: {
                 ) : null}
                 <span className="flex min-w-0 flex-1 items-center gap-2">
                   <span className="min-w-0 max-w-[45%] shrink-0 truncate font-sans text-xs font-medium">
-                    {item.label}
+                    {item.type === "skill" &&
+                    props.triggerKind === "slash-command" ? (
+                      <>
+                        <span className="text-secondary-label">/skill:</span>
+                        {formatProviderSkillDisplayName(item.skill)}
+                      </>
+                    ) : (
+                      item.label
+                    )}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-left text-secondary-label text-xs">
                     {item.description}
                   </span>
+                  {item.type === "skill" ? (
+                    <SkillSourceBadge
+                      skill={item.skill}
+                      showSkillSuffix={props.triggerKind === "skill"}
+                    />
+                  ) : null}
                 </span>
               </div>
             ))}
@@ -102,15 +140,52 @@ export function ComposerCommandMenu(props: {
           <div className="px-5 pt-3.5 pb-7">
             <p className="text-secondary-label text-xs" role="status">
               {props.isLoading
-                ? "Searching workspace files..."
+                ? props.triggerKind !== "path"
+                  ? "Searching workspace skills..."
+                  : "Searching workspace files..."
                 : (props.emptyStateText ??
-                  (props.triggerKind === "path"
-                    ? "No matching files or folders."
-                    : "No matching command."))}
+                  (props.triggerKind === "skill"
+                    ? "No skills found. Try / to browse provider commands."
+                    : props.triggerKind === "path"
+                      ? "No matching files or folders."
+                      : "No matching command."))}
             </p>
           </div>
         )}
       </ComposerBanner.Surface>
     </ComposerBanner.Attachment>
+  );
+}
+
+function SkillSourceBadge({
+  skill,
+  showSkillSuffix,
+}: {
+  skill: Skill;
+  showSkillSuffix: boolean;
+}) {
+  const kind = resolveProviderSkillSourceKind(skill);
+  const Icon = {
+    app: BlocksIcon,
+    repo: FolderIcon,
+    project: FolderIcon,
+    personal: UserRoundIcon,
+    system: SettingsIcon,
+    other: PackageIcon,
+  }[kind];
+  const label = {
+    app: "App",
+    repo: "Repo",
+    project: "Project",
+    personal: "Personal",
+    system: "System",
+    other: "Provider",
+  }[kind];
+  return (
+    <Badge className="ms-auto" variant="secondary">
+      <Icon aria-hidden="true" className="text-current" />
+      {label}
+      {showSkillSuffix ? " Skill" : null}
+    </Badge>
   );
 }

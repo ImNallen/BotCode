@@ -13,6 +13,8 @@ pub use pull_requests::{
 };
 mod runtime;
 mod settings;
+mod skills;
+pub use skills::Skill;
 mod settlement;
 pub use settlement::{SettlementInput, SettlementRules, settlement_at};
 mod store;

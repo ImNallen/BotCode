@@ -120,6 +120,7 @@ it("ties Edit from here and each changed-files card to the owning turn", () => {
   const render = (busy: boolean) =>
     renderToStaticMarkup(
       createElement(Timeline, {
+        skills: [],
         thread,
         clearance: 0,
         reverting: false,
