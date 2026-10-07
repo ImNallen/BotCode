@@ -23,6 +23,8 @@ import { notifyEditorResult, useEditorActions } from "../lib/editorActions";
 import { openInEditorMenuLabel, revealInFinderLabel } from "../lib/editors";
 import type { ChatFileLink } from "./chatFileLinks";
 import { renderSkillInlineMarkdownChildren } from "./SkillInlineText";
+import type { ComposerContextRecord } from "./composerContext";
+import { ContextRecordChip } from "./ContextRecordChip";
 
 export type FileLinks = {
   resolve: (target: string, source: "code" | "href") => ChatFileLink | null;
@@ -32,6 +34,7 @@ export type FileLinks = {
 };
 
 const FileLinkContext = createContext<FileLinks | null>(null);
+const ContextRecords = createContext<readonly ComposerContextRecord[]>([]);
 
 export function FileLinkProvider({
   value,
@@ -228,6 +231,22 @@ const components: Components = {
   },
   a({ href, children }) {
     const links = useContext(FileLinkContext);
+    const records = useContext(ContextRecords);
+    if (href?.startsWith("t3-context://v1/")) {
+      const [kind, contextId] = href
+        .slice("t3-context://v1/".length)
+        .split("/");
+      const record =
+        records.find(
+          (record) => record.contextId === contextId && record.kind === kind,
+        ) ?? null;
+      return (
+        <ContextRecordChip
+          record={record}
+          label={typeof children === "string" ? children : undefined}
+        />
+      );
+    }
     const link = href && links ? links.resolve(href, "href") : null;
     if (links && link) return <FileChip links={links} link={link} />;
     if (href && /^file:/i.test(href)) return <span>{children}</span>;
@@ -257,12 +276,14 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   lineBreaks = false,
   streaming = false,
   skills,
+  records = [],
 }: {
   text: string;
   className?: string;
   lineBreaks?: boolean;
   streaming?: boolean;
   skills?: readonly Skill[];
+  records?: readonly ComposerContextRecord[];
 }) {
   return (
     <div
@@ -272,25 +293,31 @@ export const ChatMarkdown = memo(function ChatMarkdown({
       )}
       data-streaming={streaming ? "" : undefined}
     >
-      <ReactMarkdown
-        remarkPlugins={lineBreaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
-        urlTransform={keepFileUrls}
-        components={
-          skills
-            ? {
-                ...components,
-                p: ({ children }) => (
-                  <p>{renderSkillInlineMarkdownChildren(children, skills)}</p>
-                ),
-                li: ({ children }) => (
-                  <li>{renderSkillInlineMarkdownChildren(children, skills)}</li>
-                ),
-              }
-            : components
-        }
-      >
-        {text}
-      </ReactMarkdown>
+      <ContextRecords value={records}>
+        <ReactMarkdown
+          urlTransform={(url) =>
+            url.startsWith("t3-context://v1/") ? url : keepFileUrls(url)
+          }
+          remarkPlugins={lineBreaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
+          components={
+            skills
+              ? {
+                  ...components,
+                  p: ({ children }) => (
+                    <p>{renderSkillInlineMarkdownChildren(children, skills)}</p>
+                  ),
+                  li: ({ children }) => (
+                    <li>
+                      {renderSkillInlineMarkdownChildren(children, skills)}
+                    </li>
+                  ),
+                }
+              : components
+          }
+        >
+          {text}
+        </ReactMarkdown>
+      </ContextRecords>
     </div>
   );
 });

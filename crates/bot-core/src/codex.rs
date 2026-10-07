@@ -1,3 +1,4 @@
+mod turn_input;
 use crate::{domain::*, log::RotatingLog};
 use serde_json::{Value, json};
 use std::{
@@ -17,6 +18,7 @@ use tokio::{
     task::JoinHandle,
     time::{Instant, timeout, timeout_at},
 };
+pub(crate) use turn_input::turn_input;
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>;
 type Status = watch::Receiver<Option<ExitStatus>>;
 type Tail = Arc<std::sync::Mutex<VecDeque<String>>>;

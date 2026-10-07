@@ -1,3 +1,4 @@
+use crate::MessageContext;
 use crate::usage::ContextUsage;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -149,6 +150,8 @@ pub enum Item {
         id: String,
         text: String,
         attachments: Vec<ImageAttachment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<MessageContext>,
         delivery: Delivery,
     },
     Assistant {
@@ -359,6 +362,8 @@ pub struct ModelOption {
 pub struct Turn {
     pub id: TurnId,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<MessageContext>,
     pub native_turn_id: Option<String>,
     pub delivery: Delivery,
     pub execution: Execution,
@@ -544,6 +549,8 @@ pub struct RevertResult {
     pub request_id: String,
     pub turn_id: TurnId,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<MessageContext>,
     pub turn_count: usize,
 }
 pub fn now_ms() -> u64 {

@@ -22,6 +22,11 @@ import { savedDisposition, setReviewDisposition } from "./panel/reviews";
 import type { SetReviewDisposition } from "./panel/reviews";
 import { notificationHistory } from "./notifications/observer";
 import { editorId, type EditorId } from "./lib/editors";
+import {
+  messageContext,
+  pullRequestContextMetadata,
+  type MessageContext,
+} from "./chat/composerContext";
 export const native = isTauri();
 const id = z.uuid();
 const reason = z.object({ kind: z.literal("unavailable"), reason: z.string() });
@@ -49,7 +54,7 @@ const execution = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("failed"), reason: z.string() }),
   z.object({ kind: z.literal("lost"), reason: z.string() }),
 ]);
-const imageAttachment = z.object({
+export const imageAttachment = z.object({
   id: z.string().regex(/^[0-9a-f]{64}$/),
   mimeType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
   name: z.string(),
@@ -59,6 +64,7 @@ const toolStatus = z.enum(["inProgress", "completed", "failed", "declined"]);
 const item = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("user_input"),
+    context: messageContext.nullable().optional(),
     id: z.string(),
     text: z.string(),
     attachments: z.array(imageAttachment),
@@ -358,6 +364,7 @@ const thread = z.object({
     z.object({
       id,
       prompt: z.string(),
+      context: messageContext.nullable().optional(),
       nativeTurnId: z.string().nullable(),
       delivery,
       execution,
@@ -384,6 +391,7 @@ const thread = z.object({
       requestId: z.string(),
       turnId: id,
       prompt: z.string(),
+      context: messageContext.nullable().optional(),
       turnCount: z.number().int(),
       attachments: z.array(imageAttachment).default([]),
     })
@@ -905,12 +913,23 @@ export const ipc = {
       imageAttachment,
       { headers: { "x-attachment-name": encodeURIComponent(file.name) } },
     ),
+  composerPullRequests: (
+    workspaceId: string,
+    threadId: string | undefined,
+    query: string,
+  ) =>
+    call(
+      "search_composer_pull_requests",
+      { workspaceId, threadId: threadId ?? null, query },
+      z.array(pullRequestContextMetadata),
+    ),
   submit: (
     threadId: string,
     text: string,
     requestId: string,
     attachments: ImageAttachment[],
     expectedTurnId?: string,
+    context?: MessageContext,
   ) =>
     call(
       "submit",
@@ -919,6 +938,7 @@ export const ipc = {
         text: normalizeSkillMentions(text),
         requestId,
         attachments,
+        ...(context?.records.length ? { context } : {}),
         ...(expectedTurnId ? { expectedTurnId } : {}),
       },
       z.object({ turnId: id }),

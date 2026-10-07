@@ -1,6 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/ThreadTerminalDrawer.tsx,
-// PersistentThreadTerminalDrawer and PersistentThreadTerminalPanel in components/ChatView.tsx and
-// lib/terminalCloseConfirm.ts (MIT).
+// Ported from T3 Code v0.0.45 apps/web/src/components/ThreadTerminalDrawer.tsx, ChatView.tsx and lib/terminalCloseConfirm.ts (MIT).
 import { isCommandPaletteOpen } from "../lib/commandPaletteBus";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -24,6 +22,8 @@ import {
 } from "lucide-react";
 import { ipc, native, type TerminalEvent, type TerminalTarget } from "../ipc";
 import type { FileLinks } from "../chat/ChatMarkdown";
+import type { ComposerContextRecord } from "../chat/composerContext";
+import { useComposerContext } from "../chat/ComposerContextProvider";
 import { cn } from "../lib/cn";
 import {
   observeSelectionActions,
@@ -78,6 +78,7 @@ import {
   type ThreadTerminalUiState,
 } from "./terminalState";
 import { updateTerminalState, useTerminalState } from "./terminalStore";
+import { buildTerminalContext } from "./terminalContext";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -271,6 +272,7 @@ type TerminalMenu = {
   kind: "selection" | "context";
   point: SelectionActionPoint;
   selection: string;
+  context: Extract<ComposerContextRecord, { kind: "terminal" }> | null;
 };
 
 interface TerminalViewportProps {
@@ -296,6 +298,7 @@ function TerminalViewport({
   resizeEpoch,
   drawerHeight,
 }: TerminalViewportProps) {
+  const addContext = useComposerContext();
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<GhosttyTerminalSurface | null>(null);
   const visibleRef = useRef(visible);
@@ -426,24 +429,36 @@ function TerminalViewport({
       };
       setupCleanups.push(clearSelectionAction);
 
-      const readSelection = (): string | null => {
+      const readSelection = () => {
         const activeTerminal = terminalRef.current;
         if (!activeTerminal?.hasSelection()) return null;
         const selection = activeTerminal.getSelection();
-        return selection.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, "")
-          .length > 0
-          ? selection
-          : null;
+        const position = activeTerminal.getSelectionPosition();
+        if (!position) return null;
+        const context = buildTerminalContext({
+          contextId: crypto.randomUUID(),
+          terminalId,
+          terminalLabel: getTerminalLabel(terminalId),
+          position,
+          text: selection,
+        });
+        if (!context) return null;
+        return {
+          clipboardText: selection,
+          context,
+        };
       };
 
       function showContextMenu(event: MouseEvent): void {
         // Own the gesture: the webview's own menu has no working Paste over a canvas.
         event.preventDefault();
         clearSelectionAction();
+        const selection = readSelection();
         showMenu({
           kind: "context",
           point: { x: event.clientX, y: event.clientY },
-          selection: readSelection() ?? "",
+          selection: selection?.clipboardText ?? "",
+          context: selection?.context ?? null,
         });
       }
 
@@ -463,7 +478,8 @@ function TerminalViewport({
             pointer,
             viewport: { width: window.innerWidth, height: window.innerHeight },
           }),
-          selection,
+          selection: selection.clipboardText,
+          context: selection.context,
         });
       };
 
@@ -674,6 +690,17 @@ function TerminalViewport({
           }}
           trigger={() => null}
         >
+          {addContext ? (
+            <MenuItem
+              disabled={menu.context === null}
+              onClick={() => {
+                if (!menu.context || !addContext(menu.context)) return;
+                terminalRef.current?.clearSelection();
+              }}
+            >
+              Add to chat
+            </MenuItem>
+          ) : null}
           <MenuItem
             disabled={menu.selection.length === 0}
             onClick={() => copySelection(menu.selection)}

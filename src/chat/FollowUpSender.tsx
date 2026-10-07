@@ -33,6 +33,7 @@ async function deliver(client: QueryClient, threadId: string, row: FollowUp) {
       row.id,
       row.attachments,
       intent.kind === "steer" ? intent.expectedTurnId : undefined,
+      row.context,
     );
     followUps.accepted(threadId, row.id, attempt, receipt.turnId);
   } catch (error) {

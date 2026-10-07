@@ -16,6 +16,7 @@ fn thread() -> ThreadSnapshot {
         turns: vec![Turn {
             id: TurnId::default(),
             prompt: "Accepted work".into(),
+            context: None,
             native_turn_id: None,
             delivery: Delivery::Accepted,
             execution: Execution::Completed,

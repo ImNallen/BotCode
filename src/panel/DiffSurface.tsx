@@ -1,5 +1,9 @@
-// Ported from T3 Code v0.0.45 apps/web/src/components/DiffPanel.tsx, DiffPanelShell.tsx and diffs/StyledDiffCodeView.tsx (MIT).
-import { parseDiffFromFile, type FileDiffMetadata } from "@pierre/diffs";
+// Ported from T3 Code v0.0.45 apps/web/src/components/DiffPanel.tsx, DiffPanelShell.tsx and diffs/AnnotatableCodeView.tsx (MIT).
+import {
+  parseDiffFromFile,
+  type FileDiffMetadata,
+  type SelectedLineRange,
+} from "@pierre/diffs";
 import {
   CodeView,
   type CodeViewHandle,
@@ -51,6 +55,12 @@ import {
 } from "./diffView";
 import { hideWhitespaceChanges } from "./hideWhitespace";
 import { useResolvedTheme } from "./useResolvedTheme";
+import { useComposerContext } from "../chat/ComposerContextProvider";
+import { truncateContextText } from "../chat/composerContext";
+import {
+  buildDiffReviewContext,
+  type ComposerReviewContext,
+} from "./composerReviewContext";
 
 type Change = WorkspaceView["changes"][number];
 type Basis = "staged" | "unstaged";
@@ -66,6 +76,7 @@ const parseScope = (raw: string | null): Scope =>
 
 type DiffSide = { name: string; contents: string } | null;
 type DiffFile = { path: string; fileDiff: FileDiffMetadata; version: number };
+type ReviewDraft = { context: ComposerReviewContext; range: SelectedLineRange };
 
 function plan(scope: Scope, change: Change): Basis[] {
   if (scope === "staged") return change.staged ? ["staged"] : [];
@@ -248,6 +259,13 @@ export function DiffSurface({
   onSelectTurn: (turnId: string | null, filePath?: string) => void;
 }) {
   const theme = useResolvedTheme();
+  const addContext = useComposerContext();
+  const [reviewDraft, setReviewDraft] = useState<ReviewDraft | null>(null);
+  const reviewText = useRef("");
+  const [selectedLines, setSelectedLines] = useState<{
+    id: string;
+    range: SelectedLineRange;
+  } | null>(null);
   const client = useQueryClient();
   const fileContextMenu = useFileContextMenu();
   const [scope, setScope] = useStoredState<Scope>("z1.diffScope", parseScope);
@@ -280,7 +298,7 @@ export function DiffSurface({
     expanded.scope === scopeKey ? expanded.paths : NONE_EXPANDED;
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [reveal, setReveal] = useState<{ path: string } | null>(null);
-  const viewer = useRef<CodeViewHandle<undefined, undefined>>(null);
+  const viewer = useRef<CodeViewHandle<ReviewDraft, undefined>>(null);
   const refreshing =
     useIsFetching({
       queryKey: selectedTurn
@@ -302,7 +320,13 @@ export function DiffSurface({
     [files],
   );
 
-  const items = useMemo<CodeViewItem<undefined>[]>(
+  useEffect(() => {
+    setReviewDraft(null);
+    reviewText.current = "";
+    setSelectedLines(null);
+  }, [scopeKey, checkout.workspaceId, checkout.threadId]);
+
+  const items = useMemo<CodeViewItem<ReviewDraft>[]>(
     () =>
       files.map((file) => {
         const collapsed = !expandedPaths.has(file.path);
@@ -311,10 +335,26 @@ export function DiffSurface({
           type: "diff",
           fileDiff: file.fileDiff,
           collapsed,
-          version: hash(`${file.version}:${collapsed ? 1 : 0}`),
+          annotations:
+            reviewDraft?.context.filePath === file.path
+              ? [
+                  {
+                    side:
+                      (reviewDraft.range.endSide ?? reviewDraft.range.side) ===
+                      "deletions"
+                        ? "deletions"
+                        : "additions",
+                    lineNumber: reviewDraft.range.end,
+                    metadata: reviewDraft,
+                  },
+                ]
+              : [],
+          version: hash(
+            `${file.version}:${collapsed ? 1 : 0}:${reviewDraft?.context.filePath === file.path ? reviewDraft.context.contextId : ""}`,
+          ),
         };
       }),
-    [files, expandedPaths],
+    [files, expandedPaths, reviewDraft],
   );
   const treeEntries = useMemo(
     () =>
@@ -366,6 +406,12 @@ export function DiffSurface({
     void client.invalidateQueries({ queryKey: checkoutKey("file", checkout) });
     if (thread)
       void client.invalidateQueries({ queryKey: ["turn-diff", thread.id] });
+  };
+
+  const cancelReview = () => {
+    setReviewDraft(null);
+    reviewText.current = "";
+    setSelectedLines(null);
   };
 
   const header = (
@@ -540,13 +586,46 @@ export function DiffSurface({
                 fileContextMenu.show(workspaceTarget(checkout, name), event);
               }}
             >
-              <CodeView<undefined>
+              <CodeView<ReviewDraft>
                 key={scopeKey}
                 ref={viewer}
                 className="diff-render-surface [--code-background:var(--background)] outline-none h-full min-h-0 overflow-auto"
                 items={items}
                 disableWorkerPool
-                options={diffViewOptions({ split, wordWrap, theme })}
+                selectedLines={selectedLines}
+                onSelectedLinesChange={setSelectedLines}
+                options={{
+                  ...diffViewOptions<ReviewDraft>({ split, wordWrap, theme }),
+                  enableGutterUtility:
+                    addContext !== null && reviewDraft === null,
+                  enableLineSelection:
+                    addContext !== null && reviewDraft === null,
+                  onGutterUtilityClick: (range, { item }) => {
+                    if (!range || item.type !== "diff" || !addContext) return;
+                    const context = buildDiffReviewContext({
+                      contextId: crypto.randomUUID(),
+                      sectionId: selectedTurn
+                        ? `turn:${selectedTurn.turn.id}`
+                        : `working:${scope}`,
+                      sectionTitle: scopeLabel,
+                      filePath: item.id,
+                      fileDiff: item.fileDiff,
+                      range,
+                      text: "",
+                    });
+                    if (!context) return;
+                    reviewText.current = "";
+                    setReviewDraft({ context, range });
+                  },
+                }}
+                renderAnnotation={({ metadata: draft }) => (
+                  <DiffCommentComposer
+                    key={draft.context.contextId}
+                    context={draft.context}
+                    textRef={reviewText}
+                    onCancel={cancelReview}
+                  />
+                )}
                 renderHeaderPrefix={(item) =>
                   item.type === "diff" ? (
                     <DiffFileChevron
@@ -577,6 +656,86 @@ export function DiffSurface({
         )}
       </div>
       {fileContextMenu.element}
+    </div>
+  );
+}
+
+function DiffCommentComposer({
+  context,
+  textRef,
+  onCancel,
+}: {
+  context: ComposerReviewContext;
+  textRef: { current: string };
+  onCancel: () => void;
+}) {
+  const addContext = useComposerContext();
+  const [reviewText, setReviewText] = useState(textRef.current);
+  const submit = () => {
+    if (!reviewText.trim() || !addContext) return;
+    if (
+      addContext({
+        ...context,
+        text: truncateContextText(reviewText.trim(), 16_000),
+      })
+    )
+      onCancel();
+  };
+  return (
+    <div
+      data-diff-comment-annotation
+      className="px-3 py-2 font-sans text-foreground"
+      contentEditable={false}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <span
+        data-size="sm"
+        data-slot="textarea-control"
+        className="relative inline-flex w-full rounded-lg border border-input bg-background not-dark:bg-clip-padding text-base text-foreground shadow-xs/5 ring-ring/24 transition-shadow before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] has-focus-visible:has-aria-invalid:border-destructive/64 has-focus-visible:has-aria-invalid:ring-destructive/16 has-aria-invalid:border-destructive/36 has-focus-visible:border-ring has-disabled:opacity-64 has-[:disabled,:focus-visible,[aria-invalid]]:shadow-none has-focus-visible:ring-[3px] not-has-disabled:has-not-focus-visible:not-has-aria-invalid:before:shadow-[0_1px_--theme(--color-black/4%)] sm:text-sm dark:bg-input/32 dark:has-aria-invalid:ring-destructive/24 dark:not-has-disabled:has-not-focus-visible:not-has-aria-invalid:before:shadow-[0_-1px_--theme(--color-white/6%)]"
+      >
+        <textarea
+          data-slot="textarea"
+          autoFocus
+          value={reviewText}
+          maxLength={16_000}
+          placeholder="Add a comment…"
+          aria-label={`Comment on lines ${context.rangeLabel}`}
+          className="field-sizing-content min-h-17.5 max-h-64 w-full rounded-[inherit] px-[calc(--spacing(3)-1px)] py-[calc(--spacing(1.5)-1px)] outline-none max-sm:min-h-20.5 min-h-16.5 px-[calc(--spacing(2.5)-1px)] py-[calc(--spacing(1)-1px)] max-sm:min-h-19.5"
+          onChange={(event) => {
+            textRef.current = event.target.value;
+            setReviewText(event.target.value);
+          }}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onCancel();
+            } else if (
+              event.key === "Enter" &&
+              (event.metaKey || event.ctrlKey) &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              submit();
+            }
+          }}
+        />
+      </span>
+      <div className="mt-1.5 flex items-center gap-1">
+        <span className="mr-auto text-3xs text-muted-foreground/70">
+          ⌘/Ctrl Enter to add to chat
+        </span>
+        <Button size="xs" variant="ghost-muted" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button
+          size="xs"
+          disabled={!reviewText.trim() || !addContext}
+          onClick={submit}
+        >
+          Add to chat
+        </Button>
+      </div>
     </div>
   );
 }

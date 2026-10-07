@@ -79,6 +79,7 @@ fn main() {
             ipc::switch_branch,
             ipc::git_status,
             ipc::current_branch_pull_request,
+            ipc::search_composer_pull_requests,
             ipc::list_thread_pull_requests,
             ipc::link_pull_request,
             ipc::unlink_pull_request,

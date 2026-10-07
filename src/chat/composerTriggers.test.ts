@@ -41,7 +41,7 @@ it("detects triggers at the caret with T3 line and token boundaries", () => {
     rangeStart: 6,
     rangeEnd: 9,
   });
-  for (const text of ["email@host", "See /plan", "#123", "/plan prompt"])
+  for (const text of ["email@host", "See /plan", "/plan prompt"])
     assert.equal(detectComposerTrigger(text, text.length), null);
   assert.equal(detectComposerTrigger("\n@file", 0), null);
 });
@@ -68,7 +68,7 @@ it("serializes path chips without losing spaces, brackets, punctuation or Unicod
     const value = `Before ${link} after\nsecond line\n`;
     const doc = schema.nodeFromJSON(buildComposerDocument(value));
     assert.equal(composerDocumentMap(doc).text, value);
-    assert.equal(doc.firstChild?.child(1).type.name, "composer-mention");
+    assert.equal(doc.firstChild?.child(1).type.name, "composer-context");
     for (const offset of [
       0,
       7,

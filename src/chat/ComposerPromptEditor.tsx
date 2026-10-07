@@ -10,7 +10,7 @@ import {
 import StarterKit from "@tiptap/starter-kit";
 import { Slice } from "@tiptap/pm/model";
 import { closeHistory } from "@tiptap/pm/history";
-import { FileEntryIcon } from "../panel/FileEntryIcon";
+import type { EditorView } from "@tiptap/pm/view";
 import {
   useImperativeHandle,
   useLayoutEffect,
@@ -21,7 +21,6 @@ import {
   useContext,
 } from "react";
 import { cn } from "../lib/cn";
-import { pathBasename } from "./composer-logic";
 import {
   buildComposerDocument,
   composerDocumentMap,
@@ -29,93 +28,73 @@ import {
   promptCursor,
 } from "./composerDocument";
 import type { Skill } from "../ipc";
-import { ContextChip, ContextChipLabel } from "./ContextChip";
-import { SkillChipIcon } from "./SkillInlineText";
-import { formatProviderSkillDisplayName } from "./providerSkills";
+import { ContextRecordChip } from "./ContextRecordChip";
+import {
+  composerContextRecord,
+  type ComposerContextRecord,
+} from "./composerContext";
+import {
+  readContextClipboard,
+  writeContextClipboard,
+} from "./composerContextClipboard";
 
 const SkillCatalog = createContext<readonly Skill[]>([]);
 
-function SkillNodeView({ node }: NodeViewProps) {
+function copySelection(view: EditorView, event: ClipboardEvent, cut: boolean) {
+  if (!event.clipboardData || view.state.selection.empty) return false;
+  const slice = view.state.selection.content();
+  const records: ComposerContextRecord[] = [];
+  slice.content.descendants((node) => {
+    if (node.type.name !== "composer-context") return;
+    const parsed = composerContextRecord.safeParse(node.attrs.record);
+    if (parsed.success) records.push(parsed.data);
+  });
+  const text = slice.content.textBetween(0, slice.content.size, "\n", (node) =>
+    node.type.name === "hardBreak" ? "\n" : (node.attrs.source ?? ""),
+  );
+  writeContextClipboard(event.clipboardData, { text, records });
+  event.preventDefault();
+  if (cut) view.dispatch(view.state.tr.deleteSelection().scrollIntoView());
+  return true;
+}
+
+function ContextNodeView({ node }: NodeViewProps) {
   const skills = useContext(SkillCatalog);
-  const name = typeof node.attrs.name === "string" ? node.attrs.name : "";
-  const skill = skills.find((skill) => skill.name === name) ?? { name };
+  const parsed = composerContextRecord.safeParse(node.attrs.record);
   return (
     <NodeViewWrapper
       as="span"
-      className="relative inline-flex select-none items-center align-middle leading-none data-[composer-chip-selected]:after:pointer-events-none data-[composer-chip-selected]:after:absolute data-[composer-chip-selected]:after:inset-0 data-[composer-chip-selected]:after:rounded-sm data-[composer-chip-selected]:after:bg-[Highlight] data-[composer-chip-selected]:after:opacity-30 data-[composer-chip-selected]:after:content-['']"
+      className="relative inline-flex select-none items-center align-middle leading-none"
+      contentEditable={false}
+      spellCheck={false}
     >
-      <ContextChip
-        kind="skill"
-        contentEditable={false}
-        spellCheck={false}
-        data-composer-skill-chip="true"
-        title={`$${name}`}
-        aria-label={`$${name}`}
-      >
-        <SkillChipIcon />
-        <ContextChipLabel>
-          {formatProviderSkillDisplayName(skill)}
-        </ContextChipLabel>
-      </ContextChip>
+      <ContextRecordChip
+        record={parsed.success ? parsed.data : null}
+        label={node.attrs.label}
+        skills={skills}
+      />
     </NodeViewWrapper>
   );
 }
 
-const ComposerSkill = Node.create({
-  name: "composer-skill",
+const ComposerContext = Node.create({
+  name: "composer-context",
   group: "inline",
   inline: true,
   atom: true,
   selectable: true,
-  addAttributes: () => ({ name: { default: "" }, source: { default: "" } }),
-  parseHTML: () => [{ tag: "span[data-composer-skill]" }],
-  renderHTML: ({ HTMLAttributes }) => [
+  addAttributes: () => ({
+    record: { default: null },
+    source: { default: "" },
+    label: { default: "" },
+  }),
+  parseHTML: () => [{ tag: "span[data-composer-context]" }],
+  renderHTML: ({ node }) => [
     "span",
-    { "data-composer-skill": "", ...HTMLAttributes },
+    { "data-composer-context": "", "data-source": node.attrs.source },
+    node.attrs.label || node.attrs.record?.label || "Context",
   ],
-  addNodeView: () => ReactNodeViewRenderer(SkillNodeView),
-});
-
-function MentionNodeView({ node }: NodeViewProps) {
-  const path = typeof node.attrs.path === "string" ? node.attrs.path : "";
-  return (
-    <NodeViewWrapper
-      as="span"
-      className="relative inline-flex select-none items-center align-middle leading-none data-[composer-chip-selected]:after:pointer-events-none data-[composer-chip-selected]:after:absolute data-[composer-chip-selected]:after:inset-0 data-[composer-chip-selected]:after:rounded-sm data-[composer-chip-selected]:after:bg-[Highlight] data-[composer-chip-selected]:after:opacity-30 data-[composer-chip-selected]:after:content-['']"
-    >
-      <span
-        contentEditable={false}
-        spellCheck={false}
-        data-composer-mention-chip="true"
-        title={path}
-        aria-label={path}
-        className="inline-flex h-[1.41em] max-w-full items-center gap-[0.33em] rounded-[0.5em] border px-[0.5em] align-middle font-medium text-[0.86em] leading-none [&_svg]:block [&_svg]:size-[1.17em] [&_svg]:shrink-0 [&_svg]:self-center [button&,a&,[data-popup-open]&]:cursor-pointer [button&,a&]:transition-colors [button&,a&]:motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-default [--context-chip-accent:oklch(0.62_0.11_215)] [--context-chip-border:color-mix(in_oklab,var(--context-chip-accent)_34%,var(--contrast-border))] [--context-chip-border-hover:color-mix(in_oklab,var(--context-chip-accent)_48%,var(--contrast-border))] [--context-chip-foreground:color-mix(in_oklab,var(--context-chip-accent)_22%,var(--contrast-foreground))] border-(--context-chip-border) bg-(--context-chip-accent)/11 text-(--context-chip-foreground) [button:enabled&,a&]:hover:border-(--context-chip-border-hover) [button:enabled&,a&]:hover:bg-(--context-chip-accent)/17"
-      >
-        <FileEntryIcon path={path} />
-        <span
-          data-slot="context-chip-label"
-          className="block min-w-0 self-center truncate leading-tight"
-        >
-          {pathBasename(path)}
-        </span>
-      </span>
-    </NodeViewWrapper>
-  );
-}
-
-const ComposerMention = Node.create({
-  name: "composer-mention",
-  group: "inline",
-  inline: true,
-  atom: true,
-  selectable: true,
-  addAttributes: () => ({ path: { default: "" }, source: { default: "" } }),
-  parseHTML: () => [{ tag: "span[data-composer-mention]" }],
-  renderHTML: ({ HTMLAttributes }) => [
-    "span",
-    { "data-composer-mention": "", ...HTMLAttributes },
-  ],
-  addNodeView: () => ReactNodeViewRenderer(MentionNodeView),
+  addNodeView: () => ReactNodeViewRenderer(ContextNodeView),
 });
 
 export const composerEditorExtensions = [
@@ -138,8 +117,7 @@ export const composerEditorExtensions = [
     strike: false,
     undoRedo: { newGroupDelay: 500 },
   }),
-  ComposerMention,
-  ComposerSkill,
+  ComposerContext,
 ];
 
 export type ComposerSnapshot = {
@@ -156,6 +134,7 @@ export type ComposerEditorHandle = {
     end: number;
     expectedText: string;
     replacement: string;
+    records?: ComposerContextRecord[];
   }) => boolean;
 };
 
@@ -163,7 +142,8 @@ export function ComposerPromptEditor(props: {
   ref: Ref<ComposerEditorHandle>;
   value: string;
   skills: readonly Skill[];
-  onChange: (value: string) => void;
+  records: ComposerContextRecord[];
+  onChange: (value: string, records: ComposerContextRecord[]) => void;
   onSelectionChange: (snapshot: ComposerSnapshot) => void;
   onKeyDown: (event: KeyboardEvent) => boolean;
   onPasteFiles: (event: ClipboardEvent) => boolean;
@@ -212,7 +192,7 @@ export function ComposerPromptEditor(props: {
   );
   const editor = useEditor({
     extensions: composerEditorExtensions,
-    content: buildComposerDocument(props.value),
+    content: buildComposerDocument(props.value, props.records),
     editable: !props.disabled,
     autofocus: props.autoFocus ? "end" : false,
     editorProps: {
@@ -224,10 +204,18 @@ export function ComposerPromptEditor(props: {
       },
       handlePaste: (view, event) => {
         if (latest.current.onPasteFiles(event)) return true;
-        const text = event.clipboardData?.getData("text/plain");
-        if (!text) return false;
+        const fragment = event.clipboardData
+          ? readContextClipboard(event.clipboardData)
+          : null;
+        if (!fragment) return false;
+        const existing = composerDocumentMap(view.state.doc).records;
+        if (
+          new Set([...existing, ...fragment.records].map((r) => r.contextId))
+            .size > 200
+        )
+          return true;
         const content = view.state.schema.nodeFromJSON(
-          buildComposerDocument(text),
+          buildComposerDocument(fragment.text, fragment.records),
         ).content;
         view.dispatch(
           view.state.tr
@@ -245,6 +233,8 @@ export function ComposerPromptEditor(props: {
               : "",
         ),
       handleDOMEvents: {
+        copy: (view, event) => copySelection(view, event, false),
+        cut: (view, event) => copySelection(view, event, true),
         compositionstart: () => {
           composing.current = true;
           return false;
@@ -268,7 +258,8 @@ export function ComposerPromptEditor(props: {
       },
     },
     onUpdate: ({ editor }) => {
-      latest.current.onChange(composerDocumentMap(editor.state.doc).text);
+      const content = composerDocumentMap(editor.state.doc);
+      latest.current.onChange(content.text, content.records);
       publishSelection();
     },
     onSelectionUpdate: () => publishSelection(),
@@ -300,7 +291,13 @@ export function ComposerPromptEditor(props: {
         publishSelection();
       },
       readSnapshot,
-      replaceRange: ({ start, end, expectedText, replacement }) => {
+      replaceRange: ({
+        start,
+        end,
+        expectedText,
+        replacement,
+        records = [],
+      }) => {
         if (
           !editor ||
           composing.current ||
@@ -310,7 +307,7 @@ export function ComposerPromptEditor(props: {
           return false;
         const from = editorCursor(editor.state.doc, start);
         const to = editorCursor(editor.state.doc, end);
-        const doc = buildComposerDocument(replacement);
+        const doc = buildComposerDocument(replacement, records);
         const inline = doc.content?.[0]?.content ?? [];
         return editor
           .chain()
@@ -332,14 +329,17 @@ export function ComposerPromptEditor(props: {
       composerDocumentMap(editor.state.doc).text === props.value
     )
       return;
-    editor.commands.setContent(buildComposerDocument(props.value), {
-      emitUpdate: false,
-    });
+    editor.commands.setContent(
+      buildComposerDocument(props.value, props.records),
+      {
+        emitUpdate: false,
+      },
+    );
     editor.commands.setTextSelection(
       editorCursor(editor.state.doc, props.value.length),
     );
     publishSelection();
-  }, [editor, props.value]);
+  }, [editor, props.value, props.records]);
   useLayoutEffect(() => {
     if (!editor) return;
     editor.setEditable(!props.disabled, false);

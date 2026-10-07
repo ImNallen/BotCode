@@ -1,5 +1,6 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/chat/MessagesTimeline.logic.ts, MessagesTimeline.tsx, agentSpawnSummary.ts, packages/client-runtime/src/work-log/presentation.ts and apps/server/src/orchestration/ActivityPayloadProjection.ts (MIT).
 import type { ImageAttachment, Item, Thread } from "../ipc";
+import type { ComposerContextRecord } from "./composerContext";
 import { formatDuration } from "../lib/time";
 
 type Turn = Thread["turns"][number];
@@ -67,6 +68,7 @@ export type TimelineRow =
       turnId: string;
       text: string;
       attachments: ImageAttachment[];
+      records: ComposerContextRecord[];
       at: number | null;
       editable: boolean;
       delivery: Extract<Item, { kind: "user_input" }>["delivery"] | null;
@@ -238,6 +240,7 @@ function present(item: Item, turnId: string): ItemEntry[] {
           turnId,
           text: item.text,
           attachments: item.attachments,
+          records: item.context?.records ?? [],
           at: null,
           editable: false,
           delivery: item.delivery,
@@ -655,6 +658,7 @@ export function deriveRows(
       turnId: turn.id,
       text: turn.prompt,
       attachments: turn.attachments,
+      records: turn.context?.records ?? [],
       at: turn.startedAtMs,
       editable: true,
       delivery: null,

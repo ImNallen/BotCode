@@ -922,6 +922,7 @@ fn legacy_snapshots_default_settings() {
         turns: vec![Turn {
             id: TurnId::default(),
             prompt: "hello".into(),
+            context: None,
             native_turn_id: None,
             delivery: Delivery::Accepted,
             execution: Execution::Completed,
@@ -2192,6 +2193,7 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
         turns: vec![Turn {
             id: TurnId::default(),
             prompt: "hello".into(),
+            context: None,
             native_turn_id: None,
             delivery: Delivery::Accepted,
             execution: Execution::Completed,
@@ -4497,12 +4499,14 @@ async fn restart_classifies_preparing_and_sending_steers_without_replay_even_on_
             id: "preparing".into(),
             text: "Not sent".into(),
             attachments: vec![],
+            context: None,
             delivery: Delivery::Preparing,
         },
         Item::UserInput {
             id: "sending".into(),
             text: "May have sent".into(),
             attachments: vec![],
+            context: None,
             delivery: Delivery::Sending,
         },
     ]);

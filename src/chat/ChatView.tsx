@@ -113,6 +113,17 @@ import {
   selectedCheckpointTurn,
   type TurnDiffSelection,
 } from "../panel/turnDiffSelection";
+import {
+  composerDraftKey,
+  readComposerDraft,
+  writeComposerDraft,
+} from "./composerDrafts";
+import {
+  appendContext,
+  referencedContext,
+  type ComposerContextRecord,
+} from "./composerContext";
+import { ComposerContextProvider } from "./ComposerContextProvider";
 import { PersistentThreadTerminalDrawer } from "../terminal/ThreadTerminalDrawer";
 import {
   terminalScopeKey,
@@ -174,22 +185,35 @@ export function ChatView({
       setPanelOpen(true);
     }
   }, [prPanelRequest, threadId]);
-  const [composer, setComposer] = useState(() => activateComposer(threadId));
-  if (composer.threadId !== threadId)
-    setComposer(activateComposer(threadId, composer.activation + 1));
+  const draftKey = composerDraftKey(workspaceId, threadId);
+  const [composer, setComposer] = useState<ComposerInput>(() => ({
+    ...activateComposer(threadId),
+    ...readComposerDraft(draftKey),
+    scopeKey: draftKey,
+  }));
+  if (composer.scopeKey !== draftKey)
+    setComposer({
+      ...activateComposer(threadId, composer.activation + 1),
+      ...readComposerDraft(draftKey),
+      scopeKey: draftKey,
+    });
   const composerRef = useRef(composer);
   composerRef.current = composer;
-  const { text: draft, images } = composer;
+  const { text: draft, images, records } = composer;
   useSyncExternalStore(
     followUps.subscribe,
     followUps.snapshot,
     followUps.snapshot,
   );
   const queued = threadId ? followUps.rows(threadId) : [];
-  const setDraft = (update: string | ((text: string) => string)) =>
+  const setDraft = (
+    update: string | ((text: string) => string),
+    changedRecords?: ComposerContextRecord[],
+  ) =>
     setComposer((current) => ({
       ...current,
       text: typeof update === "function" ? update(current.text) : update,
+      records: changedRecords ?? current.records,
       generation: current.generation + 1,
     }));
   const setImages = (update: (images: ComposerImage[]) => ComposerImage[]) =>
@@ -245,6 +269,19 @@ export function ChatView({
     [threadId, newThreadCheckout, newWorktreesStartFromOrigin],
   );
   const [error, setError] = useState<string>();
+  useEffect(() => {
+    if (!composer.scopeKey) return;
+    void writeComposerDraft(composer.scopeKey, composer).catch(
+      (error: unknown) => {
+        if (composerRef.current.scopeKey === composer.scopeKey)
+          setError(
+            error instanceof Error
+              ? error.message
+              : "Unable to save composer draft.",
+          );
+      },
+    );
+  }, [composer]);
   const overlay = useRef<HTMLDivElement>(null);
   const [clearance, setClearance] = useState(0);
   useEffect(() => {
@@ -271,7 +308,7 @@ export function ChatView({
       : null;
   const recoveryNotice =
     recovery && composer.appliedRevertId !== recovery.requestId
-      ? recoveryFit(images, recovery)
+      ? recoveryFit(images, recovery, records)
       : null;
   useEffect(() => {
     setComposer((current) => {
@@ -281,7 +318,7 @@ export function ChatView({
         ? current
         : { ...current, appliedRevertId: null };
     });
-  }, [thread?.id, recovery, images]);
+  }, [thread?.id, recovery, images, records]);
   useEffect(() => {
     if (composer.appliedRevertId)
       setComposerFocusRequest((current) => current + 1);
@@ -453,10 +490,18 @@ export function ChatView({
         text,
         attachments,
         () => crypto.randomUUID(),
+        referencedContext(started),
       );
       if (acceptsCompletion(composerRef.current, started))
         lastAttempt.current = attempt;
-      await ipc.submit(target, text, attempt.requestId, attachments);
+      await ipc.submit(
+        target,
+        text,
+        attempt.requestId,
+        attachments,
+        undefined,
+        referencedContext({ text, records: started.records }),
+      );
       return target;
     },
     onSuccess: (target, { started, newThreadSource }) => {
@@ -803,7 +848,13 @@ export function ChatView({
       return;
     if (thread && (busy || queued.length)) {
       const id = crypto.randomUUID();
-      followUps.enqueue(thread, { id, text: draft, attachments, settings });
+      followUps.enqueue(thread, {
+        id,
+        text: draft,
+        context: referencedContext(composer),
+        attachments,
+        settings,
+      });
       setComposer((current) => clearAcceptedInput(current, composer));
       setError(undefined);
       if (busy && effectiveFollowUpBehavior === "steer")
@@ -901,7 +952,27 @@ export function ChatView({
           />
         ),
       };
-  return (
+  const addComposerContext = (record: ComposerContextRecord) => {
+    try {
+      const content = appendContext(composer, record);
+      const started = composer;
+      setComposer((current) =>
+        acceptsCompletion(current, started, true)
+          ? { ...current, ...content, generation: current.generation + 1 }
+          : current,
+      );
+      requestAnimationFrame(() =>
+        setComposerFocusRequest((current) => current + 1),
+      );
+      return true;
+    } catch (error) {
+      setError(
+        error instanceof Error ? error.message : "Unable to add context.",
+      );
+      return false;
+    }
+  };
+  const content = (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
       <div
         className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]"
@@ -1225,6 +1296,10 @@ export function ChatView({
                     <Composer
                       key={threadId ?? "draft"}
                       value={draft}
+                      records={records}
+                      pullRequestScope={
+                        !isScratch ? { workspaceId, threadId } : undefined
+                      }
                       focusRequest={composerFocusRequest}
                       onChange={setDraft}
                       images={images}
@@ -1389,5 +1464,12 @@ export function ChatView({
         />
       ) : null}
     </div>
+  );
+  return (
+    <ComposerContextProvider
+      value={reverting || send.isPending ? null : addComposerContext}
+    >
+      {content}
+    </ComposerContextProvider>
   );
 }

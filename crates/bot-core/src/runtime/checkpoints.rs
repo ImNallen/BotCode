@@ -409,6 +409,7 @@ impl Owner {
             request_id: intent.request_id.clone(),
             turn_id: intent.turn_id.clone(),
             prompt: next.turns[position].prompt.clone(),
+            context: next.turns[position].context.clone(),
             attachments: next.turns[position].attachments.clone(),
             turn_count: position,
         });
