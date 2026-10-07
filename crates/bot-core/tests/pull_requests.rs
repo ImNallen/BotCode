@@ -478,10 +478,23 @@ async fn running_discovery_keeps_new_conversation_and_agent_completion_source() 
         .unwrap()
         .id;
     wait(&app, &first, |s| !s.discovering).await;
-    f.state(json!({"mode":"slow", "delay":0.7}));
+    let release = f.dir.path().join("release-discovery");
+    f.state(json!({"waitFor":{"BotDiscover":release}}));
+    let log = f.dir.path().join("gh.log");
+    std::fs::write(&log, "").unwrap();
     app.list_thread_pull_requests(first.clone(), true)
         .await
         .unwrap();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while !std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("BotDiscover")
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Branch discovery did not reach the host fixture");
     let second = app
         .create_thread(workspace.id, NewCheckout::Local)
         .await
@@ -495,7 +508,28 @@ async fn running_discovery_keeps_new_conversation_and_agent_completion_source() 
     )
     .await
     .unwrap();
-    let summary = wait(&app, &second, current).await;
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let snapshot = app.thread(second.clone()).await.unwrap();
+            if snapshot.turns.last().is_some_and(|turn| {
+                matches!(turn.execution, Execution::Completed)
+                    && matches!(turn.checkpoint, TurnCheckpoint::Complete { .. })
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Agent turn and checkpoint did not complete before discovery release");
+    let pending = app
+        .list_thread_pull_requests(second.clone(), false)
+        .await
+        .unwrap();
+    assert!(pending.discovering);
+    assert!(pending.links.is_empty());
+    std::fs::write(release, "").unwrap();
+    let summary = wait(&app, &second, |s| current(s) && !s.discovering).await;
     assert_eq!(summary.links[0].source, PrLinkSource::AgentDiscovered);
     assert_eq!(wait(&app, &first, current).await.links[0].pr.key, key(41));
     app.shutdown().await.unwrap();
