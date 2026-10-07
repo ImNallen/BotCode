@@ -690,6 +690,18 @@ impl ThreadSnapshot {
     pub fn summary(&self, settled_at_ms: Option<u64>) -> ThreadSummary {
         ThreadSummary {
             id: self.id.clone(),
+            revision: self.revision,
+            latest_turn: self.turns.last().map(|turn| LatestTurnSummary {
+                id: turn.id.clone(),
+                execution: turn.execution.clone(),
+                completed_at_ms: turn.completed_at_ms,
+            }),
+            pending_approval_ids: self
+                .approvals
+                .iter()
+                .filter(|approval| approval.state == ApprovalState::Pending)
+                .map(|approval| approval.id.clone())
+                .collect(),
             title: self.title.clone(),
             session: self.session.clone(),
             checkout: self.checkout.clone(),
@@ -715,7 +727,17 @@ impl ThreadSnapshot {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LatestTurnSummary {
+    pub id: TurnId,
+    pub execution: Execution,
+    pub completed_at_ms: Option<u64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ThreadSummary {
+    pub revision: u64,
+    pub latest_turn: Option<LatestTurnSummary>,
+    pub pending_approval_ids: Vec<ApprovalId>,
     #[serde(default)]
     pub pull_requests: crate::ThreadPrSummary,
     pub id: ThreadId,

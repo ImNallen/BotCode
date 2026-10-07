@@ -1,5 +1,6 @@
 // Shell geometry follows pingdotgg/t3code v0.0.45 components/AppSidebarLayout.tsx and
 // components/ui/sidebar.tsx, and components/NoProjectsHero.tsx at 6b286ae8a (MIT).
+import { ThreadNotificationCoordinator } from "./notifications/ThreadNotificationCoordinator";
 import {
   useCallback,
   useEffect,
@@ -324,6 +325,7 @@ export function Workbench() {
           ...previous,
           workspace,
           thread,
+          project: undefined,
         }),
       });
       void ipc
@@ -360,6 +362,16 @@ export function Workbench() {
         } as React.CSSProperties
       }
     >
+      <ThreadNotificationCoordinator
+        workspaces={views.flatMap((view) => (view.data ? [view.data] : []))}
+        workspaceIds={list.map((workspace) => workspace.id)}
+        visibleThread={
+          !pageOpen && selection.thread && workspaceId
+            ? { workspaceId, threadId: selection.thread }
+            : null
+        }
+        openThread={selectThread}
+      />
       <div
         className="group peer hidden text-sidebar-foreground md:block"
         data-collapsible={sidebarOpen ? "" : "offcanvas"}

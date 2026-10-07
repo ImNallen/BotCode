@@ -17,6 +17,9 @@ const workspace: Workspace = {
 };
 const thread: ThreadSummary = {
   id: "058478ab-2c41-40e0-83b7-dd2c71b3c368",
+  revision: 0,
+  latestTurn: null,
+  pendingApprovalIds: [],
   title: "Hidden thread",
   session: { kind: "draft" },
   checkout: { kind: "local" },

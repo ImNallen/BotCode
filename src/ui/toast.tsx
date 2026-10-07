@@ -6,14 +6,16 @@ import {
   CircleCheckIcon,
   InfoIcon,
   LoaderCircleIcon,
+  ShieldQuestionIcon,
   XIcon,
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { Button } from "./controls";
 
-export type ToastType = "loading" | "success" | "error" | "info";
+export type ToastType = "loading" | "success" | "error" | "info" | "warning";
 
 const icons = {
+  warning: ShieldQuestionIcon,
   error: CircleAlertIcon,
   info: InfoIcon,
   loading: LoaderCircleIcon,

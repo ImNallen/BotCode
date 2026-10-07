@@ -41,7 +41,17 @@ const storageCleanupSchema = z.object({
 });
 export type StorageCleanup = z.infer<typeof storageCleanupSchema>;
 
+export const notificationModeSchema = z.enum([
+  "off",
+  "notifications",
+  "sound",
+  "notifications-and-sound",
+]);
+export type NotificationMode = z.infer<typeof notificationModeSchema>;
+
 const schema = z.object({
+  notificationMode: notificationModeSchema,
+  inAppNotificationsEnabled: z.boolean(),
   appearance: z.enum(["system", "light", "dark"]),
   promptFontSize: z.number().int().min(12).max(20),
   codeFontSize: z.number().int().min(11).max(20),
@@ -58,6 +68,8 @@ export const checkoutModeLabels = {
 } as const satisfies Record<Preferences["newThreadCheckout"], string>;
 export type CheckoutMode = keyof typeof checkoutModeLabels;
 const defaults: Preferences = {
+  notificationMode: "off",
+  inAppNotificationsEnabled: false,
   appearance: "system",
   promptFontSize: 14,
   codeFontSize: 13,
@@ -117,6 +129,8 @@ function readPreferences(): PreferenceState {
         promptFontSize: z.unknown().optional(),
         codeFontSize: z.unknown().optional(),
         contextWindowMeter: z.unknown().optional(),
+        notificationMode: z.unknown().optional(),
+        inAppNotificationsEnabled: z.unknown().optional(),
         favoriteModels: z.unknown().optional(),
         newThreadCheckout: z.unknown().optional(),
         newWorktreesStartFromOrigin: z.unknown().optional(),
@@ -199,6 +213,13 @@ function readPreferences(): PreferenceState {
     return {
       preferences: {
         favoriteModels,
+        notificationMode: notificationModeSchema
+          .catch("off")
+          .parse(object.notificationMode),
+        inAppNotificationsEnabled: z
+          .boolean()
+          .catch(false)
+          .parse(object.inAppNotificationsEnabled),
         appearance: appearance.success ? appearance.data : defaults.appearance,
         promptFontSize: promptFontSize.success
           ? promptFontSize.data

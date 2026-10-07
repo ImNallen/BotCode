@@ -1,0 +1,13 @@
+# Bot Code macOS patch
+
+Upstream is the official `tauri-plugin-notification` crate 2.3.3, published from `tauri-apps/plugins-workspace` commit `e7a68fa63755603b9fa12d28e077eea645551d24`, directory `plugins/notification`. Source came from the crates.io release archive. MIT and Apache-2.0 license notices are retained. Packaged screenshots, JavaScript build sources and test artifacts are omitted; the compiled initialization scripts, plugin build inputs, permissions and platform source are retained.
+
+Bot Code selects `src/macos.rs` instead of the official `desktop.rs` on macOS. The official backend reports permission granted without asking macOS, ignores action metadata and uses Terminal's identity in development. The replacement uses Apple's UserNotifications framework behind the same notification plugin commands. Permission and delivery commands await Apple completion handlers without blocking the main thread. The Rust `on_action` and `NotificationData::extra` extensions carry clicked-notification metadata to Bot Code. The synchronous Rust builder reports asynchronous delivery failures through `notification:delivery-error`; Bot Code awaits the plugin `notify` command instead.
+
+The delegate stays retained for the plugin lifetime. UserInfo contains the serialized notification data. Bot Code validates thread targets before navigation and queues click targets until its renderer listener is ready. Native dispatch has no OS sound. T3 audio owns notification sound. `willPresent` suppresses native alerts while the app is foreground. Permission is requested only from the explicit General dropdown action. Unbundled development executables return an unavailable error without assuming Terminal's identity.
+
+This maintained backend patch supports Bot Code's immediate title/body/group/extra notification subset. It does not add desktop implementations of the official mobile scheduling, channel or action registration commands. Windows and Linux retain the official backend; Bot Code's native click extension currently supports macOS. Rebase the backend selection and async commands when updating the upstream crate, then verify permission, silent delivery and clicks in an actual bundled app.
+
+Native dependency license metadata was read from the locked crate manifests. `objc2` 0.6.4, `objc2-foundation` 0.3.2 and `block2` 0.6.2 are MIT. `objc2-user-notifications` 0.3.2 is Zlib OR Apache-2.0 OR MIT. `futures-channel` 0.3.34 is MIT OR Apache-2.0.
+
+T3 notification components and MP3 assets in `src` come from `pingdotgg/t3code` v0.0.45, commit `6c8fed35d`, under MIT. The source components have one-line source headers. Binary MP3 assets cannot carry source headers; their origin and license are recorded here.
