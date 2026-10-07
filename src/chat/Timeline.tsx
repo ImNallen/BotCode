@@ -27,7 +27,9 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { followUps, immediateIntent, type FollowUp } from "./followUps";
 import { checkFollowUp, sendFollowUpNow } from "./FollowUpSender";
-import type { Thread, Skill } from "../ipc";
+import { WorktreeSetupCard } from "./WorktreeSetupCard";
+import { ipc, setThreadSnapshot } from "../ipc";
+import type { Thread, Skill, WorktreeSetup } from "../ipc";
 import { cn } from "../lib/cn";
 import { formatDayAwareTimestamp, formatWorkingTimer } from "../lib/time";
 import { Button } from "../ui/controls";
@@ -611,6 +613,13 @@ export function Timeline({
         >
           <div ref={content}>
             <div className="h-[var(--workspace-titlebar-scroll-fade-height)]" />
+            {thread.worktreeSetup ? (
+              <SetupTimelineEntry
+                key={thread.id}
+                threadId={thread.id}
+                setup={thread.worktreeSetup}
+              />
+            ) : null}
             {rows.map((row) => (
               <WholePixelRow key={row.id}>
                 <div
@@ -771,6 +780,7 @@ function QueuedMessageRow({
   onRemove: (id: string) => void;
 }) {
   const client = useQueryClient();
+
   const sending = ["preparing", "dispatching"].includes(row.state.kind);
   const checking = row.state.kind === "checking";
   const canRemove = ["waiting", "held", "preparing"].includes(row.state.kind);
@@ -861,5 +871,43 @@ function QueuedMessageRow({
         ) : null}
       </div>
     </div>
+  );
+}
+
+function SetupTimelineEntry({
+  threadId,
+  setup,
+}: {
+  threadId: Thread["id"];
+  setup: WorktreeSetup;
+}) {
+  const client = useQueryClient();
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string>();
+  return (
+    <WholePixelRow>
+      <WorktreeSetupCard
+        snapshot={setup}
+        retrying={retrying}
+        onRetry={() => {
+          setRetrying(true);
+          setRetryError(undefined);
+          void ipc
+            .retryWorktreeSetup(threadId)
+            .then((snapshot) => setThreadSnapshot(client, snapshot))
+            .catch((error) =>
+              setRetryError(
+                error instanceof Error ? error.message : String(error),
+              ),
+            )
+            .finally(() => setRetrying(false));
+        }}
+      />
+      {retryError ? (
+        <p role="alert" className="text-sm text-destructive-foreground">
+          {retryError}
+        </p>
+      ) : null}
+    </WholePixelRow>
   );
 }

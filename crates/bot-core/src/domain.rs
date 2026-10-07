@@ -638,6 +638,8 @@ pub enum Arrange {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSnapshot {
     #[serde(default)]
+    pub worktree_setup: Option<crate::project::WorktreeSetup>,
+    #[serde(default)]
     pub created_at_ms: Option<u64>,
     #[serde(default)]
     pub latest_user_activity_at_ms: Option<u64>,

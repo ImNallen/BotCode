@@ -691,3 +691,23 @@ The actual native bundle used identifier `dev.bot.code.skillsverify`, disposable
 Independent review found the unsupported-name selection bug and an incorrect slash-menu loading label. Both were fixed before the final native run. The original skill metadata is retained; only names that cannot round-trip through T3's `$name` grammar are excluded from selectable rows. T3's provider ranking was compared after import/type and formatting adaptation. Ported components retain source headers and T3's class strings. Existing file and Plan behavior remains outside this change's feature scope.
 
 Evidence is under `/tmp/botcode-skills`, including generated protocol bindings, the initial live response, test/build logs, design comparisons, review findings, and `native/protocol.jsonl`. Native accessibility observations and screenshots are in the tool transcript. No new pixel-difference measurement or other-platform verification is claimed. The isolated app was stopped after verification. All project changes remain uncommitted.
+
+## Project scripts and worktree setup
+
+Verified on 2026-10-07 against T3 Code v0.0.45 at `/tmp/t3ref/t3code`. The project schema, setup runner, setup timeline card, script controls, and script ID helpers retain one-line source headers. Independent backend and UI reviews checked the integrated implementation against those sources and reported no unresolved findings after fixes.
+
+All 287 `pnpm test:ui` tests, `pnpm build`, `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and all 327 `cargo test -p bot-core` tests passed. The debug Tauri app bundle also built. One existing store migration test encountered a file-lock race in the first full core run; subsequent full runs passed without changing that test. A real Git regression verifies that a failed submodule update still runs setup and that retry cannot replay a completed script.
+
+The actual Tauri bundle used temporary identifier `dev.bot.code.projectsetupverify`, seven disposable repositories under `/tmp/botcode-project-setup/native`, and `BOT_CODE_DATA_DIR=/tmp/botcode-project-setup/native/data`. Native interaction used CUA at 1100×780. The repository's scripted app-server peer recorded turn dispatch times; no real account turn was sent. Local submodule fixtures used `GIT_ALLOW_PROTOCOL=file` only in the isolated verifier environment. The repository's Tauri configuration was unchanged.
+
+| Native workflow | Observed result |
+| --- | --- |
+| Synchronous setup | A script wrote a marker and environment variables, then slept for 16 seconds. Its card showed live output while the first turn waited. Provider dispatch occurred after the completion receipt. The marker appeared once in the new worktree. |
+| Asynchronous setup | The same sleeping script showed live output while the agent reply was already visible. Provider dispatch preceded setup completion. The marker appeared once in the new worktree. |
+| Failure, crash, and retry | An exit-7 script showed T3's warning state, retained its output, and offered Retry. The isolated app was killed and relaunched with the same data directory. The failed card survived; Retry succeeded after repairing the fixture. It recorded exactly two attempts. Previously completed scripts still had one marker each. |
+| Manual scripts | The primary header button opened a right-panel terminal tab with `SCRIPT_TAB_OK`. The checkout marker and captured `T3CODE_PROJECT_ROOT` and `T3CODE_WORKTREE_PATH` matched the intended repository and worktree. |
+| Script shortcut | The recorder saved Ctrl+Shift+R as `script.run-dev.run`. Pressing it from the composer opened another terminal tab and ran the script once. Pressing it under Settings did not run the script. |
+| Malformed configuration | Invalid JSONC produced a visible `Invalid t3.json` error, disabled draft submission, and created no conversation. |
+| Submodule modes | Recursive initialized the top-level and nested fixtures. Top-level initialized only the top-level fixture. None initialized neither. Setup scripts completed in all three worktrees. |
+
+Native accessibility observations and screenshots are in the tool transcript. Suite and bundle logs, provider timestamps, SQLite assertions, shortcut assertions, and crash evidence are under `/tmp/botcode-project-setup/evidence`. `native-assertions.json` checks setup ordering, marker counts, retry, malformed config, submodule modes, and manual checkout selection. `shortcut-assertions.json` checks the saved binding and Settings isolation. The isolated app was stopped afterward.

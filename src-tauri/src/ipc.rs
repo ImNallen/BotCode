@@ -432,3 +432,29 @@ pub async fn list_thread_summaries(
 ) -> Result<Vec<ThreadSummary>> {
     app.list_thread_summaries(workspace_id).await
 }
+
+#[tauri::command]
+pub async fn project_config(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+) -> Result<ProjectConfig> {
+    app.project_config(workspace_id).await
+}
+#[tauri::command]
+pub async fn retry_worktree_setup(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+) -> Result<ThreadSnapshot> {
+    app.retry_worktree_setup(thread_id).await
+}
+#[tauri::command]
+pub async fn run_project_script(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    script_id: String,
+    terminal_id: TerminalId,
+) -> Result<()> {
+    app.run_project_script(workspace_id, thread_id, script_id, terminal_id)
+        .await
+}

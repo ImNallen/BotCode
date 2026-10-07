@@ -31,6 +31,7 @@ function fixture(): Thread {
     id: threadId,
     workspaceId,
     title: "Checkpoint test",
+    worktreeSetup: null,
     nativeThreadId: "native",
     revision: 4,
     session: { kind: "ready" },

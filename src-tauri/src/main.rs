@@ -60,6 +60,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             notifications::notification_actions,
+            ipc::project_config,
+            ipc::retry_worktree_setup,
+            ipc::run_project_script,
             ipc::list_workspaces,
             ipc::open_workspace,
             ipc::rename_workspace,

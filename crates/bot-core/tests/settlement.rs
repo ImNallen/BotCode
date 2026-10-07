@@ -2,6 +2,7 @@ use bot_core::*;
 
 fn thread() -> ThreadSnapshot {
     ThreadSnapshot {
+        worktree_setup: None,
         created_at_ms: Some(1000),
         latest_user_activity_at_ms: Some(2000),
         id: ThreadId::default(),

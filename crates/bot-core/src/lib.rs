@@ -1,3 +1,5 @@
+mod project;
+pub use project::{ProjectConfig, ProjectScript, SetupState, WorktreeSetup};
 mod attachments;
 mod checkpoints;
 mod cleanup;

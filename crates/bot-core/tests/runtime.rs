@@ -905,6 +905,7 @@ async fn refreshed_catalog_rejects_removed_saved_model_before_acceptance() {
 #[test]
 fn legacy_snapshots_default_settings() {
     let thread = ThreadSnapshot {
+        worktree_setup: None,
         created_at_ms: None,
         latest_user_activity_at_ms: None,
         id: ThreadId::default(),
@@ -2126,6 +2127,7 @@ impl SettlementFixture for ThreadSnapshot {
 }
 fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> ThreadSnapshot {
     ThreadSnapshot {
+        worktree_setup: None,
         created_at_ms: None,
         latest_user_activity_at_ms: None,
         id: ThreadId::default(),
@@ -4974,5 +4976,358 @@ async fn implement_plan_in_new_thread_reuses_checkout_settings_and_operation_gua
             );
         }
     }
+    app.shutdown().await.unwrap();
+}
+
+async fn setup_thread(f: &Fixture, app: &App, script: serde_json::Value) -> ThreadSnapshot {
+    std::fs::write(
+        f.repository.join("t3.json"),
+        serde_json::json!({"scripts":[script]}).to_string(),
+    )
+    .unwrap();
+    let w = app.open_workspace(f.repository.clone()).await.unwrap();
+    app.create_thread(
+        w.id,
+        NewCheckout::Worktree {
+            base: "main".into(),
+            from_origin: false,
+        },
+    )
+    .await
+    .unwrap()
+}
+#[tokio::test]
+async fn project_setup_runs_after_submodule_failure_without_replaying_success() {
+    let f = Fixture::new();
+    f.commit();
+    std::fs::write(
+        f.repository.join(".gitmodules"),
+        "[submodule \"missing\"]\npath = dependencies/missing\nurl = /missing-bot-code-submodule.git\n",
+    )
+    .unwrap();
+    let commit = git_output(&f.repository, &["rev-parse", "HEAD"]);
+    git_output(&f.repository, &["add", ".gitmodules"]);
+    git_output(
+        &f.repository,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{commit},dependencies/missing"),
+        ],
+    );
+    git_output(
+        &f.repository,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Add unavailable submodule",
+        ],
+    );
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = setup_thread(
+        &f,
+        &app,
+        serde_json::json!({
+            "name": "Install",
+            "command": "echo once >> dependency-marker",
+            "runOnWorktreeCreate": true,
+            "async": false
+        }),
+    )
+    .await;
+    let done = wait(&app, &thread.id, |t| {
+        matches!(
+            t.worktree_setup.as_ref().unwrap().state,
+            SetupState::Succeeded
+        )
+    })
+    .await;
+    assert!(
+        done.worktree_setup
+            .as_ref()
+            .unwrap()
+            .output
+            .iter()
+            .any(|line| { line.contains("Submodule checkout failed with code") })
+    );
+    app.retry_worktree_setup(thread.id.clone()).await.unwrap();
+    let Checkout::Worktree { path, .. } = &done.checkout else {
+        panic!("expected worktree")
+    };
+    assert_eq!(
+        std::fs::read_to_string(path.join("dependency-marker")).unwrap(),
+        "once\n"
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn project_setup_waits_before_checkpoint_then_releases_failed_turn() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = setup_thread(
+        &f,
+        &app,
+        serde_json::json!({
+            "name": "Install",
+            "command": "while [ ! -e \"$T3CODE_PROJECT_ROOT/release\" ]; do sleep 0.05; done; echo prepared > dependency; echo setup-output; exit 7",
+            "runOnWorktreeCreate": true,
+            "async": false
+        }),
+    )
+    .await;
+    app.submit(
+        thread.id.clone(),
+        "setup-turn".into(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let held = app.thread(thread.id.clone()).await.unwrap();
+    assert!(matches!(held.turns[0].checkpoint, TurnCheckpoint::Pending));
+    assert!(!f.calls().iter().any(|call| call["method"] == "turn/start"));
+    assert!(app.delete_thread(thread.id.clone()).await.is_err());
+    assert!(
+        app.remove_workspace(thread.workspace_id.clone())
+            .await
+            .is_err()
+    );
+    std::fs::write(f.repository.join("release"), "").unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert!(matches!(
+        done.worktree_setup.unwrap().state,
+        SetupState::Failed {
+            exit_code: Some(7),
+            ..
+        }
+    ));
+    assert_eq!(
+        f.calls()
+            .iter()
+            .filter(|call| call["method"] == "turn/start")
+            .count(),
+        1
+    );
+    let diff = app
+        .read_turn_diff(
+            thread.id.clone(),
+            done.turns[0].id.clone(),
+            "dependency".into(),
+        )
+        .await;
+    assert_eq!(diff.unwrap_err().code, "invalid_path");
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn project_setup_receipt_survives_restart_and_completed_retry_is_noop() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = setup_thread(
+        &f,
+        &app,
+        serde_json::json!({
+            "name": "Install",
+            "command": "echo once >> \"$T3CODE_PROJECT_ROOT/count\"; while [ ! -e \"$T3CODE_PROJECT_ROOT/release\" ]; do sleep 0.05; done; echo done",
+            "runOnWorktreeCreate": true
+        }),
+    )
+    .await;
+    assert!(matches!(
+        app.retry_worktree_setup(thread.id.clone())
+            .await
+            .unwrap()
+            .worktree_setup
+            .unwrap()
+            .state,
+        SetupState::Running
+    ));
+    app.shutdown().await.unwrap();
+    std::fs::write(f.repository.join("release"), "").unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let app = reopen(&f.config).await;
+    wait(&app, &thread.id, |t| {
+        matches!(
+            t.worktree_setup.as_ref().unwrap().state,
+            SetupState::Succeeded
+        )
+    })
+    .await;
+    app.retry_worktree_setup(thread.id.clone()).await.unwrap();
+    let shared = app
+        .create_thread(
+            thread.workspace_id.clone(),
+            NewCheckout::Existing {
+                thread_id: thread.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(shared.worktree_setup.is_none());
+    assert_eq!(
+        std::fs::read_to_string(f.repository.join("count")).unwrap(),
+        "once\n"
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn project_config_accepts_jsonc_and_rejects_invalid_fields() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let w = app.open_workspace(f.repository.clone()).await.unwrap();
+    std::fs::write(
+        f.repository.join("t3.json"),
+        r#"{/* config */ "scripts":[{"name":" Run Tests ","command":" echo '//ok' ",},{"name":"Run Tests","command":"true"},],"worktreeSubmodules":"none",}"#,
+    )
+    .unwrap();
+    let config = app.project_config(w.id.clone()).await.unwrap();
+    assert_eq!(config.scripts[0].id, "run-tests");
+    assert_eq!(config.scripts[1].id, "run-tests-2");
+    assert_eq!(config.scripts[0].command, "echo '//ok'");
+    assert!(config.scripts[0].r#async);
+    for invalid in [
+        r#"{"scripts":[{"name":" ","command":"true"}]}"#,
+        r#"{"scripts":[{"name":"x","command":"true","async":null}]}"#,
+        r#"{"worktreeSubmodules":"shallow"}"#,
+    ] {
+        std::fs::write(f.repository.join("t3.json"), invalid).unwrap();
+        assert_eq!(
+            app.project_config(w.id.clone()).await.unwrap_err().code,
+            "project_config"
+        );
+    }
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_setup_failure_retries_and_manual_script_starts_unopened_terminal() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = setup_thread(
+        &f,
+        &app,
+        serde_json::json!({
+            "name": "Install",
+            "command": "echo attempt >> \"$T3CODE_PROJECT_ROOT/count\"; test -f \"$T3CODE_PROJECT_ROOT/release\"",
+            "runOnWorktreeCreate": true
+        }),
+    )
+    .await;
+    wait(&app, &thread.id, |t| {
+        matches!(
+            t.worktree_setup.as_ref().unwrap().state,
+            SetupState::Failed { .. }
+        )
+    })
+    .await;
+    std::fs::write(f.repository.join("release"), "").unwrap();
+    app.retry_worktree_setup(thread.id.clone()).await.unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(
+            t.worktree_setup.as_ref().unwrap().state,
+            SetupState::Succeeded
+        )
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(f.repository.join("count")).unwrap(),
+        "attempt\nattempt\n"
+    );
+    std::fs::write(
+        f.repository.join("t3.json"),
+        serde_json::json!({
+            "scripts": [{
+                "name": "Manual",
+                "command": "printf '%s\\n%s\\n' \"$T3CODE_PROJECT_ROOT\" \"$T3CODE_WORKTREE_PATH\" > manual"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    app.run_project_script(
+        thread.workspace_id.clone(),
+        Some(thread.id.clone()),
+        "manual".into(),
+        "script-tab".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let Checkout::Worktree { path, .. } = &thread.checkout else {
+        panic!()
+    };
+    for _ in 0..100 {
+        if path.join("manual").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        std::fs::read_to_string(path.join("manual")).unwrap(),
+        format!(
+            "{}\n{}\n",
+            f.repository.canonicalize().unwrap().display(),
+            path.display()
+        )
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_setup_async_default_and_live_restart_do_not_duplicate_process() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread=setup_thread(&f,&app,serde_json::json!({"name":"Install","command":"echo once >> \"$T3CODE_PROJECT_ROOT/count\"; while [ ! -e \"$T3CODE_PROJECT_ROOT/release\" ]; do sleep 0.05; done","runOnWorktreeCreate":true})).await;
+    app.submit(
+        thread.id.clone(),
+        "async-turn".into(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert!(matches!(
+        done.worktree_setup.unwrap().state,
+        SetupState::Running
+    ));
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    assert!(matches!(
+        app.retry_worktree_setup(thread.id.clone())
+            .await
+            .unwrap()
+            .worktree_setup
+            .unwrap()
+            .state,
+        SetupState::Running
+    ));
+    assert_eq!(
+        std::fs::read_to_string(f.repository.join("count")).unwrap(),
+        "once\n"
+    );
+    std::fs::write(f.repository.join("release"), "").unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(
+            t.worktree_setup.as_ref().unwrap().state,
+            SetupState::Succeeded
+        )
+    })
+    .await;
     app.shutdown().await.unwrap();
 }
