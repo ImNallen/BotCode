@@ -225,6 +225,28 @@ fn write_refuses_paths_outside_the_repository_and_inside_git() {
         inside()
     );
     assert!(root.join("folder").is_dir());
+    for path in ["folder/./x.txt", "folder//x.txt", "folder/", "x/../y"] {
+        assert_eq!(
+            refusal(repo::write_file(&canonical, path, "x")),
+            inside(),
+            "{path}"
+        );
+    }
+    assert!(!root.join("folder/x.txt").exists());
+    assert!(!root.join("y").exists());
+    std::fs::write(root.join("plain.txt"), "plain\n").unwrap();
+    std::os::unix::fs::symlink("plain.txt", root.join("plainlink")).unwrap();
+    for path in ["plain.txt/x", "plainlink/x", "plainlink/deeper/x"] {
+        assert_eq!(
+            refusal(repo::write_file(&canonical, path, "x")),
+            inside(),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(root.join("plain.txt")).unwrap(),
+        "plain\n"
+    );
     std::fs::write(root.join("big.txt"), "small\n").unwrap();
     assert_eq!(
         refusal(repo::write_file(
