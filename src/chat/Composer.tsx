@@ -14,10 +14,6 @@ import {
   FolderGit2Icon,
   FolderGitIcon,
   FolderIcon,
-  LockIcon,
-  LockOpenIcon,
-  PenLineIcon,
-  SparklesIcon,
   XIcon,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -34,6 +30,7 @@ import type {
   CheckoutRef,
   ContextUsage,
   ModelOption,
+  PermissionModeOption,
   Skill,
   SessionSettings,
 } from "../ipc";
@@ -64,6 +61,7 @@ import {
 } from "./composerSlashCommandSearch";
 import { useProjectSearch } from "../lib/projectSearch";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import { PermissionModeOptions, permissionModeIcons } from "./permissionModes";
 
 const composerControl =
   "relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap rounded-(--control-radius) border border-transparent text-base outline-none hover:bg-accent data-pressed:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 data-disabled:pointer-events-none data-disabled:opacity-64 pointer-coarse:after:absolute pointer-coarse:after:size-full pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 [&:active:not([aria-haspopup])]:scale-[0.97] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:-mx-0.5 [&_svg[data-composer-control-icon]]:mx-0 h-7 gap-1.5 px-2.5 font-medium text-secondary-label [&_svg:not([class*='text-'])]:text-muted-foreground hover:text-foreground sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 aria-pressed:bg-accent aria-pressed:text-accent-foreground aria-pressed:hover:bg-accent/80";
@@ -95,6 +93,7 @@ export function Composer({
   autoFocus,
   focusRequest,
   settings,
+  permissionModes,
   models,
   modelsLoading,
   modelsError,
@@ -144,11 +143,15 @@ export function Composer({
   autoFocus?: boolean;
   focusRequest?: number;
   settings: SessionSettings;
+  permissionModes: PermissionModeOption[];
   models: ModelOption[];
   modelsLoading: boolean;
   modelsError?: string;
   onRetryModels: () => void;
-  onSettingsChange: (settings: SessionSettings) => void;
+  onSettingsChange: (
+    settings: SessionSettings,
+    options?: { permissionModeSelected: boolean },
+  ) => void;
   settingsDisabled: boolean;
   searchCheckout: CheckoutRef | undefined;
   filesError?: string;
@@ -385,36 +388,10 @@ export function Composer({
       max: "Max",
       ultra: "Ultra",
     })[value] ?? value;
-  const modes = [
-    {
-      value: "approval-required",
-      label: "Supervised",
-      description: "Ask before commands and file changes.",
-      icon: LockIcon,
-    },
-    {
-      value: "auto-accept-edits",
-      label: "Auto-accept edits",
-      description: "Auto-approve edits, ask before other actions.",
-      icon: PenLineIcon,
-    },
-    {
-      value: "auto",
-      label: "Auto",
-      description:
-        "Supported providers approve routine actions; others still ask.",
-      icon: SparklesIcon,
-    },
-    {
-      value: "full-access",
-      label: "Full access",
-      description: "Allow commands and edits without prompts.",
-      icon: LockOpenIcon,
-    },
-  ] as const;
-  const selectedMode =
-    modes.find((mode) => mode.value === settings.permissionMode) ?? modes[0];
-  const RuntimeIcon = selectedMode.icon;
+  const selectedMode = permissionModes.find(
+    (mode) => mode.value === settings.permissionMode,
+  );
+  const RuntimeIcon = permissionModeIcons[settings.permissionMode];
   const checkout = context?.checkout;
   return (
     <ComposerSurface.Shell contextStrip={context !== undefined}>
@@ -758,9 +735,11 @@ export function Composer({
                               onClick={props.onClick}
                               aria-haspopup={props["aria-haspopup"]}
                               aria-expanded={props["aria-expanded"]}
-                              disabled={settingsDisabled}
-                              title={selectedMode.description}
-                              aria-label={`Access mode: ${selectedMode.label}`}
+                              disabled={
+                                settingsDisabled || permissionModes.length === 0
+                              }
+                              title={selectedMode?.description}
+                              aria-label={`Access mode: ${selectedMode?.label ?? settings.permissionMode}`}
                               className={composerControl}
                             >
                               <RuntimeIcon
@@ -769,48 +748,24 @@ export function Composer({
                                 data-composer-control-icon
                               />
                               <span data-composer-control-label>
-                                {selectedMode.label}
+                                {selectedMode?.label ?? settings.permissionMode}
                               </span>
                               <ChevronDownIcon className="size-3.5 text-icon-muted" />
                             </button>
                           )}
                         >
-                          {modes.map((mode) => (
-                            <MenuItem
-                              key={mode.value}
-                              disabled={settingsDisabled}
-                              title={mode.description}
-                              aria-label={mode.label}
-                              data-selected={
-                                settings.permissionMode === mode.value
-                                  ? ""
-                                  : undefined
-                              }
-                              className="flex min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center rounded-sm px-2 py-1 text-base outline-none data-selected:bg-foreground/[0.08] data-disabled:pointer-events-none data-disabled:cursor-not-allowed data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0 min-w-64"
-                              role="menuitemradio"
-                              aria-checked={
-                                settings.permissionMode === mode.value
-                              }
-                              onClick={() =>
-                                onSettingsChange({
-                                  ...settings,
-                                  permissionMode: mode.value,
-                                })
-                              }
-                            >
-                              <div className="flex min-w-0 items-center gap-3">
-                                <div className="grid min-w-0 flex-1 gap-0.5">
-                                  <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-                                    <mode.icon className="size-3.5 shrink-0 text-muted-foreground" />
-                                    {mode.label}
-                                  </span>
-                                  <span className="text-muted-foreground text-xs leading-4">
-                                    {mode.description}
-                                  </span>
-                                </div>
-                              </div>
-                            </MenuItem>
-                          ))}
+                          <PermissionModeOptions
+                            options={permissionModes}
+                            selected={settings.permissionMode}
+                            disabled={settingsDisabled}
+                            presentation="composer"
+                            onSelect={(permissionMode) =>
+                              onSettingsChange(
+                                { ...settings, permissionMode },
+                                { permissionModeSelected: true },
+                              )
+                            }
+                          />
                         </Menu>
                       </div>
                       <div

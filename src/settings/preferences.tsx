@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { z } from "zod";
-import { ipc, native } from "../ipc";
+import { ipc, native, permissionMode } from "../ipc";
 import { editorId } from "../lib/editors";
 import { serial } from "../lib/serial";
 
@@ -20,6 +20,7 @@ export type FavoriteModel = Readonly<z.infer<typeof favoriteModelSchema>>;
 export const autoSettleDefaultDays = 3;
 // Settings that a project can override. Null auto-settle days turn auto-settling off.
 const projectSchema = z.object({
+  defaultPermissionMode: permissionMode.nullable(),
   autoSettleOnMerge: z.boolean(),
   newThreadCheckout: z.enum(["local", "worktree"]),
   newWorktreesStartFromOrigin: z.boolean(),
@@ -29,6 +30,7 @@ export type ProjectValues = z.infer<typeof projectSchema>;
 export type ProjectSetting = keyof ProjectValues;
 export type ProjectOverride = Partial<ProjectValues>;
 export const builtInProject: ProjectValues = {
+  defaultPermissionMode: null,
   autoSettleOnMerge: true,
   newThreadCheckout: "local",
   newWorktreesStartFromOrigin: true,
@@ -132,6 +134,7 @@ function readPreferences(): PreferenceState {
       return { preferences: defaults, persistenceError: undefined };
     const object = z
       .object({
+        defaultPermissionMode: z.unknown().optional(),
         autoSettleOnMerge: z.unknown().optional(),
         appearance: z.unknown().optional(),
         promptFontSize: z.unknown().optional(),
@@ -150,6 +153,9 @@ function readPreferences(): PreferenceState {
         storageCleanup: z.unknown().optional(),
       })
       .parse(JSON.parse(stored));
+    const defaultPermissionMode = schema.shape.defaultPermissionMode.safeParse(
+      object.defaultPermissionMode,
+    );
     const autoSettleOnMerge = schema.shape.autoSettleOnMerge.safeParse(
       object.autoSettleOnMerge,
     );
@@ -223,6 +229,9 @@ function readPreferences(): PreferenceState {
       : [];
     return {
       preferences: {
+        defaultPermissionMode: defaultPermissionMode.success
+          ? defaultPermissionMode.data
+          : defaults.defaultPermissionMode,
         favoriteModels,
         followUpBehavior: schema.shape.followUpBehavior
           .catch("queue")

@@ -118,6 +118,7 @@ it("closes checkpoint, approval, rejected steer and terminal failure gates befor
         id: "approval",
         turnId,
         state: "answering",
+        options: [],
         action: { kind: "command", command: "echo", cwd: "/", reason: "" },
       });
     else if (gate === "rejected" || gate === "uncertain")

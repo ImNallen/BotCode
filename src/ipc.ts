@@ -173,10 +173,23 @@ const item = z.discriminatedUnion("kind", [
     review: z.string(),
   }),
 ]);
+const approvalDecision = z.enum([
+  "accept",
+  "accept_for_session",
+  "accept_always",
+  "decline",
+  "cancel",
+]);
+const approvalOption = z.object({
+  decision: approvalDecision,
+  label: z.string(),
+  warning: z.string().nullable().optional(),
+});
 const approval = z.object({
   id,
   turnId: id,
   state: z.enum(["pending", "answering", "answered", "expired", "uncertain"]),
+  options: z.array(approvalOption).default([]),
   action: z.discriminatedUnion("kind", [
     z.object({
       kind: z.literal("command"),
@@ -188,6 +201,17 @@ const approval = z.object({
       kind: z.literal("file_change"),
       text: z.string(),
       reason: z.string(),
+    }),
+    z.object({
+      kind: z.literal("permission"),
+      detail: z.string(),
+      reason: z.string(),
+    }),
+    z.object({
+      kind: z.literal("mcp_elicitation"),
+      detail: z.string(),
+      reason: z.string(),
+      appName: z.string(),
     }),
   ]),
 });
@@ -215,12 +239,25 @@ const userQuestions = z.object({
     }),
   ),
 });
-const permissionMode = z.enum([
+export const permissionMode = z.enum([
   "approval-required",
   "auto-accept-edits",
   "auto",
   "full-access",
 ]);
+const permissionModeOption = z.object({
+  value: permissionMode,
+  label: z.string(),
+  description: z.string(),
+});
+const providerCapabilities = z.object({
+  provider: z.string(),
+  permissionModes: z.array(permissionModeOption),
+  defaultPermissionMode: permissionMode,
+  supportedApprovalKinds: z.array(
+    z.enum(["command", "file_change", "permission", "mcp_elicitation"]),
+  ),
+});
 const settings = z.object({
   model: z.string().nullable(),
   effort: z.string().nullable(),
@@ -591,6 +628,9 @@ export type Workspace = z.infer<typeof workspace>;
 export type WorkspaceView = z.infer<typeof workspaceView>;
 export type Thread = z.infer<typeof thread>;
 export type SessionSettings = z.infer<typeof settings>;
+export type PermissionMode = z.infer<typeof permissionMode>;
+export type PermissionModeOption = z.infer<typeof permissionModeOption>;
+export type ProviderCapabilities = z.infer<typeof providerCapabilities>;
 export type ModelOption = z.infer<typeof modelOption>;
 export type ContextUsage = z.infer<typeof contextUsage>;
 export type LimitWindow = z.infer<typeof limitWindow>;
@@ -601,7 +641,7 @@ export type UserQuestionAnswers = Record<string, { answers: string[] }>;
 export type Item = z.infer<typeof item>;
 export type ImageAttachment = z.infer<typeof imageAttachment>;
 export type TurnDiffFile = z.infer<typeof turnDiffFile>;
-export type ApprovalDecision = "accept" | "decline" | "cancel";
+export type ApprovalDecision = z.infer<typeof approvalDecision>;
 export type Arrange =
   | {
       kind:
@@ -960,6 +1000,8 @@ export const ipc = {
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),
   resume: (threadId: string) => call("open_thread", { threadId }, thread),
   models: () => call("list_models", {}, z.array(modelOption)),
+  providerCapabilities: () =>
+    call("provider_capabilities", {}, providerCapabilities),
   skills: (cwd: string) => call("list_skills", { cwd }, z.array(skill)),
   collaborationModes: () =>
     call("collaboration_modes", {}, z.array(z.enum(["default", "plan"]))),

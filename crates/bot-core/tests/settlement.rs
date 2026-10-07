@@ -233,6 +233,7 @@ fn explicit_placement_snooze_approval_and_runtime_busy_rules_remain_authoritativ
             text: "Change".into(),
             reason: String::new(),
         },
+        options: vec![],
         state: ApprovalState::Pending,
     });
     assert_eq!(settled(&t, &links, Some(1), true, false), None);

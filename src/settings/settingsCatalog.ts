@@ -47,6 +47,14 @@ type SettingsCategory = {
 };
 
 export const projectSettingRows = {
+  defaultPermissionMode: {
+    title: "Permissions",
+    all: "Default permissions for new threads. Projects can override them.",
+    project: "Permissions for new threads in this project.",
+    resetLabel: "default permissions",
+    keywords:
+      "approval supervised auto accept edits full access sandbox permissions",
+  },
   newThreadCheckout: {
     title: "Workspace",
     all: "Where new threads start. Projects can override it.",
@@ -158,7 +166,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "approval",
             title: "Approval mode",
             description:
-              "Choose Supervised, Auto-accept edits, Auto, or Full access in each conversation composer.",
+              "Choose the permissions supported by your provider in each conversation composer.",
           },
           {
             id: "follow-up-behavior",
@@ -186,6 +194,13 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         title: "New threads",
         when: "available",
         rows: [
+          {
+            id: "default-permissions",
+            title: projectSettingRows.defaultPermissionMode.title,
+            description: projectSettingRows.defaultPermissionMode.all,
+            keywords: projectSettingRows.defaultPermissionMode.keywords,
+            setting: "defaultPermissionMode",
+          },
           {
             id: "workspace",
             title: projectSettingRows.newThreadCheckout.title,

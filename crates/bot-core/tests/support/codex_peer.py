@@ -48,6 +48,8 @@ if crash_on_launch.exists():
 active = None
 current_thread = None
 callbacks = set()
+approval_expected = None
+session_grants = set()
 def emit(value):
     print(json.dumps(value), flush=True)
 def result(request, value):
@@ -133,7 +135,109 @@ for line in sys.stdin:
             else:
                 callbacks = {'route-one', 'route-two'}
                 for callback in sorted(callbacks):
-                    emit({'id': callback, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'same-parent-item', 'command': None if prompt == 'missing-command' else 'echo ' + callback, 'cwd': '/fixture', 'reason': 'Fixture approval'}})
+                    emit({'id': callback, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'same-parent-item', 'command': None if prompt == 'missing-command' else 'echo ' + callback, 'cwd': '/fixture', 'reason': None if prompt == 'missing-command' else 'Fixture approval'}})
+        elif prompt.startswith('approval-kind-'):
+            scenario = prompt.removeprefix('approval-kind-')
+            target = {'threadId': current_thread, 'turnId': active, 'itemId': 'kind-item'}
+            approval_expected = None
+            if scenario in ('command-session', 'command-changed'):
+                params = {**target, 'command': 'echo changed' if scenario.endswith('changed') else 'echo session', 'cwd': '/fixture', 'reason': 'Review this command'}
+                method = 'item/commandExecution/requestApproval'
+                approval_expected = {'decision': 'acceptForSession'} if scenario == 'command-session' else {'decision': 'accept'}
+            elif scenario == 'reason-only':
+                method = 'item/commandExecution/requestApproval'
+                params = {**target, 'command': None, 'reason': 'Run outside the read-only sandbox', 'cwd': '/fixture'}
+                approval_expected = {'decision': 'accept'}
+            elif scenario == 'managed-network':
+                method = 'item/commandExecution/requestApproval'
+                params = {**target, 'command': None, 'cwd': '/fixture', 'reason': 'Contact the package registry', 'networkApprovalContext': {'host': 'registry.npmjs.org', 'protocol': 'https'}}
+                approval_expected = {'decision': 'accept'}
+            elif scenario in ('file-root', 'file-root-late', 'file-no-details'):
+                method = 'item/fileChange/requestApproval'
+                params = {**target, 'reason': None if scenario == 'file-no-details' else 'The tool needs write access outside the workspace', 'grantRoot': None if scenario == 'file-no-details' else '/fixture/external'}
+                approval_expected = {'decision': 'decline'} if scenario == 'file-no-details' else {'decision': 'accept'}
+            elif scenario == 'file-change':
+                method = 'item/fileChange/requestApproval'
+                params = {**target, 'reason': 'Review this file edit', 'grantRoot': '/fixture'}
+                event('item/started', {**target, 'item': {'id': 'kind-item', 'type': 'fileChange', 'status': 'inProgress', 'changes': [{'path': 'test.txt', 'diff': '@@ -1 +1 @@\n-old\n+new'}]}})
+                approval_expected = {'decision': 'accept'}
+            elif scenario in ('permission-network', 'permission-filesystem', 'permission-extensions'):
+                method = 'item/permissions/requestApproval'
+                permissions = {'network': {'enabled': True}, 'fileSystem': None} if scenario == 'permission-network' else {'network': None, 'fileSystem': {'read': ['/fixture/shared'], 'write': ['/fixture/output'], 'entries': [{'path': {'type': 'glob_pattern', 'pattern': '/fixture/logs/**'}, 'access': 'write'}]}}
+                if scenario == 'permission-extensions':
+                    permissions['futurePermission'] = {'destination': 'explicitly-reviewed'}
+                params = {**target, 'cwd': '/fixture', 'environmentId': None, 'reason': 'Grant the requested access', 'permissions': permissions}
+                approval_expected = {'permissions': permissions, 'scope': 'turn'}
+            elif scenario.startswith('mcp-'):
+                method = 'mcpServer/elicitation/request'
+                params = {'threadId': current_thread, 'turnId': None if scenario == 'mcp-null-turn' else active, 'serverName': 'fixture-server', 'mode': 'form', '_meta': {'app_name': 'Fixture App'}, 'message': 'Allow ChatGPT to use Fixture App?', 'requestedSchema': {'type': 'object', 'properties': {}, 'required': []}}
+                approval_expected = {'action': 'accept', 'content': {}}
+                if scenario == 'mcp-session':
+                    params['_meta']['persist'] = ['session']
+                    approval_expected = {'action': 'accept', '_meta': {'persist': 'session'}, 'content': {}}
+                elif scenario == 'mcp-always':
+                    params['requestedSchema'] = {'properties': {'persist': {'type': 'boolean', 'title': 'Always allow'}, 'choice': {'oneOf': [{'const': 'once', 'title': 'Approve once'}, {'const': 'always', 'title': 'Always allow'}]}}, 'required': ['persist', 'choice']}
+                    approval_expected = {'action': 'accept', '_meta': {'persist': 'always'}, 'content': {'persist': True, 'choice': 'always'}}
+                elif scenario == 'mcp-optional':
+                    params['mode'] = 'openai/form'
+                    params['requestedSchema'] = {'properties': {'notes': {'type': 'string'}, 'approved': {'type': 'boolean', 'default': True}}, 'required': ['approved']}
+                    approval_expected = {'action': 'accept', 'content': {'approved': True}}
+                elif scenario == 'mcp-malformed':
+                    params['requestedSchema'] = {'properties': {'choice': {'enum': [7]}}, 'required': ['choice']}
+                    approval_expected = {'action': 'decline'}
+                elif scenario == 'mcp-null-schema':
+                    params['requestedSchema'] = None
+                    approval_expected = {'action': 'decline'}
+                elif scenario == 'mcp-required':
+                    params['requestedSchema'] = {'properties': {'email': {'type': 'string'}}, 'required': ['email']}
+                    approval_expected = {'action': 'decline'}
+                elif scenario == 'mcp-url':
+                    params['mode'] = 'url'
+                    params['url'] = 'https://example.invalid/auth'
+                    params['elicitationId'] = 'elicitation-1'
+                    params.pop('requestedSchema')
+                    approval_expected = {'action': 'decline'}
+                elif scenario == 'mcp-camel-form':
+                    params['mode'] = 'openaiForm'
+            elif scenario.startswith('legacy-'):
+                params = {'conversationId': current_thread, 'callId': 'legacy-item', 'reason': 'Review legacy action'}
+                if scenario == 'legacy-command':
+                    method = 'execCommandApproval'
+                    params.update({'command': ['echo', 'legacy command'], 'cwd': '/fixture', 'parsedCmd': [], 'approvalId': None})
+                else:
+                    method = 'applyPatchApproval'
+                    params.update({'fileChanges': {'test.txt': {'type': 'update', 'unified_diff': '@@ -1 +1 @@\n-old\n+new', 'move_path': None}}, 'grantRoot': None})
+                    if scenario == 'legacy-file-root':
+                        params.update({'fileChanges': {}, 'grantRoot': '/fixture/external'})
+                    elif scenario == 'legacy-file-reason':
+                        params.update({'fileChanges': {}, 'reason': 'Legacy patch needs external access'})
+                approval_expected = {'decision': 'approved'}
+            elif scenario in ('token-refresh', 'tool-call'):
+                method = 'account/chatgptAuthTokens/refresh' if scenario == 'token-refresh' else 'item/tool/call'
+                params = {'reason': 'unauthorized', 'previousAccountId': None} if scenario == 'token-refresh' else {**target, 'tool': 'fixture-tool', 'arguments': {}}
+                approval_expected = {'errorCode': -32601}
+            elif scenario == 'malformed':
+                method = 'item/permissions/requestApproval'
+                params = {**target, 'turnId': 123, 'permissions': {'network': {'enabled': True}}}
+                approval_expected = {'errorCode': -32602}
+            elif scenario == 'stale-turn':
+                method = 'item/permissions/requestApproval'
+                params = {**target, 'turnId': 'stale-turn', 'permissions': {'network': {'enabled': True}}, 'reason': 'Must be refused'}
+                approval_expected = {'errorCode': -32601}
+            else:
+                raise AssertionError(scenario)
+            grant_key = (current_thread, method, json.dumps({key: value for key, value in params.items() if key not in ('turnId', 'itemId')}, sort_keys=True))
+            if grant_key in session_grants:
+                finish()
+            else:
+                callbacks = {'approval-kind-route'}
+                emit({'id': 'approval-kind-route', 'method': method, 'params': params})
+                if scenario == 'file-root-late':
+                    release = root / 'file_patch_release'
+                    deadline = time.time() + 10
+                    while not release.exists() and time.time() < deadline:
+                        time.sleep(0.01)
+                    event('item/started', {**target, 'item': {'id': 'kind-item', 'type': 'fileChange', 'status': 'inProgress', 'changes': [{'path': '/fixture/external/test.txt', 'diff': '+exact later patch'}]}})
         elif prompt == 'propose-plan':
             plan = {'id': 'proposed-plan', 'type': 'plan', 'text': '# Fixture plan\n\nImplement the requested composer workflow.'}
             event('item/started', {'threadId': current_thread, 'turnId': active, 'item': {'id': plan['id'], 'type': 'plan', 'text': ''}})
@@ -200,7 +304,7 @@ for line in sys.stdin:
         elif prompt == 'late-approval':
             time.sleep(0.5)
             callbacks = {'late-route'}
-            emit({'id': 'late-route', 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'late-item', 'command': 'echo late', 'cwd': '/fixture', 'reason': 'Fixture approval'}})
+            emit({'id': 'late-route', 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'late-item', 'command': 'echo late', 'cwd': '/fixture', 'reason': None if prompt == 'missing-command' else 'Fixture approval'}})
         elif prompt == 'descendant':
             child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'])
             pid_file = root / 'descendant.pid.tmp'
@@ -252,6 +356,18 @@ for line in sys.stdin:
         result(request, {})
         finish('interrupted')
     elif method is None and request.get('id') in callbacks:
+        if request['id'] == 'approval-kind-route':
+            expected_file = root / 'approval_expected.json'
+            expected = json.loads(expected_file.read_text()) if expected_file.exists() else approval_expected
+            actual = {'errorCode': request.get('error', {}).get('code')} if 'errorCode' in expected else request.get('result')
+            if actual != expected:
+                (root / 'approval_mismatch.json').write_text(json.dumps({'expected': expected, 'actual': actual}))
+                finish('failed')
+                callbacks.clear()
+                continue
+            response = request.get('result', {})
+            if response.get('decision') in ('acceptForSession', 'approved_for_session') or response.get('scope') == 'session' or response.get('_meta', {}).get('persist') in ('session', 'always'):
+                session_grants.add(grant_key)
         callbacks.remove(request['id'])
         if not callbacks:
             finish()

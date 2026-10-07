@@ -81,6 +81,14 @@ import { GitActionsControl } from "./GitActionsControl";
 import { ApprovalDrawer } from "./ApprovalDrawer";
 import { BranchPicker, startsFromOrigin } from "./BranchPicker";
 import { Composer } from "./Composer";
+import {
+  captureDraftSettings,
+  draftSessionSettings,
+  finishDraftSettings,
+  newDraftSettings,
+  useProviderCapabilities,
+  type DraftSessionSettings,
+} from "./permissionModes";
 import { classifyComposerAttachmentFile } from "./composerAttachmentFiles";
 import {
   type ComposerImage,
@@ -232,13 +240,15 @@ export function ChatView({
   } | null>(null);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [createdDraft, setCreatedDraft] = useState<Thread>();
-  const [draftSettings, setDraftSettings] = useState<SessionSettings>({
-    model: null,
-    effort: null,
-    permissionMode: "approval-required",
-    interactionMode: "default",
-  });
+  const [draftSettings, setDraftSettings] =
+    useState<DraftSessionSettings>(newDraftSettings);
   const { preferences } = usePreferences();
+  const capabilities = useProviderCapabilities();
+  const defaultPermissionMode = projectSetting(
+    preferences,
+    workspaceId,
+    "defaultPermissionMode",
+  ).value;
   const configQuery = useQuery({
     queryKey: ["project-config", workspaceId],
     queryFn: () => ipc.projectConfig(workspaceId),
@@ -382,7 +392,13 @@ export function ChatView({
     base,
     draftCheckout.fromOrigin,
   );
-  const settings = thread?.settings ?? draftSettings;
+  const settings =
+    thread?.settings ??
+    draftSessionSettings({
+      draft: draftSettings,
+      preferred: defaultPermissionMode,
+      capabilities: capabilities.data,
+    });
   const models = useQuery({
     queryKey: ["models"],
     queryFn: ipc.models,
@@ -404,7 +420,7 @@ export function ChatView({
   const saveSettings = useMutation({
     mutationFn: async (next: SessionSettings) => {
       if (!threadId) {
-        setDraftSettings(next);
+        setDraftSettings((current) => captureDraftSettings({ current, next }));
         return;
       }
       const snapshot = await ipc.settings(threadId, next);
@@ -511,6 +527,13 @@ export function ChatView({
       void client.invalidateQueries({ queryKey: ["thread", target] });
       void client.invalidateQueries({ queryKey: ["workspace"] });
       if (!acceptsCompletion(composerRef.current, started)) return;
+      const acceptedAsThread =
+        !threadId &&
+        !newThreadSource &&
+        acceptsCompletion(composerRef.current, started, true);
+      setDraftSettings((current) =>
+        finishDraftSettings({ current, acceptedAsThread }),
+      );
       lastAttempt.current = null;
       if (newThreadSource) implementationTarget.current = null;
       if (acceptsCompletion(composerRef.current, started, true))
@@ -758,7 +781,7 @@ export function ChatView({
       : undefined;
   const showPlanFollowUp = Boolean(
     planSupported &&
-    settings.interactionMode === "plan" &&
+    settings?.interactionMode === "plan" &&
     proposedPlan &&
     !busy &&
     !approval &&
@@ -848,6 +871,7 @@ export function ChatView({
   };
   const attachments = readyAttachments(images);
   const submit = () => {
+    if (!settings) return;
     if (!threadId && !isScratch) {
       if (configQuery.isPending) return;
       if (configQuery.error) {
@@ -919,6 +943,7 @@ export function ChatView({
   const implementInNewThread = () => {
     if (
       !showPlanFollowUp ||
+      !settings ||
       !thread ||
       !proposedPlan ||
       !("text" in proposedPlan) ||
@@ -1333,126 +1358,163 @@ export function ChatView({
                     </div>
                   ) : null}
                   <div className="relative">
-                    <Composer
-                      key={threadId ?? "draft"}
-                      value={draft}
-                      records={records}
-                      pullRequestScope={
-                        !isScratch ? { workspaceId, threadId } : undefined
-                      }
-                      focusRequest={composerFocusRequest}
-                      onChange={setDraft}
-                      images={images}
-                      onAddImages={addImages}
-                      onRemoveImage={(key) =>
-                        setImages((current) =>
-                          current.filter((image) => image.key !== key),
-                        )
-                      }
-                      onSubmit={submit}
-                      searchCheckout={
-                        view && !view.unavailable && !(isScratch && !threadId)
-                          ? checkout
-                          : undefined
-                      }
-                      skills={skills.skills}
-                      skillsLoading={skills.loading}
-                      onSkillsMenuOpen={skills.refreshIfStale}
-                      filesError={
-                        workspaceQuery.error?.message ??
-                        view?.unavailable ??
-                        undefined
-                      }
-                      planSupported={planSupported}
-                      showPlanFollowUp={showPlanFollowUp}
-                      onImplementInNewThread={implementInNewThread}
-                      onUsageLimits={() =>
-                        setUsageNotice({ key: noticeKey, now: Date.now() })
-                      }
-                      onStop={() => {
-                        recoverQueue();
-                        stop.mutate();
-                      }}
-                      followUpBehavior={effectiveFollowUpBehavior}
-                      canSend={
-                        isUsageLimitsCommand(draft) ||
-                        ((showPlanFollowUp ||
-                          Boolean(draft.trim()) ||
-                          images.length > 0) &&
-                          attachments !== null &&
-                          !reverting &&
-                          !send.isPending &&
-                          !saveSettings.isPending &&
-                          (Boolean(threadId) ||
-                            isScratch ||
-                            (!configQuery.isPending && !configQuery.error)) &&
-                          (!threadId || Boolean(thread)))
-                      }
-                      running={busy || queued.length > 0}
-                      canStop={canStop}
-                      stopping={
-                        stop.isPending ||
-                        thread?.session.kind === "interrupting"
-                      }
-                      placeholder={
-                        approval
-                          ? "Resolve this approval request to continue"
-                          : "Ask for changes or send follow-ups"
-                      }
-                      approval={
-                        questionRequest ? (
-                          <ComposerPendingUserInputPanel
-                            key={questionRequest.id}
-                            request={questionRequest}
-                            busy={
-                              answerQuestions.isPending ||
-                              questionRequest.state === "answering"
-                            }
-                            onAnswer={(answers) =>
-                              answerQuestions.mutate({
-                                requestId: questionRequest.id,
-                                answers,
-                              })
-                            }
-                          />
-                        ) : approval ? (
-                          <ApprovalDrawer
-                            approval={approval}
-                            pendingCount={pending.length}
-                            busy={approve.isPending}
-                            onAnswer={(decision) =>
-                              approve.mutate({ id: approval.id, decision })
-                            }
-                          />
-                        ) : null
-                      }
-                      notice={
-                        usageNotice?.key === noticeKey ? (
-                          <ComposerUsageLimits
-                            now={usageNotice.now}
-                            onDismiss={() => {
-                              setUsageNotice(null);
-                              setComposerFocusRequest((current) => current + 1);
-                            }}
-                          />
-                        ) : null
-                      }
-                      contextUsage={
-                        preferences.contextWindowMeter
-                          ? (thread?.context ?? null)
-                          : null
-                      }
-                      disabled={false}
-                      context={context}
-                      settings={settings}
-                      models={models.data ?? []}
-                      modelsLoading={models.isPending}
-                      modelsError={models.error?.message}
-                      onRetryModels={() => void models.refetch()}
-                      onSettingsChange={(next) => saveSettings.mutate(next)}
-                      settingsDisabled={controlsDisabled}
-                      autoFocus
-                    />
+                    {settings ? (
+                      <Composer
+                        key={threadId ?? "draft"}
+                        value={draft}
+                        records={records}
+                        pullRequestScope={
+                          !isScratch ? { workspaceId, threadId } : undefined
+                        }
+                        focusRequest={composerFocusRequest}
+                        onChange={setDraft}
+                        images={images}
+                        onAddImages={addImages}
+                        onRemoveImage={(key) =>
+                          setImages((current) =>
+                            current.filter((image) => image.key !== key),
+                          )
+                        }
+                        onSubmit={submit}
+                        searchCheckout={
+                          view && !view.unavailable && !(isScratch && !threadId)
+                            ? checkout
+                            : undefined
+                        }
+                        skills={skills.skills}
+                        skillsLoading={skills.loading}
+                        onSkillsMenuOpen={skills.refreshIfStale}
+                        filesError={
+                          workspaceQuery.error?.message ??
+                          view?.unavailable ??
+                          undefined
+                        }
+                        planSupported={planSupported}
+                        showPlanFollowUp={showPlanFollowUp}
+                        onImplementInNewThread={implementInNewThread}
+                        onUsageLimits={() =>
+                          setUsageNotice({ key: noticeKey, now: Date.now() })
+                        }
+                        onStop={() => {
+                          recoverQueue();
+                          stop.mutate();
+                        }}
+                        followUpBehavior={effectiveFollowUpBehavior}
+                        canSend={
+                          isUsageLimitsCommand(draft) ||
+                          ((showPlanFollowUp ||
+                            Boolean(draft.trim()) ||
+                            images.length > 0) &&
+                            attachments !== null &&
+                            !reverting &&
+                            !send.isPending &&
+                            !saveSettings.isPending &&
+                            (Boolean(threadId) ||
+                              isScratch ||
+                              (!configQuery.isPending && !configQuery.error)) &&
+                            (!threadId || Boolean(thread)))
+                        }
+                        running={busy || queued.length > 0}
+                        canStop={canStop}
+                        stopping={
+                          stop.isPending ||
+                          thread?.session.kind === "interrupting"
+                        }
+                        placeholder={
+                          approval
+                            ? "Resolve this approval request to continue"
+                            : "Ask for changes or send follow-ups"
+                        }
+                        approval={
+                          questionRequest ? (
+                            <ComposerPendingUserInputPanel
+                              key={questionRequest.id}
+                              request={questionRequest}
+                              busy={
+                                answerQuestions.isPending ||
+                                questionRequest.state === "answering"
+                              }
+                              onAnswer={(answers) =>
+                                answerQuestions.mutate({
+                                  requestId: questionRequest.id,
+                                  answers,
+                                })
+                              }
+                            />
+                          ) : approval ? (
+                            <ApprovalDrawer
+                              approval={approval}
+                              pendingCount={pending.length}
+                              busy={approve.isPending}
+                              onAnswer={(decision) =>
+                                approve.mutate({ id: approval.id, decision })
+                              }
+                            />
+                          ) : null
+                        }
+                        notice={
+                          usageNotice?.key === noticeKey ? (
+                            <ComposerUsageLimits
+                              now={usageNotice.now}
+                              onDismiss={() => {
+                                setUsageNotice(null);
+                                setComposerFocusRequest(
+                                  (current) => current + 1,
+                                );
+                              }}
+                            />
+                          ) : null
+                        }
+                        contextUsage={
+                          preferences.contextWindowMeter
+                            ? (thread?.context ?? null)
+                            : null
+                        }
+                        disabled={false}
+                        context={context}
+                        settings={settings}
+                        permissionModes={
+                          capabilities.data?.permissionModes ?? []
+                        }
+                        models={models.data ?? []}
+                        modelsLoading={models.isPending}
+                        modelsError={models.error?.message}
+                        onRetryModels={() => void models.refetch()}
+                        onSettingsChange={(next, options) => {
+                          if (!threadId && options?.permissionModeSelected) {
+                            setDraftSettings((current) =>
+                              captureDraftSettings({
+                                current,
+                                next,
+                                permissionModeSelected: true,
+                              }),
+                            );
+                          } else saveSettings.mutate(next);
+                        }}
+                        settingsDisabled={controlsDisabled}
+                        autoFocus
+                      />
+                    ) : (
+                      <div
+                        className="rounded-2xl border border-border bg-background p-4 text-sm text-muted-foreground"
+                        role="status"
+                      >
+                        {capabilities.error ? (
+                          <>
+                            <p>{capabilities.error.message}</p>
+                            <button
+                              type="button"
+                              className="mt-2 font-medium text-foreground hover:underline"
+                              onClick={() => void capabilities.refetch()}
+                            >
+                              Retry permissions
+                            </button>
+                          </>
+                        ) : (
+                          "Loading permissions..."
+                        )}
+                      </div>
+                    )}
                     <div
                       aria-hidden
                       className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"

@@ -15,7 +15,10 @@ use crate::{
     MessageContext,
     attachments::{self, Attachments},
     cleanup::{self, Candidate, Sweep},
-    codex::{Codex, Signal},
+    codex::{
+        self, Codex, Signal,
+        approvals::{self, ApprovalReply, Request as ProviderRequest},
+    },
     domain::*,
     editors::{self, EditorId, OpenTarget, Position},
     log::RotatingLog,
@@ -979,6 +982,9 @@ impl App {
     pub async fn open_thread(&self, id: ThreadId) -> Result<ThreadSnapshot> {
         self.call(|r| Command::Snapshot(id, true, r)).await
     }
+    pub fn provider_capabilities(&self) -> ProviderCapabilities {
+        codex::capabilities()
+    }
     pub async fn models(&self) -> Result<Vec<ModelOption>> {
         self.call(Command::Models).await
     }
@@ -1459,6 +1465,12 @@ struct Route {
     request: Value,
     item_id: String,
     epoch: u64,
+    kind: RouteKind,
+}
+#[derive(Clone)]
+enum RouteKind {
+    Approval(ApprovalReply),
+    UserInput,
 }
 struct GitCompletion {
     root: PathBuf,
@@ -2348,24 +2360,42 @@ impl Owner {
                         .iter_mut()
                         .find(|a| a.id == id)
                         .ok_or_else(|| AppError::new("approval_expired", "Approval not found."))?;
-                    if matches!(decision, ApprovalDecision::Accept)
-                        && (matches!(&approval.action,ApprovalAction::FileChange{text,..} if text.is_empty())
-                            || matches!(&approval.action,ApprovalAction::Command{command,..} if command.is_empty()))
+                    if !approval
+                        .options
+                        .iter()
+                        .any(|option| option.decision == decision)
+                    {
+                        return Err(AppError::new(
+                            "approval_choice",
+                            "This request does not support that approval choice.",
+                        ));
+                    }
+                    if matches!(
+                        decision,
+                        ApprovalDecision::Accept
+                            | ApprovalDecision::AcceptForSession
+                            | ApprovalDecision::AcceptAlways
+                    ) && !approval.action.reviewable()
                     {
                         return Err(AppError::new(
                             "approval_details_missing",
                             "The provider has not supplied reviewable action details. Decline or cancel this turn.",
                         ));
                     }
+                    let RouteKind::Approval(answer) = &route.kind else {
+                        return Err(AppError::new(
+                            "approval_expired",
+                            "This callback is not an approval.",
+                        ));
+                    };
+                    let response = answer.response(decision);
                     approval.state = ApprovalState::Answering;
                     self.install(thread)?;
                     self.callbacks.remove(&callback);
                     let done = self.done.clone();
                     let epoch = self.epoch;
                     tokio::spawn(async move {
-                        let result = provider
-                            .respond(route.request, json!({"decision":decision}))
-                            .await;
+                        let result = provider.respond(route.request, response).await;
                         let _ = done.send(Completion::Answered { epoch, id, result }).await;
                     });
                     Ok(())
@@ -2814,6 +2844,16 @@ impl Owner {
         });
     }
     fn validate_settings(&self, settings: &SessionSettings) -> Result<()> {
+        if !codex::capabilities()
+            .permission_modes
+            .iter()
+            .any(|mode| mode.value == settings.permission_mode)
+        {
+            return Err(AppError::new(
+                "permission_mode_unavailable",
+                "This provider does not support that permission mode.",
+            ));
+        }
         if settings.interaction_mode == InteractionMode::Plan
             && !self
                 .collaboration_modes
@@ -3036,7 +3076,8 @@ impl Owner {
         let native = t.native_thread_id.clone();
         let provider = self.provider.clone().unwrap();
         let settings = t.settings.clone();
-        let (approval_policy, approvals_reviewer, sandbox) = settings.permission_mode.protocol();
+        let (approval_policy, approvals_reviewer, sandbox) =
+            codex::permission_protocol(settings.permission_mode);
         let model = self.resolve_model(&settings).map(str::to_owned);
         let done = self.done.clone();
         let epoch = self.epoch;
@@ -3134,8 +3175,8 @@ impl Owner {
                             );
                             let settings = turn.settings.clone().unwrap_or_default();
                             let (approval_policy, approvals_reviewer, _) =
-                                settings.permission_mode.protocol();
-                            let sandbox_policy = settings.permission_mode.sandbox_policy();
+                                codex::permission_protocol(settings.permission_mode);
+                            let sandbox_policy = codex::sandbox_policy(settings.permission_mode);
                             let model = self.resolve_model(&settings).map(str::to_owned);
                             let effort = self.resolve_effort(&settings).map(str::to_owned);
                             let t = &self.threads[&id];
@@ -3509,17 +3550,38 @@ impl Owner {
                 .find(|t| t.native_thread_id.as_deref() == Some(native))
                 .map(|t| t.id.clone())
         });
-        let settled_before_approval = id
-            .as_ref()
-            .and_then(|id| self.threads.get(id))
-            .and_then(|t| self.settlement(t, self.auto_settle.rules(&t.workspace_id), now_ms()));
         if let Some(request) = value.get("id") {
+            let decoded = match approvals::decode(value.clone()) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    if let Some(provider) = &self.provider {
+                        provider
+                            .invalid_request(request.clone(), &error.message)
+                            .await?;
+                    }
+                    return Ok(());
+                }
+            };
+            let native = match &decoded {
+                ProviderRequest::Approval(pending) => Some(pending.thread_id.as_str()),
+                ProviderRequest::UserInput(pending) => Some(pending.target.thread_id.as_str()),
+                ProviderRequest::Unsupported => native,
+            };
+            let id = native.and_then(|native| {
+                self.threads
+                    .values()
+                    .find(|t| t.native_thread_id.as_deref() == Some(native))
+                    .map(|t| t.id.clone())
+            });
             let Some(id) = id else {
                 if let Some(provider) = &self.provider {
                     provider.refuse(request.clone(), method).await?;
                 }
                 return Ok(());
             };
+            let settled_before_approval = self.threads.get(&id).and_then(|t| {
+                self.settlement(t, self.auto_settle.rules(&t.workspace_id), now_ms())
+            });
             let t = self.threads.get_mut(&id).unwrap();
             let Some(turn) = t.turns.iter().rev().find(|turn| turn.execution.active()) else {
                 if let Some(provider) = &self.provider {
@@ -3527,89 +3589,96 @@ impl Owner {
                 }
                 return Ok(());
             };
-            if method == "item/tool/requestUserInput" {
-                let native_turn = required_string(p, "turnId")?;
-                if turn.native_turn_id.as_deref() != Some(native_turn) {
-                    if let Some(provider) = &self.provider {
-                        provider.refuse(request.clone(), method).await?;
-                    }
-                    return Ok(());
+            let native_turn = match &decoded {
+                ProviderRequest::Approval(pending) => pending.turn_id.as_deref(),
+                ProviderRequest::UserInput(pending) => Some(pending.target.turn_id.as_str()),
+                ProviderRequest::Unsupported => None,
+            };
+            if native_turn.is_some() && native_turn != turn.native_turn_id.as_deref() {
+                if let Some(provider) = &self.provider {
+                    provider.refuse(request.clone(), method).await?;
                 }
-                let questions: Vec<UserQuestion> =
-                    serde_json::from_value(p.get("questions").cloned().unwrap_or(Value::Null))?;
-                collaboration::validate_questions(&questions)?;
-                let pending = UserQuestionRequest {
-                    id: UserQuestionRequestId::default(),
-                    turn_id: turn.id.clone(),
-                    item_id: required_string(p, "itemId")?.into(),
-                    questions,
-                    state: UserQuestionState::Pending,
-                };
-                self.callbacks.insert(
-                    Callback::UserInput(pending.id.clone()),
-                    Route {
-                        thread: id.clone(),
-                        request: request.clone(),
-                        item_id: pending.item_id.clone(),
-                        epoch: self.epoch,
-                    },
-                );
-                t.record_activity(settled_before_approval);
-                t.user_questions.push(pending);
-                self.commit(&id)?;
                 return Ok(());
             }
-            let action = match method {
-                "item/commandExecution/requestApproval" => Some(ApprovalAction::Command {
-                    command: string(p, "command"),
-                    cwd: string(p, "cwd"),
-                    reason: string(p, "reason"),
-                }),
-                "item/fileChange/requestApproval" => {
-                    let item_id = required_string(p, "itemId")?.to_owned();
-                    let text = turn
-                        .items
-                        .iter()
-                        .find_map(|i| match i {
-                            Item::FileChange { id, text, .. } if *id == item_id => {
-                                Some(text.clone())
+            match decoded {
+                ProviderRequest::UserInput(pending) => {
+                    if let Err(error) = collaboration::validate_questions(&pending.questions) {
+                        if let Some(provider) = &self.provider {
+                            provider
+                                .invalid_request(request.clone(), &error.message)
+                                .await?;
+                        }
+                        return Ok(());
+                    }
+                    let pending = UserQuestionRequest {
+                        id: UserQuestionRequestId::default(),
+                        turn_id: turn.id.clone(),
+                        item_id: pending.target.item_id,
+                        questions: pending.questions,
+                        state: UserQuestionState::Pending,
+                    };
+                    self.callbacks.insert(
+                        Callback::UserInput(pending.id.clone()),
+                        Route {
+                            thread: id.clone(),
+                            request: request.clone(),
+                            item_id: pending.item_id.clone(),
+                            epoch: self.epoch,
+                            kind: RouteKind::UserInput,
+                        },
+                    );
+                    t.record_activity(settled_before_approval);
+                    t.user_questions.push(pending);
+                    self.commit(&id)?;
+                }
+                ProviderRequest::Approval(mut pending) => {
+                    if let Some(response) = pending.reply.unsupported_response() {
+                        if let Some(provider) = &self.provider {
+                            provider.respond(request.clone(), response).await?;
+                        }
+                        return Ok(());
+                    }
+                    if let ApprovalAction::FileChange { text, .. } = &mut pending.action
+                        && let Some(patch) = turn.items.iter().find_map(|item| match item {
+                            Item::FileChange { id, text, .. }
+                                if *id == pending.item_id && !text.trim().is_empty() =>
+                            {
+                                Some(text)
                             }
                             _ => None,
                         })
-                        .unwrap_or_default();
-                    Some(ApprovalAction::FileChange {
-                        text,
-                        reason: string(p, "reason"),
-                    })
+                    {
+                        *text = patch.clone();
+                    }
+                    let approval = Approval {
+                        id: ApprovalId::default(),
+                        turn_id: turn.id.clone(),
+                        action: pending.action,
+                        options: pending.options,
+                        state: ApprovalState::Pending,
+                    };
+                    self.callbacks.insert(
+                        Callback::Approval(approval.id.clone()),
+                        Route {
+                            thread: id.clone(),
+                            request: request.clone(),
+                            item_id: pending.item_id,
+                            epoch: self.epoch,
+                            kind: RouteKind::Approval(pending.reply),
+                        },
+                    );
+                    t.record_activity(settled_before_approval);
+                    t.approvals.push(approval);
+                    self.commit(&id)?;
                 }
-                _ => None,
-            };
-            if let Some(action) = action {
-                let approval = Approval {
-                    id: ApprovalId::default(),
-                    turn_id: turn.id.clone(),
-                    action,
-                    state: ApprovalState::Pending,
-                };
-                self.callbacks.insert(
-                    Callback::Approval(approval.id.clone()),
-                    Route {
-                        thread: id.clone(),
-                        request: request.clone(),
-                        item_id: string(p, "itemId"),
-                        epoch: self.epoch,
-                    },
-                );
-                t.record_activity(settled_before_approval);
-                t.approvals.push(approval);
-                self.commit(&id)?;
-            } else {
-                t.diagnostic = Some(format!(
-                    "Codex requested {method}, which this version cannot answer. The request was refused."
-                ));
-                self.commit(&id)?;
-                if let Some(provider) = &self.provider {
-                    provider.refuse(request.clone(), method).await?;
+                ProviderRequest::Unsupported => {
+                    t.diagnostic = Some(format!(
+                        "Codex requested {method}, which this version cannot answer. The request was refused."
+                    ));
+                    self.commit(&id)?;
+                    if let Some(provider) = &self.provider {
+                        provider.refuse(request.clone(), method).await?;
+                    }
                 }
             }
             return Ok(());
@@ -3736,7 +3805,7 @@ impl Owner {
                                     && approval.state == ApprovalState::Pending
                                     && let ApprovalAction::FileChange { text: details, .. } =
                                         &mut approval.action
-                                    && details.is_empty()
+                                    && !text.trim().is_empty()
                                 {
                                     *details = text.clone()
                                 }
