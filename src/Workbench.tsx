@@ -133,6 +133,25 @@ export function Workbench() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteBlocked, setPaletteBlocked] = useState(false);
   const paletteFocus = useRef<HTMLElement | null>(null);
+  const restorePaletteFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (paletteOpen || !restorePaletteFocus.current) return;
+    restorePaletteFocus.current = false;
+    const previous = paletteFocus.current;
+    paletteFocus.current = null;
+    if (
+      previous?.isConnected &&
+      previous !== document.body &&
+      previous !== document.documentElement &&
+      previous.getBoundingClientRect().width > 0 &&
+      previous.getBoundingClientRect().right > 0 &&
+      getComputedStyle(previous).visibility !== "hidden" &&
+      !previous.matches(":disabled") &&
+      !previous.closest("[inert]")
+    )
+      previous.focus({ preventScroll: true });
+    else if (!pageOpen) focusComposer();
+  }, [paletteOpen, pageOpen]);
   const openPalette = useCallback(() => {
     const previous =
       document.activeElement instanceof HTMLElement
@@ -423,25 +442,9 @@ export function Workbench() {
     };
   }, []);
   const closePalette = (restoreFocus: boolean) => {
+    restorePaletteFocus.current = restoreFocus;
+    if (!restoreFocus) paletteFocus.current = null;
     setPaletteOpen(false);
-    if (restoreFocus)
-      requestAnimationFrame(() => {
-        const previous = paletteFocus.current;
-        if (
-          previous?.isConnected &&
-          previous !== document.body &&
-          previous !== document.documentElement &&
-          previous.getBoundingClientRect().width > 0 &&
-          previous.getBoundingClientRect().right > 0 &&
-          getComputedStyle(previous).visibility !== "hidden" &&
-          !previous.matches(":disabled") &&
-          !previous.closest("[inert]")
-        )
-          previous.focus({ preventScroll: true });
-        else if (!pageOpen) focusComposer();
-        paletteFocus.current = null;
-      });
-    else paletteFocus.current = null;
   };
   if (!native)
     return (
