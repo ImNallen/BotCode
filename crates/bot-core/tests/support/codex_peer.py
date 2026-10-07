@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, pathlib, sys, time, subprocess
+import json, os, pathlib, signal, sys, time, subprocess
 root = pathlib.Path(__file__).parent
 def publish(path, text):
     temporary = path.with_name(path.name + '.tmp')
@@ -33,6 +33,18 @@ if len(sys.argv) > 1 and sys.argv[1] == 'exec':
     sys.exit(0)
 log = root / 'calls.jsonl'
 (root / 'pid').write_text(str(os.getpid()))
+with (root / 'launches.jsonl').open('a') as launches:
+    launches.write(json.dumps({'time': time.time(), 'pid': os.getpid()}) + '\n')
+print(f'fixture stderr: started {os.getpid()}', file=sys.stderr, flush=True)
+crash_on_launch = root / 'crash_on_launch'
+if crash_on_launch.exists():
+    left = int(crash_on_launch.read_text())
+    print(f'fixture stderr: refusing to start ({left} left)', file=sys.stderr, flush=True)
+    if left > 1:
+        crash_on_launch.write_text(str(left - 1))
+    else:
+        crash_on_launch.unlink()
+    sys.exit(3)
 active = None
 current_thread = None
 callbacks = set()
@@ -179,6 +191,9 @@ for line in sys.stdin:
             emit({'id': 'question-route', 'method': 'item/tool/requestUserInput', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'question-item', 'isBlocking': True, 'autoResolutionMs': None, 'questions': [{'id': 'scope', 'header': 'Scope', 'question': 'Which workflow should be implemented?', 'isOther': True, 'isSecret': False, 'options': [{'label': 'Composer', 'description': 'Implement the composer'}]}, {'id': 'notes', 'header': 'Notes', 'question': 'Any constraints?', 'isOther': False, 'isSecret': False, 'options': [] if prompt == 'ask-plan-empty-options' else None}]}})
         elif prompt == 'hold':
             pass
+        elif prompt == 'crash':
+            print(f'fixture stderr: panic in turn {active}', file=sys.stderr, flush=True)
+            os.kill(os.getpid(), signal.SIGKILL)
         elif prompt == 'late-approval':
             time.sleep(0.5)
             callbacks = {'late-route'}

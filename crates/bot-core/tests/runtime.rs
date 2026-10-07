@@ -5281,3 +5281,348 @@ async fn native_codex_items_stream_into_typed_timeline_items() {
     );
     app.shutdown().await.unwrap();
 }
+
+const KILLED: &str =
+    "Codex stopped unexpectedly (killed by signal 9). Your next message restarts it.";
+fn peer_file(f: &Fixture, name: &str) -> std::path::PathBuf {
+    f.peer.parent().unwrap().join(name)
+}
+fn peer_pid(f: &Fixture, name: &str) -> i32 {
+    std::fs::read_to_string(peer_file(f, name))
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+fn lost_reason(turn: &Turn) -> &str {
+    match &turn.execution {
+        Execution::Lost { reason } => reason,
+        other => panic!("expected a lost turn, got {other:?}"),
+    }
+}
+fn not_sent_reason(turn: &Turn) -> &str {
+    match &turn.delivery {
+        Delivery::NotSent { reason } => reason,
+        other => panic!("expected an unsent turn, got {other:?}"),
+    }
+}
+async fn wait_until_dead(pid: i32) -> bool {
+    for _ in 0..300 {
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn crash_mid_turn_reports_stderr_and_resumes_the_native_thread_without_replay() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let idle = conversation(&app, &f).await;
+    app.submit(idle.id.clone(), "idle".into(), "hello".into(), vec![])
+        .await
+        .unwrap();
+    wait(&app, &idle.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "crash".into(), "crash".into(), vec![])
+        .await
+        .unwrap();
+    let lost = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Lost { .. })
+    })
+    .await;
+    let reason = lost_reason(&lost.turns[0]);
+    assert!(
+        reason.starts_with(&format!("{KILLED}\n\nCodex stderr:\n")),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("fixture stderr: panic in turn native-"),
+        "{reason}"
+    );
+    assert_eq!(lost.diagnostic.as_deref(), Some(KILLED));
+    assert_eq!(
+        lost.session,
+        SessionState::Unavailable {
+            reason: KILLED.into()
+        }
+    );
+    let idle = app.thread(idle.id.clone()).await.unwrap();
+    assert_eq!(
+        idle.session,
+        SessionState::Unavailable {
+            reason: KILLED.into()
+        }
+    );
+    assert_eq!(idle.diagnostic, None, "an idle thread lost no work");
+    let log = std::fs::read_to_string(f.config.data_dir.join("logs").join("codex.log")).unwrap();
+    assert!(
+        log.contains("fixture stderr: panic in turn native-"),
+        "{log}"
+    );
+    assert!(log.contains("fixture stderr: started"), "{log}");
+    assert!(log.contains("exited: signal: 9"), "{log}");
+
+    let native = lost.native_thread_id.clone().unwrap();
+    std::fs::write(
+        peer_file(&f, "history.json"),
+        serde_json::json!([{"id": lost.turns[0].native_turn_id, "status": "interrupted", "items": []}])
+            .to_string(),
+    )
+    .unwrap();
+    app.submit(thread.id.clone(), "after".into(), "hello".into(), vec![])
+        .await
+        .unwrap();
+    let done = wait(&app, &thread.id, |t| {
+        t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(done.native_thread_id.as_deref(), Some(native.as_str()));
+    assert_eq!(
+        lost_reason(&done.turns[0]),
+        reason,
+        "native history reports the crashed turn as interrupted"
+    );
+    assert_eq!(done.diagnostic, None);
+    let calls = f.calls();
+    let relaunch = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, call)| call["method"] == "initialize")
+        .nth(1)
+        .unwrap()
+        .0;
+    assert!(
+        calls[relaunch..]
+            .iter()
+            .any(|call| call["method"] == "thread/resume" && call["params"]["threadId"] == native)
+    );
+    assert_eq!(method_count(&f, "turn/start"), 3);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "turn/start" && call["params"]["threadId"] == native)
+            .count(),
+        2,
+        "the crashed prompt is never replayed"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn crash_expires_pending_approvals_and_user_questions() {
+    for prompt in ["approval", "ask-plan"] {
+        let f = Fixture::new();
+        std::fs::write(peer_file(&f, "collaboration"), "").unwrap();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        if prompt == "ask-plan" {
+            app.collaboration_modes().await.unwrap();
+            app.update_settings(
+                thread.id.clone(),
+                SessionSettings {
+                    interaction_mode: InteractionMode::Plan,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        }
+        app.submit(thread.id.clone(), prompt.into(), prompt.into(), vec![])
+            .await
+            .unwrap();
+        let pending = wait(&app, &thread.id, |t| {
+            t.approvals.len() == 2 || !t.user_questions.is_empty()
+        })
+        .await;
+        assert!(pending.input_open());
+        unsafe { libc::kill(peer_pid(&f, "pid"), libc::SIGKILL) };
+        let lost = wait(&app, &thread.id, |t| {
+            matches!(t.turns[0].execution, Execution::Lost { .. })
+        })
+        .await;
+        assert!(lost_reason(&lost.turns[0]).starts_with(KILLED), "{prompt}");
+        assert_eq!(lost.diagnostic.as_deref(), Some(KILLED));
+        assert!(!lost.input_open());
+        for approval in &pending.approvals {
+            assert_eq!(
+                lost.approvals
+                    .iter()
+                    .find(|a| a.id == approval.id)
+                    .unwrap()
+                    .state,
+                ApprovalState::Expired
+            );
+            assert_eq!(
+                app.answer_approval(approval.id.clone(), ApprovalDecision::Accept)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "approval_expired"
+            );
+        }
+        for request in &pending.user_questions {
+            assert_eq!(lost.user_questions[0].id, request.id);
+            assert_eq!(lost.user_questions[0].state, UserQuestionState::Expired);
+            assert_eq!(
+                app.answer_user_questions(request.id.clone(), Default::default())
+                    .await
+                    .unwrap_err()
+                    .code,
+                "question_expired"
+            );
+        }
+        app.submit(thread.id.clone(), "after".into(), "hello".into(), vec![])
+            .await
+            .unwrap();
+        wait(&app, &thread.id, |t| {
+            t.turns.len() == 2 && matches!(t.turns[1].execution, Execution::Completed)
+        })
+        .await;
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn leader_exit_is_detected_while_a_descendant_holds_stdout() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(
+        thread.id.clone(),
+        "descendant".into(),
+        "descendant".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Running)
+    })
+    .await;
+    for _ in 0..100 {
+        if peer_file(&f, "descendant.pid").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let descendant = peer_pid(&f, "descendant.pid");
+    let killed = std::time::Instant::now();
+    unsafe { libc::kill(peer_pid(&f, "pid"), libc::SIGKILL) };
+    let lost = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Lost { .. })
+    })
+    .await;
+    assert!(killed.elapsed() < Duration::from_secs(3));
+    assert!(lost_reason(&lost.turns[0]).starts_with(KILLED));
+    assert!(
+        wait_until_dead(descendant).await,
+        "The same-group tool must not outlive its leader's loss"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn repeated_crashes_back_off_and_never_rewrite_settled_turns() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "crash".into(), "crash".into(), vec![])
+        .await
+        .unwrap();
+    let crashed = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Lost { .. })
+    })
+    .await;
+    let first = serde_json::to_value(&crashed.turns[0]).unwrap();
+    std::fs::write(peer_file(&f, "crash_on_launch"), "2").unwrap();
+
+    app.submit(thread.id.clone(), "retry-1".into(), "hello".into(), vec![])
+        .await
+        .unwrap();
+    let failed = wait(&app, &thread.id, |t| {
+        t.turns.len() == 2 && matches!(t.turns[1].delivery, Delivery::NotSent { .. })
+    })
+    .await;
+    let reason = not_sent_reason(&failed.turns[1]);
+    assert!(
+        reason.starts_with(
+            "Codex stopped unexpectedly (exit code 3). Your next message restarts it.\n\nCodex stderr:\n"
+        ),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("fixture stderr: refusing to start (2 left)"),
+        "{reason}"
+    );
+
+    app.submit(thread.id.clone(), "retry-2".into(), "hello".into(), vec![])
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        t.diagnostic.as_deref()
+            == Some("Codex stopped 2 times in a row. Bot Code restarts it in 1 second.")
+    })
+    .await;
+    let failed = wait(&app, &thread.id, |t| {
+        t.turns.len() == 3 && matches!(t.turns[2].delivery, Delivery::NotSent { .. })
+    })
+    .await;
+    assert!(
+        not_sent_reason(&failed.turns[2]).contains("fixture stderr: refusing to start (1 left)")
+    );
+
+    app.submit(thread.id.clone(), "retry-3".into(), "hello".into(), vec![])
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        t.diagnostic.as_deref()
+            == Some("Codex stopped 3 times in a row. Bot Code restarts it in 2 seconds.")
+    })
+    .await;
+    let done = wait(&app, &thread.id, |t| {
+        t.turns.len() == 4 && matches!(t.turns[3].execution, Execution::Completed)
+    })
+    .await;
+
+    let launches: Vec<f64> = std::fs::read_to_string(peer_file(&f, "launches.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["time"]
+                .as_f64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(launches.len(), 4);
+    assert!(launches[2] - launches[1] >= 0.9, "{launches:?}");
+    assert!(launches[3] - launches[2] >= 1.9, "{launches:?}");
+
+    assert_eq!(serde_json::to_value(&done.turns[0]).unwrap(), first);
+    for turn in &done.turns[1..3] {
+        assert!(matches!(turn.delivery, Delivery::NotSent { .. }));
+        assert!(matches!(turn.execution, Execution::Lost { .. }));
+    }
+    let started: Vec<_> = f
+        .calls()
+        .into_iter()
+        .filter(|call| call["method"] == "turn/start")
+        .map(|call| {
+            call["params"]["clientUserMessageId"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        started,
+        [done.turns[0].id.to_string(), done.turns[3].id.to_string()]
+    );
+    assert_eq!(done.session, SessionState::Ready);
+    assert!(!done.input_open());
+    app.shutdown().await.unwrap();
+}

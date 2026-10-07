@@ -1,4 +1,4 @@
-use super::{Codex, Completion, ModelPage, Owner};
+use super::{Callback, Codex, Completion, ModelPage, Owner};
 use crate::domain::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -147,7 +147,8 @@ impl Owner {
         id: UserQuestionRequestId,
         answers: UserQuestionAnswers,
     ) -> Result<()> {
-        let route = self.question_routes.get(&id).cloned().ok_or_else(|| {
+        let callback = Callback::UserInput(id.clone());
+        let route = self.callbacks.get(&callback).cloned().ok_or_else(|| {
             AppError::new(
                 "question_expired",
                 "This question no longer has a live callback.",
@@ -178,7 +179,7 @@ impl Owner {
         validate_answers(&request.questions, &answers)?;
         request.state = UserQuestionState::Answering;
         self.install(thread)?;
-        self.question_routes.remove(&id);
+        self.callbacks.remove(&callback);
         let done = self.done.clone();
         let epoch = self.epoch;
         tokio::spawn(async move {

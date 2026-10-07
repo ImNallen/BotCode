@@ -1,5 +1,5 @@
 // Ported from pingdotgg/t3code v0.0.45 apps/server/src/provider/Layers/CodexProvider.ts (MIT).
-use crate::{codex::Codex, domain::Result};
+use crate::{codex::Codex, domain::Result, log::RotatingLog};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
@@ -93,13 +93,18 @@ fn parse(response: Value, cwd: &Path) -> Result<Vec<Skill>> {
         .collect())
 }
 
-pub(crate) async fn list(binary: &Path, cwd: &Path) -> Vec<Skill> {
-    list_with_timeout(binary, cwd, DISCOVERY_TIMEOUT).await
+pub(crate) async fn list(binary: &Path, cwd: &Path, log: RotatingLog) -> Vec<Skill> {
+    list_with_timeout(binary, cwd, DISCOVERY_TIMEOUT, log).await
 }
 
-async fn list_with_timeout(binary: &Path, cwd: &Path, timeout: Duration) -> Vec<Skill> {
+async fn list_with_timeout(
+    binary: &Path,
+    cwd: &Path,
+    timeout: Duration,
+    log: RotatingLog,
+) -> Vec<Skill> {
     let (events, mut signals) = mpsc::channel(16);
-    let provider = match Codex::launch(binary.to_owned(), 0, events).await {
+    let provider = match Codex::launch(binary.to_owned(), 0, events, log).await {
         Ok(provider) => provider,
         Err(_) => return vec![],
     };
@@ -248,6 +253,10 @@ mod tests {
                 Self { dir, binary }
             }
 
+            fn log(&self) -> RotatingLog {
+                RotatingLog::open(self.dir.path().join("codex.log"))
+            }
+
             fn calls(&self) -> Vec<Value> {
                 std::fs::read_to_string(self.dir.path().join("calls.jsonl"))
                     .unwrap()
@@ -299,7 +308,7 @@ for line in sys.stdin:
         #[tokio::test]
         async fn discovery_initializes_requests_checkout_and_terminates() {
             let peer = Peer::new("success");
-            let skills = list(&peer.binary, Path::new("/checkout")).await;
+            let skills = list(&peer.binary, Path::new("/checkout"), peer.log()).await;
             assert_eq!(skills.len(), 1);
             assert_eq!(skills[0].name, "repo-skill");
             assert_eq!(skills[0].scope.as_deref(), Some("repo"));
@@ -320,7 +329,9 @@ for line in sys.stdin:
             for mode in ["unsupported", "malformed", "lost"] {
                 let peer = Peer::new(mode);
                 assert!(
-                    list(&peer.binary, Path::new("/checkout")).await.is_empty(),
+                    list(&peer.binary, Path::new("/checkout"), peer.log())
+                        .await
+                        .is_empty(),
                     "{mode}"
                 );
                 peer.assert_stopped();
@@ -334,7 +345,8 @@ for line in sys.stdin:
                 list_with_timeout(
                     &peer.binary,
                     Path::new("/checkout"),
-                    Duration::from_millis(250)
+                    Duration::from_millis(250),
+                    peer.log()
                 )
                 .await
                 .is_empty()
@@ -346,9 +358,13 @@ for line in sys.stdin:
         async fn missing_binary_returns_empty() {
             let dir = tempfile::tempdir().unwrap();
             assert!(
-                list(&dir.path().join("missing-codex"), dir.path())
-                    .await
-                    .is_empty()
+                list(
+                    &dir.path().join("missing-codex"),
+                    dir.path(),
+                    RotatingLog::open(dir.path().join("codex.log"))
+                )
+                .await
+                .is_empty()
             );
         }
 
