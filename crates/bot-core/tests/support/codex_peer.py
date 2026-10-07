@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 import json, os, pathlib, sys, time, subprocess
 root = pathlib.Path(__file__).parent
+def publish(path, text):
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(text)
+    temporary.replace(path)
 if len(sys.argv) > 1 and sys.argv[1] == 'exec':
     prompt = sys.stdin.read()
     schema = json.loads(pathlib.Path(sys.argv[sys.argv.index('--output-schema') + 1]).read_text())
@@ -8,14 +12,18 @@ if len(sys.argv) > 1 and sys.argv[1] == 'exec':
     kind = 'commit' if 'subject' in fields else 'pr' if 'title' in fields else 'naming'
     with (root / f'{kind}.jsonl').open('a') as log:
         log.write(json.dumps({'args': sys.argv[1:], 'prompt': prompt, 'cwd': os.getcwd()}) + '\n')
-    (root / f'{kind}.pid').write_text(str(os.getpid()))
+    publish(root / f'{kind}.pid', str(os.getpid()))
     if (root / f'{kind}_descendant').exists():
         child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(90)'])
-        (root / f'{kind}_child.pid').write_text(str(child.pid))
+        publish(root / f'{kind}_child.pid', str(child.pid))
     (root / f'{kind}_ready').touch()
     if (root / f'{kind}_stall').exists():
         while True:
             time.sleep(1)
+    if (root / f'{kind}_hold').exists():
+        deadline = time.time() + 10
+        while not (root / f'{kind}_release').exists() and time.time() < deadline:
+            time.sleep(0.01)
     if (root / f'{kind}_delay').exists():
         time.sleep(float((root / f'{kind}_delay').read_text()))
     output = root / f'{kind}_output'
