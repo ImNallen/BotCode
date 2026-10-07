@@ -6,6 +6,7 @@ import {
   ClockIcon,
   CopyIcon,
   FolderIcon,
+  FolderTreeIcon,
   GitBranchIcon,
   HashIcon,
   MessageSquareDashedIcon,
@@ -13,12 +14,13 @@ import {
   PanelRightIcon,
   PinIcon,
   SettingsIcon,
+  SquareArrowOutUpRightIcon,
   SquarePenIcon,
   TerminalIcon,
   Trash2Icon,
   type LucideIcon,
 } from "lucide-react";
-import type { Arrange, ThreadSummary, Workspace } from "../ipc";
+import type { Arrange, OpenTarget, ThreadSummary, Workspace } from "../ipc";
 import { workingSessions } from "./sessions";
 import { resolveSnoozePresets, type SnoozePreset } from "./snooze";
 import { isMacPlatform } from "./utils";
@@ -62,6 +64,9 @@ export type ActionContext = {
   renamePending: boolean;
   queued: boolean;
   archiveTarget: ThreadSummary | undefined;
+  // The open conversation's checkout root, absent for a no-project draft or a removed worktree.
+  checkoutTarget: OpenTarget | null;
+  editorLabel: string | null;
   newThread: () => void;
   startScratch: () => void;
   openSettings: () => void;
@@ -74,6 +79,8 @@ export type ActionContext = {
   requestChat: (kind: ChatRequest["kind"]) => void;
   restoreArchived: (thread: ThreadSummary) => void;
   deleteArchived: (thread: ThreadSummary) => void;
+  openInEditor: (target: OpenTarget) => void;
+  revealInFinder: (target: OpenTarget) => void;
 };
 export type KeyEventLike = Pick<
   KeyboardEvent,
@@ -226,6 +233,34 @@ const definitions = {
     palette: "root",
     available: (c) => !c.pageOpen && !!c.workspace,
     run: (c) => c.requestChat("panel.toggle"),
+  },
+  "editor.openFavorite": {
+    icon: SquareArrowOutUpRightIcon,
+    shortcutDescription:
+      "Open the conversation's checkout in the preferred editor.",
+    title: "Open in preferred editor",
+    label: (c) => `Open in ${c.editorLabel ?? "editor"}`,
+    keywords: "editor ide cursor vscode zed",
+    group: "Navigation",
+    palette: "root",
+    binding: { key: "o", modifier: "mod" },
+    allowTerminal: true,
+    available: (c) =>
+      !c.pageOpen && c.checkoutTarget !== null && c.editorLabel !== null,
+    run: (c) => {
+      if (c.checkoutTarget) c.openInEditor(c.checkoutTarget);
+    },
+  },
+  "editor.reveal": {
+    icon: FolderTreeIcon,
+    title: "Reveal in Finder",
+    keywords: "folder file manager",
+    group: "Navigation",
+    palette: "root",
+    available: (c) => !c.pageOpen && c.checkoutTarget !== null,
+    run: (c) => {
+      if (c.checkoutTarget) c.revealInFinder(c.checkoutTarget);
+    },
   },
   "terminal.toggle": {
     icon: TerminalIcon,

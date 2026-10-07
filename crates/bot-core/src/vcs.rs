@@ -224,21 +224,31 @@ async fn stop(child: &mut Child, pid: Option<u32>) -> Result<()> {
     })
 }
 
-/// Resolves a CLI for an app launched from Finder, whose PATH lacks the usual install
-/// locations: `$<env>`, then PATH, then ~/.local/bin, /opt/homebrew/bin and /usr/local/bin.
+/// Resolves a CLI for an app launched from Finder: `$<env>`, then [`bin_dirs`].
 pub(crate) fn installed_binary(name: &str, env: &str) -> PathBuf {
     if let Some(path) = std::env::var_os(env) {
         return path.into();
     }
+    bin_dirs()
+        .into_iter()
+        .map(|dir| dir.join(name))
+        .find(|path| is_executable(path))
+        .unwrap_or_else(|| name.into())
+}
+/// An app launched from Finder gets launchd's minimal PATH, so the usual install locations
+/// follow it: ~/.local/bin, /opt/homebrew/bin and /usr/local/bin.
+pub(crate) fn bin_dirs() -> Vec<PathBuf> {
     let path = std::env::var_os("PATH")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>());
     let home = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/bin"));
     path.chain(home)
         .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
-        .unwrap_or_else(|| name.into())
+        .collect()
+}
+pub(crate) fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 const LOCAL: Duration = Duration::from_secs(30);

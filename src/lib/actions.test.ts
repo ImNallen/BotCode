@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import {
+  actionLabel,
   actions,
   matchAction,
   matchesAction,
@@ -9,7 +10,7 @@ import {
   type ActionContext,
   type KeyEventLike,
 } from "./actions";
-import type { Arrange, ThreadSummary } from "../ipc";
+import type { Arrange, OpenTarget, ThreadSummary } from "../ipc";
 import { searchActions, searchThreads } from "../command/commandPaletteSearch";
 function summary(): ThreadSummary {
   return {
@@ -53,6 +54,13 @@ function context(): ActionContext {
     renamePending: false,
     queued: false,
     archiveTarget: undefined,
+    checkoutTarget: {
+      kind: "workspace",
+      workspace_id: "workspace",
+      thread_id: null,
+      path: "",
+    },
+    editorLabel: "Cursor",
     newThread: noop,
     startScratch: noop,
     openSettings: noop,
@@ -65,6 +73,8 @@ function context(): ActionContext {
     requestChat: noop,
     restoreArchived: noop,
     deleteArchived: noop,
+    openInEditor: noop,
+    revealInFinder: noop,
   };
 }
 function key(key: string, options: Partial<KeyEventLike> = {}): KeyEventLike {
@@ -210,4 +220,48 @@ it("normal searches find matching actions alongside matching thread titles", () 
     ).length,
     1,
   );
+});
+
+it("opens the checkout in the preferred editor from the palette and Command+O, even in a terminal", () => {
+  const ctx = context();
+  const opened: OpenTarget[] = [];
+  ctx.openInEditor = (target) => opened.push(target);
+  assert.equal(actions["editor.openFavorite"].palette, "root");
+  assert.equal(actionLabel("editor.openFavorite", ctx), "Open in Cursor");
+  assert.equal(shortcutLabel("editor.openFavorite", "MacIntel"), "⌘O");
+  assert.equal(
+    matchAction(key("o"), ctx, false, "MacIntel"),
+    "editor.openFavorite",
+  );
+  assert.equal(
+    matchAction(key("o"), ctx, true, "MacIntel"),
+    "editor.openFavorite",
+  );
+  assert.equal(
+    matchAction(key("o", { shiftKey: true }), ctx, false, "MacIntel"),
+    undefined,
+  );
+  assert.equal(runAction("editor.openFavorite", ctx), true);
+  assert.deepEqual(opened, [
+    { kind: "workspace", workspace_id: "workspace", thread_id: null, path: "" },
+  ]);
+});
+it("offers editor actions only for an open checkout with an installed editor", () => {
+  const ctx = context();
+  const revealed: OpenTarget[] = [];
+  ctx.revealInFinder = (target) => revealed.push(target);
+  ctx.editorLabel = null;
+  assert.equal(matchAction(key("o"), ctx, false, "MacIntel"), undefined);
+  assert.equal(runAction("editor.reveal", ctx), true);
+  ctx.editorLabel = "Zed";
+  ctx.pageOpen = true;
+  assert.equal(actions["editor.openFavorite"].available(ctx), false);
+  assert.equal(actions["editor.reveal"].available(ctx), false);
+  ctx.pageOpen = false;
+  ctx.checkoutTarget = null;
+  assert.equal(runAction("editor.openFavorite", ctx), false);
+  assert.equal(runAction("editor.reveal", ctx), false);
+  assert.deepEqual(revealed, [
+    { kind: "workspace", workspace_id: "workspace", thread_id: null, path: "" },
+  ]);
 });

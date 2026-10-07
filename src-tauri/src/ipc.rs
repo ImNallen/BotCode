@@ -209,6 +209,23 @@ pub fn open_url(url: String) -> Result<()> {
     }
     Ok(())
 }
+#[tauri::command(async)]
+pub fn available_editors() -> Vec<EditorId> {
+    bot_core::available_editors()
+}
+#[tauri::command]
+pub async fn open_in_editor(
+    app: State<'_, App>,
+    target: OpenTarget,
+    editor: EditorId,
+    position: Option<Position>,
+) -> Result<()> {
+    app.open_in_editor(target, editor, position).await
+}
+#[tauri::command]
+pub async fn reveal_in_finder(app: State<'_, App>, target: OpenTarget) -> Result<()> {
+    app.reveal_in_finder(target).await
+}
 #[tauri::command]
 pub async fn create_thread(
     app: State<'_, App>,

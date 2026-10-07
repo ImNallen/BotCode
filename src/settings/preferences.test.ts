@@ -144,3 +144,53 @@ it("defaults follow-ups to Queue, persists Steer and restores Queue with default
     else Reflect.deleteProperty(globalThis, "localStorage");
   }
 });
+
+it("starts the preferred editor automatic, persists a choice and restores automatic with defaults", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  let stored: unknown = { preferredEditor: "sublime" };
+  let observed: string | null | undefined;
+  let state: ReturnType<typeof usePreferences> | undefined;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: () => JSON.stringify(stored),
+      setItem: (_key: string, text: string) => {
+        stored = JSON.parse(text);
+      },
+    },
+  });
+  function Inspect() {
+    state = usePreferences();
+    observed = state.preferences.preferredEditor;
+    return null;
+  }
+  const render = () =>
+    renderToStaticMarkup(
+      createElement(PreferencesProvider, { children: createElement(Inspect) }),
+    );
+  try {
+    render();
+    assert.equal(observed, null);
+    state?.update({ preferredEditor: "zed" });
+    assert.equal(
+      (stored as { preferredEditor?: unknown }).preferredEditor,
+      "zed",
+    );
+    render();
+    assert.equal(observed, "zed");
+    state?.reset();
+    render();
+    assert.equal(observed, null);
+    assert.ok(
+      categories.general.groups
+        .flatMap((group) => group.rows)
+        .some(
+          (row) =>
+            row.id === "preferred-editor" && row.title === "Preferred editor",
+        ),
+    );
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});

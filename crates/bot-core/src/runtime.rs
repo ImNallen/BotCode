@@ -13,6 +13,7 @@ use crate::{
     cleanup::{self, Candidate, Sweep},
     codex::{Codex, Signal},
     domain::*,
+    editors::{self, EditorId, OpenTarget, Position},
     repo, settings, skills,
     store::Store,
     terminal::{
@@ -560,6 +561,48 @@ impl App {
         tokio::task::spawn_blocking(move || repo::write_file(&root, &path, &contents))
             .await
             .map_err(|e| AppError::new("repository", e))?
+    }
+    /// The canonical existing path a target names, refusing anything outside its checkout
+    /// or, for chat links, not named in the thread.
+    pub async fn open_target_path(&self, target: OpenTarget) -> Result<PathBuf> {
+        let resolve = match target {
+            OpenTarget::Workspace {
+                workspace_id,
+                thread_id,
+                path,
+            } => {
+                let root = match self.checkout(workspace_id, thread_id).await?.1 {
+                    Location::Repository(root) | Location::Folder(root) => root,
+                    Location::Unassigned => {
+                        return Err(AppError::new(
+                            "missing_folder",
+                            "Start a thread to see its files.",
+                        ));
+                    }
+                    Location::Removed { .. } => return Err(worktree_removed()),
+                };
+                tokio::task::spawn_blocking(move || editors::checkout_path(&root, &path))
+            }
+            OpenTarget::ChatLink { thread_id, path } => {
+                let thread = self.thread(thread_id).await?;
+                tokio::task::spawn_blocking(move || editors::chat_link_path(&thread, &path))
+            }
+        };
+        resolve.await.map_err(|e| AppError::new("repository", e))?
+    }
+    pub async fn open_in_editor(
+        &self,
+        target: OpenTarget,
+        editor: EditorId,
+        position: Option<Position>,
+    ) -> Result<()> {
+        let path = self.open_target_path(target).await?;
+        tokio::task::spawn_blocking(move || editors::launch(editor, &path, position))
+            .await
+            .map_err(|e| AppError::new("editor_launch", e))?
+    }
+    pub async fn reveal_in_finder(&self, target: OpenTarget) -> Result<()> {
+        editors::reveal(&self.open_target_path(target).await?).await
     }
     pub async fn read_diff(
         &self,
