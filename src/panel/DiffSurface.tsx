@@ -1,5 +1,4 @@
-// Diff surface copied from pingdotgg/t3code v0.0.45 components/DiffPanel.tsx, DiffPanelShell.tsx,
-// diffs/StyledDiffCodeView.tsx, DiffFilePathCopyButton.tsx and lib/diffRendering.ts (MIT).
+// Ported from T3 Code v0.0.45 apps/web/src/components/DiffPanel.tsx, DiffPanelShell.tsx and diffs/StyledDiffCodeView.tsx (MIT).
 import { parseDiffFromFile, type FileDiffMetadata } from "@pierre/diffs";
 import {
   CodeView,
@@ -13,9 +12,21 @@ import {
 } from "@tanstack/react-query";
 import { CheckIcon, ChevronDownIcon, CopyIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { checkoutKey, ipc, type CheckoutRef, type WorkspaceView } from "../ipc";
+import {
+  checkoutKey,
+  ipc,
+  type CheckoutRef,
+  type WorkspaceView,
+  type Thread,
+} from "../ipc";
 import { cn } from "../lib/cn";
-import { Menu } from "../ui/menu";
+import { Menu, MenuSeparator, MenuSub } from "../ui/menu";
+import { formatDayAwareTimestamp } from "../lib/time";
+import {
+  completedCheckpointTurns,
+  selectedCheckpointTurn,
+  type TurnDiffSelection,
+} from "./turnDiffSelection";
 import { Button, Toggle } from "../ui/controls";
 import {
   DiffStatLabel,
@@ -155,7 +166,7 @@ function useDiffFiles(
       try {
         fileDiff = parseDiffFromFile(old, next);
       } catch {
-        // Pierre throws when the two sides yield no hunks, such as an empty file being added.
+        problems.push(`${change.path}: Unable to parse the text diff.`);
         continue;
       }
       files.push({
@@ -170,18 +181,81 @@ function useDiffFiles(
 
 const NONE_EXPANDED: ReadonlySet<string> = new Set();
 
+function useTurnDiffFiles(
+  thread: Thread | undefined,
+  selection: TurnDiffSelection | null,
+  ignoreWhitespace: boolean,
+) {
+  const selected = selectedCheckpointTurn(thread, selection);
+  const checkpoint = selected?.turn.checkpoint;
+  const paths = checkpoint?.kind === "complete" ? checkpoint.files : [];
+  const reads = useQueries({
+    queries: paths.map(({ path }) => ({
+      queryKey: ["turn-diff", thread?.id, selected?.turn.id, path],
+      queryFn: () =>
+        ipc.turnDiff(thread?.id ?? "", selected?.turn.id ?? "", path),
+      staleTime: Infinity,
+    })),
+    combine: (results) => ({
+      pending: results.some((result) => result.isPending),
+      outcomes: results.map((result) => result.error?.message ?? result.data),
+    }),
+  });
+  return useMemo(() => {
+    const files: DiffFile[] = [];
+    const problems: string[] = [];
+    paths.forEach(({ path }, index) => {
+      const outcome = reads.outcomes[index];
+      if (typeof outcome === "string") problems.push(`${path}: ${outcome}`);
+      else if (outcome?.kind === "unavailable")
+        problems.push(`${path}: ${outcome.reason}`);
+      else if (outcome) {
+        try {
+          const fileDiff = parseDiffFromFile(outcome.old, outcome.new);
+          files.push({
+            path,
+            fileDiff: ignoreWhitespace
+              ? hideWhitespaceChanges(fileDiff)
+              : fileDiff,
+            version: hash(
+              `${outcome.old?.contents ?? ""}\u0000${outcome.new?.contents ?? ""}`,
+            ),
+          });
+        } catch {
+          problems.push(`${path}: No text hunks to display.`);
+        }
+      }
+    });
+    return { pending: reads.pending, files, problems };
+  }, [paths, reads.pending, reads.outcomes, ignoreWhitespace]);
+}
+
 export function DiffSurface({
   checkout,
   view,
   onOpenFile,
+  thread,
+  turnSelection,
+  onSelectTurn,
 }: {
   checkout: CheckoutRef;
   view: WorkspaceView | undefined;
   onOpenFile: (path: string) => void;
+  thread: Thread | undefined;
+  turnSelection: TurnDiffSelection | null;
+  onSelectTurn: (turnId: string | null, filePath?: string) => void;
 }) {
   const theme = useResolvedTheme();
   const client = useQueryClient();
   const [scope, setScope] = useStoredState<Scope>("z1.diffScope", parseScope);
+  const turns = completedCheckpointTurns(thread);
+  const selectedTurn = selectedCheckpointTurn(thread, turnSelection);
+  const scopeKey = selectedTurn?.turn.id ?? scope;
+  const scopeLabel = selectedTurn
+    ? selectedTurn.turn.id === turns[0]?.turn.id
+      ? "Latest turn"
+      : `Turn ${selectedTurn.number}`
+    : SCOPES[scope].label;
   const {
     split,
     setSplit,
@@ -193,25 +267,31 @@ export function DiffSurface({
     setFileTreeOpen,
   } = useDiffViewPreferences();
   const [expanded, setExpanded] = useState<{
-    scope: Scope;
+    scope: string;
     paths: ReadonlySet<string>;
   }>({
-    scope,
+    scope: scopeKey,
     paths: new Set(),
   });
   const expandedPaths =
-    expanded.scope === scope ? expanded.paths : NONE_EXPANDED;
+    expanded.scope === scopeKey ? expanded.paths : NONE_EXPANDED;
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [reveal, setReveal] = useState<{ path: string } | null>(null);
   const viewer = useRef<CodeViewHandle<undefined, undefined>>(null);
   const refreshing =
-    useIsFetching({ queryKey: checkoutKey("diff", checkout) }) > 0;
-  const { pending, files, problems } = useDiffFiles(
+    useIsFetching({
+      queryKey: selectedTurn
+        ? ["turn-diff", thread?.id, selectedTurn.turn.id]
+        : checkoutKey("diff", checkout),
+    }) > 0;
+  const gitFiles = useDiffFiles(
     checkout,
-    view,
+    selectedTurn ? undefined : view,
     scope,
     ignoreWhitespace,
   );
+  const turnFiles = useTurnDiffFiles(thread, turnSelection, ignoreWhitespace);
+  const { pending, files, problems } = selectedTurn ? turnFiles : gitFiles;
   const stat = useMemo(() => lineStat(files), [files]);
   const allCollapsed = files.every((file) => !expandedPaths.has(file.path));
   const filesByPath = useMemo(
@@ -246,11 +326,11 @@ export function DiffSurface({
     const next = new Set(expandedPaths);
     if (value) next.add(path);
     else next.delete(path);
-    setExpanded({ scope, paths: next });
+    setExpanded({ scope: scopeKey, paths: next });
   };
   const toggleAll = () =>
     setExpanded({
-      scope,
+      scope: scopeKey,
       paths: allCollapsed ? new Set(files.map((file) => file.path)) : new Set(),
     });
   const revealFile = (path: string) => {
@@ -262,6 +342,18 @@ export function DiffSurface({
     if (!reveal || !viewer.current?.getInstance()) return;
     viewer.current.scrollTo({ type: "item", id: reveal.path, align: "start" });
   }, [reveal, items]);
+  const lastExternalReveal = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      !selectedTurn ||
+      !turnSelection?.filePath ||
+      pending ||
+      lastExternalReveal.current === turnSelection.request
+    )
+      return;
+    lastExternalReveal.current = turnSelection.request;
+    revealFile(turnSelection.filePath);
+  }, [turnSelection, selectedTurn?.turn.id, pending]);
 
   const refresh = () => {
     void client.invalidateQueries({
@@ -269,6 +361,8 @@ export function DiffSurface({
     });
     void client.invalidateQueries({ queryKey: checkoutKey("diff", checkout) });
     void client.invalidateQueries({ queryKey: checkoutKey("file", checkout) });
+    if (thread)
+      void client.invalidateQueries({ queryKey: ["turn-diff", thread.id] });
   };
 
   const header = (
@@ -281,10 +375,10 @@ export function DiffSurface({
               size="xs"
               variant="secondary"
               className="max-w-full"
-              aria-label={`Diff scope: ${SCOPES[scope].label}`}
+              aria-label={`Diff scope: ${scopeLabel}`}
               {...props}
             >
-              <span className="truncate">{SCOPES[scope].label}</span>
+              <span className="truncate">{scopeLabel}</span>
               <ChevronDownIcon className="size-3.5 shrink-0 opacity-70" />
             </Button>
           )}
@@ -292,12 +386,45 @@ export function DiffSurface({
           {(Object.keys(SCOPES) as Scope[]).map((value) => (
             <MenuRadioItem
               key={value}
-              checked={value === scope}
-              onClick={() => setScope(value)}
+              checked={!selectedTurn && value === scope}
+              onClick={() => {
+                onSelectTurn(null);
+                setScope(value);
+              }}
             >
               <span>{SCOPES[value].label}</span>
             </MenuRadioItem>
           ))}
+          <MenuSeparator />
+          <MenuRadioItem
+            checked={Boolean(
+              selectedTurn && selectedTurn.turn.id === turns[0]?.turn.id,
+            )}
+            disabled={turns.length === 0}
+            onClick={() => {
+              if (turns[0]) onSelectTurn(turns[0].turn.id);
+            }}
+          >
+            <span>Latest turn</span>
+          </MenuRadioItem>
+          <MenuSub label="Turn" disabled={turns.length === 0}>
+            {turns.map(({ turn, number }) => (
+              <MenuRadioItem
+                key={turn.id}
+                checked={selectedTurn?.turn.id === turn.id}
+                onClick={() => onSelectTurn(turn.id)}
+              >
+                <span className="flex items-center gap-2">
+                  <span>Turn {number}</span>
+                  <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                    {turn.completedAtMs === null
+                      ? ""
+                      : formatDayAwareTimestamp(turn.completedAtMs)}
+                  </span>
+                </span>
+              </MenuRadioItem>
+            ))}
+          </MenuSub>
         </Menu>
       </div>
       <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
@@ -354,11 +481,13 @@ export function DiffSurface({
         {pending ? (
           <DiffLoadingState
             label={
-              scope === "working"
-                ? "Loading working tree diff..."
-                : scope === "staged"
-                  ? "Loading staged diff..."
-                  : "Loading unstaged diff..."
+              selectedTurn
+                ? `Loading turn ${selectedTurn.number} diff...`
+                : scope === "working"
+                  ? "Loading working tree diff..."
+                  : scope === "staged"
+                    ? "Loading staged diff..."
+                    : "Loading unstaged diff..."
             }
           />
         ) : files.length === 0 ? (
@@ -396,7 +525,7 @@ export function DiffSurface({
               }}
             >
               <CodeView<undefined>
-                key={scope}
+                key={scopeKey}
                 ref={viewer}
                 className="diff-render-surface [--code-background:var(--background)] outline-none h-full min-h-0 overflow-auto"
                 items={items}

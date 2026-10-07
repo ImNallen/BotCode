@@ -56,6 +56,26 @@ pub async fn read_diff(
     app.read_diff(workspace_id, thread_id, path, basis).await
 }
 #[tauri::command]
+pub async fn read_turn_diff(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    turn_id: TurnId,
+    path: String,
+) -> Result<TurnDiffView> {
+    app.read_turn_diff(thread_id, turn_id, path).await
+}
+#[tauri::command]
+pub async fn revert_thread(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    request_id: String,
+    turn_id: TurnId,
+    files: bool,
+) -> Result<ThreadSnapshot> {
+    app.revert_thread(thread_id, request_id, turn_id, files)
+        .await
+}
+#[tauri::command]
 pub async fn list_branches(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

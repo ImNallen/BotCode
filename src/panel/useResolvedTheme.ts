@@ -15,5 +15,5 @@ const snapshot = (): ResolvedTheme =>
   document.documentElement.classList.contains("dark") ? "dark" : "light";
 
 export function useResolvedTheme(): ResolvedTheme {
-  return useSyncExternalStore(subscribe, snapshot);
+  return useSyncExternalStore(subscribe, snapshot, () => "dark");
 }

@@ -224,6 +224,8 @@ pub struct Turn {
     pub completed_at_ms: Option<u64>,
     #[serde(default)]
     pub attachments: Vec<ImageAttachment>,
+    #[serde(default)]
+    pub checkpoint: TurnCheckpoint,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImageMime {
@@ -300,6 +302,101 @@ pub struct ImageAttachment {
     pub mime_type: ImageMime,
     pub name: String,
     pub size_bytes: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Checkpoint {
+    pub reference: String,
+    pub commit: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnDiffFile {
+    pub path: String,
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnCheckpoint {
+    Pending,
+    Before {
+        before: Checkpoint,
+    },
+    Complete {
+        before: Checkpoint,
+        after: Checkpoint,
+        files: Vec<TurnDiffFile>,
+    },
+    Unavailable {
+        before: Option<Checkpoint>,
+        reason: String,
+    },
+}
+impl Default for TurnCheckpoint {
+    fn default() -> Self {
+        Self::Unavailable {
+            before: None,
+            reason: "This turn predates checkpoints.".into(),
+        }
+    }
+}
+impl TurnCheckpoint {
+    pub fn before(&self) -> Option<&Checkpoint> {
+        match self {
+            Self::Before { before } | Self::Complete { before, .. } => Some(before),
+            Self::Unavailable { before, .. } => before.as_ref(),
+            Self::Pending => None,
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileText {
+    pub name: String,
+    pub contents: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnDiffView {
+    Text {
+        old: Option<FileText>,
+        new: Option<FileText>,
+    },
+    Unavailable {
+        reason: String,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevertIntent {
+    pub request_id: String,
+    pub turn_id: TurnId,
+    pub files: bool,
+    pub source_native_thread_id: Option<String>,
+    pub before_native_turn_id: Option<String>,
+    pub before: Option<Checkpoint>,
+    pub checkout_root: PathBuf,
+    pub phase: RevertPhase,
+    #[serde(default)]
+    pub retained_native_turn_ids: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RevertPhase {
+    Preparing,
+    ConversationReady { native_thread_id: Option<String> },
+    RestoringFiles { native_thread_id: Option<String> },
+    FilesRestored { native_thread_id: Option<String> },
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevertResult {
+    #[serde(default)]
+    pub attachments: Vec<ImageAttachment>,
+    pub request_id: String,
+    pub turn_id: TurnId,
+    pub prompt: String,
+    pub turn_count: usize,
 }
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -494,6 +591,10 @@ pub struct ThreadSnapshot {
     pub snooze: Option<Snooze>,
     #[serde(default)]
     pub context: Option<ContextUsage>,
+    #[serde(default)]
+    pub pending_revert: Option<RevertIntent>,
+    #[serde(default)]
+    pub last_revert: Option<RevertResult>,
 }
 impl ThreadSnapshot {
     pub fn archived(&self) -> bool {

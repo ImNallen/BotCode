@@ -1,5 +1,4 @@
-// Shell, tab strip and launcher copied from pingdotgg/t3code v0.0.45 components/RightPanelTabs.tsx,
-// preview/PreviewPanelShell.tsx and preview/RightPanelResizeHandle.tsx (MIT).
+// Ported from T3 Code v0.0.45 apps/web/src/components/RightPanelTabs.tsx, preview/PreviewPanelShell.tsx and preview/RightPanelResizeHandle.tsx (MIT).
 import {
   FileDiffIcon,
   GitPullRequestIcon,
@@ -16,7 +15,8 @@ import {
   useState,
 } from "react";
 import type { FileLinks } from "../chat/ChatMarkdown";
-import type { CheckoutRef, WorkspaceView } from "../ipc";
+import type { CheckoutRef, WorkspaceView, Thread } from "../ipc";
+import type { TurnDiffSelection } from "./turnDiffSelection";
 import { cn } from "../lib/cn";
 import { usePreferences } from "../settings/preferences";
 import {
@@ -139,6 +139,9 @@ export function RightPanel({
   onAskCodex,
   terminalAvailable,
   fileLinks,
+  thread,
+  turnSelection,
+  onSelectTurn,
 }: {
   checkout: CheckoutRef;
   git: boolean;
@@ -152,6 +155,9 @@ export function RightPanel({
   onAskCodex: (request: ReviewDraftRequest) => void;
   terminalAvailable: boolean;
   fileLinks: FileLinks;
+  thread: Thread | undefined;
+  turnSelection: TurnDiffSelection | null;
+  onSelectTurn: (turnId: string | null, filePath?: string) => void;
 }) {
   const state = eligibleSurfaces(
     savedState,
@@ -208,9 +214,14 @@ export function RightPanel({
       onSelect: openTerminal,
       ...(terminalAvailable ? {} : { unavailable: TERMINAL_UNAVAILABLE }),
     },
-    ...(!localAvailable ? [] : git ? SURFACE_TARGETS : FOLDER_TARGETS).map(
-      surfaceAction,
-    ),
+    ...(!localAvailable
+      ? thread?.turns.some((turn) => turn.checkpoint.kind === "complete")
+        ? SURFACE_TARGETS.filter((target) => target.surface.kind === "diff")
+        : []
+      : git
+        ? SURFACE_TARGETS
+        : FOLDER_TARGETS
+    ).map(surfaceAction),
   ];
   const handleOpenFile = (path: string) => onChange(openFile(state, path));
 
@@ -404,7 +415,7 @@ export function RightPanel({
                 fileLinks={fileLinks}
                 onNewTerminal={openTerminal}
               />
-            ) : view?.unavailable && active ? (
+            ) : view?.unavailable && active && active.kind !== "diff" ? (
               <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
                 <p className="text-center">{view.unavailable}</p>
               </div>
@@ -415,6 +426,9 @@ export function RightPanel({
                 checkout={checkout}
                 view={view}
                 onOpenFile={handleOpenFile}
+                thread={thread}
+                turnSelection={turnSelection}
+                onSelectTurn={onSelectTurn}
               />
             ) : (
               <FilesSurface

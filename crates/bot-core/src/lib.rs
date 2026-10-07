@@ -1,4 +1,5 @@
 mod attachments;
+mod checkpoints;
 mod cleanup;
 mod codex;
 mod domain;

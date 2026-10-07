@@ -1,5 +1,4 @@
-// Stylesheets copied from pingdotgg/t3code v0.0.45 apps/web/src/lib/diffRendering.ts,
-// components/diffs/StyledDiffCodeView.tsx, components/files/fileSurfaceChrome.tsx and pierre-tree-theme.ts (MIT).
+// Ported from T3 Code v0.0.45 lib/diffRendering.ts, diffs/StyledDiffCodeView.tsx, files/fileSurfaceChrome.tsx and pierre-tree-theme.ts (MIT).
 import type { CSSProperties } from "react";
 
 export const DIFF_SURFACE_THEME_UNSAFE_CSS = `
@@ -285,24 +284,6 @@ export const DIFF_VIEW_UNSAFE_CSS = `${DIFF_SURFACE_THEME_UNSAFE_CSS}
   color: color-mix(in srgb, var(--code-foreground) 84%, var(--primary)) !important;
 }
 
-[data-diff],
-[data-file] {
-  transition: opacity 200ms ease-out;
-}
-
-@starting-style {
-  [data-diff],
-  [data-file] {
-    opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-diff],
-  [data-file] {
-    transition: none;
-  }
-}
 `;
 
 export const FILE_VIEW_UNSAFE_CSS = `

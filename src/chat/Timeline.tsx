@@ -1,5 +1,4 @@
-// Row markup and classes follow pingdotgg/t3code v0.0.45 components/chat/MessagesTimeline.tsx,
-// MessageCopyButton.tsx and ChatView.tsx's scroll-to-end pill (MIT).
+// Ported from T3 Code v0.0.45 apps/web/src/components/chat/MessagesTimeline.tsx, MessageCopyButton.tsx and ChatView.tsx (MIT).
 import {
   type ReactNode,
   useEffect,
@@ -20,6 +19,7 @@ import {
   TerminalIcon,
   WrenchIcon,
   XIcon,
+  Undo2Icon,
 } from "lucide-react";
 import type { Thread } from "../ipc";
 import { cn } from "../lib/cn";
@@ -27,6 +27,7 @@ import { formatDayAwareTimestamp, formatWorkingTimer } from "../lib/time";
 import { Button } from "../ui/controls";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { attachmentUrl } from "./composerImages";
+import { ChangedFilesCard } from "./ChangedFilesTree";
 import {
   deriveRows,
   liveLabel,
@@ -62,6 +63,7 @@ function rowPadding(row: TimelineRow): string {
     case "work":
     case "live":
     case "error":
+    case "checkpoint":
       return "pb-2";
     case "user":
       return "pb-4";
@@ -113,7 +115,15 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function UserRow({ row }: { row: Extract<TimelineRow, { kind: "user" }> }) {
+function UserRow({
+  row,
+  disabled,
+  onEdit,
+}: {
+  row: Extract<TimelineRow, { kind: "user" }>;
+  disabled: boolean;
+  onEdit: () => void;
+}) {
   return (
     <div className="group flex flex-col items-end gap-1">
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
@@ -153,6 +163,17 @@ function UserRow({ row }: { row: Extract<TimelineRow, { kind: "user" }> }) {
           ) : null}
           <div className="flex items-center gap-0.5">
             {row.text ? <CopyButton text={row.text} /> : null}
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              disabled={disabled}
+              onClick={onEdit}
+              aria-label="Edit from here"
+              title="Edit from here"
+            >
+              <Undo2Icon className="size-3" />
+            </Button>
           </div>
         </div>
       </div>
@@ -502,9 +523,17 @@ function WholePixelRow({ children }: { children: ReactNode }) {
 export function Timeline({
   thread,
   clearance,
+  reverting,
+  busy,
+  onEdit,
+  onOpenTurnDiff,
 }: {
   thread: Thread;
   clearance: number;
+  reverting: boolean;
+  busy: boolean;
+  onEdit: (turnId: string) => void;
+  onOpenTurnDiff: (turnId: string, filePath?: string) => void;
 }) {
   const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
@@ -562,7 +591,13 @@ export function Timeline({
                   )}
                 >
                   {row.kind === "user" ? (
-                    <UserRow row={row} />
+                    <UserRow
+                      row={row}
+                      disabled={
+                        reverting || busy || Boolean(thread.pendingRevert)
+                      }
+                      onEdit={() => onEdit(row.turnId)}
+                    />
                   ) : row.kind === "assistant" ? (
                     <AssistantRow row={row} />
                   ) : row.kind === "fold" ? (
@@ -598,6 +633,13 @@ export function Timeline({
                     <LiveRow entry={row.entry} />
                   ) : row.kind === "reasoning" ? (
                     <ReasoningRow row={row} />
+                  ) : row.kind === "checkpoint" ? (
+                    thread.checkout.kind === "folder" ? null : (
+                      <CheckpointRow
+                        row={row}
+                        onOpenTurnDiff={onOpenTurnDiff}
+                      />
+                    )
                   ) : (
                     <ErrorRow text={row.text} />
                   )}
@@ -637,4 +679,31 @@ export function Timeline({
       ) : null}
     </>
   );
+}
+
+function CheckpointRow({
+  row,
+  onOpenTurnDiff,
+}: {
+  row: Extract<TimelineRow, { kind: "checkpoint" }>;
+  onOpenTurnDiff: (turnId: string, filePath?: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (row.checkpoint.kind === "complete")
+    return row.checkpoint.files.length ? (
+      <ChangedFilesCard
+        turnId={row.turnId}
+        files={row.checkpoint.files}
+        allDirectoriesExpanded={expanded}
+        onToggleAllDirectories={() => setExpanded((value) => !value)}
+        onOpenTurnDiff={onOpenTurnDiff}
+      />
+    ) : null;
+  if (row.checkpoint.kind === "unavailable")
+    return (
+      <p className="px-1 text-xs text-muted-foreground">
+        Turn diff unavailable. {row.checkpoint.reason}
+      </p>
+    );
+  return null;
 }

@@ -1,5 +1,8 @@
+// Ported from T3 Code v0.0.45 apps/web/src/components/ChatView.tsx attachment recovery (MIT).
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { ImageAttachment } from "../ipc";
+import type { ImageAttachment, Thread } from "../ipc";
+
+export const MAX_IMAGES = 100;
 
 export type ComposerImage =
   | { key: string; name: string; status: "staging" }
@@ -67,3 +70,119 @@ export const attachmentUrl = (attachment: ImageAttachment) =>
     `${attachment.id}.${extensions[attachment.mimeType]}`,
     "botcode-attachment",
   );
+
+export type ComposerInput = {
+  threadId: string | undefined;
+  activation: number;
+  generation: number;
+  text: string;
+  images: ComposerImage[];
+  appliedRevertId: string | null;
+};
+
+export function activateComposer(
+  threadId: string | undefined,
+  activation = 0,
+): ComposerInput {
+  return {
+    threadId,
+    activation,
+    generation: 0,
+    text: "",
+    images: [],
+    appliedRevertId: null,
+  };
+}
+
+export function acceptsCompletion(
+  current: ComposerInput,
+  started: Pick<ComposerInput, "activation" | "generation">,
+  requireUnedited = false,
+): boolean {
+  return (
+    current.activation === started.activation &&
+    (!requireUnedited || current.generation === started.generation)
+  );
+}
+
+export function finishComposerStaging(
+  current: ComposerInput,
+  started: Pick<ComposerInput, "activation" | "generation">,
+  key: string,
+  attachment: ImageAttachment,
+): ComposerInput {
+  if (
+    !acceptsCompletion(current, started) ||
+    !current.images.some(
+      (image) => image.key === key && image.status === "staging",
+    )
+  )
+    return current;
+  return {
+    ...current,
+    images: finishStaging(current.images, key, attachment),
+    generation: current.generation + 1,
+  };
+}
+
+export function clearAcceptedInput(
+  current: ComposerInput,
+  started: Pick<ComposerInput, "activation" | "generation">,
+): ComposerInput {
+  return acceptsCompletion(current, started, true)
+    ? { ...current, text: "", images: [], generation: current.generation + 1 }
+    : current;
+}
+
+type RecoveredInput = Pick<
+  NonNullable<Thread["lastRevert"]>,
+  "prompt" | "attachments"
+>;
+
+export function recoveryFit(
+  images: ComposerImage[],
+  recovered: RecoveredInput,
+): string | null {
+  if (images.some((image) => image.status === "staging"))
+    return "Wait for images to finish attaching to restore this message.";
+  const ids = new Set(readyAttachments(images)?.map((image) => image.id));
+  for (const image of recovered.attachments) ids.add(image.id);
+  return ids.size > MAX_IMAGES
+    ? "Remove images until the restored message fits the 100-image limit."
+    : null;
+}
+
+export function mergeRecoveredInput(
+  current: ComposerInput,
+  result: NonNullable<Thread["lastRevert"]>,
+): ComposerInput {
+  if (
+    current.appliedRevertId === result.requestId ||
+    recoveryFit(current.images, result)
+  )
+    return current;
+  const images = [...current.images];
+  const ids = new Set(readyAttachments(images)?.map((image) => image.id));
+  for (const attachment of result.attachments) {
+    if (ids.has(attachment.id)) continue;
+    ids.add(attachment.id);
+    images.push({
+      key: `revert:${result.requestId}:${attachment.id}`,
+      name: attachment.name,
+      status: "ready",
+      attachment,
+    });
+  }
+  const text = !current.text
+    ? result.prompt
+    : !result.prompt || current.text === result.prompt
+      ? current.text
+      : `${current.text}\n\n${result.prompt}`;
+  return {
+    ...current,
+    text,
+    images,
+    appliedRevertId: result.requestId,
+    generation: current.generation + 1,
+  };
+}
