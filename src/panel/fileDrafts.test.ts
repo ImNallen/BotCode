@@ -99,7 +99,7 @@ describe("file drafts", () => {
     });
   });
 
-  it("a failed refetch keeps the overlay", async () => {
+  it("a failed refetch shows the saved text and stops masking reads", async () => {
     const client = new QueryClient();
     const path = "failed.txt";
     readFile = () => {
@@ -110,10 +110,42 @@ describe("file drafts", () => {
     assert.equal(confirmFileDraft(client, checkout, path, "saved"), true);
     await settle();
 
-    assert.deepEqual(readFileDraft(checkout, path), {
+    assert.equal(readFileDraft(checkout, path), undefined);
+    assert.deepEqual(client.getQueryData(fileQuery(checkout, path).queryKey), {
+      kind: "text",
+      name: path,
       contents: "saved",
-      confirmed: true,
     });
+    readFile = () => text("agent edit");
+    await client.refetchQueries({
+      queryKey: fileQuery(checkout, path).queryKey,
+    });
+    assert.deepEqual(
+      client.getQueryData(fileQuery(checkout, path).queryKey),
+      text("agent edit"),
+    );
+  });
+
+  it("a failed refetch leaves a newer edit in place", async () => {
+    const client = new QueryClient();
+    const path = "failed-newer.txt";
+    readFile = () => {
+      throw { code: "io", message: "disk unavailable" };
+    };
+    setFileDraft(checkout, path, "saved");
+
+    assert.equal(confirmFileDraft(client, checkout, path, "saved"), true);
+    setFileDraft(checkout, path, "newer");
+    await settle();
+
+    assert.deepEqual(readFileDraft(checkout, path), {
+      contents: "newer",
+      confirmed: false,
+    });
+    assert.equal(
+      client.getQueryData(fileQuery(checkout, path).queryKey),
+      undefined,
+    );
   });
 
   it("confirm with stale contents returns false", async () => {

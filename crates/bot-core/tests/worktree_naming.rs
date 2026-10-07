@@ -389,7 +389,7 @@ async fn delayed_generation_cannot_rename_after_second_submit_or_manual_switch()
 async fn published_or_externally_switched_temporary_branches_are_preserved() {
     for guard in ["switch", "upstream", "tracking", "slash-remote-tracking"] {
         let f = Fixture::new(Some(r#"{"branch":"late-name"}"#));
-        f.control("naming_delay", "0.3");
+        f.control("naming_hold", "");
         let app = App::open(f.config.clone()).await.unwrap();
         let t = f.thread(&app).await;
         let (path, branch) = checkout(&t);
@@ -439,6 +439,7 @@ async fn published_or_externally_switched_temporary_branches_are_preserved() {
                 );
             }
         }
+        f.control("naming_release", "");
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(checkout(&app.thread(t.id.clone()).await.unwrap()).1, branch);
         assert_eq!(
