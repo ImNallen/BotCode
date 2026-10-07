@@ -79,7 +79,7 @@ Conversation history and native thread IDs survive restart. Reconnect resumes th
 
 Review decisions survive restart and belong to the project and immutable GitHub PR/finding IDs. Removing a project removes its review decisions. Remote feedback is fetched on demand and is not stored as an offline cache. The database migration preserves older data and refuses a schema version newer than this app supports.
 
-One conversation may run in each canonical checkout at a time. Other checkouts can run concurrently through the shared Codex process. A provider failure affects every live conversation on that process.
+One conversation may run in each canonical checkout at a time. Other checkouts can run concurrently through the shared Codex process. If that process crashes, every conversation with work in flight stops. Each one shows why it stopped, with the last lines Codex wrote to stderr. Pending approvals and questions expire. Your next message restarts Codex and resumes the saved native conversation. Bot Code never sends the interrupted prompt again. If Codex keeps crashing, Bot Code waits longer before each restart, up to 30 seconds. Codex stderr and restart events go to `logs/codex.log` in the data directory. The log rotates at 1 MiB and keeps three older files.
 
 ## Verify
 

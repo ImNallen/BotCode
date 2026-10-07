@@ -423,7 +423,6 @@ impl Owner {
         next.approvals.retain(|a| retained.contains(&a.turn_id));
         next.user_questions
             .retain(|request| retained.contains(&request.turn_id));
-        self.question_routes.retain(|_, route| route.thread != *id);
         next.native_thread_id = native;
         next.session = if next.native_thread_id.is_some() {
             SessionState::Dormant
@@ -444,8 +443,10 @@ impl Owner {
                 turn_id: intent.turn_id,
             },
         )?;
-        self.routes
-            .retain(|approval, _| !removed_approvals.contains(approval));
+        self.callbacks.retain(|callback, route| match callback {
+            Callback::Approval(approval) => !removed_approvals.contains(approval),
+            Callback::UserInput(_) => route.thread != *id,
+        });
         self.dirty.remove(id);
         self.held.remove(&intent.checkout_root);
         self.checkout_changed(&intent.checkout_root);

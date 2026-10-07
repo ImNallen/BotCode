@@ -822,6 +822,9 @@ function ActivityGroupRow({
 }
 
 function ErrorRow({ text }: { text: string }) {
+  const split = text.indexOf("\n\n");
+  const summary = split < 0 ? text : text.slice(0, split);
+  const detail = split < 0 ? null : text.slice(split + 2);
   return (
     <div className="group/timeline-row relative flex flex-col rounded-md px-0.5 py-0.5">
       <div className="flex select-none items-center gap-1.5">
@@ -829,9 +832,16 @@ function ErrorRow({ text }: { text: string }) {
           <CircleAlertIcon className="block size-4 shrink-0 stroke-2 opacity-70 light:brightness-60" />
         </span>
         <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm leading-relaxed font-medium text-destructive select-text">
-          {text}
+          {summary}
         </p>
       </div>
+      {detail ? (
+        <div className="mt-1 ms-7 rounded-md bg-muted/40 px-3 py-2">
+          <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-secondary-label text-(length:--font-size-code,var(--text-2xs)) leading-relaxed select-text">
+            {detail}
+          </pre>
+        </div>
+      ) : null}
     </div>
   );
 }

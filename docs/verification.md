@@ -740,3 +740,19 @@ The actual Tauri bundle used temporary identifier `dev.bot.code.projectsetupveri
 | Submodule modes | Recursive initialized the top-level and nested fixtures. Top-level initialized only the top-level fixture. None initialized neither. Setup scripts completed in all three worktrees. |
 
 Native accessibility observations and screenshots are in the tool transcript. Suite and bundle logs, provider timestamps, SQLite assertions, shortcut assertions, and crash evidence are under `/tmp/botcode-project-setup/evidence`. `native-assertions.json` checks setup ordering, marker counts, retry, malformed config, submodule modes, and manual checkout selection. `shortcut-assertions.json` checks the saved binding and Settings isolation. The isolated app was stopped afterward.
+
+## Codex crash recovery
+
+Verified on 2026-10-07 with installed Codex 0.160.1. All 358 `cargo test -p bot-core` tests, all 324 `pnpm test:ui` tests, `cargo fmt --check`, workspace Clippy with `-D warnings`, the production frontend build, and the debug Tauri app bundle passed. The fixture's crash mode drives seven runtime tests: a crash mid-turn, a crash with pending approvals and user-input questions, a crash before the `turn/start` acknowledgement, a crash while a steering follow-up is sending, a steer written to a killed Codex, a leader exit while a descendant keeps stdout open, and repeated crashes during restart.
+
+The actual native bundle used disposable repository `/tmp/botcode-crash/repo` and `BOT_CODE_DATA_DIR=/tmp/botcode-crash/data2`. It ran with `RUST_LOG=info`, because Codex writes nothing to stderr by default.
+
+| Check | Observed result |
+| --- | --- |
+| `kill -9` mid-turn | Thread A waited on a command approval in the local checkout. Thread B streamed an essay in a worktree. Both showed "Codex stopped unexpectedly (killed by signal 9)" with the last 12 stderr lines. B kept its partial text. A's approval became expired. |
+| Next message | Each thread's next prompt completed with the requested reply. Thread A kept native thread `01a11702-f451…`. Neither crashed prompt was sent again. |
+| Resume | Opening a crashed thread resumed it and kept the crash reason, also after a full app restart. |
+| Repeated crashes | Three consecutive kills logged restarts after 1 and 2 seconds. Idle threads gained no banner, and their earlier lost turns did not change. |
+| Log | `logs/codex.log` held all 732 stderr lines of the killed process and rotated into three older 1 MiB files. |
+
+The first native run found two defects that the tests had missed. Resume replaced a lost turn with Codex's `interrupted` status, so the timeline read "You stopped", and stderr showed raw ANSI color codes. Both were fixed and checked again in the native window.

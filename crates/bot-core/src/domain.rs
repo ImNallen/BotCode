@@ -560,6 +560,11 @@ pub enum ApprovalState {
     Expired,
     Uncertain,
 }
+impl ApprovalState {
+    pub fn open(&self) -> bool {
+        matches!(self, Self::Pending | Self::Answering)
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ApprovalAction {
@@ -835,12 +840,24 @@ impl ThreadSnapshot {
                 .any(|request| request.state.open())
     }
     pub fn approval_open(&self) -> bool {
-        self.approvals.iter().any(|approval| {
-            matches!(
-                approval.state,
-                ApprovalState::Pending | ApprovalState::Answering
-            )
-        })
+        self.approvals.iter().any(|approval| approval.state.open())
+    }
+    /// Expires every request whose provider callback died with its session.
+    pub fn expire_open_requests(&mut self) -> bool {
+        let mut changed = false;
+        for approval in &mut self.approvals {
+            if approval.state.open() {
+                approval.state = ApprovalState::Expired;
+                changed = true;
+            }
+        }
+        for request in &mut self.user_questions {
+            if request.state.open() {
+                request.state = UserQuestionState::Expired;
+                changed = true;
+            }
+        }
+        changed
     }
     // Ports threadRaisedHandWhileSnoozed (client-runtime state/threadSettled.ts).
     fn raised_hand(&self, snooze: &Snooze) -> bool {
