@@ -55,6 +55,7 @@ const schema = z.object({
   appearance: z.enum(["system", "light", "dark"]),
   promptFontSize: z.number().int().min(12).max(20),
   codeFontSize: z.number().int().min(11).max(20),
+  followUpBehavior: z.enum(["queue", "steer"]),
   contextWindowMeter: z.boolean(),
   favoriteModels: z.array(favoriteModelSchema),
   ...projectSchema.shape,
@@ -73,6 +74,7 @@ const defaults: Preferences = {
   appearance: "system",
   promptFontSize: 14,
   codeFontSize: 13,
+  followUpBehavior: "queue",
   contextWindowMeter: true,
   favoriteModels: [],
   ...builtInProject,
@@ -128,6 +130,7 @@ function readPreferences(): PreferenceState {
         appearance: z.unknown().optional(),
         promptFontSize: z.unknown().optional(),
         codeFontSize: z.unknown().optional(),
+        followUpBehavior: z.unknown().optional(),
         contextWindowMeter: z.unknown().optional(),
         notificationMode: z.unknown().optional(),
         inAppNotificationsEnabled: z.unknown().optional(),
@@ -213,6 +216,9 @@ function readPreferences(): PreferenceState {
     return {
       preferences: {
         favoriteModels,
+        followUpBehavior: schema.shape.followUpBehavior
+          .catch("queue")
+          .parse(object.followUpBehavior),
         notificationMode: notificationModeSchema
           .catch("off")
           .parse(object.notificationMode),

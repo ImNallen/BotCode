@@ -1,6 +1,4 @@
-// Structure and classes follow pingdotgg/t3code v0.0.45 components/chat/ChatComposer.tsx,
-// ComposerControl.tsx, ComposerPrimaryActions.tsx, BranchToolbar.tsx, BranchToolbarEnvModeSelector.tsx,
-// TraitsPicker.tsx and ui/badge.tsx (MIT).
+// Ported from T3 Code v0.0.45 components/chat/ChatComposer.tsx, ComposerControl.tsx, ComposerPrimaryActions.tsx, BranchToolbar.tsx, BranchToolbarEnvModeSelector.tsx, TraitsPicker.tsx and ui/badge.tsx (MIT).
 import {
   useEffect,
   useLayoutEffect,
@@ -55,6 +53,7 @@ export function Composer({
   running,
   canStop,
   stopping,
+  followUpBehavior,
   placeholder,
   approval,
   notice,
@@ -82,6 +81,7 @@ export function Composer({
   running: boolean;
   canStop: boolean;
   stopping: boolean;
+  followUpBehavior: "queue" | "steer";
   placeholder: string;
   approval: ReactNode;
   notice: ReactNode;
@@ -214,7 +214,7 @@ export function Composer({
                       approvalState && "pb-3 sm:pb-4",
                     )}
                   >
-                    {!approvalState && images.length > 0 ? (
+                    {images.length > 0 ? (
                       <div className="mb-3 flex max-w-full gap-2 flex-wrap">
                         {images.map((image) => (
                           <div
@@ -258,7 +258,7 @@ export function Composer({
                           autoCorrect="off"
                           spellCheck={false}
                           disabled={disabled}
-                          value={approvalState ? "" : value}
+                          value={value}
                           placeholder={placeholder}
                           onChange={(event) => onChange(event.target.value)}
                           onPaste={(event) => {
@@ -294,7 +294,7 @@ export function Composer({
                       </div>
                     </div>
                   </div>
-                  {approvalState ? null : (
+                  {
                     <div
                       data-chat-composer-footer="true"
                       className="flex min-w-0 flex-nowrap items-center justify-between gap-2 overflow-visible px-3 pb-3 sm:px-4 sm:pb-4 sm:gap-0"
@@ -515,12 +515,28 @@ export function Composer({
                               <rect x="2" y="2" width="8" height="8" rx="1.5" />
                             </svg>
                           </button>
-                        ) : (
+                        ) : null}
+                        {!running ||
+                        Boolean(value.trim()) ||
+                        images.length > 0 ? (
                           <button
                             type="submit"
                             className="relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-full shadow-xs transition-all duration-150 enabled:cursor-pointer enabled:inset-shadow-2xs enabled:inset-shadow-white/16 hover:scale-105 active:inset-shadow-black/8 active:shadow-none disabled:pointer-events-none disabled:opacity-64 disabled:shadow-none disabled:hover:scale-100 sm:h-8 sm:w-8 bg-message-action text-message-action-foreground enabled:shadow-message-action/24 hover:bg-message-action-hover"
                             disabled={!canSend}
-                            aria-label="Send message"
+                            aria-label={
+                              running
+                                ? followUpBehavior === "steer"
+                                  ? "Steer current run"
+                                  : "Queue message"
+                                : "Send message"
+                            }
+                            title={
+                              running
+                                ? followUpBehavior === "steer"
+                                  ? "Steer current run"
+                                  : "Queue message"
+                                : "Send message"
+                            }
                           >
                             <svg
                               width="14"
@@ -538,10 +554,10 @@ export function Composer({
                               />
                             </svg>
                           </button>
-                        )}
+                        ) : null}
                       </div>
                     </div>
-                  )}
+                  }
                 </div>
               </ComposerSurface.Main>
             </div>

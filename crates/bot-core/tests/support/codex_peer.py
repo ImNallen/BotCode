@@ -82,7 +82,8 @@ for line in sys.stdin:
             result(request, {'rateLimits': codex_limits, 'rateLimitsByLimitId': {'codex': codex_limits, 'base_model_inference': other_limits}})
     elif method in ('thread/start', 'thread/resume'):
         current_thread = params['threadId'] if method == 'thread/resume' else 'native-thread-' + str(request['id'])
-        result(request, {'thread': {'id': current_thread, 'turns': []}})
+        history = json.loads((root / 'history.json').read_text()) if (root / 'history.json').exists() else []
+        result(request, {'thread': {'id': current_thread, 'turns': history}})
         if (root / 'stall').exists():
             while True:
                 time.sleep(1)
@@ -127,6 +128,35 @@ for line in sys.stdin:
             event('item/agentMessage/delta', {'threadId': current_thread, 'turnId': active, 'itemId': 'reply', 'delta': 'fixture reply'})
             event('item/completed', {'threadId': current_thread, 'turnId': active, 'item': {'id': 'reply', 'type': 'agentMessage', 'text': 'fixture reply'}})
             finish()
+    elif method == 'turn/steer':
+        prompt = params['input'][0].get('text', '')
+        if prompt == 'lose-steer':
+            sys.exit(0)
+        elif prompt == 'no-response-steer':
+            pass
+        elif prompt == 'reject-steer':
+            emit({'id': request['id'], 'error': {'message': 'Steer refused'}})
+        elif prompt == 'completion-without-user':
+            finish()
+            emit({'id': request['id'], 'error': {'message': 'Turn already ended'}})
+        elif prompt == 'wrong-target-ack':
+            result(request, {'turnId': 'wrong-target'})
+        elif prompt == 'wrong-target-event':
+            item = {'type': 'userMessage', 'id': 'wrong-turn-message', 'clientId': params['clientUserMessageId'], 'content': params['input']}
+            event('item/completed', {'threadId': current_thread, 'turnId': 'wrong-target', 'item': item})
+            result(request, {'turnId': 'wrong-target'})
+        else:
+            item = {'type': 'userMessage', 'id': 'native-message-' + params['clientUserMessageId'], 'clientId': params['clientUserMessageId'], 'content': params['input']}
+            event('item/started', {'threadId': current_thread, 'turnId': active, 'item': item})
+            event('item/completed', {'threadId': current_thread, 'turnId': active, 'item': item})
+            history_file = root / 'history.json'
+            history = json.loads(history_file.read_text()) if history_file.exists() else [{'id': active, 'status': 'completed', 'items': [{'type': 'userMessage', 'id': 'original-message', 'clientId': active.removeprefix('native-')}] }]
+            history[0]['items'].append(item)
+            history_file.write_text(json.dumps(history))
+            if prompt == 'event-before-error':
+                emit({'id': request['id'], 'error': {'message': 'Reply lost after userMessage'}})
+            else:
+                result(request, {'turnId': active})
     elif method == 'turn/interrupt':
         result(request, {})
         finish('interrupted')

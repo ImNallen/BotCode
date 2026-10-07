@@ -6,8 +6,11 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import {
+  ClockIcon,
+  ArrowUpIcon,
   BrainIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -21,6 +24,9 @@ import {
   XIcon,
   Undo2Icon,
 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { followUps, immediateIntent, type FollowUp } from "./followUps";
+import { checkFollowUp, sendFollowUpNow } from "./FollowUpSender";
 import type { Thread } from "../ipc";
 import { cn } from "../lib/cn";
 import { formatDayAwareTimestamp, formatWorkingTimer } from "../lib/time";
@@ -154,7 +160,14 @@ function UserRow({
           </div>
         ) : null}
       </div>
-      <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover:opacity-100">
+      {row.delivery && row.delivery.kind !== "accepted" ? (
+        <p className="max-w-[80%] text-xs text-secondary-label">
+          {row.delivery.kind === "not_sent" || row.delivery.kind === "uncertain"
+            ? row.delivery.reason
+            : "Sending follow-up"}
+        </p>
+      ) : null}
+      <div className="flex w-full max-w-[80%]  items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover:opacity-100">
         <div className="flex shrink-0 items-center gap-2">
           {row.at !== null ? (
             <p className="text-muted-foreground text-xs tabular-nums">
@@ -163,17 +176,19 @@ function UserRow({
           ) : null}
           <div className="flex items-center gap-0.5">
             {row.text ? <CopyButton text={row.text} /> : null}
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              disabled={disabled}
-              onClick={onEdit}
-              aria-label="Edit from here"
-              title="Edit from here"
-            >
-              <Undo2Icon className="size-3" />
-            </Button>
+            {row.editable ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                disabled={disabled}
+                onClick={onEdit}
+                aria-label="Edit from here"
+                title="Edit from here"
+              >
+                <Undo2Icon className="size-3" />
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>
@@ -527,14 +542,22 @@ export function Timeline({
   busy,
   onEdit,
   onOpenTurnDiff,
+  onRemoveQueued,
 }: {
   thread: Thread;
   clearance: number;
   reverting: boolean;
   busy: boolean;
   onEdit: (turnId: string) => void;
+  onRemoveQueued: (id: string) => void;
   onOpenTurnDiff: (turnId: string, filePath?: string) => void;
 }) {
+  useSyncExternalStore(
+    followUps.subscribe,
+    followUps.snapshot,
+    followUps.snapshot,
+  );
+  const queued = followUps.rows(thread.id);
   const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
     new Set(),
@@ -646,6 +669,18 @@ export function Timeline({
                 </div>
               </WholePixelRow>
             ))}
+            {queued.map((row, index) => (
+              <WholePixelRow key={`queue:${row.id}`}>
+                <div className="pb-4">
+                  <QueuedMessageRow
+                    row={row}
+                    next={index === 0}
+                    thread={thread}
+                    onRemove={onRemoveQueued}
+                  />
+                </div>
+              </WholePixelRow>
+            ))}
             <div aria-hidden>
               <div style={{ height: clearance }} />
               <div className="h-3 sm:h-4" />
@@ -706,4 +741,107 @@ function CheckpointRow({
       </p>
     );
   return null;
+}
+
+function QueuedMessageRow({
+  row,
+  next,
+  thread,
+  onRemove,
+}: {
+  row: FollowUp;
+  next: boolean;
+  thread: Thread;
+  onRemove: (id: string) => void;
+}) {
+  const client = useQueryClient();
+  const sending = ["preparing", "dispatching"].includes(row.state.kind);
+  const checking = row.state.kind === "checking";
+  const canRemove = ["waiting", "held", "preparing"].includes(row.state.kind);
+  const status =
+    row.state.kind === "held" || row.state.kind === "checking"
+      ? row.state.reason
+      : sending
+        ? "Sending to the agent"
+        : next
+          ? "Sends when the turn ends and its checkpoint finishes"
+          : "Sends after the messages above it";
+  return (
+    <div className="flex flex-col items-end" data-queued-message-id={row.id}>
+      <div className="max-w-[80%] rounded-2xl border border-dashed border-border p-3 text-message-foreground/80">
+        {row.text.trim() ? <ChatMarkdown text={row.text} lineBreaks /> : null}
+        {row.attachments.length ? (
+          <div
+            className={cn(
+              "text-secondary-label text-xs",
+              row.text.trim() && "mt-1.5",
+            )}
+          >
+            {row.attachments.length} attachment
+            {row.attachments.length === 1 ? "" : "s"}
+          </div>
+        ) : null}
+        <div
+          className="mt-2 flex items-center gap-4 text-secondary-label text-xs"
+          data-scroll-anchor-ignore
+        >
+          <span
+            className="inline-flex h-6 items-center gap-1"
+            title={status}
+            aria-label={`${checking ? "Checking delivery" : sending ? "Sending" : "Queued"}. ${status}.`}
+          >
+            <ClockIcon className="size-3.5" aria-hidden />
+            {checking
+              ? "Checking delivery"
+              : sending
+                ? "Sending"
+                : row.state.kind === "held"
+                  ? "Held"
+                  : "Queued"}
+          </span>
+          <div className="ml-auto flex items-center gap-0.5">
+            {checking ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost-muted"
+                onClick={() => checkFollowUp(client, thread.id, row.id)}
+              >
+                Check delivery
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost-muted"
+              onPointerDown={(event) => event.preventDefault()}
+              disabled={
+                !next || sending || checking || immediateIntent(thread) === null
+              }
+              onClick={() => sendFollowUpNow(client, thread, row.id)}
+              aria-label="Send now"
+              title="Send now"
+            >
+              <ArrowUpIcon className="size-3.5" aria-hidden />
+            </Button>
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost-muted"
+              onPointerDown={(event) => event.preventDefault()}
+              disabled={!canRemove}
+              onClick={() => onRemove(row.id)}
+              aria-label="Cancel and return to the composer"
+              title="Cancel and return to the composer"
+            >
+              <XIcon className="size-3.5" aria-hidden />
+            </Button>
+          </div>
+        </div>
+        {row.state.kind === "held" || checking ? (
+          <p className="mt-1 text-xs text-secondary-label">{status}</p>
+        ) : null}
+      </div>
+    </div>
+  );
 }

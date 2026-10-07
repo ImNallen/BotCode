@@ -1,11 +1,18 @@
-// Classes copied from pingdotgg/t3code v0.0.45 settings/SettingsSidebarNav.tsx, SettingsGroup.tsx,
-// settingsLayout.tsx, WorkspacePageContainer.tsx, WorkspacePageHeader.tsx and ui/number-field.tsx (MIT).
+// Ported from T3 Code v0.0.45 settings/SettingsPanels.tsx, SettingsSidebarNav.tsx, SettingsGroup.tsx, settingsLayout.tsx, WorkspacePageContainer.tsx, WorkspacePageHeader.tsx and ui/number-field.tsx (MIT).
 import { NotificationSettings } from "./NotificationSettings";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowLeftIcon, SearchIcon, XIcon } from "lucide-react";
 import { SidebarMenuButton } from "../SidebarFooter";
-import { Button, Switch, Toggle } from "../ui/controls";
+import { Menu, MenuItem } from "../ui/menu";
+import { ChevronDownIcon } from "lucide-react";
+import {
+  Button,
+  Switch,
+  Toggle,
+  selectTrigger,
+  selectItem,
+} from "../ui/controls";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -436,6 +443,37 @@ export function SettingsPage() {
             update({ inAppNotificationsEnabled })
           }
         />
+      );
+    if (id === "follow-up-behavior")
+      return (
+        <Menu
+          trigger={(props) => (
+            <button
+              type="button"
+              {...props}
+              className={selectTrigger({
+                size: "sm",
+                className: "w-auto min-w-0",
+              })}
+              aria-label="Follow-up behavior"
+            >
+              {preferences.followUpBehavior === "queue" ? "Queue" : "Steer"}
+              <ChevronDownIcon className="size-3.5" />
+            </button>
+          )}
+        >
+          {(["queue", "steer"] as const).map((value) => (
+            <MenuItem
+              key={value}
+              className={selectItem}
+              role="menuitemradio"
+              aria-checked={preferences.followUpBehavior === value}
+              onClick={() => update({ followUpBehavior: value })}
+            >
+              {value === "queue" ? "Queue" : "Steer"}
+            </MenuItem>
+          ))}
+        </Menu>
       );
     if (id === "context-window-indicator")
       return (

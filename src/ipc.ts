@@ -55,6 +55,13 @@ const imageAttachment = z.object({
 });
 const item = z.discriminatedUnion("kind", [
   z.object({
+    kind: z.literal("user_input"),
+    id: z.string(),
+    text: z.string(),
+    attachments: z.array(imageAttachment),
+    delivery,
+  }),
+  z.object({
     kind: z.literal("assistant"),
     id: z.string(),
     text: z.string(),
@@ -199,6 +206,9 @@ const turnDiff = z.discriminatedUnion("kind", [
   reason,
 ]);
 const thread = z.object({
+  placement: z
+    .object({ kind: z.enum(["auto", "kept", "pinned", "settled", "archived"]) })
+    .optional(),
   id,
   workspaceId: id,
   title: z.string(),
@@ -693,10 +703,17 @@ export const ipc = {
     text: string,
     requestId: string,
     attachments: ImageAttachment[],
+    expectedTurnId?: string,
   ) =>
     call(
       "submit",
-      { threadId, text, requestId, attachments },
+      {
+        threadId,
+        text,
+        requestId,
+        attachments,
+        ...(expectedTurnId ? { expectedTurnId } : {}),
+      },
       z.object({ turnId: id }),
     ),
   approval: (approvalId: string, decision: ApprovalDecision) =>
@@ -816,6 +833,15 @@ export function setThreadSnapshot(client: QueryClient, incoming: Thread): void {
   client.setQueryData<Thread>(["thread", incoming.id], (current) =>
     current && current.revision > incoming.revision ? current : incoming,
   );
+}
+
+export async function readThreadSnapshot(
+  client: QueryClient,
+  threadId: string,
+): Promise<Thread> {
+  const incoming = await ipc.thread(threadId);
+  const current = client.getQueryData<Thread>(["thread", threadId]);
+  return current && current.revision > incoming.revision ? current : incoming;
 }
 
 export function configurePullRequestQueries(client: QueryClient): void {

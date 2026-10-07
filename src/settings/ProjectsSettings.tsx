@@ -1,5 +1,6 @@
 // Rows, copy and confirmation follow pingdotgg/t3code v0.0.45 settings/ProjectsSettings.tsx and
 // ProjectSettingsPanel.tsx, with input classes from ui/input.tsx and alert classes from ui/alert.tsx (MIT).
+import { followUps } from "../chat/followUps";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -117,6 +118,16 @@ function ProjectSettings({
     if (!confirmed) return;
     setRemoving(true);
     try {
+      if (
+        followUps
+          .snapshot()
+          .some(
+            (queue) => queue.workspaceId === workspace.id && queue.rows.length,
+          )
+      )
+        throw new Error(
+          "Remove queued messages from this project before removing it.",
+        );
       await ipc.removeWorkspace(workspace.id);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));

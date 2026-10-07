@@ -3986,3 +3986,502 @@ async fn deleting_shared_worktree_retains_checkout_and_surviving_history() {
     assert!(path.exists());
     app.shutdown().await.unwrap();
 }
+
+fn steering_delivery<'a>(thread: &'a ThreadSnapshot, operation: &str) -> Option<&'a Delivery> {
+    thread
+        .turns
+        .iter()
+        .flat_map(|turn| &turn.items)
+        .find_map(|item| match item {
+            Item::UserInput { id, delivery, .. } if id == operation => Some(delivery),
+            _ => None,
+        })
+}
+#[tokio::test]
+async fn steering_receipts_keep_one_turn_and_checkout_lease_and_reconcile_every_message() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let first = app
+        .submit(thread.id.clone(), "original".into(), "hold".into(), vec![])
+        .await
+        .unwrap();
+    let running = wait(&app, &thread.id, |t| {
+        matches!(t.session, SessionState::Running)
+    })
+    .await;
+    let checkpoint = serde_json::to_value(&running.turns[0].checkpoint).unwrap();
+    for (operation, text) in [
+        ("steer-one", "event-before-error"),
+        ("steer-two", "second follow-up"),
+    ] {
+        let receipt = app
+            .submit_to(
+                thread.id.clone(),
+                operation.into(),
+                text.into(),
+                vec![],
+                Some(first.turn_id.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.turn_id, first.turn_id);
+        let accepted = wait(&app, &thread.id, |t| {
+            matches!(steering_delivery(t, operation), Some(Delivery::Accepted))
+        })
+        .await;
+        assert_eq!(accepted.turns.len(), 1);
+        assert!(matches!(accepted.turns[0].execution, Execution::Running));
+        assert_eq!(
+            serde_json::to_value(&accepted.turns[0].checkpoint).unwrap(),
+            checkpoint
+        );
+        assert_eq!(accepted.turns[0].settings, running.turns[0].settings);
+        let same = app
+            .submit_to(
+                thread.id.clone(),
+                operation.into(),
+                text.into(),
+                vec![],
+                Some(first.turn_id.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(same.turn_id, first.turn_id);
+        let conflict = app
+            .submit_to(
+                thread.id.clone(),
+                operation.into(),
+                "different".into(),
+                vec![],
+                Some(first.turn_id.clone()),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(conflict.code, "request_conflict");
+    }
+    let other = conversation(&app, &f).await;
+    assert_eq!(
+        app.submit(other.id, "other".into(), "hello".into(), vec![])
+            .await
+            .unwrap_err()
+            .code,
+        "checkout_busy"
+    );
+    let calls = f.calls();
+    let steers: Vec<_> = calls
+        .iter()
+        .filter(|v| v["method"] == "turn/steer")
+        .collect();
+    assert_eq!(steers.len(), 2);
+    assert_eq!(
+        steers[0]["params"]["expectedTurnId"],
+        running.turns[0].native_turn_id.clone().unwrap()
+    );
+    assert_eq!(steers[0]["params"]["clientUserMessageId"], "steer-one");
+    assert_eq!(
+        calls.iter().filter(|v| v["method"] == "turn/start").count(),
+        1
+    );
+    app.interrupt(thread.id.clone()).await.unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Interrupted)
+    })
+    .await;
+    app.shutdown().await.unwrap();
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    let mut local = app_snapshot_after_close(&db, &thread.id);
+    for item in &mut local.turns[0].items {
+        if let Item::UserInput { delivery, .. } = item {
+            *delivery = Delivery::Uncertain {
+                reason: "Simulated lost saved outcome".into(),
+            };
+        }
+    }
+    db.execute(
+        "UPDATE threads SET data=?1 WHERE id=?2",
+        rusqlite::params![
+            serde_json::to_string(&local).unwrap(),
+            thread.id.to_string()
+        ],
+    )
+    .unwrap();
+    let restarted = reopen(&f.config).await;
+    restarted.open_thread(thread.id.clone()).await.unwrap();
+    let resumed = wait(&restarted, &thread.id, |t| {
+        matches!(t.session, SessionState::Ready)
+            && matches!(steering_delivery(t, "steer-one"), Some(Delivery::Accepted))
+            && matches!(steering_delivery(t, "steer-two"), Some(Delivery::Accepted))
+    })
+    .await;
+    assert_eq!(resumed.turns.len(), 1);
+    assert_eq!(
+        resumed.turns[0]
+            .items
+            .iter()
+            .filter(|item| matches!(item, Item::UserInput { .. }))
+            .count(),
+        2
+    );
+    assert!(matches!(
+        steering_delivery(&resumed, "steer-one"),
+        Some(Delivery::Accepted)
+    ));
+    assert!(matches!(
+        steering_delivery(&resumed, "steer-two"),
+        Some(Delivery::Accepted)
+    ));
+    restarted
+        .submit_to(
+            thread.id.clone(),
+            "steer-two".into(),
+            "second follow-up".into(),
+            vec![],
+            Some(first.turn_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.calls()
+            .iter()
+            .filter(|v| v["method"] == "turn/steer")
+            .count(),
+        2
+    );
+    restarted.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn steering_refuses_stale_targets_and_approvals_without_native_dispatch() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let original = app
+        .submit(
+            thread.id.clone(),
+            "original".into(),
+            "approval".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| t.approval_open()).await;
+    let error = app
+        .submit_to(
+            thread.id.clone(),
+            "follow".into(),
+            "hello".into(),
+            vec![],
+            Some(original.turn_id.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "busy");
+    let error = app
+        .submit_to(
+            thread.id.clone(),
+            "stale".into(),
+            "hello".into(),
+            vec![],
+            Some(TurnId::default()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "stale_turn");
+    assert_eq!(
+        f.calls()
+            .iter()
+            .filter(|v| v["method"] == "turn/steer")
+            .count(),
+        0
+    );
+    assert_eq!(app.thread(thread.id).await.unwrap().turns.len(), 1);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn steering_completion_does_not_confirm_input_and_malformed_ack_is_uncertain() {
+    for (prompt, uncertain) in [
+        ("completion-without-user", false),
+        ("wrong-target-ack", true),
+        ("wrong-target-event", true),
+        ("lose-steer", true),
+    ] {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        let original = app
+            .submit(thread.id.clone(), "original".into(), "hold".into(), vec![])
+            .await
+            .unwrap();
+        wait(&app, &thread.id, |t| {
+            matches!(t.session, SessionState::Running)
+        })
+        .await;
+        app.submit_to(
+            thread.id.clone(),
+            "follow".into(),
+            prompt.into(),
+            vec![],
+            Some(original.turn_id.clone()),
+        )
+        .await
+        .unwrap();
+        let snapshot = wait(&app, &thread.id, |t| {
+            matches!(
+                steering_delivery(t, "follow"),
+                Some(Delivery::Uncertain { .. } | Delivery::NotSent { .. })
+            )
+        })
+        .await;
+        if uncertain {
+            assert!(matches!(
+                steering_delivery(&snapshot, "follow"),
+                Some(Delivery::Uncertain { .. })
+            ));
+        } else {
+            assert!(matches!(
+                steering_delivery(&snapshot, "follow"),
+                Some(Delivery::NotSent { .. })
+            ));
+            assert!(matches!(snapshot.turns[0].execution, Execution::Completed));
+        }
+        app.submit_to(
+            thread.id.clone(),
+            "follow".into(),
+            prompt.into(),
+            vec![],
+            Some(original.turn_id),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            f.calls()
+                .iter()
+                .filter(|v| v["method"] == "turn/steer")
+                .count(),
+            1
+        );
+        app.shutdown().await.unwrap();
+        let restarted = reopen(&f.config).await;
+        let snapshot = restarted.thread(thread.id).await.unwrap();
+        assert_eq!(snapshot.turns.len(), 1);
+        assert!(!matches!(
+            steering_delivery(&snapshot, "follow"),
+            Some(Delivery::Accepted)
+        ));
+        restarted.shutdown().await.unwrap();
+    }
+}
+#[tokio::test]
+async fn steering_never_reaches_provider_when_acceptance_or_sending_save_fails() {
+    for phase in ["preparing", "sending"] {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        let original = app
+            .submit(thread.id.clone(), "original".into(), "hold".into(), vec![])
+            .await
+            .unwrap();
+        wait(&app, &thread.id, |t| {
+            matches!(t.session, SessionState::Running)
+        })
+        .await;
+        let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+        db.execute_batch(&format!("CREATE TRIGGER reject_steer BEFORE UPDATE ON threads WHEN EXISTS (SELECT 1 FROM json_each(json_extract(NEW.data,'$.turns[0].items')) WHERE json_extract(value,'$.kind')='user_input' AND json_extract(value,'$.delivery.kind')='{phase}') BEGIN SELECT RAISE(FAIL,'injected steer save failure'); END;")).unwrap();
+        let result = app
+            .submit_to(
+                thread.id.clone(),
+                "follow".into(),
+                "hello".into(),
+                vec![],
+                Some(original.turn_id.clone()),
+            )
+            .await;
+        if phase == "preparing" {
+            assert_eq!(result.unwrap_err().code, "storage");
+        } else {
+            assert_eq!(result.unwrap().turn_id, original.turn_id);
+            wait(&app, &thread.id, |t| {
+                matches!(
+                    steering_delivery(t, "follow"),
+                    Some(Delivery::NotSent { .. })
+                )
+            })
+            .await;
+            app.submit_to(
+                thread.id.clone(),
+                "follow".into(),
+                "hello".into(),
+                vec![],
+                Some(original.turn_id),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            f.calls()
+                .iter()
+                .filter(|v| v["method"] == "turn/steer")
+                .count(),
+            0
+        );
+        db.execute_batch("DROP TRIGGER reject_steer").unwrap();
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn archived_steering_images_survive_startup_sweep_and_rewind_removes_the_whole_turn() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let original = app
+        .submit(thread.id.clone(), "original".into(), "hold".into(), vec![])
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.session, SessionState::Running)
+    })
+    .await;
+    let image = app
+        .stage_attachment("steer.png".into(), SHOT.to_vec())
+        .await
+        .unwrap();
+    app.submit_to(
+        thread.id.clone(),
+        "image-steer".into(),
+        "Look here".into(),
+        vec![image.clone()],
+        Some(original.turn_id.clone()),
+    )
+    .await
+    .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(
+            steering_delivery(t, "image-steer"),
+            Some(Delivery::Accepted)
+        )
+    })
+    .await;
+    app.interrupt(thread.id.clone()).await.unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Interrupted)
+    })
+    .await;
+    app.arrange(thread.id.clone(), Arrange::Archive)
+        .await
+        .unwrap();
+    app.shutdown().await.unwrap();
+    age(
+        &attachment_path(&f, &format!("{SHOT_ID}.png")),
+        Duration::from_secs(25 * 60 * 60),
+    );
+    let app = reopen(&f.config).await;
+    assert!(attachment_path(&f, &format!("{SHOT_ID}.png")).exists());
+    app.arrange(thread.id.clone(), Arrange::Unarchive)
+        .await
+        .unwrap();
+    let reverted = app
+        .revert_thread(
+            thread.id.clone(),
+            "revert-steered-turn".into(),
+            original.turn_id.clone(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(reverted.turns.is_empty());
+    assert_eq!(reverted.last_revert.as_ref().unwrap().prompt, "hold");
+    assert!(
+        reverted
+            .last_revert
+            .as_ref()
+            .unwrap()
+            .attachments
+            .is_empty()
+    );
+    let prior_receipt = app
+        .submit_to(
+            thread.id.clone(),
+            "image-steer".into(),
+            "Look here".into(),
+            vec![image],
+            Some(original.turn_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(prior_receipt.turn_id, reverted.last_revert.unwrap().turn_id);
+    assert_eq!(
+        f.calls()
+            .iter()
+            .filter(|v| v["method"] == "turn/steer")
+            .count(),
+        1
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn restart_classifies_preparing_and_sending_steers_without_replay_even_on_completed_parent() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(thread.id.clone(), "original".into(), "hello".into(), vec![])
+        .await
+        .unwrap();
+    let mut snapshot = wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    app.shutdown().await.unwrap();
+    snapshot.turns[0].items.extend([
+        Item::UserInput {
+            id: "preparing".into(),
+            text: "Not sent".into(),
+            attachments: vec![],
+            delivery: Delivery::Preparing,
+        },
+        Item::UserInput {
+            id: "sending".into(),
+            text: "May have sent".into(),
+            attachments: vec![],
+            delivery: Delivery::Sending,
+        },
+    ]);
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    db.execute(
+        "UPDATE threads SET data=?1 WHERE id=?2",
+        rusqlite::params![
+            serde_json::to_string(&snapshot).unwrap(),
+            thread.id.to_string()
+        ],
+    )
+    .unwrap();
+    let app = reopen(&f.config).await;
+    let restored = app.thread(thread.id).await.unwrap();
+    assert!(matches!(
+        steering_delivery(&restored, "preparing"),
+        Some(Delivery::NotSent { .. })
+    ));
+    assert!(matches!(
+        steering_delivery(&restored, "sending"),
+        Some(Delivery::Uncertain { .. })
+    ));
+    assert_eq!(
+        f.calls()
+            .iter()
+            .filter(|v| v["method"] == "turn/steer")
+            .count(),
+        0
+    );
+    app.shutdown().await.unwrap();
+}
+
+fn app_snapshot_after_close(db: &rusqlite::Connection, id: &ThreadId) -> ThreadSnapshot {
+    let text: String = db
+        .query_row(
+            "SELECT data FROM threads WHERE id=?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&text).unwrap()
+}

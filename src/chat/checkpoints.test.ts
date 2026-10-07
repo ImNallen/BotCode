@@ -123,6 +123,7 @@ it("ties Edit from here and each changed-files card to the owning turn", () => {
         reverting: false,
         busy,
         onEdit() {},
+        onRemoveQueued() {},
         onOpenTurnDiff() {},
       }),
     );

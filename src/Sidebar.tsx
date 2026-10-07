@@ -1,4 +1,5 @@
 // Ported from pingdotgg/t3code v0.0.45 components/Sidebar.tsx and threadActionMenu.logic.ts (MIT).
+import { followUps } from "./chat/followUps";
 import { pullRequestSurface } from "./panel/panelState";
 import { prLabel } from "./panel/pullRequests";
 import type { Surface } from "./panel/RightPanel";
@@ -339,6 +340,15 @@ export function Sidebar({
     });
   };
   const park = async (row: Row, action: Arrange | "delete") => {
+    if (
+      (action === "delete" || action.kind === "archive") &&
+      followUps.rows(row.thread.id).length
+    ) {
+      setActionError(
+        "Remove queued messages from this thread before archiving or deleting it.",
+      );
+      return;
+    }
     const index = cards.findIndex((card) => card.thread.id === row.thread.id);
     const next =
       index !== -1 && cards.length > 1
