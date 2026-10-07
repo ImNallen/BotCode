@@ -26,6 +26,7 @@ fn thread() -> ThreadSnapshot {
             checkpoint: TurnCheckpoint::default(),
         }],
         approvals: vec![],
+        user_questions: vec![],
         diagnostic: None,
         placement: Placement::Auto,
         snooze: None,

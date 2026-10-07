@@ -18,6 +18,7 @@ function summary(): ThreadSummary {
     revision: 1,
     latestTurn: null,
     pendingApprovalIds: [],
+    pendingUserQuestionIds: [],
     pullRequests: {
       sequence: 0,
       links: [],

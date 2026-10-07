@@ -41,6 +41,12 @@ The terminal toggle in the header, or Command+J, opens a terminal drawer under t
 
 The composer has model, reasoning effort, and access menus. Model and effort choices come from the installed Codex. Settings save per conversation and apply to the next turn. Supervised is the default access mode. The other modes are Auto-accept edits, Auto, and Full access.
 
+Type `@` at a word boundary to search files in the thread's checkout. Arrow keys choose a result, and Enter or Tab inserts a path chip. Chips retain the full relative path when copied, pasted, sent, or recovered. Type `/` at the start of a line for `/model`, `/plan`, `/default`, and `/usage-limits`. Escape dismisses the menu; Shift+Enter adds a line.
+
+When the installed Codex app-server advertises Plan and Default collaboration modes, the composer shows a **Build / Plan** toggle. Plan saves per conversation and uses the selected model, effort, and access settings. Codex's proposed plan appears as a collapsible card. Type feedback and send **Refine** to continue planning, or leave the prompt empty and choose **Implement** to run in Build mode. **Implement in a new thread** starts a Build conversation in the same checkout, preserving its files. Only one conversation can run in that checkout at a time. Planning questions appear above the composer when Codex requests them.
+
+Codex 0.160.1 exposes collaboration modes but no slash-command catalog, so the menu includes the four app commands above. PR and skill mention menus are not included.
+
 To attach an image, paste it into the prompt or drop it on the composer. Bot Code accepts PNG, JPEG, GIF, and WebP images up to 10 MiB. Click the button on a thumbnail to remove that image. Codex receives each image as a local file, and the image stays in the sent message after a restart.
 
 A new worktree starts on a temporary `botcode/<random>` branch. Its first message generates a short branch name in the background. Bot Code applies the name after the first Codex turn ends and keeps the same folder. A branch switch, Git action, cleanup, or later message cancels pending naming. A generation failure keeps the temporary branch and does not interrupt the conversation. Local checkouts and branches you name yourself keep their names.

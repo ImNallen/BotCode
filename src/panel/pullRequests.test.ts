@@ -57,6 +57,7 @@ function workspace(
         revision: 0,
         latestTurn: null,
         pendingApprovalIds: [],
+        pendingUserQuestionIds: [],
         id: threadId,
         title: branch,
         session: { kind: "draft" },

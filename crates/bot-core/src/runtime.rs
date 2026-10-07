@@ -1,4 +1,5 @@
 mod checkpoints;
+mod collaboration;
 mod naming;
 mod thread_actions;
 use thread_actions::DeleteCompletion;
@@ -209,9 +210,17 @@ enum Command {
     Claim(WorkspaceId, Option<ThreadId>, Hold, Reply<PathBuf>),
     Release(PathBuf, Option<(ThreadId, String)>, Reply<()>),
     Threads(WorkspaceId, Reply<Vec<ThreadSummary>>),
-    Create(WorkspaceId, Checkout, Reply<ThreadSnapshot>),
+    Create(
+        WorkspaceId,
+        Checkout,
+        SessionSettings,
+        Reply<ThreadSnapshot>,
+    ),
+    CreateExisting(WorkspaceId, ThreadId, Reply<ThreadSnapshot>),
     Snapshot(ThreadId, bool, Reply<ThreadSnapshot>),
     Models(Reply<Vec<ModelOption>>),
+    CollaborationModes(Reply<Vec<InteractionMode>>),
+    UserQuestions(UserQuestionRequestId, UserQuestionAnswers, Reply<()>),
     UsageLimits(bool, Reply<UsageLimits>),
     Settings(ThreadId, SessionSettings, Reply<ThreadSnapshot>),
     /// The path carries a `Hold::Restore` to release in the same step as acceptance.
@@ -314,6 +323,11 @@ impl App {
                     approval.state = ApprovalState::Expired
                 }
             }
+            for request in &mut thread.user_questions {
+                if request.state.open() {
+                    request.state = UserQuestionState::Expired;
+                }
+            }
             thread.revision += 1;
             store.save(thread)?;
         }
@@ -385,6 +399,9 @@ impl App {
                 leases: HashMap::new(),
                 held: HashMap::new(),
                 routes: HashMap::new(),
+                question_routes: HashMap::new(),
+                collaboration_modes: vec![],
+                collaboration_waiters: vec![],
                 provider: None,
                 epoch: 0,
                 launching: false,
@@ -700,6 +717,11 @@ impl App {
         id: WorkspaceId,
         checkout: NewCheckout,
     ) -> Result<ThreadSnapshot> {
+        if let NewCheckout::Existing { thread_id } = checkout {
+            return self
+                .call(|r| Command::CreateExisting(id, thread_id, r))
+                .await;
+        }
         let (w, _) = self.checkout(id.clone(), None).await?;
         let checkout = match (w.kind, checkout) {
             (WorkspaceKind::Repository, NewCheckout::Local) => Checkout::Local,
@@ -719,6 +741,7 @@ impl App {
                     .await
                     .map_err(|e| AppError::new("repository", e))??
             }
+            (_, NewCheckout::Existing { .. }) => unreachable!(),
             (WorkspaceKind::Repository, NewCheckout::Folder { .. })
             | (WorkspaceKind::Scratch, NewCheckout::Local | NewCheckout::Worktree { .. }) => {
                 return Err(AppError::new(
@@ -727,7 +750,8 @@ impl App {
                 ));
             }
         };
-        self.call(|r| Command::Create(id, checkout, r)).await
+        self.call(|r| Command::Create(id, checkout, SessionSettings::default(), r))
+            .await
     }
     pub async fn thread(&self, id: ThreadId) -> Result<ThreadSnapshot> {
         self.call(|r| Command::Snapshot(id, false, r)).await
@@ -756,6 +780,16 @@ impl App {
     }
     pub async fn models(&self) -> Result<Vec<ModelOption>> {
         self.call(Command::Models).await
+    }
+    pub async fn collaboration_modes(&self) -> Result<Vec<InteractionMode>> {
+        self.call(Command::CollaborationModes).await
+    }
+    pub async fn answer_user_questions(
+        &self,
+        id: UserQuestionRequestId,
+        answers: UserQuestionAnswers,
+    ) -> Result<()> {
+        self.call(|r| Command::UserQuestions(id, answers, r)).await
     }
     pub async fn usage_limits(&self, refresh: bool) -> Result<UsageLimits> {
         self.call(|r| Command::UsageLimits(refresh, r)).await
@@ -1121,7 +1155,7 @@ enum Completion {
     },
     Launched {
         epoch: u64,
-        result: Result<Codex>,
+        result: Result<collaboration::ProviderSession>,
     },
     Prepared {
         epoch: u64,
@@ -1144,6 +1178,11 @@ enum Completion {
     Answered {
         epoch: u64,
         id: ApprovalId,
+        result: Result<()>,
+    },
+    UserQuestionsAnswered {
+        epoch: u64,
+        id: UserQuestionRequestId,
         result: Result<()>,
     },
     Interrupted {
@@ -1185,6 +1224,9 @@ struct Owner {
     leases: HashMap<PathBuf, ThreadId>,
     held: HashMap<PathBuf, Hold>,
     routes: HashMap<ApprovalId, Route>,
+    question_routes: HashMap<UserQuestionRequestId, Route>,
+    collaboration_modes: Vec<collaboration::ModePreset>,
+    collaboration_waiters: Vec<Reply<Vec<InteractionMode>>>,
     provider: Option<Codex>,
     epoch: u64,
     launching: bool,
@@ -1201,6 +1243,39 @@ struct Owner {
     done: mpsc::Sender<Completion>,
 }
 impl Owner {
+    fn new_thread(
+        &mut self,
+        workspace_id: WorkspaceId,
+        checkout: Checkout,
+        settings: SessionSettings,
+    ) -> Result<ThreadSnapshot> {
+        self.workspace(&workspace_id)?;
+        let t = ThreadSnapshot {
+            created_at_ms: Some(now_ms()),
+            latest_user_activity_at_ms: None,
+            id: ThreadId::default(),
+            workspace_id,
+            title: "New conversation".into(),
+            native_thread_id: None,
+            revision: 1,
+            session: SessionState::Draft,
+            settings,
+            checkout,
+            turns: vec![],
+            approvals: vec![],
+            user_questions: vec![],
+            diagnostic: None,
+            placement: Placement::Auto,
+            snooze: None,
+            context: None,
+            pending_revert: None,
+            last_revert: None,
+        };
+        self.store.save(&t)?;
+        self.threads.insert(t.id.clone(), t.clone());
+        self.schedule_discovery(&t.id, PrLinkSource::BranchDiscovery);
+        Ok(t)
+    }
     fn finish_git_job(
         &mut self,
         completion: std::result::Result<GitCompletion, tokio::task::JoinError>,
@@ -1364,10 +1439,7 @@ impl Owner {
         !matches!(
             t.session,
             SessionState::Connecting | SessionState::Running | SessionState::Interrupting
-        ) && !t
-            .approvals
-            .iter()
-            .any(|a| matches!(a.state, ApprovalState::Pending | ApprovalState::Answering))
+        ) && !t.input_open()
             && t.pending_revert.is_none()
             && !self.leases.contains_key(root)
             && !self.pending.iter().any(|job| job.thread() == &t.id)
@@ -1744,19 +1816,22 @@ impl Owner {
             Command::Release(root, switched, reply) => {
                 self.held.remove(&root);
                 self.checkout_changed(&root);
-                let result = match switched {
-                    Some((id, current)) => match self.threads.get_mut(&id) {
-                        Some(ThreadSnapshot {
-                            checkout: Checkout::Worktree { branch, .. },
-                            ..
-                        }) => {
-                            *branch = current;
-                            self.commit(&id)
+                let result = (|| {
+                    if let Some((_, current)) = switched {
+                        let owners: Vec<_> = self.threads.values()
+                            .filter(|thread| matches!(&thread.checkout, Checkout::Worktree { path, .. } if *path == root))
+                            .map(|thread| thread.id.clone()).collect();
+                        for id in owners {
+                            if let Checkout::Worktree { branch, .. } =
+                                &mut self.threads.get_mut(&id).unwrap().checkout
+                            {
+                                *branch = current.clone();
+                            }
+                            self.commit(&id)?;
                         }
-                        _ => Ok(()),
-                    },
-                    None => Ok(()),
-                };
+                    }
+                    Ok(())
+                })();
                 let _ = reply.send(result);
             }
             Command::Threads(id, reply) => {
@@ -1768,35 +1843,38 @@ impl Owner {
                     .collect();
                 let _ = reply.send(Ok(rows));
             }
-            Command::Create(workspace_id, checkout, reply) => {
+            Command::CreateExisting(workspace_id, source_id, reply) => {
                 let result = (|| {
-                    self.workspace(&workspace_id)?;
-                    let t = ThreadSnapshot {
-                        created_at_ms: Some(now_ms()),
-                        latest_user_activity_at_ms: None,
-                        id: ThreadId::default(),
+                    let source = self.thread(&source_id)?;
+                    if source.workspace_id != workspace_id {
+                        return Err(AppError::new(
+                            "invalid_checkout",
+                            "This checkout belongs to a different workspace.",
+                        ));
+                    }
+                    let root = source.root(self.workspace(&workspace_id)?);
+                    if !root.is_dir() {
+                        return Err(AppError::new(
+                            "missing_checkout",
+                            "Restore the source thread checkout before implementing its plan.",
+                        ));
+                    }
+                    if !self.idle(source, root) {
+                        return Err(AppError::new(
+                            "busy",
+                            "Wait for the source thread and its checkout operations to finish.",
+                        ));
+                    }
+                    self.new_thread(
                         workspace_id,
-                        title: "New conversation".into(),
-                        native_thread_id: None,
-                        revision: 1,
-                        session: SessionState::Draft,
-                        settings: SessionSettings::default(),
-                        checkout,
-                        turns: vec![],
-                        approvals: vec![],
-                        diagnostic: None,
-                        placement: Placement::Auto,
-                        snooze: None,
-                        context: None,
-                        pending_revert: None,
-                        last_revert: None,
-                    };
-                    self.store.save(&t)?;
-                    self.threads.insert(t.id.clone(), t.clone());
-                    self.schedule_discovery(&t.id, PrLinkSource::BranchDiscovery);
-                    Ok(t)
+                        source.checkout.clone(),
+                        source.settings.clone(),
+                    )
                 })();
                 let _ = reply.send(result);
+            }
+            Command::Create(workspace_id, checkout, settings, reply) => {
+                let _ = reply.send(self.new_thread(workspace_id, checkout, settings));
             }
             Command::Snapshot(id, resume, reply) => {
                 if resume && self.thread(&id).is_ok_and(|thread| thread.archived()) {
@@ -1843,6 +1921,22 @@ impl Owner {
                 } else {
                     self.list_models();
                 }
+            }
+            Command::CollaborationModes(reply) => {
+                if self.provider.is_some() {
+                    let _ = reply.send(Ok(self
+                        .collaboration_modes
+                        .iter()
+                        .filter_map(|preset| preset.mode)
+                        .collect()));
+                } else {
+                    self.collaboration_waiters.push(reply);
+                    self.launch();
+                }
+            }
+            Command::UserQuestions(id, answers, reply) => {
+                let result = self.answer_questions(id, answers);
+                let _ = reply.send(result);
             }
             Command::UsageLimits(refresh, reply) => {
                 let cached = self.limits.borrow().clone().filter(|_| !refresh);
@@ -2163,7 +2257,7 @@ impl Owner {
                 .as_ref()
                 .is_some_and(|settings| settings.model.is_some() || settings.effort.is_some())
         });
-        if self.models.is_some() {
+        if self.models.is_some() || thread.settings.interaction_mode == InteractionMode::Plan {
             self.validate_settings(&thread.settings)?;
         }
         if thread.native_thread_id.is_some()
@@ -2255,7 +2349,7 @@ impl Owner {
                 "The targeted turn is no longer running. This message was not sent.",
             ));
         }
-        if thread.pending_revert.is_some() || thread.approval_open() {
+        if thread.pending_revert.is_some() || thread.input_open() {
             return Err(AppError::new(
                 "busy",
                 "Resolve the pending approval or revert before sending now.",
@@ -2384,6 +2478,17 @@ impl Owner {
         });
     }
     fn validate_settings(&self, settings: &SessionSettings) -> Result<()> {
+        if settings.interaction_mode == InteractionMode::Plan
+            && !self
+                .collaboration_modes
+                .iter()
+                .any(|preset| preset.mode == Some(InteractionMode::Plan))
+        {
+            return Err(AppError::new(
+                "plan_unavailable",
+                "This Codex app-server does not support Plan mode.",
+            ));
+        }
         for value in [&settings.model, &settings.effort].into_iter().flatten() {
             if value.trim().is_empty() || value.len() > 128 {
                 return Err(AppError::new(
@@ -2456,7 +2561,7 @@ impl Owner {
         tokio::spawn(async move {
             let result = match Codex::launch(binary, epoch, signals).await {
                 Ok(provider) => match provider.initialize().await {
-                    Ok(()) => Ok(provider),
+                    Ok(()) => Ok(collaboration::discover(provider).await),
                     Err(e) => {
                         let _ = provider.terminate().await;
                         Err(e)
@@ -2478,34 +2583,7 @@ impl Owner {
         let epoch = self.epoch;
         let done = self.done.clone();
         tokio::spawn(async move {
-            let result = async {
-                let mut models = Vec::new();
-                let mut cursor: Option<String> = None;
-                let mut seen = HashSet::new();
-                loop {
-                    let value = provider
-                        .request("model/list", json!({"cursor":cursor,"includeHidden":false}))
-                        .await?;
-                    let page: ModelPage = serde_json::from_value(value)?;
-                    models.extend(
-                        page.data
-                            .into_iter()
-                            .filter(|model| !model.hidden)
-                            .map(|model| model.option),
-                    );
-                    match page.next_cursor {
-                        Some(next) if seen.insert(next.clone()) => cursor = Some(next),
-                        Some(_) => {
-                            return Err(AppError::new(
-                                "protocol",
-                                "Codex repeated a model cursor.",
-                            ));
-                        }
-                        None => return Ok(models),
-                    }
-                }
-            }
-            .await;
+            let result = collaboration::read_models(&provider).await;
             let _ = done.send(Completion::Models { epoch, result }).await;
         });
     }
@@ -2609,8 +2687,18 @@ impl Owner {
             Completion::Launched { epoch, result } if epoch == self.epoch => {
                 self.launching = false;
                 match result {
-                    Ok(provider) => {
-                        self.provider = Some(provider);
+                    Ok(session) => {
+                        self.collaboration_modes = session.modes;
+                        self.models = session.models;
+                        self.provider = Some(session.provider);
+                        let modes = self
+                            .collaboration_modes
+                            .iter()
+                            .filter_map(|preset| preset.mode)
+                            .collect::<Vec<_>>();
+                        for reply in std::mem::take(&mut self.collaboration_waiters) {
+                            let _ = reply.send(Ok(modes.clone()));
+                        }
                         self.read_limits();
                         if !self.model_waiters.is_empty() {
                             self.list_models();
@@ -2665,13 +2753,28 @@ impl Owner {
                             let sandbox_policy = settings.permission_mode.sandbox_policy();
                             let model = self.resolve_model(&settings).map(str::to_owned);
                             let effort = self.resolve_effort(&settings).map(str::to_owned);
+                            let collaboration = collaboration::turn_mode(
+                                &self.collaboration_modes,
+                                &settings,
+                                model.as_deref(),
+                                effort.as_deref(),
+                            );
                             self.commit(&id)?;
                             let provider = self.provider.clone().ok_or_else(|| {
                                 AppError::new("provider_lost", "Codex is unavailable.")
                             })?;
                             let done = self.done.clone();
                             tokio::spawn(async move {
-                                let result=provider.request("turn/start",json!({"threadId":native,"clientUserMessageId":turn_id.to_string(),"input":input,"model":model,"effort":effort,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandboxPolicy":sandbox_policy})).await;
+                                let result = match collaboration {
+                                    Ok(mode) => {
+                                        let mut params = json!({"threadId":native,"clientUserMessageId":turn_id.to_string(),"input":input,"model":model,"effort":effort,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandboxPolicy":sandbox_policy});
+                                        if let Some(mode) = mode {
+                                            params["collaborationMode"] = mode;
+                                        }
+                                        provider.request("turn/start", params).await
+                                    }
+                                    Err(error) => Err(error),
+                                };
                                 let _ = done
                                     .send(Completion::Started {
                                         epoch,
@@ -2734,6 +2837,20 @@ impl Owner {
                             row.execution = Execution::Running;
                             t.session = SessionState::Running;
                         }
+                    }
+                    Err(e)
+                        if matches!(e.code.as_str(), "plan_unavailable" | "models_unavailable") =>
+                    {
+                        row.delivery = Delivery::NotSent {
+                            reason: e.message.clone(),
+                        };
+                        row.execution = Execution::Failed {
+                            reason: e.message.clone(),
+                        };
+                        t.diagnostic = Some(e.message);
+                        t.session = SessionState::Ready;
+                        self.capture_after(&thread, turn)?;
+                        return Ok(());
                     }
                     Err(e) => {
                         if matches!(row.delivery, Delivery::Accepted) {
@@ -2812,6 +2929,31 @@ impl Owner {
                     .await;
                 }
             }
+            Completion::UserQuestionsAnswered { epoch, id, result } if epoch == self.epoch => {
+                if let Some(t) = self
+                    .threads
+                    .values_mut()
+                    .find(|t| t.user_questions.iter().any(|request| request.id == id))
+                {
+                    let request = t
+                        .user_questions
+                        .iter_mut()
+                        .find(|request| request.id == id)
+                        .unwrap();
+                    if request.state == UserQuestionState::Answering {
+                        request.state = if result.is_ok() {
+                            UserQuestionState::Answered
+                        } else {
+                            UserQuestionState::Uncertain
+                        };
+                    }
+                    if let Err(error) = result {
+                        t.diagnostic = Some(error.message);
+                    }
+                    let thread = t.id.clone();
+                    self.commit(&thread)?;
+                }
+            }
             Completion::Answered { epoch, id, result } if epoch == self.epoch => {
                 if let Some(t) = self
                     .threads
@@ -2871,6 +3013,11 @@ impl Owner {
             self.settle_limits(Err(AppError::new("provider_lost", reason)));
         }
         self.routes.clear();
+        self.question_routes.clear();
+        self.collaboration_modes.clear();
+        for reply in std::mem::take(&mut self.collaboration_waiters) {
+            let _ = reply.send(Err(AppError::new("provider_lost", reason)));
+        }
         self.leases.clear();
         let ids: Vec<_> = self.threads.keys().cloned().collect();
         for id in ids {
@@ -2926,6 +3073,11 @@ impl Owner {
                     approval.state = ApprovalState::Expired
                 }
             }
+            for request in &mut t.user_questions {
+                if request.state.open() {
+                    request.state = UserQuestionState::Expired;
+                }
+            }
             let _ = self.commit(&id);
         }
     }
@@ -2960,6 +3112,38 @@ impl Owner {
                 }
                 return Ok(());
             };
+            if method == "item/tool/requestUserInput" {
+                let native_turn = required_string(p, "turnId")?;
+                if turn.native_turn_id.as_deref() != Some(native_turn) {
+                    if let Some(provider) = &self.provider {
+                        provider.refuse(request.clone(), method).await?;
+                    }
+                    return Ok(());
+                }
+                let questions: Vec<UserQuestion> =
+                    serde_json::from_value(p.get("questions").cloned().unwrap_or(Value::Null))?;
+                collaboration::validate_questions(&questions)?;
+                let pending = UserQuestionRequest {
+                    id: UserQuestionRequestId::default(),
+                    turn_id: turn.id.clone(),
+                    item_id: required_string(p, "itemId")?.into(),
+                    questions,
+                    state: UserQuestionState::Pending,
+                };
+                self.question_routes.insert(
+                    pending.id.clone(),
+                    Route {
+                        thread: id.clone(),
+                        request: request.clone(),
+                        item_id: pending.item_id.clone(),
+                        epoch: self.epoch,
+                    },
+                );
+                t.record_activity(settled_before_approval);
+                t.user_questions.push(pending);
+                self.commit(&id)?;
+                return Ok(());
+            }
             let action = match method {
                 "item/commandExecution/requestApproval" => Some(ApprovalAction::Command {
                     command: string(p, "command"),
@@ -3076,6 +3260,21 @@ impl Owner {
                     })
                 }
             }
+            "item/plan/delta" => {
+                let item_id = required_string(p, "itemId")?.to_owned();
+                let delta = string(p, "delta");
+                if let Some(Item::Plan { text, .. }) =
+                    turn.items.iter_mut().find(|item| item.id() == item_id)
+                {
+                    text.push_str(&delta);
+                } else {
+                    turn.items.push(Item::Plan {
+                        id: item_id,
+                        text: delta,
+                        complete: false,
+                    });
+                }
+            }
             "item/commandExecution/outputDelta" => {
                 let item_id = required_string(p, "itemId")?.to_owned();
                 if let Some(Item::Command { output, .. }) =
@@ -3139,6 +3338,12 @@ impl Owner {
                         self.routes.remove(&approval.id);
                     }
                 }
+                for request in &mut t.user_questions {
+                    if request.turn_id == turn.id && request.state == UserQuestionState::Pending {
+                        request.state = UserQuestionState::Expired;
+                        self.question_routes.remove(&request.id);
+                    }
+                }
                 self.capture_after(&id, completed_turn)?;
                 let _ = self.refresh_prs(&id, true, PrLinkSource::AgentDiscovered);
                 return Ok(());
@@ -3197,6 +3402,11 @@ fn normalize_item(v: &Value, complete: bool) -> Option<Item> {
     Some(match kind {
         "userMessage" => return None,
         "agentMessage" => Item::Assistant {
+            id,
+            text: string(v, "text"),
+            complete,
+        },
+        "plan" => Item::Plan {
             id,
             text: string(v, "text"),
             complete,

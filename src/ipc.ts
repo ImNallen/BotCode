@@ -68,6 +68,12 @@ const item = z.discriminatedUnion("kind", [
     complete: z.boolean(),
   }),
   z.object({
+    kind: z.literal("plan"),
+    id: z.string(),
+    text: z.string(),
+    complete: z.boolean(),
+  }),
+  z.object({
     kind: z.literal("command"),
     id: z.string(),
     command: z.string(),
@@ -112,6 +118,24 @@ const workspace = z.object({
   label: z.string(),
   kind: z.enum(["repository", "scratch"]),
 });
+const userQuestions = z.object({
+  id,
+  turnId: id,
+  itemId: z.string(),
+  state: z.enum(["pending", "answering", "answered", "expired", "uncertain"]),
+  questions: z.array(
+    z.object({
+      id: z.string(),
+      header: z.string(),
+      question: z.string(),
+      isOther: z.boolean(),
+      isSecret: z.boolean(),
+      options: z
+        .array(z.object({ label: z.string(), description: z.string() }))
+        .nullable(),
+    }),
+  ),
+});
 const permissionMode = z.enum([
   "approval-required",
   "auto-accept-edits",
@@ -122,6 +146,7 @@ const settings = z.object({
   model: z.string().nullable(),
   effort: z.string().nullable(),
   permissionMode,
+  interactionMode: z.enum(["default", "plan"]).default("default"),
 });
 const modelOption = z.object({
   model: z.string(),
@@ -217,6 +242,7 @@ const thread = z.object({
   session,
   settings,
   checkout,
+  userQuestions: z.array(userQuestions).default([]),
   turns: z.array(
     z.object({
       id,
@@ -260,6 +286,7 @@ const threadSummary = z.object({
     .object({ id, execution, completedAtMs: z.number().nullable() })
     .nullable(),
   pendingApprovalIds: z.array(id),
+  pendingUserQuestionIds: z.array(id).default([]),
   pullRequests: threadPrSummary.default({
     sequence: 0,
     links: [],
@@ -413,6 +440,8 @@ export type ContextUsage = z.infer<typeof contextUsage>;
 export type LimitWindow = z.infer<typeof limitWindow>;
 export type UsageLimits = z.infer<typeof usageLimits>;
 export type Approval = z.infer<typeof approval>;
+export type UserQuestionRequest = z.infer<typeof userQuestions>;
+export type UserQuestionAnswers = Record<string, { answers: string[] }>;
 export type Item = z.infer<typeof item>;
 export type ImageAttachment = z.infer<typeof imageAttachment>;
 export type TurnDiffFile = z.infer<typeof turnDiffFile>;
@@ -431,6 +460,7 @@ export type Arrange =
   | { kind: "snooze"; untilMs: number };
 export type Checkout = z.infer<typeof checkout>;
 export type NewCheckout =
+  | { kind: "existing"; threadId: string }
   | { kind: "local" }
   | { kind: "worktree"; base: string; fromOrigin: boolean }
   | { kind: "folder"; prompt: string };
@@ -687,6 +717,8 @@ export const ipc = {
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),
   resume: (threadId: string) => call("open_thread", { threadId }, thread),
   models: () => call("list_models", {}, z.array(modelOption)),
+  collaborationModes: () =>
+    call("collaboration_modes", {}, z.array(z.enum(["default", "plan"]))),
   usageLimits: (refresh = false) =>
     call("usage_limits", { refresh }, usageLimits),
   settings: (threadId: string, value: SessionSettings) =>
@@ -718,6 +750,8 @@ export const ipc = {
     ),
   approval: (approvalId: string, decision: ApprovalDecision) =>
     call("answer_approval", { approvalId, decision }, z.null()),
+  answerUserQuestions: (requestId: string, answers: UserQuestionAnswers) =>
+    call("answer_user_questions", { requestId, answers }, z.null()),
   interrupt: (threadId: string) => call("interrupt", { threadId }, z.null()),
   arrange: (threadId: string, action: Arrange) =>
     call("arrange_thread", { threadId, action }, z.null()),

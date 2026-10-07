@@ -39,6 +39,9 @@ export function sendingBlocked(thread: Thread): boolean {
     thread.approvals.some((approval) =>
       ["pending", "answering"].includes(approval.state),
     ) ||
+    thread.userQuestions.some((request) =>
+      ["pending", "answering"].includes(request.state),
+    ) ||
     unresolvedInput(thread)
   );
 }

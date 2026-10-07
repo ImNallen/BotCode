@@ -20,6 +20,7 @@ const thread: ThreadSummary = {
   revision: 0,
   latestTurn: null,
   pendingApprovalIds: [],
+  pendingUserQuestionIds: [],
   title: "Hidden thread",
   session: { kind: "draft" },
   checkout: { kind: "local" },

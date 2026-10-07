@@ -3,7 +3,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 struct Fixture {
@@ -99,6 +99,8 @@ async fn wait(
     id: &ThreadId,
     predicate: impl Fn(&ThreadSnapshot) -> bool,
 ) -> ThreadSnapshot {
+    let started = Instant::now();
+    let mut last = None;
     for _ in 0..500 {
         let t = app.thread(id.clone()).await.unwrap();
         if predicate(&t)
@@ -112,9 +114,13 @@ async fn wait(
         {
             return t;
         }
+        last = Some(t);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("snapshot did not reach expected state")
+    panic!(
+        "snapshot did not reach expected state after {:?}; last snapshot: {last:#?}",
+        started.elapsed()
+    )
 }
 async fn wait_file(path: &Path) {
     for _ in 0..500 {
@@ -736,6 +742,39 @@ async fn an_image_only_first_message_keeps_the_temporary_branch() {
         .unwrap();
     let done = wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
     assert_eq!(checkout(&done).1, temporary);
+    app.shutdown().await.unwrap();
+    assert!(f.invocations().is_empty());
+}
+
+#[tokio::test]
+async fn shared_worktree_threads_keep_their_actual_branch_without_auto_renaming() {
+    let f = Fixture::new(Some(r#"{"branch":"composer-plan"}"#));
+    let app = App::open(f.config.clone()).await.unwrap();
+    let source = f.thread(&app).await;
+    let sibling = app
+        .create_thread(
+            source.workspace_id.clone(),
+            NewCheckout::Existing {
+                thread_id: source.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    app.submit(
+        source.id.clone(),
+        "shared-source".into(),
+        "hello".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let completed = wait(&app, &source.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    assert_eq!(completed.checkout, sibling.checkout);
+    let (path, branch) = checkout(&completed);
+    assert_eq!(git(path, &["branch", "--show-current"]), branch);
     app.shutdown().await.unwrap();
     assert!(f.invocations().is_empty());
 }

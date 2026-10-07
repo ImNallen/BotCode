@@ -84,7 +84,7 @@ impl Owner {
         let Checkout::Worktree { path, branch } = &t.checkout else {
             return;
         };
-        if temporary_suffix(branch).is_none() {
+        if self.owners(path) != 1 || temporary_suffix(branch).is_none() {
             return;
         }
         let job = NameJob {
@@ -123,10 +123,12 @@ impl Owner {
         });
     }
     fn name_matches(&self, job: &NameJob) -> bool {
-        self.naming
-            .pending
-            .get(&job.thread)
-            .is_some_and(|p| p.job == *job)
+        self.owners(&job.path) == 1
+            && self
+                .naming
+                .pending
+                .get(&job.thread)
+                .is_some_and(|p| p.job == *job)
             && self.checkout_generation(&job.path) == job.generation
             && self.threads.get(&job.thread).is_some_and(|t| {
                 matches!(t.turns.as_slice(), [first] if first.id == job.first_turn)

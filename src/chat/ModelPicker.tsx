@@ -30,6 +30,8 @@ export function ModelPicker({
   disabled,
   onRetry,
   onChange,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   trigger: ComponentProps<typeof Menu>["trigger"];
   models: ModelOption[];
@@ -39,8 +41,15 @@ export function ModelPicker({
   disabled: boolean;
   onRetry: () => void;
   onChange: (settings: SessionSettings) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlledOpen ?? localOpen;
+  const setOpen = (next: boolean) => {
+    setLocalOpen(next);
+    onOpenChange?.(next);
+  };
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const listId = useId();

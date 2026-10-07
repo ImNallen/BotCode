@@ -50,6 +50,7 @@ export type TimelineRow =
       at: number | null;
     }
   | { kind: "reasoning"; id: string; text: string }
+  | { kind: "plan"; id: string; text: string; streaming: boolean }
   | { kind: "work"; id: string; entry: WorkEntry; at: number | null }
   | {
       kind: "work-group";
@@ -122,6 +123,7 @@ function workEntry(item: Item): WorkEntry | null {
           }
         : null;
     case "assistant":
+    case "plan":
     case "user_input":
       return null;
   }
@@ -156,11 +158,21 @@ export function summarizeWork(entries: WorkEntry[]): string {
 type Entry =
   | { kind: "assistant"; id: string; text: string; streaming: boolean }
   | { kind: "reasoning"; id: string; text: string }
+  | Extract<TimelineRow, { kind: "plan" }>
   | { kind: "work"; id: string; entry: WorkEntry }
   | Extract<TimelineRow, { kind: "user" }>;
 
 function entries(turn: Turn): Entry[] {
   return turn.items.flatMap((item): Entry[] => {
+    if (item.kind === "plan")
+      return [
+        {
+          kind: "plan",
+          id: item.id,
+          text: item.text,
+          streaming: !item.complete,
+        },
+      ];
     if (item.kind === "user_input")
       return [
         {
@@ -234,6 +246,7 @@ function pushVisible(
     }
     flush();
     if (entry.kind === "user") rows.push(entry);
+    else if (entry.kind === "plan") rows.push(entry);
     else if (entry.kind === "assistant")
       rows.push({
         kind: "assistant",
@@ -308,7 +321,9 @@ export function deriveRows(
       }
     } else {
       const terminalIndex = list.findLastIndex(
-        (entry) => entry.kind === "assistant" && !entry.streaming,
+        (entry) =>
+          (entry.kind === "assistant" || entry.kind === "plan") &&
+          !entry.streaming,
       );
       const terminal = terminalIndex >= 0 ? list[terminalIndex] : undefined;
       const boundary = terminalIndex >= 0 ? terminalIndex : list.length;
@@ -318,7 +333,12 @@ export function deriveRows(
       const hidden = new Set(
         list
           .filter((entry, index) => {
-            if (entry === terminal || entry.kind === "user") return false;
+            if (
+              entry === terminal ||
+              entry.kind === "user" ||
+              entry.kind === "plan"
+            )
+              return false;
             if (index < boundary || entry.kind === "reasoning") return true;
             return (
               trailing.length === 1 &&

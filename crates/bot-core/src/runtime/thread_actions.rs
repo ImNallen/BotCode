@@ -24,6 +24,7 @@ impl Owner {
             self.store.delete_thread(&thread)?;
             self.forget_pr_threads(&HashSet::from([id.clone()]));
             self.routes.retain(|_, route| route.thread != id);
+            self.question_routes.retain(|_, route| route.thread != id);
             self.dirty.remove(&id);
             self.threads.remove(&id);
             let mut hint = self.thread_hint(&thread);

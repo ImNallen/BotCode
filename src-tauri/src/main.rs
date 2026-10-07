@@ -95,6 +95,8 @@ fn main() {
             ipc::stage_attachment,
             ipc::submit,
             ipc::list_models,
+            ipc::collaboration_modes,
+            ipc::answer_user_questions,
             ipc::usage_limits,
             ipc::update_thread_settings,
             ipc::answer_approval,

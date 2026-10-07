@@ -3,7 +3,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 struct Fixture {
@@ -103,14 +103,20 @@ async fn wait(
     id: &ThreadId,
     predicate: impl Fn(&ThreadSnapshot) -> bool,
 ) -> ThreadSnapshot {
+    let started = Instant::now();
+    let mut last = None;
     for _ in 0..1000 {
         let t = app.thread(id.clone()).await.unwrap();
         if predicate(&t) {
             return t;
         }
+        last = Some(t);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("Timed out waiting for checkpoint behavior");
+    panic!(
+        "Timed out waiting for checkpoint behavior after {:?}; last snapshot: {last:#?}",
+        started.elapsed()
+    );
 }
 async fn reopen(f: &Fixture) -> App {
     for _ in 0..100 {
@@ -474,8 +480,15 @@ async fn checkpoint_results_wait_for_storage_recovery_without_losing_the_checkou
         app.submit(t.id.clone(), "storage".into(), "edit-1".into(), vec![])
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(350)).await;
-        let snapshot = app.thread(t.id.clone()).await.unwrap();
+        let snapshot = if kind == "complete" {
+            wait(&app, &t.id, |t| {
+                matches!(t.turns[0].execution, Execution::Completed)
+            })
+            .await
+        } else {
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            app.thread(t.id.clone()).await.unwrap()
+        };
         assert!(matches!(
             snapshot.turns[0].checkpoint,
             TurnCheckpoint::Pending | TurnCheckpoint::Before { .. }
@@ -1100,6 +1113,7 @@ for line in sys.stdin:
  r=json.loads(line);m=r.get('method');p=r.get('params',{})
  with (root/'calls.jsonl').open('a') as out: out.write(json.dumps(r)+'\n')
  if m=='initialize': result(r,{'userAgent':'checkpoint fixture'})
+ elif m=='collaborationMode/list': emit({'id':r['id'],'error':{'code':-32601,'message':'Method not found'}})
  elif m=='account/read': result(r,{'account':None})
  elif m=='account/rateLimits/read': result(r,{'rateLimits':None})
  elif m=='thread/start':

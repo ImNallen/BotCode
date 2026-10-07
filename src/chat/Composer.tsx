@@ -1,6 +1,7 @@
 // Ported from T3 Code v0.0.45 components/chat/ChatComposer.tsx, ComposerControl.tsx, ComposerPrimaryActions.tsx, BranchToolbar.tsx, BranchToolbarEnvModeSelector.tsx, TraitsPicker.tsx and ui/badge.tsx (MIT).
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -8,6 +9,8 @@ import {
 } from "react";
 import {
   ChevronDownIcon,
+  BotIcon,
+  PencilRulerIcon,
   FolderGit2Icon,
   FolderGitIcon,
   FolderIcon,
@@ -34,6 +37,25 @@ import { ComposerSurface } from "./ComposerSurface";
 import { shouldHandleComposerAttachmentPaste } from "./composerAttachmentFiles";
 import { attachmentUrl, type ComposerImage } from "./composerImages";
 import { makeWorkspaceFileDropHandlers } from "./workspaceFileDrop";
+import {
+  ComposerPromptEditor,
+  type ComposerEditorHandle,
+  type ComposerSnapshot,
+} from "./ComposerPromptEditor";
+import {
+  ComposerCommandMenu,
+  composerSuggestionOptionId,
+  type ComposerCommandItem,
+} from "./ComposerCommandMenu";
+import {
+  detectComposerTrigger,
+  serializeComposerFileLink,
+} from "./composer-logic";
+import {
+  searchComposerPaths,
+  searchSlashCommandItems,
+} from "./composerSlashCommandSearch";
+import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 
 const composerControl =
   "relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap rounded-(--control-radius) border border-transparent text-base outline-none hover:bg-accent data-pressed:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 data-disabled:pointer-events-none data-disabled:opacity-64 pointer-coarse:after:absolute pointer-coarse:after:size-full pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 [&:active:not([aria-haspopup])]:scale-[0.97] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:-mx-0.5 [&_svg[data-composer-control-icon]]:mx-0 h-7 gap-1.5 px-2.5 font-medium text-secondary-label [&_svg:not([class*='text-'])]:text-muted-foreground hover:text-foreground sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 aria-pressed:bg-accent aria-pressed:text-accent-foreground aria-pressed:hover:bg-accent/80";
@@ -69,6 +91,13 @@ export function Composer({
   onRetryModels,
   onSettingsChange,
   settingsDisabled,
+  files,
+  filesLoading,
+  filesError,
+  planSupported,
+  showPlanFollowUp,
+  onImplementInNewThread,
+  onUsageLimits,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -107,17 +136,117 @@ export function Composer({
   onRetryModels: () => void;
   onSettingsChange: (settings: SessionSettings) => void;
   settingsDisabled: boolean;
+  files: string[];
+  filesLoading: boolean;
+  filesError?: string;
+  planSupported: boolean;
+  showPlanFollowUp: boolean;
+  onImplementInNewThread: () => void;
+  onUsageLimits: () => void;
 }) {
-  const editor = useRef<HTMLTextAreaElement>(null);
+  const editor = useRef<ComposerEditorHandle>(null);
+  const listId = useId();
+  const [selection, setSelection] = useState<ComposerSnapshot>({
+    value,
+    start: value.length,
+    end: value.length,
+    composing: false,
+  });
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const [highlighted, setHighlighted] = useState<string | null>(null);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const detected =
+    selection.value === value &&
+    selection.start === selection.end &&
+    !selection.composing
+      ? detectComposerTrigger(value, selection.end)
+      : null;
+  const triggerKey = detected ? JSON.stringify(detected) : null;
+  const trigger =
+    !disabled && detected && dismissed !== triggerKey ? detected : null;
+  const items =
+    trigger?.kind === "path"
+      ? searchComposerPaths(files, trigger.query)
+      : trigger
+        ? searchSlashCommandItems(trigger.query, planSupported)
+        : [];
+  const active = items.find((item) => item.id === highlighted) ?? items[0];
+  const selectSuggestion = (item: ComposerCommandItem) => {
+    if (item.type === "path" && !files.includes(item.path)) return;
+    if (
+      !trigger ||
+      (item.type === "slash-command" &&
+        item.command !== "usage-limits" &&
+        settingsDisabled)
+    )
+      return;
+    const snapshot = editor.current?.readSnapshot();
+    if (
+      !snapshot ||
+      snapshot.value !== value ||
+      snapshot.start !== trigger.rangeEnd ||
+      snapshot.start !== snapshot.end
+    )
+      return;
+    const changed = editor.current?.replaceRange({
+      start: trigger.rangeStart,
+      end: trigger.rangeEnd,
+      expectedText: value.slice(trigger.rangeStart, trigger.rangeEnd),
+      replacement:
+        item.type === "path" ? `${serializeComposerFileLink(item.path)} ` : "",
+    });
+    if (!changed) return;
+    setHighlighted(null);
+    if (item.type === "slash-command") {
+      if (item.command === "model") setModelPickerOpen(true);
+      else if (item.command === "usage-limits") onUsageLimits();
+      else
+        onSettingsChange({
+          ...settings,
+          interactionMode: item.command === "plan" ? "plan" : "default",
+        });
+    }
+  };
+  const keys = (event: KeyboardEvent) => {
+    if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey)
+      return false;
+    if (trigger && !event.shiftKey) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setDismissed(triggerKey);
+        return true;
+      }
+      if (
+        items.length &&
+        (event.key === "ArrowDown" || event.key === "ArrowUp")
+      ) {
+        event.preventDefault();
+        const index = items.findIndex((item) => item === active);
+        const next =
+          items[
+            (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) %
+              items.length
+          ];
+        if (next) setHighlighted(next.id);
+        return true;
+      }
+      if (active && (event.key === "Enter" || event.key === "Tab")) {
+        event.preventDefault();
+        selectSuggestion(active);
+        return true;
+      }
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      onSubmit();
+      return true;
+    }
+    return false;
+  };
   useLayoutEffect(() => {
     if (focusRequest) editor.current?.focus();
   }, [focusRequest]);
-  useLayoutEffect(() => {
-    const element = editor.current;
-    if (!element) return;
-    element.style.height = "auto";
-    element.style.height = `${element.scrollHeight}px`;
-  }, [value, approval]);
   const approvalState = approval !== null;
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   // A cancelled drag can end without a dragleave on the hovered target.
@@ -191,6 +320,20 @@ export function Composer({
           >
             {notice}
             {approval}
+            {trigger ? (
+              <ComposerCommandMenu
+                listId={listId}
+                items={items}
+                triggerKind={trigger.kind}
+                isLoading={trigger.kind === "path" && filesLoading}
+                emptyStateText={
+                  trigger.kind === "path" ? filesError : undefined
+                }
+                activeItemId={active?.id ?? null}
+                onHighlightedItemChange={setHighlighted}
+                onSelect={selectSuggestion}
+              />
+            ) : null}
             <div className="relative">
               <ComposerSurface.Main>
                 <div
@@ -249,47 +392,57 @@ export function Composer({
                     ) : null}
                     <div className="relative">
                       <div className="relative flow-root font-(family-name:--font-composer,var(--font-sans)) text-(length:--font-size-prompt,var(--text-sm))">
-                        <textarea
+                        <ComposerPromptEditor
                           ref={editor}
-                          aria-label="Message"
-                          rows={1}
-                          autoFocus={autoFocus}
-                          autoCapitalize="off"
-                          autoCorrect="off"
-                          spellCheck={false}
-                          disabled={disabled}
                           value={value}
-                          placeholder={placeholder}
-                          onChange={(event) => onChange(event.target.value)}
-                          onPaste={(event) => {
-                            const files = Array.from(event.clipboardData.files);
+                          onChange={onChange}
+                          onSelectionChange={(next) => {
+                            setSelection(next);
                             if (
-                              files.length > 0 &&
+                              next.value !== selection.value ||
+                              next.start !== selection.start ||
+                              next.end !== selection.end ||
+                              next.composing !== selection.composing
+                            )
+                              setHighlighted(null);
+                            if (
+                              JSON.stringify(
+                                detectComposerTrigger(next.value, next.end),
+                              ) !== dismissed
+                            )
+                              setDismissed(null);
+                          }}
+                          onKeyDown={keys}
+                          onPasteFiles={(event) => {
+                            const files = Array.from(
+                              event.clipboardData?.files ?? [],
+                            );
+                            if (
+                              files.length &&
                               shouldHandleComposerAttachmentPaste({
                                 files,
                                 plainText:
-                                  event.clipboardData.getData("text/plain"),
+                                  event.clipboardData?.getData("text/plain") ??
+                                  "",
                               })
                             ) {
                               event.preventDefault();
                               event.stopPropagation();
                               onAddImages(files);
+                              return true;
                             }
+                            return false;
                           }}
-                          onKeyDown={(event) => {
-                            if (
-                              event.key === "Enter" &&
-                              !event.shiftKey &&
-                              !event.nativeEvent.isComposing
-                            ) {
-                              event.preventDefault();
-                              onSubmit();
-                            }
-                          }}
-                          className={cn(
-                            "-m-1 block max-h-52 min-h-19.5 w-[calc(100%+0.5rem)] resize-none overflow-y-auto p-1 whitespace-pre-wrap wrap-break-word bg-transparent leading-relaxed text-foreground placeholder:text-placeholder/75 focus:outline-none disabled:cursor-default",
-                            approvalState && "min-h-10",
-                          )}
+                          disabled={disabled}
+                          autoFocus={autoFocus}
+                          placeholder={placeholder}
+                          approvalState={approvalState}
+                          suggestionListId={trigger ? listId : undefined}
+                          activeSuggestionId={
+                            trigger && active
+                              ? composerSuggestionOptionId(listId, active.id)
+                              : undefined
+                          }
                         />
                       </div>
                     </div>
@@ -304,6 +457,14 @@ export function Composer({
                         className="relative -m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                       >
                         <ModelPicker
+                          open={modelPickerOpen}
+                          onOpenChange={(open) => {
+                            setModelPickerOpen(open);
+                            if (!open)
+                              requestAnimationFrame(() =>
+                                editor.current?.focus(),
+                              );
+                          }}
                           models={models}
                           settings={settings}
                           loading={modelsLoading}
@@ -335,6 +496,45 @@ export function Composer({
                             </button>
                           )}
                         />
+                        {planSupported ? (
+                          <button
+                            type="button"
+                            disabled={settingsDisabled}
+                            className={cn(
+                              composerControl,
+                              "shrink-0 whitespace-nowrap",
+                            )}
+                            aria-pressed={settings.interactionMode === "plan"}
+                            aria-label={
+                              settings.interactionMode === "plan"
+                                ? "Plan mode, click to return to normal build mode"
+                                : "Default mode, click to enter plan mode"
+                            }
+                            onClick={() =>
+                              onSettingsChange({
+                                ...settings,
+                                interactionMode:
+                                  settings.interactionMode === "plan"
+                                    ? "default"
+                                    : "plan",
+                              })
+                            }
+                          >
+                            {settings.interactionMode === "plan" ? (
+                              <PencilRulerIcon />
+                            ) : (
+                              <BotIcon />
+                            )}
+                            <span
+                              data-composer-control-label
+                              className="sr-only sm:not-sr-only"
+                            >
+                              {settings.interactionMode === "plan"
+                                ? "Plan"
+                                : "Build"}
+                            </span>
+                          </button>
+                        ) : null}
                         <Menu
                           side="top"
                           trigger={(props) => (
@@ -496,65 +696,17 @@ export function Composer({
                             }
                           />
                         ) : null}
-                        {running && canStop ? (
-                          <button
-                            type="button"
-                            className="flex cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-2xs inset-shadow-white/16 transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-black/8 active:shadow-none disabled:pointer-events-none disabled:opacity-64 size-8 sm:h-8 sm:w-8"
-                            onClick={onStop}
-                            disabled={stopping}
-                            aria-label="Stop generation"
-                            title="Interrupt"
-                          >
-                            <svg
-                              width="12"
-                              height="12"
-                              viewBox="0 0 12 12"
-                              fill="currentColor"
-                              aria-hidden="true"
-                            >
-                              <rect x="2" y="2" width="8" height="8" rx="1.5" />
-                            </svg>
-                          </button>
-                        ) : null}
-                        {!running ||
-                        Boolean(value.trim()) ||
-                        images.length > 0 ? (
-                          <button
-                            type="submit"
-                            className="relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-full shadow-xs transition-all duration-150 enabled:cursor-pointer enabled:inset-shadow-2xs enabled:inset-shadow-white/16 hover:scale-105 active:inset-shadow-black/8 active:shadow-none disabled:pointer-events-none disabled:opacity-64 disabled:shadow-none disabled:hover:scale-100 sm:h-8 sm:w-8 bg-message-action text-message-action-foreground enabled:shadow-message-action/24 hover:bg-message-action-hover"
-                            disabled={!canSend}
-                            aria-label={
-                              running
-                                ? followUpBehavior === "steer"
-                                  ? "Steer current run"
-                                  : "Queue message"
-                                : "Send message"
-                            }
-                            title={
-                              running
-                                ? followUpBehavior === "steer"
-                                  ? "Steer current run"
-                                  : "Queue message"
-                                : "Send message"
-                            }
-                          >
-                            <svg
-                              width="14"
-                              height="14"
-                              viewBox="0 0 14 14"
-                              fill="none"
-                              aria-hidden="true"
-                            >
-                              <path
-                                d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
-                                stroke="currentColor"
-                                strokeWidth="1.8"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              />
-                            </svg>
-                          </button>
-                        ) : null}
+                        <ComposerPrimaryActions
+                          running={running}
+                          canStop={canStop}
+                          stopping={stopping}
+                          canSend={canSend}
+                          followUpBehavior={followUpBehavior}
+                          showPlanFollowUp={showPlanFollowUp}
+                          promptHasText={Boolean(value.trim())}
+                          onStop={onStop}
+                          onImplementInNewThread={onImplementInNewThread}
+                        />
                       </div>
                     </div>
                   }
