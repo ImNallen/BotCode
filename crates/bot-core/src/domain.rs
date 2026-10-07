@@ -122,8 +122,28 @@ impl Execution {
         matches!(self, Self::NotStarted | Self::Running)
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolStatus {
+    InProgress,
+    Completed,
+    Failed,
+    Declined,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubAgentActivity {
+    Started,
+    Interacted,
+    Interrupted,
+    Completed,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum Item {
     UserInput {
         id: String,
@@ -154,10 +174,72 @@ pub enum Item {
         #[serde(default)]
         paths: Vec<String>,
     },
-    Other {
+    Reasoning {
         id: String,
-        label: String,
         text: String,
+        complete: bool,
+    },
+    McpToolCall {
+        id: String,
+        server: String,
+        tool: String,
+        title: String,
+        status: ToolStatus,
+        arguments: serde_json::Value,
+        result: Option<String>,
+        error: Option<String>,
+        duration_ms: Option<u64>,
+    },
+    DynamicToolCall {
+        id: String,
+        tool: String,
+        status: ToolStatus,
+    },
+    CollabAgentToolCall {
+        id: String,
+        tool: String,
+        prompt: Option<String>,
+        status: ToolStatus,
+    },
+    SubAgentActivity {
+        id: String,
+        activity: SubAgentActivity,
+        agent_path: String,
+        agent_thread_id: String,
+    },
+    WebSearch {
+        id: String,
+        query: String,
+        status: ToolStatus,
+    },
+    ImageView {
+        id: String,
+        path: String,
+    },
+    ImageGeneration {
+        id: String,
+        status: ToolStatus,
+    },
+    ContextCompaction {
+        id: String,
+        complete: bool,
+    },
+    HookPrompt {
+        id: String,
+        text: String,
+    },
+    FunctionCallOutput {
+        id: String,
+        name: String,
+    },
+    Sleep {
+        id: String,
+        duration_ms: u64,
+    },
+    ReviewMode {
+        id: String,
+        entered: bool,
+        review: String,
     },
 }
 impl Item {
@@ -168,9 +250,51 @@ impl Item {
             | Self::Plan { id, .. }
             | Self::Command { id, .. }
             | Self::FileChange { id, .. }
-            | Self::Other { id, .. } => id,
+            | Self::Reasoning { id, .. }
+            | Self::McpToolCall { id, .. }
+            | Self::DynamicToolCall { id, .. }
+            | Self::CollabAgentToolCall { id, .. }
+            | Self::SubAgentActivity { id, .. }
+            | Self::WebSearch { id, .. }
+            | Self::ImageView { id, .. }
+            | Self::ImageGeneration { id, .. }
+            | Self::ContextCompaction { id, .. }
+            | Self::HookPrompt { id, .. }
+            | Self::FunctionCallOutput { id, .. }
+            | Self::Sleep { id, .. }
+            | Self::ReviewMode { id, .. } => id,
         }
     }
+}
+fn items_with_legacy<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Vec<Item>, D::Error> {
+    #[derive(Deserialize)]
+    struct Legacy {
+        id: String,
+        label: String,
+        #[serde(default)]
+        text: String,
+    }
+    let mut items = Vec::new();
+    for value in Vec::<serde_json::Value>::deserialize(d)? {
+        if value.get("kind").and_then(serde_json::Value::as_str) != Some("other") {
+            items.push(serde_json::from_value(value).map_err(serde::de::Error::custom)?);
+            continue;
+        }
+        let Legacy { id, label, text } =
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        match label.as_str() {
+            "Reasoning" => items.push(Item::Reasoning {
+                id,
+                text,
+                complete: true,
+            }),
+            "contextCompaction" => items.push(Item::ContextCompaction { id, complete: true }),
+            _ => {}
+        }
+    }
+    Ok(items)
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -238,6 +362,7 @@ pub struct Turn {
     pub native_turn_id: Option<String>,
     pub delivery: Delivery,
     pub execution: Execution,
+    #[serde(deserialize_with = "items_with_legacy")]
     pub items: Vec<Item>,
     #[serde(default)]
     pub settings: Option<SessionSettings>,
