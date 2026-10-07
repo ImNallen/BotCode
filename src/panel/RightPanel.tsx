@@ -36,6 +36,7 @@ import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { Kbd, MenuShortcut, PanelTabCloseButton, ScrollRow } from "./chrome";
 import { DiffSurface } from "./DiffSurface";
+import { usePendingFiles } from "./fileDrafts";
 import { FileEntryIcon } from "./FileEntryIcon";
 import { FilesSurface } from "./FilesSurface";
 import { PullRequestDetail } from "./PullRequestDetail";
@@ -172,6 +173,7 @@ export function RightPanel({
   const active =
     state.active === null ? undefined : state.surfaces[state.active];
   const { preferences } = usePreferences();
+  const pendingFiles = usePendingFiles(checkout);
   const threadId = conversationId ?? null;
   const terminalScope = terminalScopeKey(checkout.workspaceId, threadId);
   const terminals = useTerminalState(terminalScope).panelSurfaces;
@@ -328,6 +330,13 @@ export function RightPanel({
                           surface={surface}
                           pullRequests={pullRequests}
                         />
+                        {surface.kind === "file" &&
+                        pendingFiles.has(surface.path) ? (
+                          <span
+                            className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-current"
+                            aria-hidden
+                          />
+                        ) : null}
                       </PanelTabCloseButton>
                       <button
                         type="button"

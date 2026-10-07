@@ -1313,6 +1313,57 @@ async fn worktree_requires_a_commit() {
     app.shutdown().await.unwrap();
 }
 #[tokio::test]
+async fn writes_land_in_the_thread_checkout() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let isolated = app
+        .create_thread(workspace.id.clone(), main_worktree())
+        .await
+        .unwrap();
+    let (path, _) = worktree(&isolated.checkout);
+    app.write_file(
+        workspace.id.clone(),
+        Some(isolated.id.clone()),
+        "README.md".into(),
+        "edited\n".into(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(path.join("README.md")).unwrap(),
+        "edited\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repository.join("README.md")).unwrap(),
+        "fixture\n"
+    );
+    std::fs::remove_dir_all(&path).unwrap();
+    let removed = app
+        .write_file(
+            workspace.id.clone(),
+            Some(isolated.id.clone()),
+            "README.md".into(),
+            "again\n".into(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(removed.code, "worktree_removed");
+    assert!(!path.exists());
+    let home = app.ensure_scratch().await.unwrap();
+    let unassigned = app
+        .write_file(home.id, None, "notes.txt".into(), "x".into())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (unassigned.code.as_str(), unassigned.message.as_str()),
+        ("missing_folder", "Start a thread to see its files.")
+    );
+    assert!(!home.root.join("notes.txt").exists());
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
 async fn worktree_views_inspect_the_thread_checkout() {
     let f = Fixture::new();
     f.commit();

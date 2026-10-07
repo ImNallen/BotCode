@@ -306,6 +306,53 @@ pub fn read_file(root: &Path, path: &str) -> Result<FileView> {
         Err(e) => FileView::Unavailable { reason: e.message },
     })
 }
+fn writable(root: &Path, path: &str) -> Result<PathBuf> {
+    let inside = || AppError::new("invalid_path", "Choose a file inside the repository.");
+    let root = root.canonicalize()?;
+    let mut existing = root.join(relative(path)?);
+    let mut missing = Vec::new();
+    while existing.symlink_metadata().is_err() {
+        missing.push(existing.file_name().ok_or_else(inside)?.to_owned());
+        existing.pop();
+    }
+    let mut inner = existing
+        .canonicalize()
+        .map_err(|_| inside())?
+        .strip_prefix(&root)
+        .map_err(|_| {
+            AppError::new(
+                "invalid_path",
+                "This symlink points outside the repository.",
+            )
+        })?
+        .to_path_buf();
+    inner.extend(missing.iter().rev());
+    if inner
+        .components()
+        .any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
+    {
+        return Err(inside());
+    }
+    let real = root.join(inner);
+    match std::fs::metadata(&real) {
+        Ok(meta) if !meta.is_file() => Err(inside()),
+        _ => Ok(real),
+    }
+}
+pub fn write_file(root: &Path, path: &str, contents: &str) -> Result<()> {
+    if contents.len() > TEXT_LIMIT {
+        return Err(AppError::new(
+            "file_unavailable",
+            "This file exceeds the 1 MB text limit.",
+        ));
+    }
+    let real = writable(root, path)?;
+    if let Some(parent) = real.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(real, contents)?;
+    Ok(())
+}
 pub fn inspect(workspace: Workspace, threads: Vec<ThreadSummary>) -> Result<WorkspaceView> {
     let root = &workspace.root;
     let files = git(
