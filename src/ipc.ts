@@ -240,6 +240,12 @@ const workspace = z.object({
   label: z.string(),
   kind: z.enum(["repository", "scratch"]),
 });
+const browseDirectory = z.object({
+  path: z.string(),
+  parentPath: z.string().nullable(),
+  entries: z.array(z.object({ name: z.string(), fullPath: z.string() })),
+});
+export type BrowseDirectory = z.infer<typeof browseDirectory>;
 const userQuestions = z.object({
   id,
   turnId: id,
@@ -805,6 +811,8 @@ export const ipc = {
     call("unlink_pull_request", { threadId, key }, threadPrSummary),
   workspaces: () => call("list_workspaces", {}, z.array(workspace)),
   openWorkspace: (path: string) => call("open_workspace", { path }, workspace),
+  browseDirectory: (path: string, cwd?: string) =>
+    call("browse_directory", { path, cwd }, browseDirectory),
   renameWorkspace: (workspaceId: string, label: string) =>
     call("rename_workspace", { workspaceId, label }, workspace),
   removeWorkspace: (workspaceId: string) =>

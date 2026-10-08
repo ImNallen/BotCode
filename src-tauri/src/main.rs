@@ -1,3 +1,4 @@
+mod filesystem;
 mod ipc;
 mod notifications;
 mod preview;
@@ -106,6 +107,7 @@ fn main() {
                 ipc::run_project_script,
                 ipc::list_workspaces,
                 ipc::open_workspace,
+                filesystem::browse_directory,
                 ipc::rename_workspace,
                 ipc::remove_workspace,
                 ipc::scratch_available,
