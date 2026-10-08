@@ -54,6 +54,7 @@ export function Toast({
   type,
   title,
   description,
+  children,
   action,
   onDismiss,
   dismissAfterVisibleMs,
@@ -61,6 +62,7 @@ export function Toast({
   type: ToastType;
   title: string;
   description?: string;
+  children?: ReactNode;
   action?: { label: string; onClick: () => void };
   onDismiss?: () => void;
   dismissAfterVisibleMs?: number;
@@ -135,6 +137,7 @@ export function Toast({
               {description}
             </div>
           ) : null}
+          {children}
         </div>
         {action ? (
           <div className="flex items-center gap-1.5 w-full justify-end">

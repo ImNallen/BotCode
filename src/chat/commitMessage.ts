@@ -1,4 +1,20 @@
 // Commit preview adapts pingdotgg/t3code v0.0.45 components/GitActionsControl.tsx (MIT).
+import { commitSelection, type CommitSelection, type GitStatus } from "../ipc";
+
+export function selectedCommitFiles(
+  files: GitStatus["files"],
+  excluded: ReadonlySet<string>,
+): CommitSelection | null {
+  const selected = files.filter((file) => !excluded.has(file.path));
+  if (selected.length === 0) return null;
+  return selected.length === files.length
+    ? { kind: "all" }
+    : commitSelection.parse({
+        kind: "paths",
+        paths: selected.map((file) => file.path),
+      });
+}
+
 export type CommitDraft = {
   message: string;
   edited: boolean;
@@ -7,7 +23,8 @@ export type CommitDraft = {
 export type CommitDraftEvent =
   | { kind: "edit"; message: string }
   | { kind: "generated"; message: string }
-  | { kind: "failed" };
+  | { kind: "failed" }
+  | { kind: "selection_changed" };
 export const initialCommitDraft: CommitDraft = {
   message: "",
   edited: false,
@@ -18,6 +35,12 @@ export function updateCommitDraft(
   event: CommitDraftEvent,
 ): CommitDraft {
   switch (event.kind) {
+    case "selection_changed":
+      return {
+        ...draft,
+        message: draft.edited ? draft.message : "",
+        generation: "running",
+      };
     case "edit":
       return { ...draft, edited: true, message: event.message };
     case "generated":
@@ -32,13 +55,18 @@ export function updateCommitDraft(
 }
 export function startCommitPreview({
   threadId,
+  selection,
   api,
   onGenerated,
   onFailed,
 }: {
   threadId: string;
+  selection: CommitSelection;
   api: {
-    beginCommitMessage: (threadId: string) => Promise<string>;
+    beginCommitMessage: (
+      threadId: string,
+      selection: CommitSelection,
+    ) => Promise<string>;
     awaitCommitMessage: (job: string) => Promise<string>;
     cancelCommitMessage: (job: string) => Promise<unknown>;
   };
@@ -51,7 +79,7 @@ export function startCommitPreview({
     if (job) void api.cancelCommitMessage(job).catch(() => {});
   };
   void api
-    .beginCommitMessage(threadId)
+    .beginCommitMessage(threadId, selection)
     .then(async (id) => {
       job = id;
       if (stopped) {

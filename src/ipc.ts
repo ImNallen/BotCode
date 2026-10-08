@@ -635,7 +635,37 @@ const gitPhase = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pr") }),
   z.object({ kind: z.literal("pull") }),
 ]);
+export const commitSelection = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("all") }),
+  z.object({
+    kind: z.literal("paths"),
+    paths: z.tuple([z.string().min(1)], z.string().min(1)),
+  }),
+]);
+export const commitRequest = z.object({
+  message: z.string().trim().min(1).max(10000).nullable(),
+  selection: commitSelection,
+  destination: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("current") }),
+    z.object({ kind: z.literal("new_branch") }),
+  ]),
+});
+const gitProgress = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("phase"), phase: gitPhase }),
+  z.object({ kind: z.literal("hook_started"), name: z.string() }),
+  z.object({
+    kind: z.literal("hook_finished"),
+    name: z.string(),
+    code: z.number().nullable(),
+  }),
+  z.object({
+    kind: z.literal("output"),
+    stream: z.enum(["stdout", "stderr"]),
+    line: z.string(),
+  }),
+]);
 const gitOutcome = z.object({
+  branch: z.string().nullable().default(null),
   warnings: z.array(z.string()).default([]),
   commit: z.object({ sha: z.string(), subject: z.string() }).nullable(),
   push: z
@@ -753,11 +783,14 @@ export type GitStatus = z.infer<typeof gitStatus>;
 export type PullRequest = z.infer<typeof pullRequest>;
 export type PrLookup = z.infer<typeof prLookup>;
 export type GitPhase = z.infer<typeof gitPhase>;
+export type CommitSelection = z.infer<typeof commitSelection>;
+export type CommitRequest = z.infer<typeof commitRequest>;
+export type GitProgress = z.infer<typeof gitProgress>;
 export type GitOutcome = z.infer<typeof gitOutcome>;
 export type GitAction =
   | {
       kind: "commit" | "commit_push" | "commit_push_pr";
-      message: string | null;
+      request: CommitRequest;
     }
   | { kind: "push" | "create_pr" | "pull" };
 const skill = z.object({
@@ -975,8 +1008,8 @@ export const ipc = {
       { workspaceId, threadId: threadId ?? null, branch },
       prLookup,
     ),
-  beginCommitMessage: (threadId: string) =>
-    call("begin_commit_message", { threadId }, z.string()),
+  beginCommitMessage: (threadId: string, selection: CommitSelection) =>
+    call("begin_commit_message", { threadId, selection }, z.string()),
   awaitCommitMessage: (job: string) =>
     call("await_commit_message", { job }, z.string()),
   cancelCommitMessage: (job: string) =>
@@ -985,11 +1018,11 @@ export const ipc = {
     { workspaceId }: CheckoutRef,
     originThreadId: string,
     action: GitAction,
-    onPhase: (phase: GitPhase) => void,
+    onProgressEvent: (progress: GitProgress) => void,
   ) => {
     const onProgress = new Channel<unknown>((message) => {
-      const phase = gitPhase.safeParse(message);
-      if (phase.success) onPhase(phase.data);
+      const progress = gitProgress.safeParse(message);
+      if (progress.success) onProgressEvent(progress.data);
     });
     return call(
       "run_git_action",

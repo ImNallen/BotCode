@@ -175,6 +175,7 @@ pub(crate) async fn preview_commit(
     binary: &Path,
     model: Option<&str>,
     root: &Path,
+    selection: &CommitSelection,
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<CommitMessage> {
     let path = git(
@@ -210,7 +211,7 @@ pub(crate) async fn preview_commit(
         cancel,
     )
     .await?;
-    git(root, &["add", "-A"], Some(private.path()), cancel).await?;
+    vcs::stage(root, selection, Some(private.path()), cancel).await?;
     commit_message(binary, model, root, Some(private.path()), cancel).await
 }
 pub(crate) async fn pr_content(

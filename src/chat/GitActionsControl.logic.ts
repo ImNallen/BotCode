@@ -1,6 +1,5 @@
 // Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/GitActionsControl.logic.ts (MIT).
-// Bot Code: drops buildGitActionProgressStages (the core reports phases, see gitActions.ts phaseLabel),
-// the thread-branch sync helpers and resolveAutoFeatureBranchName (Bot Code has no feature branches).
+// Bot Code handles progress in gitProgress.ts and branch naming and checkout metadata in the core.
 
 // Bot Code: the fields of T3's VcsStatusResult that the rules read, built by gitActions.ts `toVcsStatus`.
 export interface VcsStatus {

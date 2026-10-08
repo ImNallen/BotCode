@@ -1,3 +1,4 @@
+import { initialGitProgress, updateGitProgress } from "./gitProgress";
 import type { QueryClient } from "@tanstack/react-query";
 import { useCallback, useSyncExternalStore } from "react";
 import {
@@ -55,29 +56,26 @@ export function startGitRun({
 }): boolean {
   const key = runKey(checkout);
   if (runs.get(key)?.state === "running") return false;
+  let progress = { ...initialGitProgress, phaseStartedAtMs: Date.now() };
   set(key, {
     state: "running",
     action,
-    phase: null,
-    phaseStartedAtMs: Date.now(),
+    progress,
   });
   ipc
-    .runGitAction(checkout, originThreadId, action, (phase) =>
-      set(key, {
-        state: "running",
-        action,
-        phase,
-        phaseStartedAtMs: Date.now(),
-      }),
-    )
+    .runGitAction(checkout, originThreadId, action, (event) => {
+      progress = updateGitProgress(progress, event, Date.now());
+      set(key, { state: "running", action, progress });
+    })
     .then(
       (outcome) => {
-        set(key, { state: "done", outcome, before, pr });
+        set(key, { state: "done", outcome, before, pr, progress });
         if (outcome.pr && !outcome.failure) onPullRequest?.();
       },
       (error: unknown) =>
         set(key, {
           state: "refused",
+          progress,
           action,
           error:
             error instanceof IpcError

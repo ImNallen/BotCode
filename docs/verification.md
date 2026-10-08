@@ -781,3 +781,41 @@ Native interaction used CUA and the actual 1100×780 Tauri window. The temporary
 Native screenshots and accessibility observations are in the tool transcript. Build and suite logs, the protocol capture, scripted replies and `native-assertions.json` are under `/tmp/botcode-approvals/evidence`. `check-native.py` checks the captured mode parameters, HTTP results, identical-command session skip, saved defaults, exact MCP and legacy replies, and crash expiration and recovery. The isolated verifier app and its providers were stopped afterward. Real Codex established network escalation and all four modes; the scripted peer established the new permission and MCP request shapes in the native UI.
 
 To repeat, build a temporary app bundle with a distinct identifier, launch it with a disposable repository and isolated `BOT_CODE_DATA_DIR`, and select Supervised. Send the exact harmless network command above, approve its escalation for the session, and repeat it in a second turn. Use `BOT_CODE_CODEX_BIN` to point at a disposable copy of `crates/bot-core/tests/support/codex_peer.py` for the `approval-kind-*` scenarios. Keep the peer's marker files and logs outside the working repository.
+
+## Selective commits, new branches and Git hook feedback
+
+Verified on 2026-10-08 against [T3 Code v0.0.45](https://github.com/pingdotgg/t3code/releases/tag/v0.0.45), commit `6c8fed35dded9ff71c5b46807125457acbb76be6`. The full core suite passed 430 tests, including 38 real Git action cases. All 452 UI tests passed. The production build, TypeScript checking, rustfmt and workspace Clippy with warnings denied passed.
+
+The commit dialog passes a shared `CommitRequest` through the renderer, IPC and checkout-held Git action. All-selected commits retain `git add -A`. Subsets validate fresh status membership before changing the index, clear it with `read-tree`, and stage literal selected paths and rename sources. Message previews use the same selection in a private index. Git execution streams both pipes while reading named hook lifecycle events from TRACE2, including child exits that omit the hook name. Completed branches and commits remain in the outcome when a later step fails. A nonzero post-commit hook exit is a warning when Git itself succeeds.
+
+Real Git regression cases cover excluded staged, unstaged and untracked changes; full current contents of a partially staged file; literal metacharacter paths; deletion and rename sources; invalid, empty and stale selection; private split-index and unborn previews; branch name collisions and shared worktree metadata; blocked hook output before completion; pre-push failure after commit; and successful commits with a failing post-commit hook. The native run caught an ambiguous rename bug that the initial suite missed: status and diff inferred different source files with identical contents. The file list now takes its membership only from porcelain status. A regression failed before this fix and passed afterward. Unmatched line counts remain zero rather than guessing which file a diff count belongs to.
+
+The actual debug Tauri bundle ran with identifier `dev.bot.code.selectiveverify`, isolated `BOT_CODE_DATA_DIR=/private/tmp/bot-selective-commit/native-final/state`, and three disposable repositories prepared by `scripts/verify-selective-commits.py`. The repository test Codex peer supplied generated messages; Git, hooks, SQLite, IPC and the renderer were real. The only origin was a deliberately missing local path. No project commit, external push or pull request was made.
+
+- In **Verify selection**, Files > Edit exposed checkboxes and Select all. Selecting none disabled both commit buttons. Excluding `exclude-staged.txt`, `exclude-unstaged.txt` and `exclude-untracked.txt` updated row labels and totals. Preview left the real staged rename and excluded staged contents unchanged, and its generation prompt included the selected mixed file's current contents while excluding all three excluded paths. **Commit on new branch**, with subject `Select files`, created `feature/select-files-2` without altering the existing `feature/select-files`. Tauri's sidebar, branch picker and completion toast showed the new branch. The actual tree at `e24ff02f2d14cba6b648d528695ae8a945585bf4` contained exactly the selected modifications, addition, rename and deletion. The excluded tracked files retained their base contents in HEAD, the excluded untracked file stayed absent, and the real index was empty. Excluded working changes remained on disk.
+- In **Verify hooks**, subject `Hook rejected` created `feature/hook-rejected` and then blocked in pre-commit. Before release, Tauri showed **Running pre-commit hook...**, `native hook started` and repeated carriage-return progress lines. HEAD still matched the baseline. Releasing the rejecting hook left HEAD unchanged and `changed.txt` staged. The failure toast retained **Created branch feature/hook-rejected**, the rejection output and **pre-commit hook failed (exit 1)**. The sidebar and branch picker retained the branch. Resolving the hook and retrying Commit produced `9a03eb98b8907c49d51794e4b050c68cff794596`, with the successful hook output and lifecycle visible.
+- In **Verify partial**, the combined **Commit, push & PR** action committed `02458f41bfe8cc6d26df732b17e9202e5df5abca`, then failed against the missing local origin before reaching the PR step. The toast showed **Committed 02458f4** and **Push failed**, and its Git output disclosure retained the commit summary and remote error. The checker confirmed the commit and its contents remained, and no origin directory was created.
+
+The native layout was inspected at 1100×780 and at the 1000×620 minimum. A fresh minimum-size fixture used `/private/tmp/bot-selective-commit/native-min/state` and a temporary Tauri config without changing the project config. The dialog kept its message field and all footer controls visible. Its file list scrolled to the last checkbox independently. Cancel restored the left sidebar, centered chat, bottom composer and compact header. The computer-use adapter could not bind the second temporary bundle identifier, so the minimum-size build reused the established `dev.bot.code.selectiveverify` identifier.
+
+The result checks are saved in `/tmp/bot-selective-commit/native-final/{selection,hooks,hooks-success,partial}-check.json`. The hook-failure check was recorded before its successful retry; rerunning that check after the retry correctly refuses the changed HEAD. Native accessibility trees and screenshots were inspected through the computer-use tool in this task's transcript. The original tool outputs and screenshot bytes were extracted from this task's own Codex transcript into `/tmp/bot-selective-commit/native-evidence`; `index.json` lists each observation, and each JSON records its transcript path, output line and screenshot path. No pixel-difference measurement is claimed. Core and UI logs are `/tmp/bot-selective-commit/final-core-tests.log` and `/tmp/bot-selective-commit/final-ui-tests.log`.
+
+To reproduce, choose an empty fixture path and prepare it:
+
+```sh
+python3 scripts/verify-selective-commits.py prepare /tmp/bot-commit-verify
+pnpm tauri build --debug --config '{"identifier":"dev.bot.code.selectiveverify"}'
+BOT_CODE_DATA_DIR=/tmp/bot-commit-verify/state \
+BOT_CODE_CODEX_BIN=/tmp/bot-commit-verify/peers/codex \
+BOT_CODE_GH_BIN=/tmp/bot-commit-verify/peers/missing-gh \
+  'target/debug/bundle/macos/Bot Code.app/Contents/MacOS/bot-code'
+```
+
+Drive the three sidebar conversations using the steps above. Before the hook-failure action, create `hook-control/fail`; while the hook runs, inspect the live output, then create `hook-control/release`. Check `hooks` before removing `fail` and retrying. The release file lets the retry finish immediately. After each outcome, run:
+
+```sh
+python3 scripts/verify-selective-commits.py check /tmp/bot-commit-verify selection
+python3 scripts/verify-selective-commits.py check /tmp/bot-commit-verify hooks
+python3 scripts/verify-selective-commits.py check /tmp/bot-commit-verify hooks-success
+python3 scripts/verify-selective-commits.py check /tmp/bot-commit-verify partial
+```

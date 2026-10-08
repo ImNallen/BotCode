@@ -1,4 +1,8 @@
+mod progress;
+mod staging;
 use crate::{domain::*, repo};
+use staging::new_branch_name;
+pub(crate) use staging::stage;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -29,6 +33,28 @@ pub(crate) struct Output {
     pub stdout: String,
     pub stderr: String,
     pub code: Option<i32>,
+    hook_warnings: Vec<String>,
+}
+impl Output {
+    fn success(self, warnings: &mut Vec<String>) -> Result<String> {
+        warnings.extend(self.hook_warnings);
+        if self.code == Some(0) {
+            return Ok(self.stdout);
+        }
+        Err(AppError::new(
+            "git",
+            if self.stderr.trim().is_empty() {
+                self.stdout.trim()
+            } else {
+                self.stderr.trim()
+            },
+        ))
+    }
+}
+struct ToolExecution<'a> {
+    input: Option<&'a [u8]>,
+    env: &'a [(&'a str, &'a std::ffi::OsStr)],
+    observer: Option<&'a (dyn Fn(GitProgress) + Send + Sync)>,
 }
 impl Tool<'_> {
     pub async fn run(&self, args: &[&str], limit: Duration) -> Result<Output> {
@@ -67,6 +93,32 @@ impl Tool<'_> {
         input: Option<&[u8]>,
         env: &[(&str, &std::ffi::OsStr)],
     ) -> Result<Output> {
+        self.run_observable(
+            args,
+            limit,
+            bytes,
+            cancel,
+            ToolExecution {
+                input,
+                env,
+                observer: None,
+            },
+        )
+        .await
+    }
+    async fn run_observable(
+        &self,
+        args: &[&str],
+        limit: Duration,
+        bytes: u64,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+        execution: ToolExecution<'_>,
+    ) -> Result<Output> {
+        let ToolExecution {
+            input,
+            env,
+            observer,
+        } = execution;
         if *cancel.borrow() {
             return Err(AppError::new("cancelled", "Tool work cancelled."));
         }
@@ -108,42 +160,8 @@ impl Tool<'_> {
                         }
                         Ok::<_, std::io::Error>(())
                     },
-                    async {
-                        match &mut stdout {
-                            Some(pipe) => pipe
-                                .take(bytes + 1)
-                                .read_to_end(&mut out)
-                                .await
-                                .and_then(|_| {
-                                    if out.len() as u64 > bytes {
-                                        Err(std::io::Error::other(
-                                            "Review response exceeded the byte limit.",
-                                        ))
-                                    } else {
-                                        Ok(())
-                                    }
-                                }),
-                            None => Ok(()),
-                        }
-                    },
-                    async {
-                        match &mut stderr {
-                            Some(pipe) => pipe
-                                .take(bytes + 1)
-                                .read_to_end(&mut err)
-                                .await
-                                .and_then(|_| {
-                                    if err.len() as u64 > bytes {
-                                        Err(std::io::Error::other(
-                                            "Tool error exceeded the byte limit.",
-                                        ))
-                                    } else {
-                                        Ok(())
-                                    }
-                                }),
-                            None => Ok(()),
-                        }
-                    },
+                    progress::read_output(&mut stdout, &mut out, bytes, observer, GitOutputStream::Stdout),
+                    progress::read_output(&mut stderr, &mut err, bytes, observer, GitOutputStream::Stderr),
                 )?;
             Ok::<_, std::io::Error>((status, out, err))
         }) => Some(result),
@@ -165,6 +183,7 @@ impl Tool<'_> {
                     stdout: String::from_utf8_lossy(&out).into_owned(),
                     stderr: String::from_utf8_lossy(&err).into_owned(),
                     code: status.code(),
+                    hook_warnings: Vec::new(),
                 })
             }
             Err(_) => {
@@ -173,6 +192,50 @@ impl Tool<'_> {
                     "timeout",
                     format!("{} {} timed out.", self.name(), args.first().unwrap_or(&"")),
                 ))
+            }
+        }
+    }
+    async fn run_observed(
+        &self,
+        args: &[&str],
+        limit: Duration,
+        observer: &(dyn Fn(GitProgress) + Send + Sync),
+    ) -> Result<Output> {
+        let trace = tempfile::NamedTempFile::new()?;
+        let env = [("GIT_TRACE2_EVENT", trace.path().as_os_str())];
+        let (_send, mut cancel) = tokio::sync::watch::channel(false);
+        let run = self.run_observable(
+            args,
+            limit,
+            64 * 1024,
+            &mut cancel,
+            ToolExecution {
+                input: None,
+                env: &env,
+                observer: Some(observer),
+            },
+        );
+        tokio::pin!(run);
+        let mut reader = progress::HookTrace::new(trace.path()).await?;
+        let mut tick = tokio::time::interval(Duration::from_millis(20));
+        let mut trace_available = true;
+        loop {
+            tokio::select! {
+                result = &mut run => {
+                    if trace_available { let _ = reader.drain(observer).await; }
+                    return result.map(|mut output| {
+                        if output.code == Some(0) && !reader.failed.is_empty() {
+                            output.hook_warnings = reader.failed;
+                        }
+                        output
+                    });
+                }
+                _ = tick.tick(), if trace_available => {
+                    if let Err(error) = reader.drain(observer).await {
+                        trace_available = false;
+                        observer(GitProgress::Output { stream: GitOutputStream::Stderr, line: format!("Hook progress unavailable: {}", error.message) });
+                    }
+                },
             }
         }
     }
@@ -313,11 +376,12 @@ pub(crate) async fn status(root: &Path) -> Result<GitStatus> {
             (path, stat)
         })
         .collect();
-    files.extend(
-        parse_numstat(&numstat)
-            .into_iter()
-            .map(|stat| (stat.path.clone(), stat)),
-    );
+    // Diff and status can infer different rename sources for identical files.
+    for stat in parse_numstat(&numstat) {
+        if let Some(file) = files.get_mut(&stat.path) {
+            *file = stat;
+        }
+    }
     let origin = git.run(&["remote", "get-url", "origin"], LOCAL).await?.code == Some(0);
     let branch = match porcelain.head {
         Some(name) => Some(branch_status(root, name, porcelain.ahead_behind).await?),
@@ -415,6 +479,7 @@ pub(crate) struct Porcelain {
     pub unborn: bool,
     pub ahead_behind: Option<(u32, u32)>,
     pub paths: Vec<String>,
+    pub renames: BTreeMap<String, String>,
 }
 pub(crate) fn parse_porcelain(out: &str) -> Porcelain {
     let mut porcelain = Porcelain::default();
@@ -441,8 +506,12 @@ pub(crate) fn parse_porcelain(out: &str) -> Porcelain {
             Some(("1", _)) => record.splitn(9, ' ').nth(8),
             // A rename's original path follows as its own field.
             Some(("2", _)) => {
-                records.next();
-                record.splitn(10, ' ').nth(9)
+                let original = records.next();
+                let path = record.splitn(10, ' ').nth(9);
+                if let (Some(path), Some(original)) = (path, original) {
+                    porcelain.renames.insert(path.into(), original.into());
+                }
+                path
             }
             Some(("u", _)) => record.splitn(11, ' ').nth(10),
             Some(("?", path)) => Some(path),
@@ -523,14 +592,10 @@ pub(crate) enum Plan {
         upstream: String,
     },
     Stack {
-        commit: Option<CommitRequest>,
+        commit: Option<Box<CommitRequest>>,
         push: Option<PushTarget>,
         pr: Option<PrStep>,
     },
-}
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct CommitRequest {
-    pub message: Option<CommitMessage>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PushTarget {
@@ -550,11 +615,19 @@ pub(crate) fn plan(
     status: &GitStatus,
     pr: Option<&PrLookup>,
 ) -> std::result::Result<Plan, GitFailure> {
+    if matches!(&action, GitAction::CommitPush { request } | GitAction::CommitPushPr { request } if request.destination == CommitDestination::NewBranch)
+    {
+        return Err(refuse(
+            GitPhase::Commit,
+            "invalid_commit_destination",
+            "Commit on a new branch is a commit-only action.",
+        ));
+    }
     let (commit, pushes, opens) = match action {
         GitAction::Pull => return plan_pull(status),
-        GitAction::Commit { message } => (Some(CommitRequest { message }), false, false),
-        GitAction::CommitPush { message } => (Some(CommitRequest { message }), true, false),
-        GitAction::CommitPushPr { message } => (Some(CommitRequest { message }), true, true),
+        GitAction::Commit { request } => (Some(Box::new(request)), false, false),
+        GitAction::CommitPush { request } => (Some(Box::new(request)), true, false),
+        GitAction::CommitPushPr { request } => (Some(Box::new(request)), true, true),
         GitAction::Push => (None, true, false),
         GitAction::CreatePr => (None, false, true),
     };
@@ -713,7 +786,7 @@ pub(crate) struct Context {
     pub network: Duration,
     pub codex: PathBuf,
     pub model: Option<String>,
-    pub progress: Box<dyn Fn(GitPhase) + Send + Sync>,
+    pub progress: Box<dyn Fn(GitProgress) + Send + Sync>,
 }
 pub(crate) async fn run(cx: &Context, action: GitAction) -> Result<GitOutcome> {
     let status = status(&cx.root).await?;
@@ -738,29 +811,43 @@ async fn steps(
     let failed = |phase: GitPhase| move |error| GitFailure { phase, error };
     let (commit_message, push_target, pr_step) = match plan {
         Plan::Pull { upstream } => {
-            (cx.progress)(GitPhase::Pull);
-            out.pull = Some(pull(cx, upstream).await.map_err(failed(GitPhase::Pull))?);
+            (cx.progress)(GitProgress::Phase {
+                phase: GitPhase::Pull,
+            });
+            out.pull = Some(
+                pull(cx, upstream, &mut out.warnings)
+                    .await
+                    .map_err(failed(GitPhase::Pull))?,
+            );
             return Ok(());
         }
         Plan::Stack { commit, push, pr } => (commit, push, pr),
     };
     if let Some(message) = commit_message {
-        (cx.progress)(GitPhase::Commit);
-        out.commit = Some(
-            commit(cx, message.message)
-                .await
-                .map_err(failed(GitPhase::Commit))?,
-        );
+        (cx.progress)(GitProgress::Phase {
+            phase: GitPhase::Commit,
+        });
+        commit(cx, *message, out)
+            .await
+            .map_err(failed(GitPhase::Commit))?;
     }
     if let Some(target) = push_target {
         let phase = GitPhase::Push {
             remote: target.remote.clone(),
         };
-        (cx.progress)(phase.clone());
-        out.push = Some(push(cx, &target).await.map_err(failed(phase))?);
+        (cx.progress)(GitProgress::Phase {
+            phase: phase.clone(),
+        });
+        out.push = Some(
+            push(cx, &target, &mut out.warnings)
+                .await
+                .map_err(failed(phase))?,
+        );
     }
     if let Some(step) = pr_step {
-        (cx.progress)(GitPhase::Pr);
+        (cx.progress)(GitProgress::Phase {
+            phase: GitPhase::Pr,
+        });
         out.pr = Some(
             open_pr(cx, step, &mut out.warnings)
                 .await
@@ -769,17 +856,18 @@ async fn steps(
     }
     Ok(())
 }
-async fn commit(cx: &Context, message: Option<CommitMessage>) -> Result<Committed> {
+async fn commit(cx: &Context, request: CommitRequest, out: &mut GitOutcome) -> Result<()> {
     let root = &cx.root;
     let git = git(root);
-    git.ok(&["add", "-A"], LOCAL, "git").await?;
+    let (_send, mut cancel) = tokio::sync::watch::channel(false);
+    stage(root, &request.selection, None, &mut cancel).await?;
     if git.run(&["diff", "--cached", "--quiet"], LOCAL).await?.code == Some(0) {
         return Err(AppError::new(
             "nothing_to_commit",
             "There are no changes to commit.",
         ));
     }
-    let message = match message {
+    let message = match request.message {
         Some(message) => message,
         None => {
             let (_send, mut cancel) = tokio::sync::watch::channel(false);
@@ -799,14 +887,44 @@ async fn commit(cx: &Context, message: Option<CommitMessage>) -> Result<Committe
             })?
         }
     };
-    git.ok(&["commit", "-m", message.as_str()], COMMIT, "git")
-        .await?;
-    Ok(Committed {
-        sha: head(root).await?,
-        subject: message.subject().into(),
-    })
+    if request.destination == CommitDestination::NewBranch {
+        let branch = new_branch_name(root, message.subject()).await?;
+        let switched = git
+            .run_observed(&["checkout", "-b", &branch], LOCAL, cx.progress.as_ref())
+            .await;
+        if git
+            .ok(&["symbolic-ref", "--short", "HEAD"], LOCAL, "git")
+            .await
+            .is_ok_and(|current| current.trim() == branch)
+        {
+            out.branch = Some(branch);
+        }
+        switched?.success(&mut out.warnings)?;
+    }
+    let before = head(root).await.ok();
+    let committed = git
+        .run_observed(
+            &["commit", "-m", message.as_str()],
+            COMMIT,
+            cx.progress.as_ref(),
+        )
+        .await;
+    // Hooks may fail after HEAD moved. Report that landed commit before the failure.
+    if let Ok(sha) = head(root).await
+        && before.as_ref() != Some(&sha)
+    {
+        out.commit = Some(Committed {
+            sha,
+            subject: message.subject().into(),
+        });
+    }
+    committed?.success(&mut out.warnings)?;
+    if out.commit.is_none() {
+        return Err(AppError::new("git", "Git did not create a commit."));
+    }
+    Ok(())
 }
-async fn push(cx: &Context, target: &PushTarget) -> Result<Pushed> {
+async fn push(cx: &Context, target: &PushTarget, warnings: &mut Vec<String>) -> Result<Pushed> {
     let git = git(&cx.root);
     if let Some(base) = &target.record_base {
         git.ok(
@@ -822,18 +940,21 @@ async fn push(cx: &Context, target: &PushTarget) -> Result<Pushed> {
         args.push("-u");
     }
     args.extend([target.remote.as_str(), &refspec]);
-    git.ok(&args, cx.network, "git").await?;
+    git.run_observed(&args, cx.network, cx.progress.as_ref())
+        .await?
+        .success(warnings)?;
     Ok(Pushed {
         sha: head(&cx.root).await?,
         upstream: format!("{}/{}", target.remote, target.branch),
         set_upstream: target.set_upstream,
     })
 }
-async fn pull(cx: &Context, upstream: String) -> Result<Pulled> {
+async fn pull(cx: &Context, upstream: String, warnings: &mut Vec<String>) -> Result<Pulled> {
     let before = head(&cx.root).await?;
     git(&cx.root)
-        .ok(&["pull", "--ff-only"], cx.network, "git")
-        .await?;
+        .run_observed(&["pull", "--ff-only"], cx.network, cx.progress.as_ref())
+        .await?
+        .success(warnings)?;
     Ok(Pulled {
         updated: head(&cx.root).await? != before,
         upstream,
@@ -936,6 +1057,7 @@ mod tests {
                 head: Some("feature".into()),
                 unborn: false,
                 ahead_behind: Some((2, 1)),
+                renames: BTreeMap::from([("new name.txt".into(), "old name.txt".into())]),
                 paths: vec![
                     "with space.txt".into(),
                     "new name.txt".into(),
@@ -951,6 +1073,7 @@ mod tests {
                 unborn: true,
                 ahead_behind: None,
                 paths: vec![],
+                renames: BTreeMap::new(),
             }
         );
     }

@@ -194,8 +194,12 @@ pub async fn set_review_disposition(
     app.set_review_disposition(thread_id, key, input).await
 }
 #[tauri::command]
-pub async fn begin_commit_message(app: State<'_, App>, thread_id: ThreadId) -> Result<String> {
-    app.begin_commit_message(thread_id).await
+pub async fn begin_commit_message(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    selection: CommitSelection,
+) -> Result<String> {
+    app.begin_commit_message(thread_id, selection).await
 }
 #[tauri::command]
 pub async fn await_commit_message(app: State<'_, App>, job: String) -> Result<String> {
@@ -211,7 +215,7 @@ pub async fn run_git_action(
     workspace_id: WorkspaceId,
     origin_thread_id: ThreadId,
     action: GitAction,
-    on_progress: Channel<GitPhase>,
+    on_progress: Channel<GitProgress>,
 ) -> Result<GitOutcome> {
     app.run_git_action(workspace_id, Some(origin_thread_id), action, move |phase| {
         let _ = on_progress.send(phase);

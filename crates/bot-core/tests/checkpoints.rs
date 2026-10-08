@@ -414,7 +414,10 @@ async fn active_turn_and_git_hold_refuse_both_revert_modes() {
             workspace,
             Some(thread),
             GitAction::Commit {
-                message: Some("checkpoint verification".to_owned().try_into().unwrap()),
+                request: CommitRequest {
+                    message: Some("checkpoint verification".to_owned().try_into().unwrap()),
+                    ..CommitRequest::default()
+                },
             },
             |_| {},
         )

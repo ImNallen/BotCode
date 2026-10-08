@@ -16,7 +16,11 @@ pub(super) struct Writing {
     pub active: tokio::task::JoinSet<(String, Result<String>)>,
 }
 impl Owner {
-    pub(super) fn begin_commit_preview(&mut self, thread: ThreadId) -> Result<String> {
+    pub(super) fn begin_commit_preview(
+        &mut self,
+        thread: ThreadId,
+        selection: CommitSelection,
+    ) -> Result<String> {
         let t = self.thread(&thread)?;
         let (_, location) = self.checkout(&t.workspace_id, Some(thread.clone()))?;
         let root = location.repository()?;
@@ -55,6 +59,7 @@ impl Owner {
                     &binary,
                     model.as_deref(),
                     &root,
+                    &selection,
                     &mut receiver,
                 )
                 .await
