@@ -157,6 +157,7 @@ fn main() {
                 ipc::collaboration_modes,
                 ipc::answer_user_questions,
                 ipc::usage_limits,
+                ipc::usage_history,
                 ipc::update_thread_settings,
                 ipc::answer_approval,
                 ipc::interrupt,

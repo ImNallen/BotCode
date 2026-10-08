@@ -47,6 +47,8 @@ pub use settlement::{SettlementInput, SettlementRules, settlement_at};
 mod store;
 mod terminal;
 pub use terminal::{TerminalEvent, TerminalId};
+mod usage_history;
+pub use usage_history::{UsageHistoryReport, UsageHistoryRequest, UsagePeriod};
 mod usage;
 pub use usage::{ContextUsage, LimitWindow, Slot, UsageLimits, WindowKind};
 mod text_generation;

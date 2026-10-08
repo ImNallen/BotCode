@@ -402,6 +402,13 @@ pub async fn answer_user_questions(
     app.answer_user_questions(request_id, answers).await
 }
 #[tauri::command]
+pub async fn usage_history(
+    app: State<'_, App>,
+    request: UsageHistoryRequest,
+) -> Result<UsageHistoryReport> {
+    app.usage_history(request).await
+}
+#[tauri::command]
 pub async fn usage_limits(app: State<'_, App>, refresh: bool) -> Result<UsageLimits> {
     app.usage_limits(refresh).await
 }

@@ -272,6 +272,7 @@ enum Command {
 #[derive(Clone)]
 pub struct App {
     thread_search: crate::thread_search::ThreadSearch,
+    usage_history: crate::usage_history::UsageHistory,
     commands: mpsc::Sender<Command>,
     changes: broadcast::Sender<ChangeHint>,
     limits: watch::Receiver<Option<UsageLimits>>,
@@ -306,6 +307,8 @@ impl App {
     ) -> Result<Self> {
         let thread_search =
             crate::thread_search::ThreadSearch::new(config.data_dir.join("z1.sqlite"));
+        let usage_history =
+            crate::usage_history::UsageHistory::from_environment(config.data_dir.clone());
         let network_timeout = config.network_timeout;
         let store = Store::open(&config.data_dir)?;
         let workspaces = store
@@ -502,6 +505,7 @@ impl App {
         );
         let app = Self {
             thread_search,
+            usage_history,
             commands,
             changes,
             limits: limits_rx,
@@ -1072,6 +1076,12 @@ impl App {
         answers: UserQuestionAnswers,
     ) -> Result<()> {
         self.call(|r| Command::UserQuestions(id, answers, r)).await
+    }
+    pub async fn usage_history(
+        &self,
+        request: crate::UsageHistoryRequest,
+    ) -> Result<crate::UsageHistoryReport> {
+        self.usage_history.read(request).await
     }
     pub async fn usage_limits(&self, refresh: bool) -> Result<UsageLimits> {
         self.call(|r| Command::UsageLimits(refresh, r)).await
