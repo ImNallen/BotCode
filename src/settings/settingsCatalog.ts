@@ -223,6 +223,14 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         when: "available",
         rows: [
           {
+            id: "working-shelf",
+            title: "Working section (beta)",
+            description:
+              "Fold working and monitoring threads into a Working section. They return to the top of the inbox when they need you.",
+            keywords:
+              "hide fold running monitoring threads inbox sidebar shelf",
+          },
+          {
             id: "auto-settle-on-merge",
             title: projectSettingRows.autoSettleOnMerge.title,
             description: projectSettingRows.autoSettleOnMerge.all,

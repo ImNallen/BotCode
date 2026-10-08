@@ -1670,6 +1670,7 @@ export function ChatView({
                               (!configQuery.isPending && !configQuery.error)) &&
                             (!threadId || Boolean(thread)))
                         }
+                        taskTurn={latestTurn}
                         running={busy || queued.length > 0}
                         canStop={canStop}
                         stopping={

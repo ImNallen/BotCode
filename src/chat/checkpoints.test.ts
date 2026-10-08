@@ -52,6 +52,7 @@ function fixture(): Thread {
       id,
       prompt: `Edit ${index + 1}`,
       attachments: [],
+      tasks: null,
       nativeTurnId: `native-${index + 1}`,
       delivery: { kind: "accepted" },
       execution: { kind: "completed" },

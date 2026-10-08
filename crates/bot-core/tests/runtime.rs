@@ -910,6 +910,7 @@ fn legacy_snapshots_default_settings() {
         worktree_setup: None,
         created_at_ms: None,
         latest_user_activity_at_ms: None,
+        unsettled_at_ms: None,
         id: ThreadId::default(),
         workspace_id: WorkspaceId::default(),
         title: "Legacy".into(),
@@ -922,6 +923,7 @@ fn legacy_snapshots_default_settings() {
             branch: "bot-code/legacy".into(),
         },
         turns: vec![Turn {
+            tasks: None,
             id: TurnId::default(),
             prompt: "hello".into(),
             context: None,
@@ -2261,6 +2263,7 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
         worktree_setup: None,
         created_at_ms: None,
         latest_user_activity_at_ms: None,
+        unsettled_at_ms: None,
         id: ThreadId::default(),
         workspace_id: WorkspaceId::default(),
         title: "Idle".into(),
@@ -2270,6 +2273,7 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
         settings: SessionSettings::default(),
         checkout: Checkout::Local,
         turns: vec![Turn {
+            tasks: None,
             id: TurnId::default(),
             prompt: "hello".into(),
             context: None,
@@ -7021,4 +7025,279 @@ async fn a_pre_port_image_receipt_retries_with_unchanged_serialized_fingerprint(
     assert_eq!(app.thread(thread.id).await.unwrap().turns.len(), 1);
     assert_eq!(turn_inputs(&f).len(), 1);
     app.shutdown().await.unwrap();
+}
+
+async fn task_control(
+    f: &Fixture,
+    native: &str,
+    revision: u64,
+    action: &str,
+    fields: serde_json::Value,
+) {
+    let mut value = fields;
+    value["revision"] = revision.into();
+    value["action"] = action.into();
+    let root = f.peer.parent().unwrap();
+    std::fs::write(
+        root.join(format!("task-control-{native}.json")),
+        value.to_string(),
+    )
+    .unwrap();
+    for _ in 0..200 {
+        let observed =
+            std::fs::read_to_string(root.join(format!("task-control-seen-{native}.json")))
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        if observed.as_ref().is_some_and(|v| v["revision"] == revision) {
+            tokio::time::sleep(Duration::from_millis(130)).await;
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("task fixture did not consume {action}");
+}
+
+#[tokio::test]
+async fn task_progress_routes_exact_turns_and_preserves_last_valid_snapshot() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(
+        thread.id.clone(),
+        "early-tasks".into(),
+        "task-progress-early".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let first = wait(&app, &thread.id, |t| {
+        t.turns[0]
+            .tasks
+            .as_ref()
+            .is_some_and(|tasks| tasks.steps().len() == 3)
+    })
+    .await;
+    let native = first.native_thread_id.clone().unwrap();
+    let first_turn = first.turns[0].native_turn_id.clone().unwrap();
+    assert_eq!(
+        first.turns[0].tasks.as_ref().unwrap().steps()[0].status,
+        TaskStatus::InProgress
+    );
+    task_control(&f, &native, 1, "advance", json!({"stage":1})).await;
+    let updated = wait(&app, &thread.id, |t| {
+        t.turns[0]
+            .tasks
+            .as_ref()
+            .is_some_and(|tasks| tasks.steps()[0].status == TaskStatus::Completed)
+    })
+    .await;
+    let tasks = updated.turns[0].tasks.clone();
+    let revision = updated.revision;
+    assert!(tasks.as_ref().unwrap().steps()[0].duration_ms.is_some());
+    task_control(&f, &native, 2, "advance", json!({"stage":1})).await;
+    assert_eq!(
+        app.thread(thread.id.clone()).await.unwrap().revision,
+        revision
+    );
+    for (index, action) in ["malformed", "missing", "stale", "wrong-thread"]
+        .into_iter()
+        .enumerate()
+    {
+        task_control(&f, &native, index as u64 + 3, action, json!({})).await;
+        let snapshot = app.thread(thread.id.clone()).await.unwrap();
+        assert_eq!(snapshot.turns[0].tasks, tasks);
+        assert_eq!(snapshot.revision, revision);
+        assert_eq!(snapshot.session, SessionState::Running);
+    }
+    task_control(&f, &native, 7, "clear", json!({})).await;
+    assert!(
+        app.thread(thread.id.clone()).await.unwrap().turns[0]
+            .tasks
+            .is_none()
+    );
+    task_control(&f, &native, 8, "advance", json!({"stage":0})).await;
+    app.interrupt(thread.id.clone()).await.unwrap();
+    let stopped = wait(&app, &thread.id, |t| {
+        t.turns[0].execution == Execution::Interrupted
+    })
+    .await;
+    assert_eq!(
+        stopped.turns[0].tasks.as_ref().unwrap().steps()[0].status,
+        TaskStatus::InProgress
+    );
+    std::fs::remove_file(
+        f.peer
+            .parent()
+            .unwrap()
+            .join(format!("task-control-{native}.json")),
+    )
+    .unwrap();
+    app.submit(
+        thread.id.clone(),
+        "next-tasks".into(),
+        "task-progress".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let next = wait(&app, &thread.id, |t| {
+        t.turns.len() == 2 && t.turns[1].tasks.is_some()
+    })
+    .await;
+    assert_eq!(
+        next.turns[1].tasks.as_ref().unwrap().steps()[0].status,
+        TaskStatus::InProgress
+    );
+    task_control(&f, &native, 9, "stale", json!({"turnId":first_turn})).await;
+    let safe = app.thread(thread.id.clone()).await.unwrap();
+    assert_eq!(safe.turns[0].tasks, stopped.turns[0].tasks);
+    assert_eq!(safe.turns[1].tasks, next.turns[1].tasks);
+    task_control(&f, &native, 10, "advance", json!({"stage":3})).await;
+    let completed_tasks = app.thread(thread.id.clone()).await.unwrap().turns[1]
+        .tasks
+        .clone();
+    assert!(
+        completed_tasks
+            .as_ref()
+            .unwrap()
+            .steps()
+            .iter()
+            .all(|s| s.status == TaskStatus::Completed)
+    );
+    task_control(&f, &native, 11, "finish", json!({})).await;
+    let completed = wait(&app, &thread.id, |t| {
+        t.turns[1].execution == Execution::Completed
+    })
+    .await;
+    assert_eq!(completed.turns[1].tasks, completed_tasks);
+    app.shutdown().await.unwrap();
+    let reopened = reopen(&f.config).await;
+    let restored = reopened.thread(thread.id.clone()).await.unwrap();
+    assert_eq!(restored.turns[0].tasks, stopped.turns[0].tasks);
+    assert_eq!(restored.turns[1].tasks, completed_tasks);
+    reopened
+        .revert_thread(
+            thread.id.clone(),
+            "rewind-tasks".into(),
+            restored.turns[1].id.clone(),
+            false,
+        )
+        .await
+        .unwrap();
+    let rewound = reopened.thread(thread.id.clone()).await.unwrap();
+    assert_eq!(rewound.turns.len(), 1);
+    assert_eq!(rewound.turns[0].tasks, stopped.turns[0].tasks);
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn task_progress_survives_active_restart_as_lost_without_replaying_timers() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(
+        thread.id.clone(),
+        "restart-tasks".into(),
+        "task-progress".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    let running = wait(&app, &thread.id, |t| t.turns[0].tasks.is_some()).await;
+    app.shutdown().await.unwrap();
+    let reopened = reopen(&f.config).await;
+    let restored = reopened.thread(thread.id.clone()).await.unwrap();
+    assert!(matches!(
+        restored.turns[0].execution,
+        Execution::Lost { .. }
+    ));
+    assert_eq!(restored.turns[0].tasks, running.turns[0].tasks);
+    assert!(matches!(
+        restored.session,
+        SessionState::Ready | SessionState::Dormant
+    ));
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn task_progress_provider_loss_and_failure_keep_reported_statuses() {
+    for fail in [false, true] {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let thread = conversation(&app, &f).await;
+        app.submit(
+            thread.id.clone(),
+            "terminal-tasks".into(),
+            "task-progress".into(),
+            vec![],
+        )
+        .await
+        .unwrap();
+        let running = wait(&app, &thread.id, |t| t.turns[0].tasks.is_some()).await;
+        if fail {
+            task_control(
+                &f,
+                running.native_thread_id.as_deref().unwrap(),
+                1,
+                "fail",
+                serde_json::json!({}),
+            )
+            .await;
+        } else {
+            let pid = std::fs::read_to_string(f.peer.parent().unwrap().join("pid")).unwrap();
+            assert!(
+                Command::new("kill")
+                    .args(["-KILL", pid.trim()])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let terminal = wait(&app, &thread.id, |t| {
+            if fail {
+                matches!(t.turns[0].execution, Execution::Failed { .. })
+            } else {
+                matches!(t.turns[0].execution, Execution::Lost { .. })
+            }
+        })
+        .await;
+        assert_eq!(terminal.turns[0].tasks, running.turns[0].tasks);
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn unsettle_return_clock_survives_reopen_without_changing_user_activity() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.arrange(thread.id.clone(), Arrange::Settle)
+        .await
+        .unwrap();
+    app.arrange(thread.id.clone(), Arrange::Unsettle)
+        .await
+        .unwrap();
+    let un_settled = app.thread(thread.id.clone()).await.unwrap();
+    assert!(un_settled.unsettled_at_ms.is_some());
+    assert_eq!(
+        un_settled.latest_user_activity_at_ms,
+        thread.latest_user_activity_at_ms
+    );
+    app.arrange(thread.id.clone(), Arrange::Unsettle)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.thread(thread.id.clone()).await.unwrap().unsettled_at_ms,
+        un_settled.unsettled_at_ms
+    );
+    app.shutdown().await.unwrap();
+    let reopened = reopen(&f.config).await;
+    let restored = reopened.thread(thread.id.clone()).await.unwrap();
+    assert_eq!(restored.unsettled_at_ms, un_settled.unsettled_at_ms);
+    assert_eq!(
+        restored.latest_user_activity_at_ms,
+        un_settled.latest_user_activity_at_ms
+    );
+    reopened.shutdown().await.unwrap();
 }
