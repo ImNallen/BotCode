@@ -890,7 +890,7 @@ async fn image_turn(f: &Fixture, app: &App, prompt: &str) -> ThreadSnapshot {
         ("first.png", b"\x89PNG\r\n\x1a\nfirst".as_slice()),
     ] {
         images.push(
-            app.stage_attachment(name.into(), bytes.to_vec())
+            app.stage_attachment(name.into(), bytes.to_vec(), AttachmentKind::Image)
                 .await
                 .unwrap(),
         );
@@ -962,13 +962,13 @@ async fn revert_recovers_ordered_images_and_text_until_an_accepted_send() {
     }
 }
 
-fn image_path(f: &Fixture, image: &ImageAttachment) -> PathBuf {
+fn image_path(f: &Fixture, image: &Attachment) -> PathBuf {
     f.config
         .data_dir
         .canonicalize()
         .unwrap()
         .join("attachments")
-        .join(format!("{}.{}", image.id, image.mime_type.extension()))
+        .join(format!("{}.{}", image.id(), image.extension()))
 }
 fn age_image(path: &Path) {
     std::fs::File::options()
@@ -990,7 +990,11 @@ async fn outstanding_revert_images_survive_archived_restart_and_sweep() {
         let t = image_turn(&f, &app, "").await;
         let images = t.turns[0].attachments.clone();
         let orphan = app
-            .stage_attachment("orphan.gif".into(), b"GIF89aorphan".to_vec())
+            .stage_attachment(
+                "orphan.gif".into(),
+                b"GIF89aorphan".to_vec(),
+                AttachmentKind::Image,
+            )
             .await
             .unwrap();
         app.revert_thread(t.id.clone(), "recover".into(), t.turns[0].id.clone(), false)
@@ -1029,6 +1033,7 @@ async fn outstanding_revert_images_survive_archived_restart_and_sweep() {
         assert_eq!(
             sent["params"]["input"],
             serde_json::json!([
+                {"type":"text", "text":format!("[Attached image \"second.gif\" is saved at: {}]\n\n[Attached image \"first.png\" is saved at: {}]", image_path(&f, &images[0]).display(), image_path(&f, &images[1]).display()), "text_elements":[]},
                 {"type":"localImage", "path":image_path(&f, &images[0])},
                 {"type":"localImage", "path":image_path(&f, &images[1])}
             ])

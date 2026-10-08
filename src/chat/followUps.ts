@@ -1,5 +1,5 @@
 // Ported from T3 Code v0.0.45 queuedMessageStore.ts and sendQueuedMessage.ts (MIT).
-import type { ImageAttachment, SessionSettings, Thread } from "../ipc";
+import type { Attachment, SessionSettings, Thread } from "../ipc";
 
 import type { MessageContext } from "./composerContext";
 
@@ -10,7 +10,7 @@ export type FollowUp = {
   id: string;
   text: string;
   context?: MessageContext;
-  attachments: ImageAttachment[];
+  attachments: Attachment[];
   settings: SessionSettings;
   state:
     | { kind: "waiting" }

@@ -257,7 +257,11 @@ async fn all_chip_payloads_use_t3_envelopes_with_skill_invocation_and_binary_ima
         .await
         .unwrap();
     let image = app
-        .stage_attachment("shot.png".into(), b"\x89PNG\r\n\x1a\n".to_vec())
+        .stage_attachment(
+            "shot.png".into(),
+            b"\x89PNG\r\n\x1a\n".to_vec(),
+            AttachmentKind::Image,
+        )
         .await
         .unwrap();
     let mut records = terminal().records;
@@ -277,7 +281,7 @@ async fn all_chip_payloads_use_t3_envelopes_with_skill_invocation_and_binary_ima
         (
             "image",
             "ctx_i",
-            json!({"attachmentId":image.id.as_str(),"name":image.name,"mimeType":"image/png","sizeBytes":image.size_bytes}),
+            json!({"attachmentId":image.id().as_str(),"name":image.name(),"mimeType":"image/png","sizeBytes":image.size_bytes()}),
         ),
         (
             "citation",

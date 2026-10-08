@@ -54,12 +54,31 @@ const execution = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("failed"), reason: z.string() }),
   z.object({ kind: z.literal("lost"), reason: z.string() }),
 ]);
+// Ported from T3 Code v0.0.45 packages/contracts/src/orchestration.ts.
+const attachmentId = z.string().regex(/^[0-9a-f]{64}$/);
 export const imageAttachment = z.object({
-  id: z.string().regex(/^[0-9a-f]{64}$/),
+  kind: z.literal("image").default("image"),
+  id: attachmentId,
   mimeType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
   name: z.string(),
-  sizeBytes: z.number(),
+  sizeBytes: z.number().int().nonnegative(),
 });
+export const attachmentSource = z.object({ _tag: z.literal("pasted-text") });
+export const fileAttachment = z.object({
+  kind: z.literal("file"),
+  id: attachmentId,
+  mimeType: z.string().min(1).max(255),
+  name: z.string(),
+  sizeBytes: z.number().int().positive(),
+  extension: z
+    .string()
+    .regex(/^[a-z0-9]{1,10}$/)
+    .refine((value) => value !== "part"),
+  source: attachmentSource.optional(),
+});
+export const attachmentSchema = z.union([fileAttachment, imageAttachment]);
+export type ImageAttachment = z.infer<typeof imageAttachment>;
+export type AttachmentSource = z.infer<typeof attachmentSource>;
 const toolStatus = z.enum(["inProgress", "completed", "failed", "declined"]);
 const item = z.discriminatedUnion("kind", [
   z.object({
@@ -67,7 +86,7 @@ const item = z.discriminatedUnion("kind", [
     context: messageContext.nullable().optional(),
     id: z.string(),
     text: z.string(),
-    attachments: z.array(imageAttachment),
+    attachments: z.array(attachmentSchema),
     delivery,
   }),
   z.object({
@@ -409,7 +428,7 @@ const thread = z.object({
       settings: settings.nullable(),
       startedAtMs: z.number().nullable(),
       completedAtMs: z.number().nullable(),
-      attachments: z.array(imageAttachment).default([]),
+      attachments: z.array(attachmentSchema).default([]),
       checkpoint: turnCheckpoint.default({
         kind: "unavailable",
         before: null,
@@ -430,7 +449,7 @@ const thread = z.object({
       prompt: z.string(),
       context: messageContext.nullable().optional(),
       turnCount: z.number().int(),
-      attachments: z.array(imageAttachment).default([]),
+      attachments: z.array(attachmentSchema).default([]),
     })
     .nullable()
     .default(null),
@@ -639,7 +658,7 @@ export type Approval = z.infer<typeof approval>;
 export type UserQuestionRequest = z.infer<typeof userQuestions>;
 export type UserQuestionAnswers = Record<string, { answers: string[] }>;
 export type Item = z.infer<typeof item>;
-export type ImageAttachment = z.infer<typeof imageAttachment>;
+export type Attachment = z.infer<typeof attachmentSchema>;
 export type TurnDiffFile = z.infer<typeof turnDiffFile>;
 export type ApprovalDecision = z.infer<typeof approvalDecision>;
 export type Arrange =
@@ -1009,12 +1028,23 @@ export const ipc = {
     call("usage_limits", { refresh }, usageLimits),
   settings: (threadId: string, value: SessionSettings) =>
     call("update_thread_settings", { threadId, settings: value }, thread),
-  stageAttachment: async (file: File) =>
+  stageAttachment: async (
+    file: File,
+    kind: Attachment["kind"],
+    source?: AttachmentSource,
+  ) =>
     call(
       "stage_attachment",
       new Uint8Array(await file.arrayBuffer()),
-      imageAttachment,
-      { headers: { "x-attachment-name": encodeURIComponent(file.name) } },
+      attachmentSchema,
+      {
+        headers: {
+          "x-attachment-name": encodeURIComponent(file.name),
+          "x-attachment-kind": kind,
+          "x-attachment-mime": file.type || "application/octet-stream",
+          ...(source ? { "x-attachment-source": source._tag } : {}),
+        },
+      },
     ),
   composerPullRequests: (
     workspaceId: string,
@@ -1030,7 +1060,7 @@ export const ipc = {
     threadId: string,
     text: string,
     requestId: string,
-    attachments: ImageAttachment[],
+    attachments: Attachment[],
     expectedTurnId?: string,
     context?: MessageContext,
   ) =>
@@ -1068,6 +1098,7 @@ export const ipc = {
       ]),
     ),
   uiState: () => call("ui_state", {}, z.record(z.string(), z.string())),
+  clipboardText: () => call("clipboard_text", {}, z.string().nullable()),
   setUiState: (key: string, value: string | null) =>
     call("set_ui_state", { key, value }, z.null()),
   settingsFile: () => call("settings", {}, z.string().nullable()),

@@ -8,7 +8,7 @@ import {
   type Thread,
 } from "../ipc";
 
-import { recoveryFit, type ComposerInput } from "./composerImages";
+import { recoveryFit, type ComposerInput } from "./composerAttachments";
 
 export function useTurnRevert({
   workspaceId,
@@ -77,7 +77,7 @@ export function useTurnRevert({
       if (!thread || !turn || revert.isPending) return;
       const refusal = thread.pendingRevert
         ? null
-        : recoveryFit(composer.images, turn, composer.records);
+        : recoveryFit(composer.attachments, turn, composer.records);
       if (refusal) {
         setPreflightError(refusal);
         return;

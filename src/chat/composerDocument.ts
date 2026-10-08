@@ -1,6 +1,9 @@
 // Ported from T3 Code v0.0.45 packages/shared/src/composerInlineTokens.ts and apps/web/src/composer-rich-text-doc.ts (MIT).
 import type { JSONContent } from "@tiptap/core";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { Slice, type Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { TextSelection, type Transaction } from "@tiptap/pm/state";
+import { closeHistory } from "@tiptap/pm/history";
+import { Transform } from "@tiptap/pm/transform";
 import { pathBasename } from "./composer-logic";
 import { SKILL_TOKEN_REGEX } from "./composerSkillTokens";
 import {
@@ -115,6 +118,40 @@ export function buildComposerDocument(
       return { type: "paragraph", content };
     }),
   };
+}
+
+export function replaceComposerText(
+  tr: Transaction,
+  input: {
+    start: number;
+    end: number;
+    expectedText: string;
+    replacement: string;
+    records?: ComposerContextRecord[];
+  },
+): boolean {
+  const current = composerDocumentMap(tr.doc).text;
+  if (
+    input.start < 0 ||
+    input.end < input.start ||
+    input.end > current.length ||
+    current.slice(input.start, input.end) !== input.expectedText
+  )
+    return false;
+  const from = editorCursor(tr.doc, input.start);
+  const to = editorCursor(tr.doc, input.end);
+  const content = tr.doc.type.schema.nodeFromJSON(
+    buildComposerDocument(input.replacement, input.records),
+  ).content;
+  const slice = new Slice(content, 1, 1);
+  const candidate = new Transform(tr.doc).replaceRange(from, to, slice);
+  if (composerDocumentMap(candidate.doc).records.length > 200) return false;
+  const stepCount = tr.steps.length;
+  closeHistory(tr).replaceRange(from, to, slice);
+  tr.setSelection(
+    TextSelection.near(tr.doc.resolve(tr.mapping.slice(stepCount).map(to, 1))),
+  );
+  return true;
 }
 
 type PromptSpan = {

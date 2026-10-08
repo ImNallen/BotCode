@@ -1,5 +1,5 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/chat/MessagesTimeline.logic.ts, MessagesTimeline.tsx, agentSpawnSummary.ts, packages/client-runtime/src/work-log/presentation.ts and apps/server/src/orchestration/ActivityPayloadProjection.ts (MIT).
-import type { Approval, ImageAttachment, Item, Thread } from "../ipc";
+import type { Approval, Attachment, Item, Thread } from "../ipc";
 import type { ComposerContextRecord } from "./composerContext";
 import { formatDuration } from "../lib/time";
 
@@ -84,7 +84,7 @@ export type TimelineRow =
       id: string;
       turnId: string;
       text: string;
-      attachments: ImageAttachment[];
+      attachments: Attachment[];
       records: ComposerContextRecord[];
       at: number | null;
       editable: boolean;

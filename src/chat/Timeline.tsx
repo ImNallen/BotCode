@@ -43,7 +43,7 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
 import type { ComposerContextRecord } from "./composerContext";
 import { copyContextContent } from "./composerContextClipboard";
-import { attachmentUrl } from "./composerImages";
+import { attachmentUrl } from "./composerAttachments";
 import {
   ChangedFilesCard,
   type FileContextMenuHandler,
@@ -168,18 +168,37 @@ function UserRow({
         <h3 className="sr-only select-none">You</h3>
         {row.attachments.length > 0 ? (
           <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">
-            {row.attachments.map((image) => (
-              <div
-                key={image.id}
-                className="bg-background/70 aspect-[4/3] overflow-hidden rounded-lg border border-border/80"
-              >
-                <img
-                  src={attachmentUrl(image)}
-                  alt={image.name}
-                  className="block size-full object-cover"
-                />
-              </div>
-            ))}
+            {row.attachments
+              .filter((attachment) => attachment.kind === "image")
+              .map((image) => (
+                <div
+                  key={image.id}
+                  className="bg-background/70 aspect-[4/3] overflow-hidden rounded-lg border border-border/80"
+                >
+                  <img
+                    src={attachmentUrl(image)}
+                    alt={image.name}
+                    className="block size-full object-cover"
+                  />
+                </div>
+              ))}
+          </div>
+        ) : null}
+        {row.attachments.some((attachment) => attachment.kind === "file") ? (
+          <div className="mb-2 flex flex-col gap-1">
+            {row.attachments
+              .filter((attachment) => attachment.kind === "file")
+              .map((file) => (
+                <div
+                  key={JSON.stringify([file.id, file.name])}
+                  className="flex min-w-0 items-center gap-2 py-1 text-sm text-foreground"
+                >
+                  <span className="truncate">{file.name}</span>
+                  <span className="shrink-0 text-xs text-secondary-label">
+                    {(file.sizeBytes / 1024).toFixed(1)} KB
+                  </span>
+                </div>
+              ))}
           </div>
         ) : null}
         {row.text ? (

@@ -3447,18 +3447,18 @@ async fn turn_start_sends_the_text_then_each_image_by_its_stored_path() {
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
     let shot = app
-        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .stage_attachment("shot.png".into(), SHOT.to_vec(), AttachmentKind::Image)
         .await
         .unwrap();
     let clip = app
-        .stage_attachment("clip.gif".into(), CLIP.to_vec())
+        .stage_attachment("clip.gif".into(), CLIP.to_vec(), AttachmentKind::Image)
         .await
         .unwrap();
     assert_eq!(
         serde_json::to_value(&shot).unwrap(),
         serde_json::json!({"id": SHOT_ID, "mimeType": "image/png", "name": "shot.png", "sizeBytes": 12})
     );
-    assert_eq!(clip.id.as_str(), CLIP_ID);
+    assert_eq!(clip.id().as_str(), CLIP_ID);
     app.submit(
         thread.id.clone(),
         "images".into(),
@@ -3476,7 +3476,7 @@ async fn turn_start_sends_the_text_then_each_image_by_its_stored_path() {
     assert_eq!(
         turn_inputs(&f),
         [serde_json::json!([
-            {"type": "text", "text": "What changed?", "text_elements": []},
+            {"type": "text", "text": format!("What changed?\n\n[Attached image \"shot.png\" is saved at: {}]\n\n[Attached image \"clip.gif\" is saved at: {}]", attachment_path(&f, &format!("{SHOT_ID}.png")).display(), attachment_path(&f, &format!("{CLIP_ID}.gif")).display()), "text_elements": []},
             {"type": "localImage", "path": attachment_path(&f, &format!("{SHOT_ID}.png"))},
             {"type": "localImage", "path": attachment_path(&f, &format!("{CLIP_ID}.gif"))},
         ])]
@@ -3489,14 +3489,14 @@ async fn a_retried_submit_returns_its_turn_and_different_images_conflict() {
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
     let shot = app
-        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .stage_attachment("shot.png".into(), SHOT.to_vec(), AttachmentKind::Image)
         .await
         .unwrap();
     let clip = app
-        .stage_attachment("clip.gif".into(), CLIP.to_vec())
+        .stage_attachment("clip.gif".into(), CLIP.to_vec(), AttachmentKind::Image)
         .await
         .unwrap();
-    let submit = |attachments: Vec<ImageAttachment>| {
+    let submit = |attachments: Vec<Attachment>| {
         app.submit(
             thread.id.clone(),
             "retry".into(),
@@ -3509,10 +3509,10 @@ async fn a_retried_submit_returns_its_turn_and_different_images_conflict() {
     assert_eq!(retry.turn_id, first.turn_id);
     let conflict = submit(vec![shot.clone(), clip]).await.unwrap_err();
     assert_eq!(conflict.code, "request_conflict");
-    let renamed = ImageAttachment {
-        name: "other.png".into(),
-        ..shot
-    };
+    let mut renamed = shot.clone();
+    if let Attachment::Image(image) = &mut renamed {
+        image.name = "other.png".into();
+    }
     assert_eq!(
         submit(vec![renamed]).await.unwrap_err().code,
         "request_conflict"
@@ -3539,7 +3539,7 @@ async fn an_image_without_text_starts_a_turn_titled_by_the_image() {
         "invalid_prompt"
     );
     let shot = app
-        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .stage_attachment("shot.png".into(), SHOT.to_vec(), AttachmentKind::Image)
         .await
         .unwrap();
     app.submit(thread.id.clone(), "image".into(), " ".into(), vec![shot])
@@ -3554,6 +3554,7 @@ async fn an_image_without_text_starts_a_turn_titled_by_the_image() {
     assert_eq!(
         turn_inputs(&f),
         [serde_json::json!([
+            {"type": "text", "text": format!("[Attached image \"shot.png\" is saved at: {}]", attachment_path(&f, &format!("{SHOT_ID}.png")).display()), "text_elements": []},
             {"type": "localImage", "path": attachment_path(&f, &format!("{SHOT_ID}.png"))},
         ])]
     );
@@ -3565,13 +3566,13 @@ async fn a_submit_refuses_images_that_are_not_staged() {
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
     let shot = app
-        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .stage_attachment("shot.png".into(), SHOT.to_vec(), AttachmentKind::Image)
         .await
         .unwrap();
-    let wrong_size = ImageAttachment {
-        size_bytes: 13,
-        ..shot.clone()
-    };
+    let mut wrong_size = shot.clone();
+    if let Attachment::Image(image) = &mut wrong_size {
+        image.size_bytes = 13;
+    }
     let refused = app
         .submit(
             thread.id.clone(),
@@ -3585,7 +3586,7 @@ async fn a_submit_refuses_images_that_are_not_staged() {
         refused,
         AppError::new(
             "missing_attachment",
-            "'shot.png' is no longer available. Attach the image again."
+            "'shot.png' is no longer available. Attach the file again."
         )
     );
     std::fs::remove_file(attachment_path(&f, &format!("{SHOT_ID}.png"))).unwrap();
@@ -3609,10 +3610,10 @@ async fn turn_images_survive_reopen_and_the_sweep_keeps_only_referenced_old_file
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
     let shot = app
-        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .stage_attachment("shot.png".into(), SHOT.to_vec(), AttachmentKind::Image)
         .await
         .unwrap();
-    app.stage_attachment("clip.gif".into(), CLIP.to_vec())
+    app.stage_attachment("clip.gif".into(), CLIP.to_vec(), AttachmentKind::Image)
         .await
         .unwrap();
     app.submit(
@@ -3653,7 +3654,7 @@ async fn image_threads_keep_renames_and_archives_until_the_last_reference_is_del
         .await
         .unwrap();
     let image = app
-        .stage_attachment("shot.png".into(), SHOT.to_vec())
+        .stage_attachment("shot.png".into(), SHOT.to_vec(), AttachmentKind::Image)
         .await
         .unwrap();
     app.rename_thread(first.id.clone(), "Saved image".into())
@@ -4486,7 +4487,7 @@ async fn archived_steering_images_survive_startup_sweep_and_rewind_removes_the_w
     })
     .await;
     let image = app
-        .stage_attachment("steer.png".into(), SHOT.to_vec())
+        .stage_attachment("steer.png".into(), SHOT.to_vec(), AttachmentKind::Image)
         .await
         .unwrap();
     app.submit_to(
@@ -6656,4 +6657,368 @@ fn historical_approval_without_options_still_deserializes() {
     .unwrap();
     assert!(approval.options.is_empty());
     assert_eq!(approval.state, ApprovalState::Answered);
+}
+
+fn stored_attachment(f: &Fixture, attachment: &Attachment) -> std::path::PathBuf {
+    attachment_path(
+        f,
+        &format!("{}.{}", attachment.id(), attachment.extension()),
+    )
+}
+fn expected_mixed_input(f: &Fixture, text: &str, files: &[Attachment]) -> serde_json::Value {
+    serde_json::json!([
+        {"type":"text", "text":format!("{text}\n\n[Attached file \"Report.PDF\" is saved at: {}]\n\n[Pasted text \"pasted-text.txt\" is saved at: {}. Inspect it as needed.]\n\n[Attached image \"shot.png\" is saved at: {}]", stored_attachment(f, &files[0]).display(), stored_attachment(f, &files[1]).display(), stored_attachment(f, &files[2]).display()), "text_elements":[]},
+        {"type":"localImage", "path":stored_attachment(f, &files[2])}
+    ])
+}
+#[tokio::test]
+async fn files_and_folded_text_use_exact_t3_paths_at_both_codex_boundaries() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let pdf = app
+        .stage_attachment(
+            "Report.PDF".into(),
+            b"%PDF-1.4 fixture".to_vec(),
+            AttachmentKind::File {
+                mime_type: "application/pdf".into(),
+                source: None,
+            },
+        )
+        .await
+        .unwrap();
+    let paste = app
+        .stage_attachment(
+            "pasted-text.txt".into(),
+            "å".repeat(16384).into_bytes(),
+            AttachmentKind::File {
+                mime_type: "text/plain;charset=utf-8".into(),
+                source: Some(AttachmentSource::PastedText),
+            },
+        )
+        .await
+        .unwrap();
+    let image = app
+        .stage_attachment("shot.png".into(), SHOT.to_vec(), AttachmentKind::Image)
+        .await
+        .unwrap();
+    let files = vec![pdf, paste, image];
+    assert_eq!(
+        std::fs::read(stored_attachment(&f, &files[0])).unwrap(),
+        b"%PDF-1.4 fixture"
+    );
+    assert_eq!(
+        std::fs::read(stored_attachment(&f, &files[1])).unwrap(),
+        "å".repeat(16384).into_bytes()
+    );
+    app.submit(
+        thread.id.clone(),
+        "files-start".into(),
+        "Inspect these".into(),
+        files.clone(),
+    )
+    .await
+    .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.session, SessionState::Ready)
+    })
+    .await;
+    assert_eq!(
+        turn_inputs(&f)[0],
+        expected_mixed_input(&f, "Inspect these", &files)
+    );
+    let original = app
+        .submit(thread.id.clone(), "held".into(), "hold".into(), vec![])
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.session, SessionState::Running)
+    })
+    .await;
+    app.submit_to(
+        thread.id.clone(),
+        "files-steer".into(),
+        "Read now".into(),
+        files.clone(),
+        Some(original.turn_id),
+    )
+    .await
+    .unwrap();
+    let steered = wait(&app, &thread.id, |t| {
+        matches!(
+            steering_delivery(t, "files-steer"),
+            Some(Delivery::Accepted)
+        )
+    })
+    .await;
+    assert_eq!(
+        f.calls()
+            .iter()
+            .find(|call| call["method"] == "turn/steer")
+            .unwrap()["params"]["input"],
+        expected_mixed_input(&f, "Read now", &files)
+    );
+    assert!(
+        steered.turns[1].items.iter().any(
+            |item| matches!(item, Item::UserInput { attachments, .. } if attachments == &files)
+        )
+    );
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        app.thread(thread.id).await.unwrap().turns[0].attachments,
+        files
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn native_file_limits_and_immutable_extensions_refuse_invalid_metadata_before_dispatch() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let kind = || AttachmentKind::File {
+        mime_type: "application/octet-stream".into(),
+        source: None,
+    };
+    assert_eq!(
+        app.stage_attachment("empty.txt".into(), vec![], kind())
+            .await
+            .unwrap_err()
+            .message,
+        "'empty.txt' is empty or could not be read."
+    );
+    assert_eq!(
+        app.stage_attachment("huge.pdf".into(), vec![0; 50 * 1024 * 1024 + 1], kind())
+            .await
+            .unwrap_err()
+            .message,
+        "'huge.pdf' exceeds the 50 MB attachment limit."
+    );
+    let largest = app
+        .stage_attachment("limit.bin".into(), vec![0; 50 * 1024 * 1024], kind())
+        .await
+        .unwrap();
+    assert_eq!(largest.size_bytes(), 50 * 1024 * 1024);
+    assert_eq!(
+        std::fs::metadata(stored_attachment(&f, &largest))
+            .unwrap()
+            .len(),
+        50 * 1024 * 1024
+    );
+    for name in [
+        "file.part",
+        "file.../../outside",
+        "file.é",
+        "file.verylongextension",
+    ] {
+        let file = app
+            .stage_attachment(name.into(), b"data".to_vec(), kind())
+            .await
+            .unwrap();
+        assert_eq!(file.extension(), "bin");
+        assert_eq!(
+            std::fs::read(stored_attachment(&f, &file)).unwrap(),
+            b"data"
+        );
+    }
+    let mut file = app
+        .stage_attachment("safe.PDF".into(), b"data".to_vec(), kind())
+        .await
+        .unwrap();
+    if let Attachment::File(file) = &mut file {
+        file.name = "renamed.txt".into();
+    }
+    assert_eq!(file.extension(), "pdf");
+    let error = app
+        .submit(
+            thread.id.clone(),
+            "too-many".into(),
+            "Inspect".into(),
+            vec![file.clone(); 101],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.message, "You can attach up to 100 files per message.");
+    if let Attachment::File(file) = &mut file {
+        file.size_bytes = 50 * 1024 * 1024 + 1;
+    }
+    assert_eq!(
+        app.submit(
+            thread.id.clone(),
+            "forged-size".into(),
+            "Inspect".into(),
+            vec![file]
+        )
+        .await
+        .unwrap_err()
+        .message,
+        "'renamed.txt' exceeds the 50 MB attachment limit."
+    );
+    let invalid = serde_json::json!({"kind":"file", "id":SHOT_ID, "mimeType":"image/png", "name":"shot.png", "sizeBytes":12, "extension":"../outside"});
+    assert!(serde_json::from_value::<Attachment>(invalid).is_err());
+    let image = app
+        .stage_attachment("shot.png".into(), SHOT.to_vec(), AttachmentKind::Image)
+        .await
+        .unwrap();
+    let large = match image {
+        Attachment::Image(mut image) => {
+            image.size_bytes = 10 * 1024 * 1024;
+            Attachment::Image(image)
+        }
+        Attachment::File(_) => unreachable!(),
+    };
+    let error = app
+        .submit(
+            thread.id.clone(),
+            "too-many-image-bytes".into(),
+            "Inspect".into(),
+            vec![large; 9],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.message,
+        "Images can total up to 80 MiB per message or question response. Use smaller images or send fewer at once."
+    );
+    assert!(turn_inputs(&f).is_empty());
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn startup_sweep_keeps_aged_files_owned_by_drafts_stashes_and_chips_only() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let mut files = vec![];
+    for name in [
+        "draft.pdf",
+        "stash.txt",
+        "chip.bin",
+        "orphan.csv",
+        "legacy.png",
+    ] {
+        let kind = if name.ends_with("png") {
+            AttachmentKind::Image
+        } else {
+            AttachmentKind::File {
+                mime_type: "application/octet-stream".into(),
+                source: None,
+            }
+        };
+        let bytes = if name.ends_with("png") {
+            SHOT.to_vec()
+        } else {
+            name.as_bytes().to_vec()
+        };
+        files.push(
+            app.stage_attachment(name.into(), bytes, kind)
+                .await
+                .unwrap(),
+        );
+    }
+    app.set_ui_state("composer-draft:unsent".into(), Some(serde_json::json!({"version":2,"text":"draft", "records":[], "attachments":[{"key":"d","status":"ready","attachment":files[0]}]}).to_string())).await.unwrap();
+    app.set_ui_state("prompt-stash:v1".into(), Some(serde_json::json!({"version":1,"entries":[{"id":"s","createdAt":"2026-10-07T00:00:00Z","payload":{"version":1,"text":"stash", "records":[], "attachments":[files[1]]}}]}).to_string())).await.unwrap();
+    app.set_ui_state("composer-draft:chips".into(), Some(serde_json::json!({"version":2,"text":"chip", "records":[{"kind":"file","attachmentId":files[2].id()}], "attachments":[]}).to_string())).await.unwrap();
+    app.set_ui_state("composer-draft:old".into(), Some(serde_json::json!({"version":1,"text":"old", "records":[], "images":[{"key":"i","status":"ready","attachment":files[4]}]}).to_string())).await.unwrap();
+    app.set_ui_state(
+        "unrelated".into(),
+        Some(serde_json::json!({"attachments":[files[3]]}).to_string()),
+    )
+    .await
+    .unwrap();
+    app.shutdown().await.unwrap();
+    for file in &files {
+        age(
+            &stored_attachment(&f, file),
+            Duration::from_secs(25 * 60 * 60),
+        );
+    }
+    let partial = attachment_path(&f, ".stale.part");
+    std::fs::write(&partial, "unfinished").unwrap();
+    age(&partial, Duration::from_secs(2 * 60 * 60));
+    let app = reopen(&f.config).await;
+    for index in [0, 1, 2, 4] {
+        assert!(stored_attachment(&f, &files[index]).exists());
+    }
+    assert!(!stored_attachment(&f, &files[3]).exists());
+    assert!(!partial.exists());
+    assert!(app.ui_state().await.unwrap()["prompt-stash:v1"].contains("stash.txt"));
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn malformed_or_future_composer_state_prevents_destructive_attachment_sweep() {
+    for saved in ["{broken", "{\"version\":99,\"text\":\"future\"}"] {
+        let f = Fixture::new();
+        let app = App::open(f.config.clone()).await.unwrap();
+        let file = app
+            .stage_attachment(
+                "kept.pdf".into(),
+                b"bytes".to_vec(),
+                AttachmentKind::File {
+                    mime_type: "application/pdf".into(),
+                    source: None,
+                },
+            )
+            .await
+            .unwrap();
+        app.set_ui_state("composer-draft:unreadable".into(), Some(saved.into()))
+            .await
+            .unwrap();
+        app.shutdown().await.unwrap();
+        age(
+            &stored_attachment(&f, &file),
+            Duration::from_secs(25 * 60 * 60),
+        );
+        let app = reopen(&f.config).await;
+        assert_eq!(
+            std::fs::read(stored_attachment(&f, &file)).unwrap(),
+            b"bytes"
+        );
+        app.shutdown().await.unwrap();
+    }
+}
+#[tokio::test]
+async fn a_pre_port_image_receipt_retries_with_unchanged_serialized_fingerprint() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let image = app
+        .stage_attachment("shot.png".into(), SHOT.to_vec(), AttachmentKind::Image)
+        .await
+        .unwrap();
+    let legacy =
+        serde_json::json!({"id":SHOT_ID,"mimeType":"image/png","name":"shot.png","sizeBytes":12});
+    assert_eq!(
+        serde_json::to_string(&image).unwrap(),
+        format!(
+            "{{\"id\":\"{SHOT_ID}\",\"mimeType\":\"image/png\",\"name\":\"shot.png\",\"sizeBytes\":12}}"
+        )
+    );
+    let first = app
+        .submit(
+            thread.id.clone(),
+            "legacy-retry".into(),
+            "Inspect".into(),
+            vec![image],
+        )
+        .await
+        .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.session, SessionState::Ready)
+    })
+    .await;
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    let decoded: Attachment = serde_json::from_value(legacy).unwrap();
+    let retry = app
+        .submit(
+            thread.id.clone(),
+            "legacy-retry".into(),
+            "Inspect".into(),
+            vec![decoded],
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry.turn_id, first.turn_id);
+    assert_eq!(app.thread(thread.id).await.unwrap().turns.len(), 1);
+    assert_eq!(turn_inputs(&f).len(), 1);
+    app.shutdown().await.unwrap();
 }

@@ -5,7 +5,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { readThreadSnapshot, setThreadSnapshot, type Thread } from "../ipc";
 import { FollowUpStore, followUps } from "./followUps";
 import { sendFollowUpNow, checkFollowUp } from "./FollowUpSender";
-import { activateComposer, restoreFollowUps } from "./composerImages";
+import { activateComposer, restoreFollowUps } from "./composerAttachments";
 import { deriveRows } from "./timelineRows";
 
 Object.defineProperty(globalThis, "window", {
@@ -209,9 +209,10 @@ it("a new batch follows the latest ordinary turn after an earlier queue empties"
   store.enqueue(thread, input(thread, "new-batch"));
   assert.equal(store.claim(thread)?.id, "new-batch");
 });
-it("restores queued text and images atomically while preserving current draft and staging", () => {
+it("restores queued text and attachments atomically while preserving current draft and staging", () => {
   const composer = { ...activateComposer(threadId), text: "Current" };
   const image = {
+    kind: "image",
     id: "a".repeat(64),
     name: "image.png",
     mimeType: "image/png",
@@ -223,10 +224,10 @@ it("restores queued text and images atomically while preserving current draft an
   ];
   const restored = restoreFollowUps(composer, rows);
   assert.equal(restored.input.text, "Current\n\nOne\n\nTwo");
-  assert.equal(restored.input.images.length, 1);
+  assert.equal(restored.input.attachments.length, 1);
   const staging = {
     ...composer,
-    images: [{ key: "staging", name: "new", status: "staging" } as const],
+    attachments: [{ key: "staging", name: "new", status: "staging" } as const],
   };
   const refused = restoreFollowUps(staging, rows);
   assert.equal(refused.input, staging);

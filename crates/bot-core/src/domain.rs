@@ -149,7 +149,7 @@ pub enum Item {
     UserInput {
         id: String,
         text: String,
-        attachments: Vec<ImageAttachment>,
+        attachments: Vec<Attachment>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<MessageContext>,
         delivery: Delivery,
@@ -382,7 +382,7 @@ pub struct Turn {
     #[serde(default)]
     pub completed_at_ms: Option<u64>,
     #[serde(default)]
-    pub attachments: Vec<ImageAttachment>,
+    pub attachments: Vec<Attachment>,
     #[serde(default)]
     pub checkpoint: TurnCheckpoint,
 }
@@ -455,12 +455,164 @@ impl std::fmt::Display for AttachmentId {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageAttachment {
     pub id: AttachmentId,
     pub mime_type: ImageMime,
     pub name: String,
     pub size_bytes: u64,
+}
+// Ported from T3 Code v0.0.45 packages/contracts/src/orchestration.ts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct AttachmentExtension(String);
+impl AttachmentExtension {
+    pub fn from_name(name: &str) -> Self {
+        name.rsplit_once('.')
+            .and_then(|(_, extension)| extension.to_ascii_lowercase().parse().ok())
+            .unwrap_or_else(|| Self("bin".into()))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl std::str::FromStr for AttachmentExtension {
+    type Err = AppError;
+    fn from_str(value: &str) -> Result<Self> {
+        if (1..=10).contains(&value.len())
+            && value != "part"
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        {
+            Ok(Self(value.into()))
+        } else {
+            Err(AppError::new(
+                "invalid_attachment",
+                "Invalid attachment extension.",
+            ))
+        }
+    }
+}
+impl TryFrom<String> for AttachmentExtension {
+    type Error = AppError;
+    fn try_from(value: String) -> Result<Self> {
+        value.parse()
+    }
+}
+impl From<AttachmentExtension> for String {
+    fn from(value: AttachmentExtension) -> Self {
+        value.0
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "_tag")]
+pub enum AttachmentSource {
+    #[serde(rename = "pasted-text")]
+    PastedText,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileAttachment {
+    pub id: AttachmentId,
+    pub mime_type: String,
+    pub name: String,
+    pub size_bytes: u64,
+    pub extension: AttachmentExtension,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<AttachmentSource>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attachment {
+    Image(ImageAttachment),
+    File(FileAttachment),
+}
+impl Serialize for Attachment {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            // Receipts fingerprint this exact legacy image field order.
+            Self::Image(image) => image.serialize(serializer),
+            Self::File(file) => {
+                #[derive(Serialize)]
+                #[serde(tag = "kind")]
+                enum Tagged<'a> {
+                    #[serde(rename = "file")]
+                    File(&'a FileAttachment),
+                }
+                Tagged::File(file).serialize(serializer)
+            }
+        }
+    }
+}
+impl<'de> Deserialize<'de> for Attachment {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "lowercase")]
+        enum Tagged {
+            Image(ImageAttachment),
+            File(FileAttachment),
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Tagged(Tagged),
+            Legacy(ImageAttachment),
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Tagged(Tagged::Image(image)) | Wire::Legacy(image) => Self::Image(image),
+            Wire::Tagged(Tagged::File(file)) => Self::File(file),
+        })
+    }
+}
+impl From<ImageAttachment> for Attachment {
+    fn from(image: ImageAttachment) -> Self {
+        Self::Image(image)
+    }
+}
+impl Attachment {
+    pub fn id(&self) -> &AttachmentId {
+        match self {
+            Self::Image(a) => &a.id,
+            Self::File(a) => &a.id,
+        }
+    }
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Image(a) => &a.name,
+            Self::File(a) => &a.name,
+        }
+    }
+    pub fn size_bytes(&self) -> u64 {
+        match self {
+            Self::Image(a) => a.size_bytes,
+            Self::File(a) => a.size_bytes,
+        }
+    }
+    pub fn mime_type(&self) -> &str {
+        match self {
+            Self::Image(a) => a.mime_type.as_str(),
+            Self::File(a) => &a.mime_type,
+        }
+    }
+    pub fn extension(&self) -> &str {
+        match self {
+            Self::Image(a) => a.mime_type.extension(),
+            Self::File(a) => a.extension.as_str(),
+        }
+    }
+}
+#[derive(Debug, Clone)]
+pub enum AttachmentKind {
+    Image,
+    File {
+        mime_type: String,
+        source: Option<AttachmentSource>,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -551,7 +703,7 @@ pub enum RevertPhase {
 #[serde(rename_all = "camelCase")]
 pub struct RevertResult {
     #[serde(default)]
-    pub attachments: Vec<ImageAttachment>,
+    pub attachments: Vec<Attachment>,
     pub request_id: String,
     pub turn_id: TurnId,
     pub prompt: String,

@@ -15,9 +15,30 @@ import {
   FolderGitIcon,
   FolderIcon,
   XIcon,
+  FileIcon,
+  PaperclipIcon,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { ipc } from "../ipc";
+import { isMacPlatform } from "../lib/utils";
+import { isTerminalFocused } from "../terminal/terminalKeys";
+import { ComposerStashBadge } from "./ComposerStashBadge";
+import { ComposerStashMenu } from "./ComposerStashMenu";
+import { ComposerBanner } from "./ComposerBanner";
+import type { PromptStashEntry } from "./promptStash";
+import {
+  buildComposerPromptHistoryEntries,
+  stepComposerPromptHistory,
+  type ComposerPromptHistoryMessage,
+  type ComposerPromptHistoryPosition,
+} from "./composerPromptHistory";
+import {
+  isPasteAsTextShortcut,
+  pastedTextDisposition,
+  nextPastedTextFileName,
+  replaceTextSelection,
+} from "./textPaste";
+import { MAX_FILE_BYTES } from "./composerAttachmentIngestion";
+import { ipc, native } from "../ipc";
 import {
   contextReference,
   pullRequestReference,
@@ -26,6 +47,8 @@ import {
 } from "./composerContext";
 import { Menu, MenuItem } from "../ui/menu";
 import type {
+  Attachment,
+  AttachmentSource,
   Checkout,
   CheckoutRef,
   ContextUsage,
@@ -42,7 +65,7 @@ import { ContextWindowMeter } from "./ContextWindowMeter";
 import { ModelPicker } from "./ModelPicker";
 import { ComposerSurface } from "./ComposerSurface";
 import { shouldHandleComposerAttachmentPaste } from "./composerAttachmentFiles";
-import { attachmentUrl, type ComposerImage } from "./composerImages";
+import { attachmentUrl, type ComposerAttachment } from "./composerAttachments";
 import { makeWorkspaceFileDropHandlers } from "./workspaceFileDrop";
 import {
   ComposerPromptEditor,
@@ -70,13 +93,26 @@ const contextControl =
   "inline-flex h-7 min-w-0 items-center gap-1 border border-transparent px-1.75 font-normal text-muted-foreground/70 text-xs sm:h-6";
 
 export function Composer({
+  scopeKey,
+  activation,
+  dropRequest,
+  historyMessages,
+  stashEntries,
+  stashOpen,
+  stashPulse,
+  onStash,
+  onToggleStash,
+  onCloseStash,
+  onRestoreStash,
+  onDeleteStash,
+  onAttachmentNotice,
   value,
   records,
   pullRequestScope,
   onChange,
-  images,
-  onAddImages,
-  onRemoveImage,
+  attachments,
+  onAddAttachments,
+  onRemoveAttachment,
   onSubmit,
   onStop,
   canSend,
@@ -110,13 +146,29 @@ export function Composer({
   onImplementInNewThread,
   onUsageLimits,
 }: {
+  scopeKey: string;
+  activation: number;
+  dropRequest?: { id: string; scopeKey: string; files: File[] };
+  historyMessages: ComposerPromptHistoryMessage[];
+  stashEntries: PromptStashEntry[];
+  stashOpen: boolean;
+  stashPulse: number;
+  onStash: () => void;
+  onToggleStash: () => void;
+  onCloseStash: () => void;
+  onRestoreStash: (entry: PromptStashEntry) => void;
+  onDeleteStash: (entry: PromptStashEntry) => void;
+  onAttachmentNotice: (message: string) => void;
   value: string;
   records: ComposerContextRecord[];
   pullRequestScope?: { workspaceId: string; threadId: string | undefined };
   onChange: (value: string, records?: ComposerContextRecord[]) => void;
-  images: ComposerImage[];
-  onAddImages: (files: File[]) => void;
-  onRemoveImage: (key: string) => void;
+  attachments: ComposerAttachment[];
+  onAddAttachments: (
+    files: File[],
+    source?: AttachmentSource,
+  ) => Promise<Attachment[]>;
+  onRemoveAttachment: (key: string) => void;
   onSubmit: () => void;
   onStop: () => void;
   canSend: boolean;
@@ -165,6 +217,28 @@ export function Composer({
 }) {
   const editor = useRef<ComposerEditorHandle>(null);
   const listId = useId();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const historyPosition = useRef<ComposerPromptHistoryPosition | null>(null);
+  const pasteAsTextUntil = useRef(0);
+  const scope = useRef(`${activation}:${scopeKey}`);
+  scope.current = `${activation}:${scopeKey}`;
+  const [pulsing, setPulsing] = useState(false);
+  useEffect(() => {
+    historyPosition.current = null;
+    onCloseStash();
+    pasteAsTextUntil.current = 0;
+  }, [scopeKey, activation]);
+  useEffect(() => {
+    if (historyPosition.current?.recalled !== value)
+      historyPosition.current = null;
+  }, [value]);
+  useEffect(() => {
+    if (!stashPulse) return;
+    setPulsing(true);
+    const timer = setTimeout(() => setPulsing(false), 700);
+    return () => clearTimeout(timer);
+  }, [stashPulse]);
+
   const [selection, setSelection] = useState<ComposerSnapshot>({
     value,
     start: value.length,
@@ -320,6 +394,140 @@ export function Composer({
         });
     }
   };
+  const attachFiles = (
+    files: File[],
+    source?: AttachmentSource,
+    pastedText?: string,
+    fallbackInline = true,
+  ) => {
+    const captured = editor.current?.readSnapshot();
+    const target = scope.current;
+    void onAddAttachments(files, source).then((prepared) => {
+      if (
+        target !== scope.current ||
+        !captured ||
+        editor.current?.readSnapshot().value !== captured.value
+      )
+        return;
+      const references = prepared.flatMap((attachment) =>
+        attachment.kind === "file"
+          ? [
+              {
+                kind: "file" as const,
+                version: 1 as const,
+                contextId: `ctx_${crypto.randomUUID().replaceAll("-", "")}`,
+                label: truncateContextText(attachment.name, 200),
+                attachmentId: attachment.id,
+                name: attachment.name,
+                mimeType: attachment.mimeType,
+                sizeBytes: attachment.sizeBytes,
+              },
+            ]
+          : [],
+      );
+      if ((editor.current?.readRecords().length ?? 0) + references.length > 200)
+        return;
+      if (!references.length) {
+        if (pastedText && fallbackInline)
+          editor.current?.replaceRange({
+            start: captured.start,
+            end: captured.end,
+            expectedText: captured.value.slice(captured.start, captured.end),
+            replacement: pastedText,
+          });
+        return;
+      }
+      editor.current?.replaceRange({
+        start: captured.start,
+        end: captured.end,
+        expectedText: captured.value.slice(captured.start, captured.end),
+        replacement: `${references.map(contextReference).join(" ")} `,
+        records: references,
+      });
+      if (pastedText && prepared[0])
+        onAttachmentNotice(
+          `Large paste attached as ${prepared[0].name}\n${formatAttachmentSize(prepared[0].sizeBytes)} · Use ${isMacPlatform(navigator.platform) ? "⌘⇧V" : "Ctrl+Shift+V"} to keep a large paste inline.`,
+        );
+    });
+  };
+  const consumedDrop = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      !dropRequest ||
+      dropRequest.scopeKey !== scopeKey ||
+      consumedDrop.current === dropRequest.id ||
+      disabled
+    )
+      return;
+    consumedDrop.current = dropRequest.id;
+    editor.current?.focus();
+    attachFiles(dropRequest.files);
+  }, [dropRequest, scopeKey, disabled]);
+  useEffect(() => {
+    const handle = (event: KeyboardEvent) => {
+      if (
+        isPasteAsTextShortcut(event, isMacPlatform(navigator.platform)) &&
+        !event.isComposing &&
+        !disabled &&
+        editor.current?.containsFocus()
+      ) {
+        if (native) {
+          event.preventDefault();
+          event.stopPropagation();
+          const captured = editor.current.readSnapshot();
+          const target = scope.current;
+          void ipc.clipboardText().then(
+            (text) => {
+              if (
+                text === null ||
+                target !== scope.current ||
+                !editor.current?.containsFocus() ||
+                editor.current.readSnapshot().value !== captured.value
+              )
+                return;
+              editor.current.replaceRange({
+                start: captured.start,
+                end: captured.end,
+                expectedText: captured.value.slice(
+                  captured.start,
+                  captured.end,
+                ),
+                replacement: text,
+              });
+            },
+            (cause: unknown) => {
+              if (target === scope.current)
+                onAttachmentNotice(
+                  `Could not paste clipboard text\n${cause instanceof Error ? cause.message : String(cause)}`,
+                );
+            },
+          );
+        } else pasteAsTextUntil.current = Date.now() + 1000;
+      }
+      if (
+        event.key.toLowerCase() !== "s" ||
+        event.shiftKey ||
+        event.altKey ||
+        event.isComposing ||
+        !(isMacPlatform(navigator.platform)
+          ? event.metaKey && !event.ctrlKey
+          : event.ctrlKey && !event.metaKey)
+      )
+        return;
+      if (isTerminalFocused()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (
+        disabled ||
+        approval !== null ||
+        document.querySelector("dialog[open], [data-command-palette]")
+      )
+        return;
+      onStash();
+    };
+    window.addEventListener("keydown", handle, true);
+    return () => window.removeEventListener("keydown", handle, true);
+  }, [onStash, disabled, approval, onAttachmentNotice]);
   const keys = (event: KeyboardEvent) => {
     if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey)
       return false;
@@ -350,6 +558,37 @@ export function Composer({
         return true;
       }
     }
+    if (
+      !event.shiftKey &&
+      !trigger &&
+      !approvalState &&
+      !disabled &&
+      !attachments.length &&
+      !records.length &&
+      (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+      (historyPosition.current || !value)
+    ) {
+      const direction = event.key === "ArrowUp" ? "backward" : "forward";
+      if (
+        editor.current?.isCaretOnVisualEdge(
+          direction === "backward" ? "start" : "end",
+        )
+      ) {
+        const step = stepComposerPromptHistory({
+          direction,
+          entries: buildComposerPromptHistoryEntries(historyMessages),
+          position: historyPosition.current,
+          currentPrompt: value,
+        });
+        if (step) {
+          event.preventDefault();
+          event.stopPropagation();
+          historyPosition.current = step.position;
+          onChange(step.prompt, []);
+          return true;
+        }
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       onSubmit();
@@ -361,6 +600,9 @@ export function Composer({
     if (focusRequest) editor.current?.focus();
   }, [focusRequest]);
   const approvalState = approval !== null;
+  useEffect(() => {
+    if (trigger || value !== selection.value) onCloseStash();
+  }, [triggerKey, value]);
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   // A cancelled drag can end without a dragleave on the hovered target.
   useEffect(() => {
@@ -372,7 +614,7 @@ export function Composer({
   const fileDrop = makeWorkspaceFileDropHandlers({
     setDragActive: (active) => setIsDragOverComposer(active && !disabled),
     addFiles: (files) => {
-      if (!disabled) onAddImages(files);
+      if (!disabled) attachFiles(files);
     },
   });
   const selectedModel = settings.model
@@ -405,6 +647,30 @@ export function Composer({
               onSubmit();
             }}
           >
+            <ComposerBanner.Dock>
+              <ComposerBanner.Column>
+                {stashOpen ? (
+                  <ComposerBanner.Attachment>
+                    <ComposerStashMenu
+                      entries={stashEntries}
+                      stashShortcutLabel={
+                        isMacPlatform(navigator.platform) ? "⌘S" : "Ctrl+S"
+                      }
+                      onRestore={onRestoreStash}
+                      onDelete={onDeleteStash}
+                      onClose={onCloseStash}
+                    />
+                  </ComposerBanner.Attachment>
+                ) : null}
+              </ComposerBanner.Column>
+              <ComposerStashBadge
+                count={stashEntries.length}
+                menuOpen={stashOpen}
+                pulseKey={stashPulse}
+                pulsing={pulsing}
+                onToggleMenu={onToggleStash}
+              />
+            </ComposerBanner.Dock>
             {notice}
             {approval}
             {trigger ? (
@@ -463,39 +729,89 @@ export function Composer({
                       approvalState && "pb-3 sm:pb-4",
                     )}
                   >
-                    {images.length > 0 ? (
+                    {attachments.some(
+                      (slot) =>
+                        slot.status === "staging" ||
+                        slot.attachment.kind === "image",
+                    ) ? (
                       <div className="mb-3 flex max-w-full gap-2 flex-wrap">
-                        {images.map((image) => (
-                          <div
-                            key={image.key}
-                            data-chat-composer-expanded-image="true"
-                            className="group/attachment shrink-0 snap-start bg-background relative h-16 w-16 overflow-hidden rounded-lg border border-border/80"
-                          >
-                            {image.status === "ready" ? (
-                              <img
-                                src={attachmentUrl(image.attachment)}
-                                alt={image.name}
-                                className="h-full w-full object-cover"
-                              />
-                            ) : (
-                              <div className="flex h-full w-full items-center justify-center px-1 text-center text-3xs text-secondary-label">
-                                {image.name}
-                              </div>
-                            )}
-                            <span className="absolute right-1 top-1 flex">
+                        {attachments
+                          .filter(
+                            (slot) =>
+                              slot.status === "staging" ||
+                              slot.attachment.kind === "image",
+                          )
+                          .map((image) => (
+                            <div
+                              key={image.key}
+                              data-chat-composer-expanded-image="true"
+                              className="group/attachment shrink-0 snap-start bg-background relative h-16 w-16 overflow-hidden rounded-lg border border-border/80"
+                            >
+                              {image.status === "ready" ? (
+                                <img
+                                  src={attachmentUrl(image.attachment)}
+                                  alt={image.name}
+                                  className="h-full w-full object-cover"
+                                />
+                              ) : (
+                                <div className="flex h-full w-full items-center justify-center px-1 text-center text-3xs text-secondary-label">
+                                  {image.name}
+                                </div>
+                              )}
+                              <span className="absolute right-1 top-1 flex">
+                                <Button
+                                  variant="media-close"
+                                  size="icon-xs"
+                                  onClick={() => onRemoveAttachment(image.key)}
+                                  aria-label={`Remove ${image.name}`}
+                                >
+                                  <XIcon />
+                                </Button>
+                              </span>
+                            </div>
+                          ))}
+                      </div>
+                    ) : null}
+                    <div className="mb-3 flex flex-col gap-1 empty:hidden">
+                      {attachments
+                        .filter(
+                          (slot) =>
+                            slot.status === "ready" &&
+                            slot.attachment.kind === "file" &&
+                            !records.some(
+                              (record) =>
+                                record.kind === "file" &&
+                                record.attachmentId === slot.attachment.id &&
+                                record.name === slot.attachment.name,
+                            ),
+                        )
+                        .map((slot) =>
+                          slot.status === "ready" ? (
+                            <div
+                              key={slot.key}
+                              className="flex min-w-0 items-center gap-2 py-1 text-sm text-foreground"
+                            >
+                              <FileIcon className="size-4 shrink-0" />
+                              <span className="min-w-0 flex-1 truncate text-left">
+                                {slot.name}
+                              </span>
+                              <span className="shrink-0 text-xs text-secondary-label">
+                                {formatAttachmentSize(
+                                  slot.attachment.sizeBytes,
+                                )}
+                              </span>
                               <Button
-                                variant="media-close"
+                                variant="ghost"
                                 size="icon-xs"
-                                onClick={() => onRemoveImage(image.key)}
-                                aria-label={`Remove ${image.name}`}
+                                onClick={() => onRemoveAttachment(slot.key)}
+                                aria-label={`Remove ${slot.name}`}
                               >
                                 <XIcon />
                               </Button>
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
+                            </div>
+                          ) : null,
+                        )}
+                    </div>
                     <div className="relative">
                       <div className="relative flow-root font-(family-name:--font-composer,var(--font-sans)) text-(length:--font-size-prompt,var(--text-sm))">
                         <ComposerPromptEditor
@@ -521,25 +837,84 @@ export function Composer({
                               setDismissed(null);
                           }}
                           onKeyDown={keys}
-                          onPasteFiles={(event) => {
+                          onBlur={() => {
+                            pasteAsTextUntil.current = 0;
+                          }}
+                          onPasteFiles={(event, structured) => {
+                            const bypass =
+                              pasteAsTextUntil.current > Date.now();
+                            pasteAsTextUntil.current = 0;
+                            if (structured) return false;
                             const files = Array.from(
                               event.clipboardData?.files ?? [],
                             );
+                            const text =
+                              event.clipboardData?.getData("text/plain") ?? "";
                             if (
                               files.length &&
                               shouldHandleComposerAttachmentPaste({
                                 files,
-                                plainText:
-                                  event.clipboardData?.getData("text/plain") ??
-                                  "",
+                                plainText: text,
                               })
                             ) {
                               event.preventDefault();
                               event.stopPropagation();
-                              onAddImages(files);
+                              attachFiles(files);
                               return true;
                             }
-                            return false;
+                            const captured = editor.current?.readSnapshot();
+                            if (!captured) return false;
+                            const bytes = new TextEncoder().encode(
+                              text,
+                            ).byteLength;
+                            const exceeds =
+                              new TextEncoder().encode(
+                                replaceTextSelection({
+                                  value: captured.value,
+                                  selection: captured,
+                                  text,
+                                }).value,
+                              ).byteLength > 100_000;
+                            const disposition = pastedTextDisposition({
+                              text,
+                              canAttach:
+                                attachments.length < 100 &&
+                                records.length < 200,
+                              bypassAutoAttachment: bypass,
+                              wouldExceedInputLimit: exceeds,
+                            });
+                            if (disposition === "inline") {
+                              if (!exceeds || bypass) return false;
+                              event.preventDefault();
+                              onAttachmentNotice(
+                                "Pasted text is too large for this message\nRemove some text or an attachment, then paste again.",
+                              );
+                              return true;
+                            }
+                            if (bytes > MAX_FILE_BYTES) {
+                              if (!exceeds) return false;
+                              event.preventDefault();
+                              onAttachmentNotice(
+                                "Pasted text is too large to attach\nReduce the clipboard contents or save a smaller excerpt as a file.",
+                              );
+                              return true;
+                            }
+                            event.preventDefault();
+                            event.stopPropagation();
+                            const name = nextPastedTextFileName(
+                              attachments.map((slot) => slot.name),
+                            );
+                            attachFiles(
+                              [
+                                new File([text], name, {
+                                  type: "text/plain;charset=utf-8",
+                                }),
+                              ],
+                              { _tag: "pasted-text" },
+                              text,
+                              !exceeds,
+                            );
+                            return true;
                           }}
                           disabled={disabled}
                           autoFocus={autoFocus}
@@ -782,6 +1157,30 @@ export function Composer({
                             }
                           />
                         ) : null}
+                        <input
+                          ref={fileInput}
+                          type="file"
+                          multiple
+                          className="hidden"
+                          onChange={(event) => {
+                            const files = Array.from(
+                              event.currentTarget.files ?? [],
+                            );
+                            event.currentTarget.value = "";
+                            if (files.length) attachFiles(files);
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label="Attach files"
+                          title="Attach files"
+                          disabled={disabled}
+                          onClick={() => fileInput.current?.click()}
+                        >
+                          <PaperclipIcon />
+                        </Button>
                         <ComposerPrimaryActions
                           running={running}
                           canStop={canStop}
@@ -893,4 +1292,12 @@ function CheckoutModeIcon({ mode }: { mode: CheckoutMode }) {
   ) : (
     <FolderIcon className="size-3" />
   );
+}
+
+function formatAttachmentSize(bytes: number): string {
+  return bytes < 1024
+    ? `${bytes} B`
+    : bytes < 1024 * 1024
+      ? `${(bytes / 1024).toFixed(1)} KB`
+      : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

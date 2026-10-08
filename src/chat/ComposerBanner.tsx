@@ -1,5 +1,5 @@
 // Copied from pingdotgg/t3code v0.0.45 components/chat/ComposerBanner.tsx (MIT).
-import { XIcon } from "lucide-react";
+import { XIcon, ChevronDownIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 import { cn } from "../lib/cn";
 import { Button } from "../ui/controls";
@@ -259,6 +259,10 @@ function Dismiss({
 }
 
 export const ComposerBanner = {
+  ButtonRow,
+  ListRow,
+  Count,
+  ToggleIcon,
   Surface,
   Attachment,
   Dock,
@@ -273,3 +277,52 @@ export const ComposerBanner = {
   Body,
   Dismiss,
 };
+
+const basicRowClass =
+  "group/banner-row grid min-h-(--composer-banner-icon-column) w-full min-w-0 grid-cols-[var(--composer-banner-icon-column)_minmax(0,1fr)_auto] items-center gap-x-1 text-start not-has-[>[data-slot=composer-banner-actions]]:grid-cols-[var(--composer-banner-icon-column)_minmax(0,1fr)]";
+function ButtonRow({ className, ...props }: ComponentProps<"button">) {
+  return (
+    <button
+      type="button"
+      data-composer-banner-row="true"
+      data-composer-banner-layout="inline"
+      className={cn(
+        basicRowClass,
+        "cursor-pointer rounded-md focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+function ListRow({ className, ...props }: ComponentProps<"li">) {
+  return (
+    <li
+      data-composer-banner-row="true"
+      data-composer-banner-layout="inline"
+      className={cn(basicRowClass, className)}
+      {...props}
+    />
+  );
+}
+function Count({ className, ...props }: ComponentProps<"span">) {
+  return (
+    <span
+      className={cn(
+        "inline-flex min-w-(--composer-banner-icon-column,1em) flex-none justify-center font-medium text-muted-foreground tabular-nums",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+function ToggleIcon({ expanded }: { expanded: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none inline-flex size-5 items-center justify-center"
+    >
+      <ChevronDownIcon className={cn("size-3.5", !expanded && "rotate-180")} />
+    </span>
+  );
+}

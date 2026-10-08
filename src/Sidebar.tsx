@@ -1,4 +1,7 @@
 // Ported from pingdotgg/t3code v0.0.45 components/Sidebar.tsx and threadActionMenu.logic.ts (MIT).
+import { useRouter } from "@tanstack/react-router";
+import { sidebarPendingFileDrops } from "./chat/sidebarPendingFileDrops";
+import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
 import { followUps } from "./chat/followUps";
 import { pullRequestSurface } from "./panel/panelState";
 import { prLabel } from "./panel/pullRequests";
@@ -197,13 +200,33 @@ export function Sidebar({
     workspaceId: string,
     threadId: string,
     panel?: Surface,
-  ) => void;
+  ) => void | Promise<void>;
   onNewThread: (workspaceId?: string) => void;
   onOpenRepository: () => void;
   onOpenProjectSettings: (workspaceId: string) => void;
   onArrange: (threadId: string, action: Arrange) => Promise<boolean>;
 }) {
   const client = useQueryClient();
+  const router = useRouter();
+  const dropFiles = (row: Row, files: File[]) => {
+    const id = sidebarPendingFileDrops.queue(row.thread.id, files);
+    try {
+      void Promise.resolve(onSelectThread(row.workspace.id, row.thread.id))
+        .then(() => {
+          if (router.state.location.search.thread !== row.thread.id)
+            sidebarPendingFileDrops.remove(id);
+        })
+        .catch((cause) => {
+          sidebarPendingFileDrops.remove(id);
+          setActionError(
+            cause instanceof Error ? cause.message : String(cause),
+          );
+        });
+    } catch (cause) {
+      sidebarPendingFileDrops.remove(id);
+      setActionError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
   const [actionError, setActionError] = useState<string>();
   const [actionStatus, setActionStatus] = useState<string>();
   const [renaming, setRenaming] = useState<{ id: string; title: string }>();
@@ -584,6 +607,7 @@ export function Sidebar({
                     key={row.thread.id}
                     row={row}
                     active={row.thread.id === threadId}
+                    onDropFiles={(files) => dropFiles(row, files)}
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
@@ -628,6 +652,7 @@ export function Sidebar({
                       now,
                     )}
                     active={row.thread.id === threadId}
+                    onDropFiles={(files) => dropFiles(row, files)}
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
@@ -669,6 +694,7 @@ export function Sidebar({
                         : formatSidebarTime(row.thread.settledAtMs)
                     }
                     active={row.thread.id === threadId}
+                    onDropFiles={(files) => dropFiles(row, files)}
                     onSelect={() =>
                       onSelectThread(row.workspace.id, row.thread.id)
                     }
@@ -1015,6 +1041,7 @@ function SnoozeMenuButton({
 
 function ThreadRow({
   row,
+  onDropFiles,
   active,
   onSelect,
   onPullRequests,
@@ -1024,6 +1051,7 @@ function ThreadRow({
   onContextMenu,
 }: {
   row: Row;
+  onDropFiles: (files: File[]) => void;
   active: boolean;
   onSelect: () => void;
   onPullRequests: () => void;
@@ -1034,6 +1062,7 @@ function ThreadRow({
 }) {
   const isWorking = workingSessions.has(row.thread.session.kind);
   const recede = !active;
+  const { fileDrop, isDragOver } = useThreadFileDrop(onDropFiles);
   // Settling and snoozing are refused while an approval waits, so the buttons stay hidden.
   const canSettle = !row.thread.awaitingApproval;
   const [snoozeOpen, setSnoozeOpen] = useState(false);
@@ -1044,6 +1073,7 @@ function ThreadRow({
   return (
     <li
       data-thread-item
+      {...fileDrop}
       className="list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]"
     >
       <div
@@ -1055,6 +1085,8 @@ function ThreadRow({
         onContextMenu={onContextMenu}
         className={cn(
           "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          isDragOver && "ring-1 ring-inset ring-primary/70",
+          isDragOver && !active && "bg-sidebar-row-hover",
           active
             ? "bg-sidebar-row-active text-sidebar-foreground"
             : recede
@@ -1181,6 +1213,7 @@ function ThreadRow({
 
 function SlimRow({
   row,
+  onDropFiles,
   action,
   label,
   active,
@@ -1191,6 +1224,7 @@ function SlimRow({
   onContextMenu,
 }: {
   row: Row;
+  onDropFiles: (files: File[]) => void;
   action: "unsettle" | "unsnooze";
   label: string;
   active: boolean;
@@ -1201,10 +1235,12 @@ function SlimRow({
   onUnpin: () => void;
 }) {
   const recede = !active;
+  const { fileDrop, isDragOver } = useThreadFileDrop(onDropFiles);
   const unsettle = action === "unsettle";
   return (
     <li
       data-thread-item
+      {...fileDrop}
       className="list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]"
     >
       <div
@@ -1218,6 +1254,8 @@ function SlimRow({
           "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           unsettle &&
             "[&:not(:hover):not(:focus-within)_*]:text-secondary-label/70",
+          isDragOver && "ring-1 ring-inset ring-primary/70",
+          isDragOver && !active && "bg-sidebar-row-hover",
           active
             ? "bg-sidebar-row-active text-sidebar-foreground"
             : "text-sidebar-muted-foreground/75 hover:bg-sidebar-row-hover hover:text-sidebar-foreground",
@@ -1392,4 +1430,20 @@ function ThreadTitle({
       className="min-w-0 flex-1 rounded-sm border border-input bg-card px-1 text-sm font-medium text-card-foreground outline-none focus:border-foreground"
     />
   );
+}
+
+function useThreadFileDrop(addFiles: (files: File[]) => void) {
+  const [isDragOver, setDragOver] = useState(false);
+  useEffect(() => {
+    const clear = () => setDragOver(false);
+    window.addEventListener("dragend", clear);
+    return () => window.removeEventListener("dragend", clear);
+  }, []);
+  return {
+    isDragOver,
+    fileDrop: makeWorkspaceFileDropHandlers({
+      setDragActive: setDragOver,
+      addFiles,
+    }),
+  };
 }
