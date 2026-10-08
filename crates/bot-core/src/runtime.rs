@@ -3437,18 +3437,22 @@ impl Owner {
                 let row = t.turns.iter_mut().find(|r| r.id == turn).unwrap();
                 match result {
                     Ok(value) => {
-                        row.native_turn_id = Some(
-                            value
-                                .pointer("/turn/id")
-                                .and_then(Value::as_str)
-                                .ok_or_else(|| {
-                                    AppError::new(
-                                        "protocol",
-                                        "Codex did not acknowledge a turn ID.",
-                                    )
-                                })?
-                                .into(),
-                        );
+                        let native_turn = value
+                            .pointer("/turn/id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                AppError::new("protocol", "Codex did not acknowledge a turn ID.")
+                            })?;
+                        // turn/started can arrive before the ack and already record it.
+                        let unchanged = row.native_turn_id.as_deref() == Some(native_turn)
+                            && row.delivery == Delivery::Accepted
+                            && (!row.execution.active()
+                                || (row.execution == Execution::Running
+                                    && t.session == SessionState::Running));
+                        if unchanged {
+                            return Ok(());
+                        }
+                        row.native_turn_id = Some(native_turn.into());
                         row.delivery = Delivery::Accepted;
                         if row.execution.active() {
                             row.execution = Execution::Running;
@@ -3924,7 +3928,10 @@ impl Owner {
             native_turn.is_some() && native_turn == turn.native_turn_id.as_deref();
         match method {
             "turn/started" => {
-                if !current_turn || !turn.execution.active() {
+                let already_running = turn.delivery == Delivery::Accepted
+                    && turn.execution == Execution::Running
+                    && t.session == SessionState::Running;
+                if !current_turn || !turn.execution.active() || already_running {
                     return Ok(());
                 }
                 turn.delivery = Delivery::Accepted;
