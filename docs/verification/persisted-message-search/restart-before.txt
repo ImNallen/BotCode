@@ -1,0 +1,150 @@
+Wall time: 0.1312 seconds
+Output:
+
+Window: "Bot Code persisted search verification", App: Bot Code.
+0 standard window Bot Code persisted search verification, Secondary Actions: Raise
+	1 scroll area
+		2 HTML content Description: Bot Code, URL: tauri://localhost
+			3 container Threads
+				4 button New thread
+				5 container
+					6 search text field (settable) Search threads, Placeholder: Search
+						7 text Search
+					8 pop up button Filter threads by project
+					9 button Add project
+					10 button New thread, Help: New thread (⇧⌘O)
+New thread in current project: Shift+click
+					11 content list
+						12 button Compatibility whitespace fixture
+Persistence Alpha now
+Snooze thread Settle thread
+main
+						13 button continuous-stream-fixture
+Persistence Alpha 6m
+Snooze thread Settle thread
+main
+						14 button continuous-stream-fixture
+Persistence Alpha 7m
+Snooze thread Settle thread
+main
+						15 button Unicode fixture
+Persistence Alpha 25m
+Snooze thread Settle thread
+main
+						16 button Bounded conversation 10
+Persistence Alpha 25m
+Snooze thread Settle thread
+main
+						17 button Bounded conversation 52
+Persistence Alpha 25m
+Snooze thread Settle thread
+main
+						18 button Bounded conversation 45
+Persistence Alpha 25m
+Snooze thread Settle thread
+main
+						19 button Bounded conversation 29
+Persistence Alpha 25m
+Snooze thread Settle thread
+main
+						20 button Snooze thread Settle thread
+						21 button Snooze thread Settle thread
+						22 button Snooze thread Settle thread
+						23 button Snooze thread Settle thread
+						24 button Snooze thread Settle thread
+						25 button Snooze thread Settle thread
+						26 button Snooze thread Settle thread
+						27 button Snooze thread Settle thread
+						28 button Snooze thread Settle thread
+						29 button Snooze thread Settle thread
+						30 button Snooze thread Settle thread
+						31 button Snooze thread Settle thread
+						32 button Snooze thread Settle thread
+						33 button Snooze thread Settle thread
+						34 button Snooze thread Settle thread
+						35 button Snooze thread Settle thread
+						36 button Snooze thread Settle thread
+						37 button Snooze thread Settle thread
+						38 button Snooze thread Settle thread
+						39 button Snooze thread Settle thread
+						40 button Snooze thread Settle thread
+						41 button Snooze thread Settle thread
+						42 button Snooze thread Settle thread
+						43 button Snooze thread Settle thread
+						44 button Snooze thread Settle thread
+						45 button Snooze thread Settle thread
+						46 button Snooze thread Settle thread
+						47 button Snooze thread Settle thread
+						48 button Snooze thread Settle thread
+						49 button Snooze thread Settle thread
+						50 button Snooze thread Settle thread
+						51 button Snooze thread Settle thread
+						52 button Snooze thread Settle thread
+						53 button Snooze thread Settle thread
+						54 button Snooze thread Settle thread
+						55 button Snooze thread Settle thread
+						56 button Snooze thread Settle thread
+						57 button Snooze thread Settle thread
+						58 button Snooze thread Settle thread
+						59 button Snooze thread Settle thread
+						60 button Snooze thread Settle thread
+						61 button Snooze thread Settle thread
+						62 button Snooze thread Settle thread
+						63 button Snooze thread Settle thread
+						64 button Snooze thread Settle thread
+						65 button Snooze thread Settle thread
+						66 button Snooze thread Settle thread
+						67 button Snooze thread Settle thread
+						68 button Snooze thread Settle thread
+						69 button Snooze thread Settle thread
+						70 button Snooze thread Settle thread
+						71 button Snooze thread Settle thread
+						72 button Snooze thread Settle thread
+						73 button Snooze thread Settle thread
+						74 button Snooze thread Settle thread
+						75 button Snooze thread Settle thread
+						76 button Snooze thread Settle thread
+						77 button Snooze thread Settle thread
+						78 button Snooze thread Settle thread
+						79 button (collapsed) Snoozed (1), Secondary Actions: Expand
+						80 button (collapsed) Settled (1), Secondary Actions: Expand
+				81 content list
+					82 button Settings
+					83 button Usage
+				84 button Resize Sidebar, Help: Drag to resize sidebar
+			85 container
+				86 toggle button Toggle terminal drawer, Help: Toggle terminal drawer (⌘J), Value: off
+				87 toggle button Toggle right panel, Value: off
+				88 container Thread breadcrumb
+					89 content list
+						90 button New thread in Persistence Alpha
+						91 heading New thread, Value: 2
+							92 text New thread
+				93 container Open in editor
+					94 button Open
+					95 pop up button Choose editor
+				96 heading What should we build in Persistence Alpha?, Value: 1
+					97 text What should we build in
+					98 pop up button Persistence Alpha
+					99 text ?
+				100 button or start without a project, Help: ⌥⌘N
+				101 text entry area (settable) Message, Placeholder: Ask for changes or send follow-ups, Secondary Actions: Show Writing Tools, Value:
+
+				102 pop up button Model: Model One
+				103 pop up button Reasoning effort: Low
+				104 pop up button Access mode: Full access, Help: Allow commands and edits without prompts.
+				105 button Attach files
+				106 button (disabled) Send message
+				107 pop up button Workspace
+				108 pop up button main
+			109 toggle button Toggle main sidebar, Help: Toggle main sidebar (⌘B), Value: on
+	110 close button
+	111 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	112 minimize button
+113 menu bar
+	114 Bot Code
+	115 File
+	116 Edit
+	117 View
+	118 Window
+	119 Help

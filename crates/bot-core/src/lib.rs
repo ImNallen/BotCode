@@ -53,3 +53,6 @@ mod text_generation;
 mod vcs;
 pub use domain::*;
 pub use runtime::{App, RuntimeConfig};
+
+mod thread_search;
+pub use thread_search::{MessageSource, ThreadMessageMatch, ThreadMessageSearch};

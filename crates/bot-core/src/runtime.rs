@@ -267,6 +267,7 @@ enum Command {
 }
 #[derive(Clone)]
 pub struct App {
+    thread_search: crate::thread_search::ThreadSearch,
     commands: mpsc::Sender<Command>,
     changes: broadcast::Sender<ChangeHint>,
     limits: watch::Receiver<Option<UsageLimits>>,
@@ -286,6 +287,12 @@ pub struct App {
     project_search: crate::project_search::ProjectSearch,
 }
 impl App {
+    pub async fn search_thread_messages(
+        &self,
+        query: String,
+    ) -> Result<crate::ThreadMessageSearch> {
+        self.thread_search.search(query).await
+    }
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
         Self::open_with_tools(config, crate::AgentTools::default()).await
     }
@@ -293,6 +300,8 @@ impl App {
         config: RuntimeConfig,
         agent_tools: crate::AgentTools,
     ) -> Result<Self> {
+        let thread_search =
+            crate::thread_search::ThreadSearch::new(config.data_dir.join("z1.sqlite"));
         let network_timeout = config.network_timeout;
         let store = Store::open(&config.data_dir)?;
         let workspaces = store
@@ -488,6 +497,7 @@ impl App {
             .run(rx, signals, completions),
         );
         let app = Self {
+            thread_search,
             commands,
             changes,
             limits: limits_rx,

@@ -302,7 +302,12 @@ async fn missing_command_cannot_be_approved_and_late_file_details_become_reviewa
     app.submit(thread.id.clone(), "file".into(), "late-file".into(), vec![])
         .await
         .unwrap();
-    let snapshot=wait(&app,&thread.id,|t|t.approvals.iter().any(|a|matches!(&a.action,ApprovalAction::FileChange{text,..} if text.contains("fixture change")))).await;
+    let snapshot = wait(&app, &thread.id, |t| {
+        t.approvals.iter().any(|approval| {
+            matches!(&approval.action, ApprovalAction::FileChange { text, .. } if text == "test.txt\n+fixture change")
+        })
+    })
+    .await;
     let paths: Vec<&Vec<String>> = snapshot.turns[1]
         .items
         .iter()

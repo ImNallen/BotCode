@@ -1,0 +1,148 @@
+Wall time: 0.6937 seconds
+Output:
+
+The following is a diff from the previous accessibility tree for Window: "Bot Code persisted search verification" with ~ and + representing changed and added elements, respectively. Removed elements are summarized by ID range.
+Removed element IDs: 122-133
+~		2 HTML content Description: Bot Code, URL: tauri://localhost/?workspace=3f3c50cc-eaaa-4d98-a3f9-4fa90d6fb648&thread=6fa69fab-5bb2-4929-b1c4-f1286af4e42d
+~			120 container Threads
+~				121 button New thread
++				122 container
++					123 search text field (settable) Search threads, Placeholder: Search
++						124 text Search
++					125 pop up button Filter threads by project
++					126 button Add project
++					127 button New thread, Help: New thread (⇧⌘O)
+New thread in current project: Shift+click
++					128 content list
++						129 button Compatibility whitespace fixture
+Persistence Alpha now
+Snooze thread Settle thread
+main
++						130 button continuous-stream-fixture
+Persistence Alpha 6m
+Snooze thread Settle thread
+main
++						131 button continuous-stream-fixture
+Persistence Alpha 7m
+Snooze thread Settle thread
+main
++						132 button Unicode fixture
+Persistence Alpha 25m
+Snooze thread Settle thread
+main
++						133 button Bounded conversation 10
+Persistence Alpha 25m
+Snooze thread Settle thread
+main
++						134 button Bounded conversation 52
+Persistence Alpha 25m
+Snooze thread Settle thread
+main
++						135 button Bounded conversation 45
+Persistence Alpha 25m
+Snooze thread Settle thread
+main
++						136 button Bounded conversation 29
+Persistence Alpha 25m
+Snooze thread Settle thread
+main
++						137 button Snooze thread Settle thread
++						138 button Snooze thread Settle thread
++						139 button Snooze thread Settle thread
++						140 button Snooze thread Settle thread
++						141 button Snooze thread Settle thread
++						142 button Snooze thread Settle thread
++						143 button Snooze thread Settle thread
++						144 button Snooze thread Settle thread
++						145 button Snooze thread Settle thread
++						146 button Snooze thread Settle thread
++						147 button Snooze thread Settle thread
++						148 button Snooze thread Settle thread
++						149 button Snooze thread Settle thread
++						150 button Snooze thread Settle thread
++						151 button Snooze thread Settle thread
++						152 button Snooze thread Settle thread
++						153 button Snooze thread Settle thread
++						154 button Snooze thread Settle thread
++						155 button Snooze thread Settle thread
++						156 button Snooze thread Settle thread
++						157 button Snooze thread Settle thread
++						158 button Snooze thread Settle thread
++						159 button Snooze thread Settle thread
++						160 button Snooze thread Settle thread
++						161 button Snooze thread Settle thread
++						162 button Snooze thread Settle thread
++						163 button Snooze thread Settle thread
++						164 button Snooze thread Settle thread
++						165 button Snooze thread Settle thread
++						166 button Snooze thread Settle thread
++						167 button Snooze thread Settle thread
++						168 button Snooze thread Settle thread
++						169 button Snooze thread Settle thread
++						170 button Snooze thread Settle thread
++						171 button Snooze thread Settle thread
++						172 button Snooze thread Settle thread
++						173 button Snooze thread Settle thread
++						174 button Snooze thread Settle thread
++						175 button Snooze thread Settle thread
++						176 button Snooze thread Settle thread
++						177 button Snooze thread Settle thread
++						178 button Snooze thread Settle thread
++						179 button Snooze thread Settle thread
++						180 button Snooze thread Settle thread
++						181 button Snooze thread Settle thread
++						182 button Snooze thread Settle thread
++						183 button Snooze thread Settle thread
++						184 button Snooze thread Settle thread
++						185 button Snooze thread Settle thread
++						186 button Snooze thread Settle thread
++						187 button Snooze thread Settle thread
++						188 button Snooze thread Settle thread
++						189 button Snooze thread Settle thread
++						190 button Snooze thread Settle thread
++						191 button Snooze thread Settle thread
++						192 button Snooze thread Settle thread
++						193 button Snooze thread Settle thread
++						194 button Snooze thread Settle thread
++						195 button Snooze thread Settle thread
++						196 button (collapsed) Snoozed (1), Secondary Actions: Expand
++						197 button (collapsed) Settled (1), Secondary Actions: Expand
++				198 content list
++					199 button Settings
++					200 button Usage
++				201 button Resize Sidebar, Help: Drag to resize sidebar
++			202 container
++				203 toggle button Toggle terminal drawer, Help: Toggle terminal drawer (⌘J), Value: off
++				204 toggle button Toggle right panel, Value: off
++				205 container Thread breadcrumb
++					206 content list
++						207 button New thread in Persistence Alpha
++						208 heading Please review the ordinary conversation notes and reta, Value: 2
++							209 text Please review the ordinary conversation notes and reta
++				210 container Open in editor
++					211 button Open
++					212 pop up button Choose editor
++				213 container Git actions
++					214 button (disabled) Push, Help: Add an "origin" remote before pushing.
++					215 pop up button Git action options
++				216 heading You, Value: 3
++					217 text You
++				218 text Please review the ordinary conversation notes and retain the following reference for a later search. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Routine context. Rou 3:58 PM
++				219 button Copy message
++				220 button Edit from here
++				221 heading Codex, Value: 3
++					222 text Codex
++				223 text fixture reply
++				224 button Copy message
++				225 text 3:58 PM
++				226 text entry area (settable) Message, Placeholder: Ask for changes or send follow-ups, Secondary Actions: Show Writing Tools, Value:
+
++				227 pop up button Model: Model One
++				228 pop up button Reasoning effort: Low
++				229 pop up button Access mode: Full access, Help: Allow commands and edits without prompts.
++				230 button Attach files
++				231 button (disabled) Send message
++				232 text Local checkout
++				233 pop up button main
++			234 toggle button Toggle main sidebar, Help: Toggle main sidebar (⌘B), Value: on
+The focused UI element is 226 text entry area (settable) Message, Placeholder: Ask for changes or send follow-ups, Secondary Actions: Show Writing Tools, Value:
