@@ -10,6 +10,7 @@ import {
   ExternalLinkIcon,
   FileDiffIcon,
   HammerIcon,
+  GitBranchIcon,
   MoreHorizontalIcon,
 } from "lucide-react";
 import { ipc } from "../ipc";
@@ -174,6 +175,7 @@ export function PullRequestDetail({
       workspaceId: handoff.workspaceId,
       threadId: handoff.threadId,
       key: prKey,
+      target: { ...detail.observation },
       intent,
       problems: detail.problems,
       finding,
@@ -260,6 +262,20 @@ export function PullRequestDetail({
           </div>
         </div>
         <div className="mr-4 flex h-7 shrink-0 items-center justify-end gap-1">
+          {handoff.onCheckout ? (
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label="Check out"
+              disabled={!detail || disabled}
+              onClick={() =>
+                detail && handoff.onCheckout?.({ ...detail.observation })
+              }
+            >
+              <GitBranchIcon aria-hidden className="size-3.5" />
+              <span className="@max-[35rem]/pr-header:hidden">Check out</span>
+            </Button>
+          ) : null}
           {armedBadge ? autoMergeBadge(armedBadge) : null}
           {primary.kind === "resolve_conflicts" ? (
             <Button

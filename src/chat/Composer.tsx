@@ -59,6 +59,7 @@ import type {
   AttachmentSource,
   Checkout,
   CheckoutRef,
+  RegisteredWorktree,
   ContextUsage,
   ModelOption,
   PermissionModeOption,
@@ -198,6 +199,10 @@ export function Composer({
           kind: "draft";
           mode: CheckoutMode;
           onChange: (mode: CheckoutMode) => void;
+          worktrees: RegisteredWorktree[];
+          worktreesLoading: boolean;
+          worktreesError: string | undefined;
+          onSelectWorktree: (path: string) => void;
         }
       | undefined;
     branch: ReactNode;
@@ -1330,6 +1335,47 @@ export function Composer({
                           </span>
                         </MenuItem>
                       ))}
+                      {checkout.worktrees.length ? (
+                        <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+                          Existing worktrees
+                        </div>
+                      ) : null}
+                      {checkout.worktrees.map((worktree) => (
+                        <MenuItem
+                          key={worktree.path}
+                          className={selectItem}
+                          disabled={Boolean(worktree.unavailable)}
+                          title={worktree.unavailable ?? worktree.path}
+                          onClick={() =>
+                            checkout.onSelectWorktree(worktree.path)
+                          }
+                        >
+                          <FolderGitIcon className="mt-1 size-3.5 shrink-0 self-start" />
+                          <span className="flex min-w-0 flex-col">
+                            <span className="truncate">
+                              {worktree.branch ?? "Detached HEAD"}
+                            </span>
+                            <span className="truncate text-xs text-muted-foreground">
+                              {worktree.path}
+                            </span>
+                            {worktree.unavailable ? (
+                              <span className="text-xs text-muted-foreground">
+                                {worktree.unavailable}
+                              </span>
+                            ) : null}
+                          </span>
+                        </MenuItem>
+                      ))}
+                      {checkout.worktreesLoading ? (
+                        <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                          Loading worktrees...
+                        </div>
+                      ) : null}
+                      {checkout.worktreesError ? (
+                        <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                          {checkout.worktreesError}
+                        </div>
+                      ) : null}
                     </Menu>
                   ) : checkout ? (
                     <span

@@ -40,6 +40,7 @@ import type {
   Thread,
   Workspace,
   SessionSettings,
+  PullRequestDestination,
   UserQuestionAnswers,
 } from "../ipc";
 import { cn } from "../lib/cn";
@@ -72,6 +73,15 @@ import {
   reconcileTerminalSurfaces,
 } from "../panel/panelState";
 import type { ThreadPrSummary } from "../panel/pullRequests";
+import type { PrObservation } from "../panel/prReview";
+import { PullRequestCheckoutDialog } from "./PullRequestCheckoutDialog";
+import {
+  PullRequestPreparation,
+  preparedRepairInput,
+  persistPreparedRepair,
+  sameHandoffSource,
+  carryCheckoutDraft,
+} from "./pullRequestHandoff";
 import {
   appendReviewDraft,
   canAcceptReviewDraft,
@@ -179,6 +189,20 @@ type DraftCheckout = {
   base: string | null;
   fromOrigin: boolean;
 };
+type PullRequestHandoff = {
+  preparation: PullRequestPreparation;
+} & (
+  | { kind: "choose"; error?: string }
+  | { kind: "working" }
+  | { kind: "prepared"; thread: Thread; error: string }
+  | {
+      kind: "opening";
+      thread: Thread;
+      source: ComposerInput;
+      activation: number;
+    }
+  | { kind: "appending"; thread: Thread }
+);
 
 export function ChatView({
   workspaceId,
@@ -279,6 +303,32 @@ export function ChatView({
     setComposer(next);
   };
   const { text: draft, attachments: slots, records } = composer;
+  const [prHandoff, setPrHandoff] = useState<PullRequestHandoff | null>(null);
+  const handoffRef = useRef(prHandoff);
+  handoffRef.current = prHandoff;
+  const setHandoff = (next: PullRequestHandoff | null) => {
+    handoffRef.current = next;
+    setPrHandoff(next);
+  };
+  const handoffMounted = useRef(true);
+  useEffect(() => {
+    handoffMounted.current = true;
+    return () => {
+      handoffMounted.current = false;
+    };
+  }, []);
+  const [selectingWorktree, setSelectingWorktree] = useState(false);
+  const selectedWorktree = useRef<{
+    path: string;
+    thread: Thread;
+    copied: boolean;
+  } | null>(null);
+  const worktrees = useQuery({
+    queryKey: ["worktrees", workspaceId],
+    queryFn: () => ipc.listWorktrees(workspaceId),
+    enabled: !isScratch && (!threadId || prHandoff !== null),
+    retry: false,
+  });
   useSyncExternalStore(
     followUps.subscribe,
     followUps.snapshot,
@@ -449,6 +499,7 @@ export function ChatView({
   }, []);
   useEffect(() => {
     setCreatedDraft(undefined);
+    selectedWorktree.current = null;
   }, [threadId]);
   const query = useQuery({
     queryKey: ["thread", threadId],
@@ -972,11 +1023,264 @@ export function ChatView({
   const askCodex = (request: ReviewDraftRequest) => {
     const target = reviewDraftTarget.current;
     if (!canAcceptReviewDraft(request, target)) return;
+    if (!["ask", "explain"].includes(request.intent)) {
+      startPullRequestHandoff(request.target, request);
+      return;
+    }
     setDraft(
       (current) => appendReviewDraft(current, request, target) ?? current,
     );
     setMaximized(false);
     setComposerFocusRequest((current) => current + 1);
+  };
+  const startPullRequestHandoff = (
+    target: PrObservation,
+    request: ReviewDraftRequest | null = null,
+  ) => {
+    if (handoffRef.current || !threadId || !thread || isScratch) return;
+    setHandoff({
+      kind: "choose",
+      preparation: new PullRequestPreparation(
+        { ...target },
+        request,
+        composerRef.current,
+      ),
+    });
+    void worktrees.refetch();
+  };
+  const openPreparedPullRequest = async (
+    preparation: PullRequestPreparation,
+    destination: Thread,
+  ) => {
+    const source = composerRef.current;
+    setHandoff({ kind: "working", preparation });
+    try {
+      if (source.scopeKey)
+        await writeComposerDraft(source.scopeKey, source, true);
+      if (!handoffMounted.current) return;
+      if (!sameHandoffSource(composerRef.current, source))
+        throw new Error(
+          "The conversation changed. The prepared checkout is ready to open.",
+        );
+      setHandoff({
+        kind: "opening",
+        preparation,
+        thread: destination,
+        source,
+        activation:
+          source.activation + (source.threadId === destination.id ? 0 : 1),
+      });
+      await navigate({
+        to: "/",
+        search: (previous) => ({
+          ...previous,
+          workspace: destination.workspaceId,
+          thread: destination.id,
+        }),
+      });
+    } catch (cause) {
+      if (handoffMounted.current)
+        setHandoff({
+          kind: "prepared",
+          preparation,
+          thread: destination,
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+    }
+  };
+  const preparePullRequest = async (destination: PullRequestDestination) => {
+    const current = handoffRef.current;
+    if (!current || current.kind !== "choose") return;
+    const preparation = current.preparation;
+    setHandoff({ kind: "working", preparation });
+    try {
+      const prepared = await preparation.prepare({
+        destination,
+        current: () => composerRef.current,
+        persist: (input) =>
+          writeComposerDraft(
+            input.scopeKey ?? composerDraftKey(workspaceId, input.threadId),
+            input,
+            true,
+          ),
+        prepare: ipc.preparePullRequestThread,
+      });
+      setThreadSnapshot(client, prepared);
+      invalidateCheckouts(client, prepared.workspaceId);
+      void client.invalidateQueries({
+        queryKey: ["worktrees", prepared.workspaceId],
+      });
+      if (!handoffMounted.current) return;
+      if (!sameHandoffSource(composerRef.current, preparation.source)) {
+        setHandoff({
+          kind: "prepared",
+          preparation,
+          thread: prepared,
+          error:
+            "The conversation changed while preparing. Your drafts are preserved. Open the prepared conversation to continue.",
+        });
+        return;
+      }
+      await openPreparedPullRequest(preparation, prepared);
+    } catch (cause) {
+      if (!handoffMounted.current) return;
+      const error = cause instanceof Error ? cause.message : String(cause);
+      setHandoff(
+        preparation.thread
+          ? { kind: "prepared", preparation, thread: preparation.thread, error }
+          : { kind: "choose", preparation, error },
+      );
+    }
+  };
+  useEffect(() => {
+    if (
+      !prHandoff ||
+      prHandoff.kind !== "opening" ||
+      handoffRef.current !== prHandoff
+    )
+      return;
+    const { preparation, thread: destination, source, activation } = prHandoff;
+    if (composer.threadId !== destination.id) {
+      if (!sameHandoffSource(composer, source))
+        setHandoff({
+          kind: "prepared",
+          preparation,
+          thread: destination,
+          error:
+            "Navigation changed. Open the prepared conversation to continue.",
+        });
+      return;
+    }
+    if (!thread || thread.id !== destination.id) return;
+    const input = preparation.request
+      ? preparedRepairInput({
+          current: composer,
+          activation,
+          destination,
+          request: preparation.request,
+        })
+      : composer.activation === activation
+        ? composer
+        : null;
+    if (!input) {
+      setHandoff({
+        kind: "prepared",
+        preparation,
+        thread: destination,
+        error:
+          "The active conversation changed. Open the prepared conversation to continue.",
+      });
+      return;
+    }
+    if (!preparation.request) {
+      setHandoff(null);
+      setComposerFocusRequest((current) => current + 1);
+      return;
+    }
+    setHandoff({ kind: "appending", preparation, thread: destination });
+    void persistPreparedRepair({
+      current: () => composerRef.current,
+      activation,
+      destination,
+      request: preparation.request,
+      persist: (next) =>
+        writeComposerDraft(
+          composerDraftKey(destination.workspaceId, destination.id),
+          next,
+          true,
+        ),
+    }).then(
+      (result) => {
+        if (!handoffMounted.current) return;
+        if (!result) {
+          setHandoff({
+            kind: "prepared",
+            preparation,
+            thread: destination,
+            error:
+              "The conversation changed. Open the prepared conversation to add the task.",
+          });
+          return;
+        }
+        setHandoff(null);
+        if (result.kind === "active") {
+          updateComposer(() => result.input);
+          setMaximized(false);
+          setComposerFocusRequest((current) => current + 1);
+        }
+      },
+      (cause: unknown) => {
+        if (handoffMounted.current)
+          setHandoff({
+            kind: "prepared",
+            preparation,
+            thread: destination,
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
+      },
+    );
+  }, [prHandoff, composer, thread]);
+  const selectRegisteredWorktree = async (path: string) => {
+    if (selectingWorktree || threadId) return;
+    const source = composerRef.current;
+    setSelectingWorktree(true);
+    try {
+      if (!readyAttachments(source.attachments))
+        throw new Error(
+          "Wait for files to finish attaching before selecting a worktree.",
+        );
+      await writeComposerDraft(composerDraftKey(workspaceId), source, true);
+      if (!sameHandoffSource(composerRef.current, source)) return;
+      let selected = selectedWorktree.current;
+      if (!selected || selected.path !== path) {
+        const created = await ipc.create(workspaceId, {
+          kind: "registered",
+          path,
+        });
+        selected = { path, thread: created, copied: false };
+        selectedWorktree.current = selected;
+        setThreadSnapshot(client, created);
+        invalidateCheckouts(client, workspaceId);
+      }
+      if (
+        !handoffMounted.current ||
+        !sameHandoffSource(composerRef.current, source)
+      )
+        return;
+      if (!selected.copied) {
+        const key = composerDraftKey(workspaceId, selected.thread.id);
+        const destination = {
+          ...activateComposer(selected.thread.id),
+          ...readComposerDraft(key),
+          scopeKey: key,
+        };
+        await writeComposerDraft(
+          key,
+          carryCheckoutDraft(destination, source),
+          true,
+        );
+        selected.copied = true;
+      }
+      if (
+        !handoffMounted.current ||
+        !sameHandoffSource(composerRef.current, source)
+      )
+        return;
+      await navigate({
+        to: "/",
+        search: (previous) => ({
+          ...previous,
+          workspace: workspaceId,
+          thread: selected.thread.id,
+        }),
+      });
+      setComposerFocusRequest((current) => current + 1);
+    } catch (cause) {
+      if (handoffMounted.current)
+        setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (handoffMounted.current) setSelectingWorktree(false);
+    }
   };
   const canStop = Boolean(
     thread?.turns.some(
@@ -1059,6 +1363,7 @@ export function ChatView({
   }, [dropVersion, thread?.id, composer.activation, settings]);
   const attachments = readyAttachments(slots);
   const submit = () => {
+    if (handoffRef.current?.kind === "appending") return;
     if (!settings) return;
     if (!threadId && !isScratch) {
       if (configQuery.isPending) return;
@@ -1151,6 +1456,8 @@ export function ChatView({
   const worktreeDraft =
     isDraft && !createdDraft && draftCheckout.mode === "worktree";
   const controlsDisabled =
+    selectingWorktree ||
+    prHandoff?.kind === "appending" ||
     busy ||
     reverting ||
     send.isPending ||
@@ -1171,6 +1478,10 @@ export function ChatView({
                     ...current,
                     mode,
                   })),
+                worktrees: worktrees.data ?? [],
+                worktreesLoading: worktrees.isFetching,
+                worktreesError: worktrees.error?.message,
+                onSelectWorktree: (path) => void selectRegisteredWorktree(path),
               }
             : (thread ?? createdDraft)?.checkout,
         branch: (
@@ -1657,18 +1968,20 @@ export function ChatView({
                         }}
                         followUpBehavior={effectiveFollowUpBehavior}
                         canSend={
-                          isUsageLimitsCommand(draft) ||
-                          ((showPlanFollowUp ||
-                            Boolean(draft.trim()) ||
-                            slots.length > 0) &&
-                            attachments !== null &&
-                            !reverting &&
-                            !send.isPending &&
-                            !saveSettings.isPending &&
-                            (Boolean(threadId) ||
-                              isScratch ||
-                              (!configQuery.isPending && !configQuery.error)) &&
-                            (!threadId || Boolean(thread)))
+                          prHandoff?.kind !== "appending" &&
+                          (isUsageLimitsCommand(draft) ||
+                            ((showPlanFollowUp ||
+                              Boolean(draft.trim()) ||
+                              slots.length > 0) &&
+                              attachments !== null &&
+                              !reverting &&
+                              !send.isPending &&
+                              !saveSettings.isPending &&
+                              (Boolean(threadId) ||
+                                isScratch ||
+                                (!configQuery.isPending &&
+                                  !configQuery.error)) &&
+                              (!threadId || Boolean(thread))))
                         }
                         taskTurn={latestTurn}
                         running={busy || queued.length > 0}
@@ -1727,7 +2040,7 @@ export function ChatView({
                             ? (thread?.context ?? null)
                             : null
                         }
-                        disabled={false}
+                        disabled={prHandoff?.kind === "appending"}
                         context={context}
                         settings={settings}
                         permissionModes={
@@ -1843,6 +2156,7 @@ export function ChatView({
             pullRequests={pullRequests}
             canAskCodex={reviewDraftTarget.current.canAccept}
             onAskCodex={askCodex}
+            onCheckoutPullRequest={(target) => startPullRequestHandoff(target)}
             terminalAvailable={terminalAvailable}
             fileLinks={fileLinks}
             thread={thread}
@@ -1907,9 +2221,36 @@ export function ChatView({
   );
   return (
     <ComposerContextProvider
-      value={reverting || send.isPending ? null : addComposerContext}
+      value={
+        reverting || send.isPending || prHandoff?.kind === "appending"
+          ? null
+          : addComposerContext
+      }
     >
       {content}
+      {prHandoff ? (
+        <PullRequestCheckoutDialog
+          target={prHandoff.preparation.target}
+          worktrees={worktrees.data ?? []}
+          loading={worktrees.isFetching}
+          discoveryError={worktrees.error?.message}
+          busy={["working", "opening", "appending"].includes(prHandoff.kind)}
+          prepared={prHandoff.preparation.thread}
+          error={
+            prHandoff.kind === "prepared" || prHandoff.kind === "choose"
+              ? prHandoff.error
+              : undefined
+          }
+          repair={prHandoff.preparation.request !== null}
+          onClose={() => setHandoff(null)}
+          onPrepare={(destination) => void preparePullRequest(destination)}
+          onOpen={() => {
+            const current = handoffRef.current;
+            if (current?.kind === "prepared")
+              void openPreparedPullRequest(current.preparation, current.thread);
+          }}
+        />
+      ) : null}
       {attachmentNotice ? (
         <ToastViewport>
           <Toast

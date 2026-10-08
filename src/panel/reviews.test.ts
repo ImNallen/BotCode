@@ -30,6 +30,7 @@ import {
 import { ReviewDetails } from "./ReviewFinding.tsx";
 import {
   prReviewDetail,
+  prObservation,
   type PrChangeResult,
   type PrReviewChange,
 } from "./prReview.ts";
@@ -70,14 +71,20 @@ const finding = reviewFinding.parse({
   ],
   saved: null,
 });
-const request: ReviewDraftRequest = {
+const request = {
   workspaceId: "workspace",
   threadId: "thread",
   key: "github.com/test/repo/7",
+  target: prObservation.parse({
+    key: "github.com/test/repo/7",
+    nodeId: "PR_fixture",
+    headOid: "a".repeat(40),
+    viewer: "reviewer",
+  }),
   intent: "ask",
   problems: [],
   finding,
-};
+} satisfies ReviewDraftRequest;
 const target = {
   workspaceId: "workspace",
   threadId: "thread",
@@ -488,6 +495,7 @@ it("prepares aggregate and conflict drafts with captured identity, original evid
       workspaceId: target.workspaceId,
       threadId: target.threadId,
       key: request.key,
+      target: { ...detail.observation },
       intent,
       observation: {
         nodeId: detail.observation.nodeId,
@@ -520,9 +528,7 @@ it("prepares aggregate and conflict drafts with captured identity, original evid
     assert.isTrue(draft?.includes("Only four pages loaded") ?? false);
     assert.isTrue(draft?.includes("Original reviewed commit") ?? false);
     assert.isTrue(draft?.includes("Unit tests; state FAILURE") ?? false);
-    assert.isTrue(
-      draft?.includes("does not switch or create a checkout") ?? false,
-    );
+    assert.isTrue(draft?.includes("prepared pull request checkout") ?? false);
     assert.equal(
       appendReviewDraft("Preserve", repair, { ...target, threadId: "another" }),
       null,
