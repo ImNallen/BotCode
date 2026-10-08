@@ -63,6 +63,7 @@ function context(): ActionContext {
     },
     editorLabel: "Cursor",
     newThread: noop,
+    newThreadDirect: noop,
     startScratch: noop,
     openSettings: noop,
     closePage: noop,
@@ -89,6 +90,24 @@ function key(key: string, options: Partial<KeyEventLike> = {}): KeyEventLike {
     ...options,
   };
 }
+it("New thread uses the project router while New thread in current project stays direct", () => {
+  const ctx = context();
+  const calls: string[] = [];
+  ctx.newThread = () => calls.push("route");
+  ctx.newThreadDirect = () => calls.push("direct");
+  assert.equal(matchAction(key("n"), ctx, false, "MacIntel"), "chat.new");
+  assert.equal(
+    matchAction(key("n", { shiftKey: true }), ctx, false, "MacIntel"),
+    "chat.newLocal",
+  );
+  runAction("chat.new", ctx);
+  runAction("chat.newLocal", ctx);
+  assert.deepEqual(calls, ["route", "direct"]);
+  const pages: string[] = [];
+  ctx.openSubmenu = (page) => pages.push(page);
+  runAction("project.add", ctx);
+  assert.deepEqual(pages, ["project-sources"]);
+});
 it("the same discovered pin and settle commands execute from palette and shortcuts", () => {
   const ctx = context();
   const calls: Arrange[] = [];

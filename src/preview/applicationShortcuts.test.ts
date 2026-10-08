@@ -27,6 +27,7 @@ const context: ActionContext = {
   checkoutTarget: null,
   editorLabel: null,
   newThread: noop,
+  newThreadDirect: noop,
   startScratch: noop,
   openSettings: noop,
   closePage: noop,

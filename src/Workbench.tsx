@@ -40,6 +40,7 @@ import {
   workspaceTarget,
   type Arrange,
   type CheckoutRef,
+  type Workspace,
 } from "./ipc";
 import { EditorToasts, useEditorActions } from "./lib/editorActions";
 import { editorById } from "./lib/editors";
@@ -57,14 +58,17 @@ import {
   type ActionContext,
   type SidebarRequest,
   type ChatRequest,
+  type PalettePage,
 } from "./lib/actions";
 import { matchAction, matchesAction, shortcutLabel } from "./lib/shortcuts";
 import {
   focusComposer,
   isCommandPaletteOpen,
   subscribeCommandPaletteOpen,
+  type PaletteIntent,
 } from "./lib/commandPaletteBus";
 import { CommandPalette } from "./command/CommandPalette";
+import { newThreadDestination } from "./command/projectNavigation";
 import { followUps } from "./chat/followUps";
 import { confirmAndDeleteThread, restoreThread } from "./threadActions";
 import { isTerminalFocused } from "./terminal/terminalKeys";
@@ -144,6 +148,11 @@ export function Workbench() {
   const [actionStatus, setActionStatus] = useState<string>();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteBlocked, setPaletteBlocked] = useState(false);
+  const [paletteRequest, setPaletteRequest] = useState<{
+    page: Exclude<PalettePage, "archive-actions" | "project-local">;
+    sequence: number;
+  }>({ page: "root", sequence: 0 });
+  const paletteEpoch = useRef(0);
   const paletteFocus = useRef<HTMLElement | null>(null);
   const restorePaletteFocus = useRef(false);
   useLayoutEffect(() => {
@@ -164,30 +173,36 @@ export function Workbench() {
       previous.focus({ preventScroll: true });
     else if (!pageOpen) focusComposer();
   }, [paletteOpen, pageOpen]);
-  const openPalette = useCallback(() => {
-    const previous =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    const dialogs = Array.from(
-      document.querySelectorAll<HTMLDialogElement>(
-        "dialog[open]:not([data-command-palette])",
-      ),
-    );
-    flushSync(() => {
-      for (const dialog of dialogs)
-        dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
-    });
-    paletteFocus.current = previous?.isConnected
-      ? previous
-      : document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    setPaletteBlocked(
-      dialogs.some((dialog) => dialog.isConnected && dialog.open),
-    );
-    setPaletteOpen(true);
-  }, []);
+  const openPalette = useCallback(
+    (
+      page: Exclude<PalettePage, "archive-actions" | "project-local"> = "root",
+    ) => {
+      const previous =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      const dialogs = Array.from(
+        document.querySelectorAll<HTMLDialogElement>(
+          "dialog[open]:not([data-command-palette])",
+        ),
+      );
+      flushSync(() => {
+        for (const dialog of dialogs)
+          dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+      });
+      paletteFocus.current = previous?.isConnected
+        ? previous
+        : document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      setPaletteBlocked(
+        dialogs.some((dialog) => dialog.isConnected && dialog.open),
+      );
+      setPaletteRequest({ page, sequence: ++paletteEpoch.current });
+      setPaletteOpen(true);
+    },
+    [],
+  );
   const [sidebarRequest, setSidebarRequest] = useState<SidebarRequest>();
   const [chatRequest, setChatRequest] = useState<ChatRequest>();
   const [renamePending, setRenamePending] = useState(false);
@@ -197,7 +212,13 @@ export function Workbench() {
     followUps.snapshot,
     followUps.snapshot,
   );
-  useEffect(() => subscribeCommandPaletteOpen(openPalette), [openPalette]);
+  useEffect(
+    () =>
+      subscribeCommandPaletteOpen((intent: PaletteIntent) =>
+        openPalette(intent === "add-project" ? "project-sources" : intent),
+      ),
+    [openPalette],
+  );
   const [prPanelRequest, setPrPanelRequest] = useState<{
     threadId: string;
     surface: Surface;
@@ -297,21 +318,21 @@ export function Workbench() {
     });
     return () => cancelAnimationFrame(frame);
   }, [pageOpen, sidebarOpen]);
-  const openRepository = async () => {
-    try {
-      const path = await open({
-        directory: true,
-        multiple: false,
-        title: "Open a Git repository",
-      });
-      if (typeof path !== "string") return;
-      const workspace = await ipc.openWorkspace(path);
-      await client.invalidateQueries({ queryKey: ["workspaces"] });
-      void navigate({ to: "/", search: { workspace: workspace.id } });
-      setError(undefined);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+  const openRepository = () => openPalette("project-sources");
+  const openRepositoryPath = async (path: string, isCurrent: () => boolean) => {
+    const epoch = paletteEpoch.current;
+    const workspace = await ipc.openWorkspace(path);
+    await client.invalidateQueries({ queryKey: ["workspaces"] });
+    if (epoch !== paletteEpoch.current || !isCurrent()) return;
+    closePalette(false);
+    const closedEpoch = paletteEpoch.current;
+    await navigate({ to: "/", search: { workspace: workspace.id } });
+    setError(undefined);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (closedEpoch === paletteEpoch.current) focusComposer();
+      }),
+    );
   };
   const selectThread = useCallback(
     (workspace: string, thread: string, panel?: Surface) => {
@@ -341,6 +362,20 @@ export function Workbench() {
     void navigate({ to: "/", search: { workspace } });
   const newThread = (workspace = workspaceId) =>
     void navigate({ to: "/", search: { workspace } });
+  const createThread = (scopeId?: string, shiftKey = false) => {
+    const destination = newThreadDestination({
+      scopeId,
+      currentId: workspaceId,
+      workspaces: list,
+      scratchAvailable,
+      shiftKey,
+    });
+    if (destination.kind === "picker") openPalette("new-thread-in");
+    else if (destination.kind === "workspace") {
+      newThread(destination.id);
+      requestAnimationFrame(() => requestAnimationFrame(focusComposer));
+    } else if (destination.kind === "scratch") void startScratch();
+  };
   const currentView = views.find(
     (view) => view.data?.workspace.id === workspaceId,
   )?.data;
@@ -384,13 +419,17 @@ export function Workbench() {
     archiveTarget: undefined,
     checkoutTarget,
     editorLabel: editors.preferred ? editorById(editors.preferred).label : null,
-    newThread: () => newThread(),
+    newThread: () => createThread(),
+    newThreadDirect: () => createThread(undefined, true),
     startScratch: () => void startScratch(),
     openSettings,
     closePage,
     toggleSidebar: () => setSidebarOpen((value) => !value),
     openPalette,
-    openSubmenu: openPalette,
+    openSubmenu: (page) => {
+      if (page !== "archive-actions" && page !== "project-local")
+        openPalette(page);
+    },
     arrange: (id, action) => void arrange(id, action),
     requestSidebar: (threadId, operation) => {
       if (operation.kind === "rename") setSidebarOpen(true);
@@ -535,6 +574,7 @@ export function Workbench() {
     };
   }, []);
   const closePalette = (restoreFocus: boolean) => {
+    paletteEpoch.current += 1;
     restorePaletteFocus.current = restoreFocus;
     if (!restoreFocus) paletteFocus.current = null;
     setPaletteOpen(false);
@@ -600,7 +640,7 @@ export function Workbench() {
               data-slot="sidebar-inner"
               className="flex h-full w-full flex-col bg-sidebar"
             >
-              <SidebarBrand onNewThread={() => newThread()} />
+              <SidebarBrand onNewThread={() => createThread()} />
               <div className="relative min-h-0 flex-1">
                 <div
                   className="absolute inset-0 flex min-h-0 flex-col"
@@ -619,7 +659,7 @@ export function Workbench() {
                     workspaceId={workspaceId}
                     threadId={selection.thread}
                     onSelectThread={selectThread}
-                    onNewThread={newThread}
+                    onNewThread={createThread}
                     onOpenRepository={() => void openRepository()}
                     onOpenProjectSettings={(id) =>
                       openSettingsAt("projects", id)
@@ -795,9 +835,36 @@ export function Workbench() {
       ) : null}
       {paletteOpen ? (
         <CommandPalette
+          key={paletteRequest.sequence}
+          initialPage={paletteRequest.page}
           context={actionContext}
           blocked={paletteBlocked}
           workspaces={list}
+          workspacesLoading={workspaces.isPending}
+          workspacesError={workspaces.error?.message}
+          onRetryWorkspaces={() => void workspaces.refetch()}
+          onNewThread={(id) => {
+            if (
+              !client
+                .getQueryData<Workspace[]>(["workspaces"])
+                ?.some((workspace) => workspace.id === id)
+            )
+              return false;
+            closePalette(false);
+            newThread(id);
+            requestAnimationFrame(() => requestAnimationFrame(focusComposer));
+            return true;
+          }}
+          onOpenRepository={openRepositoryPath}
+          onChooseRepository={async (defaultPath) => {
+            const path = await open({
+              directory: true,
+              multiple: false,
+              title: "Open a Git repository",
+              defaultPath,
+            });
+            return typeof path === "string" ? path : null;
+          }}
           threads={views.flatMap((view) =>
             view.data
               ? view.data.threads.map((thread) => ({

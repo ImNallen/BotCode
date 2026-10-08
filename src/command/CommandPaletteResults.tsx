@@ -14,7 +14,7 @@ export type PaletteItem = {
   id: string;
   title: string;
   icon: ReactNode;
-  description?: string;
+  description?: ReactNode;
   threadContentMatch?: MessageMatch;
   shortcut?: string;
   submenu?: boolean;

@@ -6,6 +6,7 @@ import {
   ClockIcon,
   CopyIcon,
   FolderIcon,
+  FolderPlusIcon,
   FolderTreeIcon,
   FileSearchIcon,
   TextSearchIcon,
@@ -26,7 +27,11 @@ import type { Arrange, OpenTarget, ThreadSummary, Workspace } from "../ipc";
 import { workingSessions } from "./sessions";
 import { resolveSnoozePresets, type SnoozePreset } from "./snooze";
 import { keybindings } from "../keybindings/store";
-import { DEFAULT_KEYBINDINGS, type KeybindingRule } from "../keybindings/rules";
+import {
+  DEFAULT_KEYBINDINGS,
+  THREAD_JUMP_KEYBINDING_COMMANDS,
+  type KeybindingRule,
+} from "../keybindings/rules";
 import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
@@ -65,6 +70,9 @@ export type PalettePage =
   | "snooze"
   | "copy"
   | "archived"
+  | "new-thread-in"
+  | "project-sources"
+  | "project-local"
   | "archive-actions";
 export type ActionContext = {
   pageOpen: boolean;
@@ -81,6 +89,7 @@ export type ActionContext = {
   checkoutTarget: OpenTarget | null;
   editorLabel: string | null;
   newThread: () => void;
+  newThreadDirect: () => void;
   startScratch: () => void;
   openSettings: () => void;
   closePage: () => void;
@@ -191,8 +200,26 @@ const definitions = {
     title: "New thread",
     group: "Navigation",
     palette: "root",
-    available: (c) => !!c.workspace,
+    available: (c) => !!c.workspace || c.scratchAvailable,
     run: (c) => c.newThread(),
+  },
+  "chat.newLocal": {
+    icon: SquarePenIcon,
+    title: "New thread in current project",
+    group: "Navigation",
+    palette: false,
+    available: (c) => !!c.workspace || c.scratchAvailable,
+    run: (c) => c.newThreadDirect(),
+  },
+  "project.add": {
+    icon: FolderPlusIcon,
+    title: "Add project",
+    keywords: "local folder repository",
+    group: "Navigation",
+    palette: "root",
+    submenu: true,
+    available: () => true,
+    run: (c) => c.openSubmenu("project-sources"),
   },
   "chat.newWithoutProject": {
     icon: MessageSquareDashedIcon,
@@ -529,6 +556,15 @@ function runnableBindings() {
       snapshot.scriptCommands.has(binding.command),
   );
 }
+export function paletteBindings() {
+  const snapshot = keybindings.getSnapshot();
+  return snapshot.bindings.filter(
+    (binding) =>
+      isActionId(binding.command) ||
+      THREAD_JUMP_KEYBINDING_COMMANDS.includes(binding.command) ||
+      snapshot.scriptCommands.has(binding.command),
+  );
+}
 export function commandShortcutLabel(
   command: string,
   platform = navigator.platform,
@@ -572,7 +608,11 @@ export function shortcutLabel(id: ActionId, platform = navigator.platform) {
 }
 
 export const defaultKeybindings: readonly KeybindingRule[] = [
-  ...DEFAULT_KEYBINDINGS.filter((rule) => isActionId(rule.command)),
+  ...DEFAULT_KEYBINDINGS.filter(
+    (rule) =>
+      isActionId(rule.command) ||
+      THREAD_JUMP_KEYBINDING_COMMANDS.includes(rule.command),
+  ),
   ...actionIds.flatMap((command) =>
     (actions[command].defaultBindings ?? []).map((binding) => ({
       ...binding,
@@ -580,4 +620,7 @@ export const defaultKeybindings: readonly KeybindingRule[] = [
     })),
   ),
 ];
-keybindings.configure(defaultKeybindings, new Set(actionIds));
+keybindings.configure(
+  defaultKeybindings,
+  new Set([...actionIds, ...THREAD_JUMP_KEYBINDING_COMMANDS]),
+);

@@ -1,24 +1,25 @@
 // Classes ported from pingdotgg/t3code v0.0.45 components/ui/command.tsx, autocomplete.tsx and input.tsx (MIT).
 import { SearchIcon } from "lucide-react";
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { cn } from "../lib/cn";
 import { Input } from "./input";
+import { Button } from "./controls";
 export function Command(props: ComponentProps<"div">) {
   return <div className="flex min-h-0 flex-1 flex-col" {...props} />;
 }
 export function CommandInput({
   className,
+  startAddon = <SearchIcon className="translate-x-0.5 text-icon-muted" />,
   ...props
-}: Omit<ComponentProps<"input">, "size">) {
+}: Omit<ComponentProps<"input">, "size"> & { startAddon?: ReactNode }) {
   return (
     <div className="px-[var(--command-shell-inset)] py-1.5 [&_[data-slot=autocomplete-start-addon]]:ps-[calc(var(--command-shell-inset)+0.0625rem)]">
       <div className="relative not-has-[>*.w-full]:w-fit w-full text-foreground has-disabled:opacity-64">
         <div
-          aria-hidden="true"
           data-slot="autocomplete-start-addon"
           className="[&_svg]:-mx-0.5 pointer-events-none has-[button]:pointer-events-auto absolute inset-y-0 start-px z-10 flex items-center ps-[calc(--spacing(3)-1px)] opacity-80 has-[+[data-size=sm]]:ps-[calc(--spacing(2.5)-1px)] [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4"
         >
-          <SearchIcon className="translate-x-0.5 text-icon-muted" />
+          {startAddon}
         </div>
         <Input
           size="lg"
@@ -111,6 +112,19 @@ export function CommandFooter({ className, ...props }: ComponentProps<"div">) {
       )}
       data-slot="command-footer"
       {...props}
+    />
+  );
+}
+export function CommandFooterAction({
+  className,
+  ...props
+}: Omit<ComponentProps<typeof Button>, "size" | "variant">) {
+  return (
+    <Button
+      {...props}
+      variant="ghost-muted"
+      size="xs"
+      className={cn("h-auto px-2 text-xs hover:bg-transparent", className)}
     />
   );
 }

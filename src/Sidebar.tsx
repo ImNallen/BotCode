@@ -63,7 +63,11 @@ import {
   MenuSub,
   MenuSeparator,
 } from "./ui/menu";
-import { canParkThread, type SidebarRequest } from "./lib/actions";
+import {
+  canParkThread,
+  shortcutLabel,
+  type SidebarRequest,
+} from "./lib/actions";
 import { confirmAndDeleteThread } from "./threadActions";
 import { resolveSnoozePresets, snoozeWakeLabel } from "./lib/snooze";
 
@@ -201,7 +205,7 @@ export function Sidebar({
     threadId: string,
     panel?: Surface,
   ) => void | Promise<void>;
-  onNewThread: (workspaceId?: string) => void;
+  onNewThread: (workspaceId?: string, shiftKey?: boolean) => void;
   onOpenRepository: () => void;
   onOpenProjectSettings: (workspaceId: string) => void;
   onArrange: (threadId: string, action: Arrange) => Promise<boolean>;
@@ -587,9 +591,9 @@ export function Sidebar({
               ) : null}
               <HeaderIconButton
                 aria-label="New thread"
-                title="New thread"
+                title={`New thread${shortcutLabel("chat.new") ? ` (${shortcutLabel("chat.new")})` : ""}\nNew thread in current project: Shift+click`}
                 disabled={!scope && !workspaceId}
-                onClick={() => onNewThread(scope?.id)}
+                onClick={(event) => onNewThread(scope?.id, event.shiftKey)}
               >
                 <SquarePenIcon />
               </HeaderIconButton>
