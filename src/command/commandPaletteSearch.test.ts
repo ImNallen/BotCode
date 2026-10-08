@@ -64,6 +64,7 @@ function snapshot(id: string): Thread {
       {
         id: "turn",
         prompt: "Please inspect login behavior",
+        tasks: null,
         nativeTurnId: null,
         delivery: { kind: "accepted" },
         execution: { kind: "completed" },

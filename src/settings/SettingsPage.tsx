@@ -38,7 +38,11 @@ import {
   type SettingsSection,
 } from "./settingsCatalog";
 import { SettingsScopeSentence, useSettingsScope } from "./settingsScope";
-import { SettingsGroup, SettingsRow } from "./settingsLayout";
+import {
+  SettingResetButton,
+  SettingsGroup,
+  SettingsRow,
+} from "./settingsLayout";
 
 function useCategory() {
   const pathname = useLocation({ select: (location) => location.pathname });
@@ -468,6 +472,16 @@ export function SettingsPage() {
           }
         />
       );
+    if (id === "working-shelf")
+      return (
+        <Switch
+          aria-label="Working section (beta)"
+          checked={preferences.sidebarWorkingShelfEnabled}
+          onCheckedChange={(sidebarWorkingShelfEnabled) =>
+            update({ sidebarWorkingShelfEnabled })
+          }
+        />
+      );
     if (id === "in-app-notifications")
       return (
         <Switch
@@ -539,7 +553,20 @@ export function SettingsPage() {
         scope={scope}
       />
     ) : (
-      <SettingsRow key={info.id} {...info} control={control(info.id)} />
+      <SettingsRow
+        key={info.id}
+        {...info}
+        control={control(info.id)}
+        resetAction={
+          info.id === "working-shelf" &&
+          preferences.sidebarWorkingShelfEnabled ? (
+            <SettingResetButton
+              label="working section"
+              onClick={() => update({ sidebarWorkingShelfEnabled: false })}
+            />
+          ) : undefined
+        }
+      />
     );
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">

@@ -42,6 +42,7 @@ function fixture(): Thread {
       {
         id: turnId,
         prompt: "First",
+        tasks: null,
         nativeTurnId: "native-turn",
         delivery: { kind: "accepted" },
         execution: { kind: "running" },

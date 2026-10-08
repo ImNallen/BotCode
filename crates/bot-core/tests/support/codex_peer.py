@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, pathlib, signal, sys, time, subprocess
+import json, os, pathlib, signal, sys, time, subprocess, threading
 root = pathlib.Path(__file__).parent
 def publish(path, text):
     temporary = path.with_name(path.name + '.tmp')
@@ -50,8 +50,10 @@ current_thread = None
 callbacks = set()
 approval_expected = None
 session_grants = set()
+output_lock = threading.Lock()
 def emit(value):
-    print(json.dumps(value), flush=True)
+    with output_lock:
+        print(json.dumps(value), flush=True)
 def result(request, value):
     emit({'id': request['id'], 'result': value})
 def event(method, params):
@@ -65,6 +67,63 @@ other_limits = {'limitId': 'base_model_inference', 'planType': 'pro', 'primary':
 def token_usage(last, total):
     breakdown = lambda n: {'totalTokens': n, 'inputTokens': n, 'cachedInputTokens': 0, 'outputTokens': 0, 'reasoningOutputTokens': 0}
     event('thread/tokenUsage/updated', {'threadId': current_thread, 'turnId': active, 'tokenUsage': {'last': breakdown(last), 'total': breakdown(total), 'modelContextWindow': 258400}})
+task_turns = {}
+task_callbacks = {}
+task_lock = threading.Lock()
+def task_event(thread, turn, plan, **fields):
+    event('turn/plan/updated', {'threadId': thread, 'turnId': turn, 'explanation': 'Fixture execution checklist', 'plan': plan, **fields})
+def task_plan(stage=0):
+    labels = ['Read the repository', 'Implement task progress', 'Verify the native app']
+    return [{'step': label, 'status': 'completed' if i < stage else 'inProgress' if i == stage else 'pending'} for i, label in enumerate(labels)]
+def start_tasks(thread, turn):
+    state = {'threadId': thread, 'turnId': turn, 'controlPath': str(root / ('task-control-' + thread + '.json')), 'active': True}
+    with task_lock:
+        task_turns[thread] = state
+        publish(root / 'task-progress.json', json.dumps(list(task_turns.values())))
+    task_event(thread, turn, task_plan())
+    def watch():
+        revision = None
+        while state['active']:
+            try:
+                control = json.loads(pathlib.Path(state['controlPath']).read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                time.sleep(0.025)
+                continue
+            if control.get('revision') == revision:
+                time.sleep(0.025)
+                continue
+            revision = control.get('revision')
+            action = control.get('action')
+            if action == 'advance':
+                task_event(thread, turn, task_plan(control.get('stage', 1)))
+            elif action == 'clear':
+                task_event(thread, turn, [])
+            elif action == 'malformed':
+                task_event(thread, turn, [{'step': 'Malformed', 'status': 'unknown'}])
+            elif action == 'stale':
+                task_event(thread, turn, task_plan(2), turnId=control.get('turnId', 'old-turn'))
+            elif action == 'missing':
+                event('turn/plan/updated', {'threadId': thread, 'explanation': None, 'plan': task_plan(2)})
+            elif action == 'wrong-thread':
+                task_event('other-native-thread', turn, task_plan(2))
+            elif action == 'raw':
+                event(control.get('method', 'turn/plan/updated'), control['params'])
+            elif action in ('finish', 'fail'):
+                state['active'] = False
+                event('turn/completed', {'threadId': thread, 'turn': {'id': turn, 'status': 'failed' if action == 'fail' else 'completed', 'items': []}})
+                task_event(thread, turn, [{'step': 'Late terminal telemetry', 'status': 'pending'}])
+            elif action == 'approval':
+                callback = 'task-approval-' + turn
+                task_callbacks[callback] = (thread, turn)
+                emit({'id': callback, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': thread, 'turnId': turn, 'itemId': callback, 'command': 'echo task progress', 'cwd': os.getcwd(), 'reason': 'Fixture task approval'}})
+            elif action == 'question':
+                callback = 'task-question-' + turn
+                task_callbacks[callback] = (thread, turn)
+                emit({'id': callback, 'method': 'item/tool/requestUserInput', 'params': {'threadId': thread, 'turnId': turn, 'itemId': callback, 'isBlocking': True, 'questions': [{'id': 'scope', 'header': 'Scope', 'question': 'Continue task progress?', 'isOther': True, 'isSecret': False, 'options': [{'label': 'Continue', 'description': 'Continue the fixture turn'}]}]}})
+            publish(root / ('task-control-seen-' + thread + '.json'), json.dumps(control))
+            time.sleep(0.025)
+    threading.Thread(target=watch, daemon=True).start()
+
 for line in sys.stdin:
     request = json.loads(line)
     with log.open('a') as output:
@@ -109,6 +168,12 @@ for line in sys.stdin:
             emit({'id': request['id'], 'error': {'message': 'Usage service unavailable'}})
         else:
             result(request, {'rateLimits': codex_limits, 'rateLimitsByLimitId': {'codex': codex_limits, 'base_model_inference': other_limits}})
+    elif method == 'thread/fork':
+        starts = [json.loads(line) for line in log.read_text().splitlines()]
+        turns = [{'id': 'native-' + call['params']['clientUserMessageId'], 'status': 'completed', 'items': []} for call in starts if call.get('method') == 'turn/start' and call['params']['threadId'] == params['threadId']]
+        boundary = next(i for i, turn in enumerate(turns) if turn['id'] == params['beforeTurnId'])
+        current_thread = 'fork-' + str(request['id'])
+        result(request, {'thread': {'id': current_thread, 'turns': turns[:boundary]}})
     elif method in ('thread/start', 'thread/resume'):
         current_thread = params['threadId'] if method == 'thread/resume' else 'native-thread-' + str(request['id'])
         history = json.loads((root / 'history.json').read_text()) if (root / 'history.json').exists() else []
@@ -124,6 +189,10 @@ for line in sys.stdin:
         if prompt == 'crash-before-ack':
             print(f'fixture stderr: panic before ack {active}', file=sys.stderr, flush=True)
             os.kill(os.getpid(), signal.SIGKILL)
+        if prompt == 'task-progress-early':
+            event('turn/started', {'threadId': current_thread, 'turn': {'id': active}})
+            start_tasks(current_thread, active)
+            time.sleep(0.15)
         if prompt != 'late-response':
             result(request, {'turn': {'id': active, 'status': 'inProgress', 'items': []}})
         event('turn/started', {'threadId': current_thread, 'turn': {'id': active}})
@@ -296,6 +365,9 @@ for line in sys.stdin:
         elif prompt in ('ask-plan', 'ask-plan-empty-options'):
             callbacks = {'question-route'}
             emit({'id': 'question-route', 'method': 'item/tool/requestUserInput', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'question-item', 'isBlocking': True, 'autoResolutionMs': None, 'questions': [{'id': 'scope', 'header': 'Scope', 'question': 'Which workflow should be implemented?', 'isOther': True, 'isSecret': False, 'options': [{'label': 'Composer', 'description': 'Implement the composer'}]}, {'id': 'notes', 'header': 'Notes', 'question': 'Any constraints?', 'isOther': False, 'isSecret': False, 'options': [] if prompt == 'ask-plan-empty-options' else None}]}})
+        elif prompt in ('task-progress', 'task-progress-early'):
+            if prompt == 'task-progress':
+                start_tasks(current_thread, active)
         elif prompt == 'hold':
             pass
         elif prompt == 'crash':
@@ -354,7 +426,14 @@ for line in sys.stdin:
                 result(request, {'turnId': active})
     elif method == 'turn/interrupt':
         result(request, {})
-        finish('interrupted')
+        task_state = task_turns.get(params['threadId'])
+        if task_state and task_state['active']:
+            task_state['active'] = False
+            event('turn/completed', {'threadId': params['threadId'], 'turn': {'id': task_state['turnId'], 'status': 'interrupted', 'items': []}})
+        else:
+            finish('interrupted')
+    elif method is None and request.get('id') in task_callbacks:
+        task_callbacks.pop(request['id'])
     elif method is None and request.get('id') in callbacks:
         if request['id'] == 'approval-kind-route':
             expected_file = root / 'approval_expected.json'

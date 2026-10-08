@@ -66,6 +66,7 @@ function thread(items: Item[], running = false): Thread {
         id: turnId,
         prompt: "Check the latest Rust release and compute 6 × 7",
         attachments: [],
+        tasks: null,
         nativeTurnId: "native-turn",
         delivery: { kind: "accepted" },
         execution: { kind: running ? "running" : "completed" },

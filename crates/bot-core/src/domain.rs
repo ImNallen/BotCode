@@ -385,6 +385,8 @@ pub struct Turn {
     pub attachments: Vec<Attachment>,
     #[serde(default)]
     pub checkpoint: TurnCheckpoint,
+    #[serde(default)]
+    pub tasks: Option<crate::TaskProgress>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImageMime {
@@ -973,6 +975,8 @@ pub struct ThreadSnapshot {
     pub created_at_ms: Option<u64>,
     #[serde(default)]
     pub latest_user_activity_at_ms: Option<u64>,
+    #[serde(default)]
+    pub unsettled_at_ms: Option<u64>,
     pub id: ThreadId,
     pub workspace_id: WorkspaceId,
     pub title: String,
@@ -1083,6 +1087,7 @@ impl ThreadSnapshot {
             (self.placement, settled_at)
         {
             self.placement = Placement::Settled { at_ms };
+            self.unsettled_at_ms = None;
             self.snooze = None;
         }
     }
@@ -1174,11 +1179,13 @@ impl ThreadSnapshot {
                     }
                     self.placement = Placement::Settled { at_ms: now };
                 }
+                self.unsettled_at_ms = None;
                 self.snooze = None;
             }
             Arrange::Unsettle => {
                 if matches!(self.placement, Placement::Settled { .. }) {
                     self.placement = Placement::Kept;
+                    self.unsettled_at_ms = Some(now);
                 }
             }
             Arrange::Snooze { until_ms } => {
@@ -1217,6 +1224,7 @@ impl ThreadSnapshot {
                 id: turn.id.clone(),
                 execution: turn.execution.clone(),
                 completed_at_ms: turn.completed_at_ms,
+                started_at_ms: turn.started_at_ms,
             }),
             pending_approval_ids: self
                 .approvals
@@ -1238,6 +1246,7 @@ impl ThreadSnapshot {
                 _ => None,
             },
             created_at_ms: self.created_at_ms,
+            unsettled_at_ms: self.unsettled_at_ms,
             updated_at_ms: self.turns.iter().rev().find_map(|turn| turn.started_at_ms),
             awaiting_approval: self
                 .approvals
@@ -1260,6 +1269,7 @@ impl ThreadSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LatestTurnSummary {
+    pub started_at_ms: Option<u64>,
     pub id: TurnId,
     pub execution: Execution,
     pub completed_at_ms: Option<u64>,
@@ -1267,6 +1277,8 @@ pub struct LatestTurnSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSummary {
+    #[serde(default)]
+    pub unsettled_at_ms: Option<u64>,
     pub revision: u64,
     pub latest_turn: Option<LatestTurnSummary>,
     pub pending_approval_ids: Vec<ApprovalId>,

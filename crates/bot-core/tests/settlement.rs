@@ -5,6 +5,7 @@ fn thread() -> ThreadSnapshot {
         worktree_setup: None,
         created_at_ms: Some(1000),
         latest_user_activity_at_ms: Some(2000),
+        unsettled_at_ms: None,
         id: ThreadId::default(),
         workspace_id: WorkspaceId::default(),
         title: "Settlement".into(),
@@ -14,6 +15,7 @@ fn thread() -> ThreadSnapshot {
         settings: SessionSettings::default(),
         checkout: Checkout::Local,
         turns: vec![Turn {
+            tasks: None,
             id: TurnId::default(),
             prompt: "Accepted work".into(),
             context: None,
@@ -248,4 +250,41 @@ fn explicit_placement_snooze_approval_and_runtime_busy_rules_remain_authoritativ
         ),
         Some(6000)
     );
+}
+
+#[test]
+fn unsettle_return_clock_stamps_only_actual_transitions_and_defaults_for_old_snapshots() {
+    let mut manual = thread();
+    manual.arrange(Arrange::Settle, 4000, None).unwrap();
+    assert_eq!(manual.unsettled_at_ms, None);
+    manual.arrange(Arrange::Unsettle, 5000, None).unwrap();
+    assert_eq!(manual.unsettled_at_ms, Some(5000));
+    assert_eq!(manual.latest_user_activity_at_ms, Some(2000));
+    manual.arrange(Arrange::Unsettle, 6000, None).unwrap();
+    assert_eq!(manual.unsettled_at_ms, Some(5000));
+    assert_eq!(manual.summary(None).unsettled_at_ms, Some(5000));
+    let serialized = serde_json::to_value(&manual).unwrap();
+    let restored: ThreadSnapshot = serde_json::from_value(serialized.clone()).unwrap();
+    assert_eq!(restored.unsettled_at_ms, Some(5000));
+    let mut legacy = serialized;
+    legacy.as_object_mut().unwrap().remove("unsettledAtMs");
+    assert_eq!(
+        serde_json::from_value::<ThreadSnapshot>(legacy)
+            .unwrap()
+            .unsettled_at_ms,
+        None
+    );
+    manual.arrange(Arrange::Settle, 7000, None).unwrap();
+    assert_eq!(manual.unsettled_at_ms, None);
+
+    let mut automatic = thread();
+    automatic
+        .arrange(Arrange::Unsettle, 8000, Some(3000))
+        .unwrap();
+    assert_eq!(automatic.placement, Placement::Kept);
+    assert_eq!(automatic.unsettled_at_ms, Some(8000));
+    automatic.placement = Placement::Auto;
+    automatic.materialize_settlement(Some(3000));
+    assert_eq!(automatic.unsettled_at_ms, None);
+    assert_eq!(automatic.latest_user_activity_at_ms, Some(2000));
 }
