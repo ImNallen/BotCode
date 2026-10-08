@@ -14,7 +14,7 @@
 - [x] Prototype dynamic tools and restart registration against installed Codex.
 - [x] Ground and compare two architecture sketches, then save the chosen contracts.
 - [x] Unit a. Provider-neutral tools and PR links. Verify native Codex and all required checks.
-- [ ] Unit b. Preview tab, navigation, discovery, responsive viewport, and project scripts. Verify native layout and all required checks.
+- [x] Unit b. Preview tab, navigation, discovery, responsive viewport, and project scripts. Verify native layout and all required checks.
 - [ ] Unit c. Automation tools. Verify a native Codex turn links, opens, snapshots, and clicks. Verify restart isolation and all required checks.
 - [ ] Measure injected guidance and tool schema tokens.
 - [ ] Update README, UI baseline, and architecture.

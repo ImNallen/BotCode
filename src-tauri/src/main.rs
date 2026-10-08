@@ -1,7 +1,8 @@
 mod ipc;
 mod notifications;
+mod preview;
 use bot_core::{AgentTools, App, Registration, RuntimeConfig};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, EventTarget, Manager};
 fn main() {
     if std::env::args().any(|argument| argument == "--agent-tools") {
         if let Err(error) = tauri::async_runtime::block_on(bot_core::run_agent_tools_stdio()) {
@@ -17,6 +18,15 @@ fn main() {
         .register_asynchronous_uri_scheme_protocol(
             "botcode-attachment",
             |ctx, request, responder| {
+                if ctx.webview_label() != "main" {
+                    responder.respond(
+                        tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new())
+                            .expect("static response parts are valid"),
+                    );
+                    return;
+                }
                 let app = ctx.app_handle().state::<App>().inner().clone();
                 let file = request.uri().path().trim_start_matches('/').to_owned();
                 tauri::async_runtime::spawn_blocking(move || {
@@ -35,6 +45,7 @@ fn main() {
         )
         .setup(|app| {
             notifications::install(app.handle());
+            app.manage(preview::PreviewManager::new(app.handle().clone()));
             let runtime = tauri::async_runtime::block_on(App::open_with_tools(
                 RuntimeConfig::from_environment()?,
                 AgentTools {
@@ -50,10 +61,11 @@ fn main() {
                 loop {
                     match changes.recv().await {
                         Ok(change) => {
-                            let _ = handle.emit("bot:changed", change);
+                            let _ =
+                                handle.emit_to(EventTarget::webview("main"), "bot:changed", change);
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            let _ = handle.emit("bot:refresh", ());
+                            let _ = handle.emit_to(EventTarget::webview("main"), "bot:refresh", ());
                         }
                         Err(_) => break,
                     }
@@ -65,7 +77,8 @@ fn main() {
                 while limits.changed().await.is_ok() {
                     let value = limits.borrow_and_update().clone();
                     if let Some(value) = value {
-                        let _ = handle.emit("bot:usage-limits", value);
+                        let _ =
+                            handle.emit_to(EventTarget::webview("main"), "bot:usage-limits", value);
                     }
                 }
             });
@@ -74,6 +87,15 @@ fn main() {
         })
         .invoke_handler({
             let commands: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                preview::preview_state,
+                preview::preview_open,
+                preview::preview_navigate,
+                preview::preview_viewport,
+                preview::preview_attach,
+                preview::preview_layout,
+                preview::preview_detach,
+                preview::preview_discover,
+                preview::preview_application_shortcuts,
                 notifications::notification_actions,
                 ipc::project_config,
                 ipc::retry_worktree_setup,
@@ -159,6 +181,11 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("Bot Code could not start");
     app.run(|handle, event| {
+        if matches!(&event, tauri::RunEvent::Exit)
+            || matches!(&event, tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } if label == "main")
+        {
+            preview::shutdown_keyboard();
+        }
         if matches!(event, tauri::RunEvent::Exit) {
             let runtime = handle.state::<App>();
             let _ = tauri::async_runtime::block_on(runtime.shutdown());

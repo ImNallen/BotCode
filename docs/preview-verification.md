@@ -17,7 +17,7 @@ Protocol probes used installed Codex with isolated `CODEX_HOME` directories and 
 | Unit | Native workflow | Required checks | State |
 | --- | --- | --- | --- |
 | a. Transport and PR tools | Existing Codex conversation links and lists a PR; link persists across restart. | UI tests, build, format, workspace Clippy, core tests. | Passed. |
-| b. Preview panel | Local script opens the preview; navigation, discovery, responsive size, and overlay hiding work. | UI tests, build, format, workspace Clippy, core tests. | Pending implementation. |
+| b. Preview panel | Local script opens the preview; navigation, discovery, responsive size, overlay hiding, and page-focused shortcuts work. | UI tests, build, format, workspace Clippy, core tests. | Passed. |
 | c. Automation | A Codex turn opens, snapshots, types, clicks, and observes the changed local page. | UI tests, build, format, workspace Clippy, core tests. | Pending implementation. |
 
 ## Repeat the local page
@@ -31,3 +31,9 @@ Independent review identified four transport defects. Regressions now cover a sp
 With tiktoken 0.14.0 `o200k_base`, PR-only guidance is **46 UTF-8 bytes / 10 tokens**. The preview paragraph is **163 bytes / 32 tokens** and is injected only when preview tools are registered. Unit a's three tool schemas and descriptions serialize to **1,443 bytes / 340 tokens**. These are reproducible static counts, not provider billing or an exact GPT-6.1 tokenizer. The detailed record is `/tmp/botcode-preview-verification/unit-a-token-counts.json`.
 
 The final preview checks and complete catalog measurement remain open until units b and c pass.
+
+Unit b passed 418 UI tests, the build, format, workspace Clippy with warnings denied, and all core tests. Logs are `/tmp/botcode-preview-verification/unit-b-{ui,build,format,clippy,core}.log`. The final native bundle opened the script URL in the right panel. Desktop, mobile, rotation, and custom Enter changed the page's measured CSS viewport. Custom 900 by 600 measured exactly 900 by 600. Back, reload, and forward retained the forward entry. A History API route updated the URL bar and Back state. Local discovery listed the fixture server. Draft and conversation previews retained separate state, including a switch during browser startup. Menus and the command palette covered the page without a native view covering them. Command+K from a focused page input opened the application palette; ordinary typing stayed in the input.
+
+The keyboard relay uses an AppKit local event monitor. It registers effective application bindings, checks the main window and native first responder, and rejects events from an old preview scope. It needs no OS input permission. The prototype evidence is `/tmp/botcode-preview-keyboard/design.md` and `prototype-native.log`. Independent panel review found notification activation, SPA state, pre-commit navigation timeout, late panel reopening, and reload-history defects. All were repaired before this gate. Temporary native visibility diagnostics were removed.
+
+A final slow-server check requested `http://127.0.0.1:43128/` with no listener, then closed the panel during readiness polling. The timeout did not reopen the panel. Reopening showed that same requested address and the local-server error.

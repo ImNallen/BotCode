@@ -22,6 +22,16 @@ The desktop uses `App::open_with_tools` with stdio registration. The same execut
 
 Tool guidance goes in the per-turn `additionalContext` application entry. PR-only sessions receive only the PR sentence. The preview paragraph appears only when that backend registers its tools. Schemas and descriptions carry the operation details. [Preview design](preview-design.md) records the alternatives and native prototypes; [verification](preview-verification.md) records delivery checks and token measurements.
 
+## Native preview
+
+`src-tauri/src/preview` adapts T3's preview manager and port scanner to a Tauri 2 child webview. Its model separates thread and draft scopes, browser state, requested CSS viewport, native geometry, navigation generation, and one active geometry lease. A monotonically increasing lease and sequence reject late layout and detach calls. The manager retains a bounded cache of private browser views and evicts hidden scopes. Fixed viewports use native zoom and proportional geometry; hidden views retain their own CSS size. The native adapter measures `innerWidth` and `innerHeight` after layout.
+
+`src/preview` ports T3's browser chrome, empty and discovery states, and device toolbar. React owns Preview tab intent, subscribes to scoped state events, and measures the host. Resize and mutation observers hide the native sibling view for inactive content and application overlays. A navigation requests panel opening once; later readiness or load results only update state. Script completion captures its original scope before applying `previewUrl` and `autoOpenPreview`.
+
+Native page load and requested-navigation supervision have bounded lifetimes. An active-lease poll observes same-document SPA URL and history changes. Loaded pages reload through the native browser; failed or missing pages retry the requested URL. Local discovery reads listeners and probes only loopback HTTP servers, with request, output and concurrency limits.
+
+External views have no application capabilities. The capability file names only the main webview, and the custom command handler independently rejects every other view. The attachment URI handler also checks the main view identity. Application events target the main view. Navigation accepts HTTP and HTTPS, denies new native windows and downloads, and redirects requested browser popups into their own scoped view. Preview uses private browsing and imports no cookies.
+
 ## Checkouts
 
 Each thread records a `Checkout`. A local thread runs in the repository's own checkout. A worktree thread runs in a Git worktree on a fresh `botcode/<id>` branch, under `<data dir>/worktrees/<repository>/botcode-<id>`. The draft's `NewCheckout` names the base branch. With `fromOrigin` and an `origin` remote, the runtime fetches the base from origin and starts from `origin/<base>` when it exists, else from the local base. A failed fetch fails the creation. The branch is created with `--no-track`, so a user's `branch.autoSetupMerge` cannot make it track the base, and its base is recorded as `branch.<branch>.gh-merge-base`. Git actions read that key as the pull request base, and `gh` reads it too. The renderer sets `fromOrigin` only when origin has remote-tracking refs and the base is a local branch, which is when the picker reads "From origin/{base}". The runtime creates the worktree outside the owner loop when the thread is created, which happens on the first send. A repository without commits cannot start one.
@@ -133,3 +143,5 @@ Full event sourcing, generated protocol types, a frontend patch/replay framework
 ## Verification boundary
 
 Core tests and the real Codex smoke exercise the Tauri-independent App API. Typechecking and frontend/native builds verify package integration. The actual Tauri window passed interaction checks for folder selection, two repositories, Pierre file/diff rendering, streamed Codex output, command and file approvals, interruption, renderer reload with a live approval, and history continuation after a full application restart. These checks used disposable repositories and isolated Bot Code state.
+
+On macOS, a local AppKit event monitor relays registered application chords from the visible child webview to the existing action registry. Main-window, first-responder, and preview-scope checks prevent other windows or stale queued events from invoking an action. It exposes no page IPC and requests no OS input permission.

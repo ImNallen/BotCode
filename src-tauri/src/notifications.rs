@@ -1,7 +1,7 @@
 use bot_core::{App, ThreadId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, EventTarget, Manager, State};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -42,7 +42,7 @@ pub fn install(app: &AppHandle) {
         let handle = handle.clone();
         let main = handle.clone();
         let _ = handle.run_on_main_thread(move || {
-            if let Some(window) = main.get_webview_window("main") {
+            if let Some(window) = main.get_window("main") {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -53,7 +53,7 @@ pub fn install(app: &AppHandle) {
                     .lock()
                     .expect("notification action lock")
                     .push(target);
-                let _ = main.emit("bot:notification-open", ());
+                let _ = main.emit_to(EventTarget::webview("main"), "bot:notification-open", ());
             }
         });
     });

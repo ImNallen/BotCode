@@ -126,6 +126,7 @@ export function eligibleSurfaces(
       case "pull_request":
         return links?.some((link) => link.pr.key === surface.key) ?? false;
       case "terminal":
+      case "preview":
         return true;
       default:
         return (
@@ -152,6 +153,8 @@ export function surfaceTitle(
       return "Files";
     case "diff":
       return "Diff";
+    case "preview":
+      return "Preview";
     case "pull_requests":
       return "Pull requests";
     case "pull_request":

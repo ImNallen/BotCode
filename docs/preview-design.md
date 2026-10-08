@@ -68,3 +68,26 @@ The concrete IPC payloads are:
 - `preview_discover() -> Array<{port, url, title: string | null}>`
 
 `PreviewState` has `url: string | null`, `title: string`, `loading: boolean`, `error: string | null`, `canGoBack: boolean`, `canGoForward: boolean`, `viewport: {width, height} | null`, and `measuredViewport: {width, height} | null`. All native structs use camel-case fields and reject extra input fields. `viewport: null` fits the panel; a requested size fits proportionally and sets native zoom to preserve CSS breakpoints.
+
+## Automation contract
+
+The backend derives a thread scope from `ToolContext`. The first implementation keeps one browser per thread. It does not accept tab or thread identities. Each entry owns a serialization gate and an opaque DOM key. An in-flight call pins its entry against eviction. Wait calls retain that pin while releasing the gate between polls. Main-thread operations check whether their caller has been canceled before issuing work.
+
+The twelve operations are:
+
+| Tool | Input and result |
+| --- | --- |
+| `preview_status` | Reports browser availability, current URL, loading, visibility and measured viewport. |
+| `preview_open` | Optional HTTP/HTTPS URL and `open` flag. Reuses the browser or initializes a blank one; `open: false` allows background work. |
+| `preview_navigate` | Navigates to a URL without forcing the panel open. |
+| `preview_snapshot` | Bounded semantic text, current element references and optional native PNG. `save` writes a generated path beneath the application data directory. |
+| `preview_click` | One current snapshot reference or strict CSS selector. |
+| `preview_type` | One text target, literal text and optional `clear`. |
+| `preview_press` | Page key handlers and supported form, editing and focus defaults. |
+| `preview_scroll` | Finite deltas for the page or one container. |
+| `preview_resize` | Fill, freeform, or desktop/tablet/mobile preset; reports measured CSS size. |
+| `preview_evaluate` | Synchronous JavaScript expression and a bounded JSON value. Promise results return an explicit error. |
+| `preview_wait_for` | All supplied target, text and URL conditions; bounded, cancelable polling. |
+| `preview_set_appearance` | Native light, dark, or system color scheme. |
+
+DOM actions reject ambiguous, hidden, disabled, read-only or stale targets. A new snapshot invalidates earlier references, and navigation replaces the document that owns them. Snapshots inspect the main frame and omit password values. They report their omissions. DOM-dispatched events are untrusted. Browser actions that require trusted user activation, native shortcuts, cross-origin frame inspection and closed shadow roots remain unsupported. Native PNG capture and appearance overrides are implemented for macOS.
