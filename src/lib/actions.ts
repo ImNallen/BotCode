@@ -37,6 +37,7 @@ import {
   shortcutLabelForCommand,
 } from "../keybindings/keyboard";
 import { currentShortcutContext } from "./shortcutContext";
+import { revealLabel } from "./editors";
 
 export type SidebarOperation =
   | {
@@ -312,7 +313,7 @@ const definitions = {
   },
   "editor.reveal": {
     icon: FolderTreeIcon,
-    title: "Reveal in Finder",
+    title: revealLabel,
     keywords: "folder file manager",
     group: "Navigation",
     palette: "root",

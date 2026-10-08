@@ -1,5 +1,6 @@
 // Ported from pingdotgg/t3code v0.0.45 packages/contracts/src/editor.ts, apps/web/src/editorLabels.ts and editorPreferences.ts (MIT).
 import { z } from "zod";
+import { isMacPlatform } from "./utils";
 import {
   AntigravityIcon,
   AquaIcon,
@@ -97,4 +98,6 @@ export function openInEditorMenuLabel(id: EditorId | null): string {
     : `Open in ${editorById(id).label}`;
 }
 
-export const revealInFinderLabel = "Reveal in Finder";
+export const revealLabel = isMacPlatform(navigator.platform)
+  ? "Reveal in Finder"
+  : "Show in Explorer";

@@ -6,6 +6,7 @@ import type { Approval, Item, Thread } from "../ipc";
 import { Timeline } from "./Timeline";
 import {
   deriveRows,
+  liveWorkEntryLabel,
   workEntryExpandedBody,
   type TimelineRow,
 } from "./timelineRows";
@@ -328,4 +329,34 @@ it("renders nothing for item kinds T3 drops", () => {
     new Set(),
   );
   assert.deepEqual(kinds(rows), ["user", "assistant"]);
+});
+
+it("names the program a Windows shell runs, not the shell", () => {
+  const ran = (command: string) =>
+    liveWorkEntryLabel(
+      {
+        id: "command",
+        action: "command",
+        icon: "terminal",
+        heading: "Ran command",
+        label: "Ran command",
+        command,
+        detail: "",
+        mcpCall: null,
+        running: false,
+        failed: false,
+      },
+      false,
+    );
+  assert.equal(
+    ran('"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "cargo test"'),
+    "Ran cargo",
+  );
+  assert.equal(ran("powershell.exe -NoProfile -Command git status"), "Ran git");
+  assert.equal(
+    ran("C:\\Windows\\System32\\cmd.exe /c pnpm install"),
+    "Ran pnpm",
+  );
+  assert.equal(ran("/bin/zsh -lc 'rg TODO'"), "Ran rg");
+  assert.equal(ran("C:\\tools\\rg.exe TODO"), "Ran rg");
 });

@@ -29,6 +29,8 @@ export function newThreadDestination({
   return { kind: scratchAvailable ? "scratch" : "unavailable" };
 }
 
+const WINDOWS_ABSOLUTE = /^[A-Za-z]:[\\/]/;
+
 export function browsePath(
   query: string,
   cwd: string | undefined,
@@ -36,7 +38,7 @@ export function browsePath(
   | { kind: "path"; directory: string; leaf: string; exact: string }
   | { kind: "error"; message: string } {
   const exact = query.trim();
-  if (exact.startsWith("./") || exact.startsWith("../")) {
+  if (/^\.\.?[\\/]/.test(exact)) {
     if (!cwd)
       return {
         kind: "error",
@@ -44,7 +46,8 @@ export function browsePath(
       };
   } else if (
     !exact.startsWith("/") &&
-    !exact.startsWith("~/") &&
+    !/^~[\\/]/.test(exact) &&
+    !WINDOWS_ABSOLUTE.test(exact) &&
     exact !== "~"
   ) {
     return {
@@ -54,7 +57,8 @@ export function browsePath(
     };
   }
   const normalized = exact === "~" ? "~/" : exact;
-  const split = normalized.lastIndexOf("/") + 1;
+  const split =
+    Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\")) + 1;
   return {
     kind: "path",
     exact: normalized,
@@ -77,5 +81,6 @@ export function filterBrowseEntries(
 }
 
 export function directoryQuery(path: string) {
-  return path.endsWith("/") ? path : `${path}/`;
+  if (/[\\/]$/.test(path)) return path;
+  return WINDOWS_ABSOLUTE.test(path) ? `${path}\\` : `${path}/`;
 }

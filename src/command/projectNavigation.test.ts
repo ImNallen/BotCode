@@ -103,6 +103,25 @@ it("typed paths browse their parent and preserve the exact Add target", () => {
   assert.equal(directoryQuery("/"), "/");
 });
 
+it("browse paths accept Windows drives and backslash separators", () => {
+  assert.deepEqual(browsePath("C:\\Users\\me\\Al", undefined), {
+    kind: "path",
+    directory: "C:\\Users\\me\\",
+    leaf: "Al",
+    exact: "C:\\Users\\me\\Al",
+  });
+  assert.deepEqual(browsePath("~\\src", undefined), {
+    kind: "path",
+    directory: "~\\",
+    leaf: "src",
+    exact: "~\\src",
+  });
+  assert.equal(browsePath(".\\Alpha", alpha.root).kind, "path");
+  assert.equal(browsePath("C:Alpha", undefined).kind, "error");
+  assert.equal(directoryQuery("C:\\Users\\me"), "C:\\Users\\me\\");
+  assert.equal(directoryQuery("C:\\"), "C:\\");
+});
+
 it("directory filtering matches a prefix and shows hidden entries only for a dot prefix", () => {
   const entries = ["Alpha", "Alpine", "beta", ".cache", ".config"].map(
     (name) => ({ name, fullPath: `/tmp/${name}` }),

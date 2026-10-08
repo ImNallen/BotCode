@@ -89,3 +89,36 @@ it("drops a zero line, which no editor accepts", () => {
     line: 4,
   });
 });
+
+it("resolves Windows paths inside the checkout regardless of case and separator", () => {
+  const windows = (raw: string, source: "code" | "href" = "code") =>
+    parseChatFileLink(raw, {
+      files,
+      root: "C:\\Users\\me\\project",
+      source,
+      threadId: "thread",
+    });
+  assert.deepEqual(windows("C:\\Users\\me\\project\\src\\main.ts:12"), {
+    kind: "workspace",
+    path: "src/main.ts",
+    line: 12,
+  });
+  assert.deepEqual(windows("c:/users/me/project/src/main.ts"), {
+    kind: "workspace",
+    path: "src/main.ts",
+  });
+  assert.deepEqual(windows("file:///C:/Users/me/project/src/main.ts", "href"), {
+    kind: "workspace",
+    path: "src/main.ts",
+  });
+  assert.deepEqual(windows("src\\main.ts"), {
+    kind: "workspace",
+    path: "src/main.ts",
+  });
+  assert.deepEqual(windows("C:\\Users\\me\\other\\lib.rs", "href"), {
+    kind: "external",
+    threadId: "thread",
+    path: "C:\\Users\\me\\other\\lib.rs",
+  });
+  assert.equal(windows("C:\\Users\\me\\project-two\\src\\main.ts"), null);
+});

@@ -20,8 +20,9 @@ import { Menu, MenuItem } from "../ui/menu";
 import type { OpenTarget, Skill } from "../ipc";
 import { contextMenuPoint } from "../fileContextMenu";
 import { notifyEditorResult, useEditorActions } from "../lib/editorActions";
-import { openInEditorMenuLabel, revealInFinderLabel } from "../lib/editors";
+import { openInEditorMenuLabel, revealLabel } from "../lib/editors";
 import type { ChatFileLink } from "./chatFileLinks";
+import { pathBasename } from "./composer-logic";
 import { renderSkillInlineMarkdownChildren } from "./SkillInlineText";
 import type { ComposerContextRecord } from "./composerContext";
 import { ContextRecordChip } from "./ContextRecordChip";
@@ -66,7 +67,7 @@ function FileChip({ links, link }: { links: FileLinks; link: ChatFileLink }) {
     returnFocus: HTMLElement;
   }>();
   const { path } = link;
-  const label = path.split("/").at(-1) ?? path;
+  const label = pathBasename(path);
   const position =
     link.line === undefined
       ? null
@@ -117,7 +118,7 @@ function FileChip({ links, link }: { links: FileLinks; link: ChatFileLink }) {
           ) : null}
           {editors.available.includes("file-manager") ? (
             <MenuItem onClick={() => editors.reveal(links.target(link))}>
-              {revealInFinderLabel}
+              {revealLabel}
             </MenuItem>
           ) : null}
           <MenuItem onClick={() => copyPath(path, "Relative path")}>
