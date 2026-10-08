@@ -8,6 +8,7 @@ mod thread_actions;
 use thread_actions::DeleteCompletion;
 mod pr_review;
 mod pull_requests;
+mod tools;
 mod writing;
 use crate::pr_review::*;
 use crate::pull_requests::{PrLinkSource, PullRequestKey, ThreadPrSummary};
@@ -286,6 +287,12 @@ pub struct App {
 }
 impl App {
     pub async fn open(config: RuntimeConfig) -> Result<Self> {
+        Self::open_with_tools(config, crate::AgentTools::default()).await
+    }
+    pub async fn open_with_tools(
+        config: RuntimeConfig,
+        agent_tools: crate::AgentTools,
+    ) -> Result<Self> {
         let network_timeout = config.network_timeout;
         let store = Store::open(&config.data_dir)?;
         let workspaces = store
@@ -425,10 +432,12 @@ impl App {
         let (provider_events, signals) = mpsc::channel(512);
         let (done, completions) = mpsc::channel(128);
         let prs = PrWork::load(&mut store)?;
+        let tools = tools::ToolWork::new(&config, agent_tools, &store)?;
         let log = RotatingLog::open(config.data_dir.join("logs").join("codex.log"));
         let project_search = crate::project_search::ProjectSearch::default();
         tokio::spawn(
             Owner {
+                tools,
                 project_search: project_search.clone(),
                 prs,
                 review_work: {
@@ -1532,6 +1541,7 @@ struct GitCompletion {
     reply: Reply<GitOutcome>,
 }
 struct Owner {
+    tools: tools::ToolWork,
     project_search: crate::project_search::ProjectSearch,
     closing: bool,
     checkpoint_work: checkpoints::CheckpointWork,
@@ -1961,6 +1971,12 @@ impl Owner {
                         Err(error) => { eprintln!("Pull request worker stopped: {error}"); }
                     }
                 }
+                Some(envelope)=self.tools.incoming.recv(), if !self.closing=>{
+                    if let Err(error)=self.mcp_tool(envelope).await {self.lose(&error.message).await;}
+                }
+                Some(done)=self.tools.jobs.join_next(), if !self.tools.jobs.is_empty()=>{
+                    if let Err(error)=self.finish_tool(done).await {self.lose(&error.message).await;}
+                }
                 Some(done)=completions.recv()=>{
                     if let Err(error)=self.complete(done).await {self.lose(&error.message).await;}
                 }
@@ -1984,6 +2000,8 @@ impl Owner {
             let _ = provider.terminate().await;
         }
         commands.close();
+        self.tools.revoke();
+        while self.tools.jobs.join_next().await.is_some() {}
         while let Some(Ok(done)) = self.delete_jobs.join_next().await {
             self.finish_delete(done);
         }
@@ -2483,6 +2501,7 @@ impl Owner {
                     let mut next = self.thread(&id)?.clone();
                     next.session = SessionState::Interrupting;
                     self.install(next)?;
+                    self.tools.cancel_thread(&id);
                     let done = self.done.clone();
                     let epoch = self.epoch;
                     tokio::spawn(async move {
@@ -3123,11 +3142,17 @@ impl Owner {
         let model = self.resolve_model(&settings).map(str::to_owned);
         let done = self.done.clone();
         let epoch = self.epoch;
+        let creating = native.is_none();
+        let mut params = json!({"cwd":root,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandbox":sandbox,"model":model});
+        self.tools_thread_params(job.thread(), &mut params, creating);
         tokio::spawn(async move {
             let result = if let Some(native) = native {
-                provider.request("thread/resume",json!({"threadId":native,"cwd":root,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandbox":sandbox,"model":model,"excludeTurns":false})).await
+                params["threadId"] = json!(native);
+                params["excludeTurns"] = json!(false);
+                provider.request("thread/resume", params).await
             } else {
-                provider.request("thread/start",json!({"cwd":root,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandbox":sandbox,"model":model,"ephemeral":false})).await
+                params["ephemeral"] = json!(false);
+                provider.request("thread/start", params).await
             };
             let _ = done.send(Completion::Prepared { epoch, job, result }).await;
         });
@@ -3192,6 +3217,8 @@ impl Owner {
                                 AppError::new("protocol", "Codex did not return a thread ID.")
                             })?
                             .to_owned();
+                        let created = self.thread(&id)?.native_thread_id.is_none();
+                        self.tools_prepared(&native, created)?;
                         let t = self.threads.get_mut(&id).ok_or_else(|| {
                             AppError::new("missing_thread", "Conversation not found.")
                         })?;
@@ -3238,10 +3265,14 @@ impl Owner {
                                 AppError::new("provider_lost", "Codex is unavailable.")
                             })?;
                             let done = self.done.clone();
+                            let tool_guidance = self.tools.guidance(&native);
                             tokio::spawn(async move {
                                 let result = match collaboration {
                                     Ok(mode) => {
                                         let mut params = json!({"threadId":native,"clientUserMessageId":turn_id.to_string(),"input":input,"model":model,"effort":effort,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandboxPolicy":sandbox_policy});
+                                        if let Some(guidance) = tool_guidance {
+                                            params["additionalContext"] = json!({"botcode_tools":{"kind":"application","value":guidance}});
+                                        }
                                         if let Some(mode) = mode {
                                             params["collaborationMode"] = mode;
                                         }
@@ -3493,6 +3524,7 @@ impl Owner {
         }
         self.cancel_names();
         self.cancel_commit_previews(None);
+        self.tools.revoke();
         if let Some(provider) = self.provider.take() {
             let _ = provider.terminate().await;
         }
@@ -3593,6 +3625,9 @@ impl Owner {
                 .map(|t| t.id.clone())
         });
         if let Some(request) = value.get("id") {
+            if method == "item/tool/call" {
+                return self.dynamic_tool(request.clone(), p.clone()).await;
+            }
             let decoded = match approvals::decode(value.clone()) {
                 Ok(decoded) => decoded,
                 Err(error) => {
@@ -3859,9 +3894,10 @@ impl Owner {
                 }
             }
             "turn/completed" => {
-                if !current_turn || !turn.execution.active() {
+                if !current_turn || !turn.execution.active() || !input_matches_turn {
                     return Ok(());
                 }
+                self.tools.cancel_turn(&id, &turn.id);
                 let completed_turn = turn.id.clone();
                 let status = p
                     .pointer("/turn/status")

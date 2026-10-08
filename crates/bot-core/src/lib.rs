@@ -4,6 +4,13 @@ mod attachments;
 mod checkpoints;
 mod cleanup;
 mod codex;
+mod tool_bridge;
+mod tools;
+pub use tool_bridge::run_agent_tools_stdio;
+pub use tools::{
+    AGENT_TOOL_GUIDANCE, AgentTools, Registration, ToolAnnotations, ToolBackend, ToolCall,
+    ToolContent, ToolContext, ToolFuture, ToolResult, ToolSpec, pull_request_tool_specs,
+};
 mod composer_context;
 mod composer_pull_requests;
 pub use composer_context::{

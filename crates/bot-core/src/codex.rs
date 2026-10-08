@@ -1,5 +1,6 @@
 // Ported from T3 Code v0.0.45 apps/server/src/provider/Layers/CodexSessionRuntime.ts.
 pub(crate) mod approvals;
+pub(crate) mod tools;
 mod turn_input;
 use crate::{domain::*, log::RotatingLog};
 use serde_json::{Value, json};

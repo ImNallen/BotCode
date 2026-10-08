@@ -361,8 +361,10 @@ impl Owner {
         } else {
             self.workspaces[&t.workspace_id].root.clone()
         };
+        let mut params = json!({"threadId": native.unwrap(), "beforeTurnId": intent.before_native_turn_id.clone().unwrap(), "cwd": cwd, "excludeTurns": false});
+        self.tools_thread_params(&id, &mut params, false);
         self.checkpoint_work.active.spawn(async move {
-            let result = provider.request("thread/fork", json!({"threadId": native.unwrap(), "beforeTurnId": intent.before_native_turn_id.unwrap(), "cwd": cwd, "excludeTurns": false})).await.and_then(|value| {
+            let result = provider.request("thread/fork", params).await.and_then(|value| {
                 let thread = value.get("thread").unwrap_or(&Value::Null);
                 let ids: Vec<_> = thread.get("turns").and_then(Value::as_array).ok_or_else(|| AppError::new("native_history_unconfirmed", "Codex did not return the forked conversation history."))?.iter().map(|row| required_string(row, "id").map(str::to_owned)).collect::<Result<_>>()?;
                 if ids != intent.retained_native_turn_ids {
@@ -378,6 +380,12 @@ impl Owner {
         id: &ThreadId,
         native_thread_id: Option<String>,
     ) -> Result<()> {
+        let source = self
+            .thread(id)?
+            .pending_revert
+            .as_ref()
+            .and_then(|intent| intent.source_native_thread_id.clone());
+        self.tools_forked(source.as_deref(), native_thread_id.as_deref())?;
         let mut next = self.thread(id)?.clone();
         next.pending_revert.as_mut().unwrap().phase =
             RevertPhase::ConversationReady { native_thread_id };
