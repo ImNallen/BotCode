@@ -602,3 +602,11 @@ pub async fn search_composer_pull_requests(
 pub fn provider_capabilities(app: State<'_, App>) -> ProviderCapabilities {
     app.provider_capabilities()
 }
+
+#[tauri::command]
+pub async fn search_thread_messages(
+    app: State<'_, App>,
+    query: String,
+) -> Result<ThreadMessageSearch> {
+    app.search_thread_messages(query).await
+}

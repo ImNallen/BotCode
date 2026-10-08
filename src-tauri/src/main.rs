@@ -92,6 +92,7 @@ fn main() {
         })
         .invoke_handler({
             let commands: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                ipc::search_thread_messages,
                 preview::preview_state,
                 preview::preview_open,
                 preview::preview_navigate,
