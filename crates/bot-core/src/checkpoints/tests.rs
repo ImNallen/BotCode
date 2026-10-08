@@ -2,6 +2,8 @@ use super::*;
 fn repository() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q"]).unwrap();
+    // Git for Windows defaults to autocrlf, which would rewrite the bytes these tests compare.
+    git(dir.path(), &["config", "core.autocrlf", "false"]).unwrap();
     git(dir.path(), &["config", "user.name", "Test"]).unwrap();
     git(
         dir.path(),
@@ -312,6 +314,7 @@ fn binary_large_special_paths_and_deleted_sides_have_honest_views() {
     std::fs::remove_file(root.join("gone.txt")).unwrap();
     write(root, "binary", [0, 1, 2]);
     write(root, "large", vec![b'x'; 1_000_001]);
+    #[cfg(unix)]
     write(root, "tab\tnewline\n.txt", "added\n");
     let after = capture_at(root, "views-after");
     assert!(matches!(
@@ -323,6 +326,7 @@ fn binary_large_special_paths_and_deleted_sides_have_honest_views() {
         TurnDiffView::Unavailable { .. }
     ));
     let changes = files(root, &before, &after).unwrap();
+    #[cfg(unix)]
     assert!(
         changes
             .iter()

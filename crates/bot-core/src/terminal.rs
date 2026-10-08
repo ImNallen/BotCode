@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn deleted_thread_gate_prevents_stale_checkout_attach() {
         let directory = tempfile::tempdir().unwrap();
-        let terminals = Terminals::new(Some("/bin/sh".into()));
+        let terminals = Terminals::new(cfg!(unix).then(|| "/bin/sh".into()));
         let id = ThreadId::default();
         let key = TerminalKey {
             workspace: WorkspaceId::default(),
@@ -543,6 +543,7 @@ mod tests {
             env(&[("COLORTERM", "24bit"), ("TERM", "xterm-256color")])
         );
     }
+    #[cfg(unix)]
     #[test]
     fn shell_candidates_prefer_shell_then_system_shells() {
         let paths = |c: Vec<(PathBuf, Vec<&str>)>| {
