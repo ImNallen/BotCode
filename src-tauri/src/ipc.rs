@@ -433,6 +433,18 @@ pub async fn settings(app: State<'_, App>) -> Result<Option<String>> {
     app.settings()
 }
 #[tauri::command]
+pub async fn keybindings_file(app: State<'_, App>) -> Result<bot_core::KeybindingsFile> {
+    app.keybindings_file()
+}
+#[tauri::command]
+pub async fn save_keybindings_file(
+    app: State<'_, App>,
+    text: String,
+    expected_text: Option<String>,
+) -> Result<()> {
+    app.save_keybindings_file(&text, expected_text.as_deref())
+}
+#[tauri::command]
 pub async fn save_settings(app: State<'_, App>, text: String) -> Result<()> {
     app.save_settings(&text).await
 }

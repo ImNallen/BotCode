@@ -13,16 +13,25 @@ import type { ProjectScript } from "../ipc";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { Dialog, DialogTitle, DialogFooter } from "../ui/dialog";
-import { actionIds, matchesAction } from "../lib/actions";
-import { storage } from "../lib/storage";
+import {
+  commandShortcutLabel,
+  registerScriptCommands,
+  resolveCommand,
+} from "../lib/actions";
+import { keybindings, useKeybindings } from "../keybindings/store";
+import {
+  compileResolvedKeybindingRule,
+  type KeybindingRule,
+} from "../keybindings/rules";
+import {
+  formatShortcutLabel,
+  keybindingFromKeyboardEvent,
+  shortcutConflictKey,
+} from "../keybindings/keyboard";
 import { isCommandPaletteOpen } from "../lib/commandPaletteBus";
 import {
   commandForProjectScript,
   primaryProjectScript,
-  scriptShortcuts,
-  matchesScriptShortcut,
-  scriptShortcutLabel,
-  type ScriptShortcut,
 } from "./projectScripts";
 function ScriptIcon({ icon }: { icon: string }) {
   const Icon =
@@ -39,7 +48,6 @@ function ScriptIcon({ icon }: { icon: string }) {
               : PlayIcon;
   return <Icon className="size-3.5" />;
 }
-const STORAGE_KEY = "z1:project-script-keybindings";
 export function ProjectScriptsControl({
   scripts,
   onRun,
@@ -47,25 +55,29 @@ export function ProjectScriptsControl({
   scripts: readonly ProjectScript[];
   onRun: (script: ProjectScript) => void;
 }) {
-  const [bindings, setBindings] = useState(() => {
-    try {
-      return scriptShortcuts.parse(
-        JSON.parse(storage.getItem(STORAGE_KEY) ?? "{}"),
-      );
-    } catch {
-      return {};
-    }
-  });
+  const bindings = useKeybindings();
   const [editing, setEditing] = useState<ProjectScript | null>(null);
-  const [candidate, setCandidate] = useState<ScriptShortcut | null>(null);
+  const [candidate, setCandidate] = useState<string | null>(null);
   const [shortcutError, setShortcutError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
   const primary = primaryProjectScript(scripts);
+  const scriptCommands = scripts
+    .map((script) => commandForProjectScript(script.id))
+    .join("\0");
+  useEffect(
+    () =>
+      registerScriptCommands(
+        new Set(scriptCommands ? scriptCommands.split("\0") : []),
+      ),
+    [scriptCommands],
+  );
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if (
         event.defaultPrevented ||
+        (event.target instanceof Element &&
+          event.target.closest("[data-keybinding-capture]")) ||
         document.querySelector("[data-chat-header]")?.closest("[inert]") ||
         event.repeat ||
         event.isComposing ||
@@ -74,10 +86,10 @@ export function ProjectScriptsControl({
         document.querySelector("dialog[open]")
       )
         return;
-      const script = scripts.find((script) => {
-        const binding = bindings[commandForProjectScript(script.id)];
-        return binding && matchesScriptShortcut(event, binding);
-      });
+      const command = resolveCommand(event);
+      const script = scripts.find(
+        (script) => commandForProjectScript(script.id) === command,
+      );
       if (script) {
         event.preventDefault();
         event.stopPropagation();
@@ -86,31 +98,52 @@ export function ProjectScriptsControl({
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
-  }, [bindings, scripts, onRun, editing]);
-  const save = (binding: ScriptShortcut | null) => {
+  }, [scripts, onRun, editing]);
+  const save = (key: string | null) => {
     if (!editing) return;
-    const next = { ...bindings };
     const command = commandForProjectScript(editing.id);
-    if (binding) next[command] = binding;
-    else delete next[command];
+    const previous = bindings.rules.findLast(
+      (rule) => rule.command === command,
+    );
     setSaving(true);
     setShortcutError(undefined);
-    void storage
-      .setItem(STORAGE_KEY, JSON.stringify(next))
-      .then(() => {
-        setBindings(next);
-        setEditing(null);
-      })
-      .catch((error) => {
-        setBindings(next);
+    void (
+      key
+        ? keybindings.upsert({ key, command, when: "!terminalFocus" }, previous)
+        : keybindings.reset(command)
+    )
+      .then(() => setEditing(null))
+      .catch((cause: unknown) =>
         setShortcutError(
-          `The shortcut applies for this session but could not be saved. ${
-            error instanceof Error ? error.message : "Try saving again."
-          }`,
-        );
-      })
+          cause instanceof Error
+            ? cause.message
+            : "Could not save the shortcut.",
+        ),
+      )
       .finally(() => setSaving(false));
   };
+  const candidateRule: KeybindingRule | null =
+    candidate && editing
+      ? {
+          key: candidate,
+          command: commandForProjectScript(editing.id),
+          when: "!terminalFocus",
+        }
+      : null;
+  const compiledCandidate =
+    candidateRule && compileResolvedKeybindingRule(candidateRule);
+  const conflicts = compiledCandidate
+    ? bindings.bindings.filter(
+        (binding) =>
+          binding.command !== candidateRule?.command &&
+          shortcutConflictKey(binding.shortcut, navigator.platform) ===
+            shortcutConflictKey(
+              compiledCandidate.shortcut,
+              navigator.platform,
+            ) &&
+          (!binding.whenAst || binding.command.startsWith("script.")),
+      )
+    : [];
   if (!primary) return null;
   return (
     <>
@@ -144,7 +177,9 @@ export function ProjectScriptsControl({
           )}
         >
           {scripts.map((script) => {
-            const binding = bindings[commandForProjectScript(script.id)];
+            const shortcut = commandShortcutLabel(
+              commandForProjectScript(script.id),
+            );
             return (
               <div key={script.id}>
                 <MenuItem
@@ -159,7 +194,7 @@ export function ProjectScriptsControl({
                     {script.runOnWorktreeCreate ? " (setup)" : ""}
                   </span>
                   <span className="ms-auto text-xs text-muted-foreground">
-                    {binding ? scriptShortcutLabel(binding) : ""}
+                    {shortcut ?? ""}
                   </span>
                 </MenuItem>
                 <MenuItem
@@ -168,7 +203,10 @@ export function ProjectScriptsControl({
                     setShortcutError(undefined);
                     setEditing(script);
                     setCandidate(
-                      bindings[commandForProjectScript(script.id)] ?? null,
+                      bindings.rules.findLast(
+                        (rule) =>
+                          rule.command === commandForProjectScript(script.id),
+                      )?.key ?? null,
                     );
                   }}
                 >
@@ -186,8 +224,14 @@ export function ProjectScriptsControl({
           aria-label="Keyboard shortcut"
           autoFocus
           readOnly
+          data-keybinding-capture
           value={
-            candidate ? scriptShortcutLabel(candidate) : "Press a shortcut"
+            compiledCandidate
+              ? formatShortcutLabel(
+                  compiledCandidate.shortcut,
+                  navigator.platform,
+                )
+              : "Press a shortcut"
           }
           className="my-4 rounded-md border p-2"
           onKeyDown={(event) => {
@@ -195,40 +239,22 @@ export function ProjectScriptsControl({
             event.preventDefault();
             event.stopPropagation();
             if (event.repeat || event.nativeEvent.isComposing) return;
-            if (actionIds.some((id) => matchesAction(event.nativeEvent, id))) {
-              setCandidate(null);
-              setShortcutError(
-                "This shortcut is reserved for a built-in action.",
-              );
-              return;
-            }
             setShortcutError(undefined);
-            if (
-              Object.entries(bindings).some(
-                ([command, binding]) =>
-                  command !== commandForProjectScript(editing?.id ?? "") &&
-                  matchesScriptShortcut(event, binding),
-              )
-            ) {
-              setCandidate(null);
-              setShortcutError(
-                "This shortcut already runs another project script.",
-              );
-              return;
-            }
-            if (
-              event.key.length === 1 &&
-              (event.metaKey || event.ctrlKey || event.altKey)
-            )
-              setCandidate({
-                key: event.key.toLowerCase(),
-                meta: event.metaKey,
-                ctrl: event.ctrlKey,
-                alt: event.altKey,
-                shift: event.shiftKey,
-              });
+            setCandidate(
+              keybindingFromKeyboardEvent(
+                event.nativeEvent,
+                navigator.platform,
+              ),
+            );
           }}
         />
+        {conflicts.length ? (
+          <p className="text-sm text-warning">
+            This key is also assigned to{" "}
+            {conflicts.map((binding) => binding.command).join(", ")}. The last
+            matching rule wins.
+          </p>
+        ) : null}
         {shortcutError ? (
           <p role="alert" className="text-sm text-destructive-foreground">
             {shortcutError}

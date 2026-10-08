@@ -4,7 +4,7 @@ import type { OpenTarget } from "../ipc";
 import { cn } from "../lib/cn";
 import { useEditorActions } from "../lib/editorActions";
 import { editorById, type Editor } from "../lib/editors";
-import { shortcutLabel } from "../lib/shortcuts";
+import { useShortcutLabel } from "../lib/shortcuts";
 import { Button } from "../ui/controls";
 import { Group, GroupSeparator } from "../ui/group";
 import { Menu, MenuItem, MenuShortcut } from "../ui/menu";
@@ -24,7 +24,9 @@ export function OpenInPicker({
 }) {
   const editors = useEditorActions();
   const primary = editors.preferred ? editorById(editors.preferred) : null;
-  const openFavoriteEditorShortcutLabel = shortcutLabel("editor.openFavorite");
+  const openFavoriteEditorShortcutLabel = useShortcutLabel(
+    "editor.openFavorite",
+  );
   return (
     <Group aria-label="Open in editor" className="shrink-0">
       <Button

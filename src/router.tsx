@@ -1,3 +1,4 @@
+// Root error recovery ported from T3 Code v0.0.45 apps/web/src/routes/__root.tsx (MIT).
 import {
   createRootRoute,
   createRoute,
@@ -9,6 +10,7 @@ import { Workbench } from "./Workbench";
 import { SettingsPage } from "./settings/SettingsPage";
 import { settingsSection } from "./settings/settingsCatalog";
 import { UsagePage } from "./usage/UsagePage";
+import { RootRouteErrorView } from "./errors/RootRouteErrorView";
 const search = z.object({
   workspace: z.uuid().optional(),
   thread: z.uuid().optional(),
@@ -19,6 +21,7 @@ export type Selection = z.infer<typeof search>;
 const route = createRootRoute({
   validateSearch: (input) => search.parse(input),
   component: Workbench,
+  errorComponent: RootRouteErrorView,
 });
 const index = createRoute({
   getParentRoute: () => route,

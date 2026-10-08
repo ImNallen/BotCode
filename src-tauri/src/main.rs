@@ -122,6 +122,8 @@ fn main() {
             ipc::set_ui_state,
             ipc::clipboard_text,
             ipc::settings,
+            ipc::keybindings_file,
+            ipc::save_keybindings_file,
             ipc::save_settings,
             ipc::terminal_attach,
             ipc::terminal_detach,

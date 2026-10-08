@@ -1102,6 +1102,14 @@ export const ipc = {
   setUiState: (key: string, value: string | null) =>
     call("set_ui_state", { key, value }, z.null()),
   settingsFile: () => call("settings", {}, z.string().nullable()),
+  keybindingsFile: () =>
+    call(
+      "keybindings_file",
+      {},
+      z.object({ path: z.string(), text: z.string().nullable() }),
+    ),
+  saveKeybindingsFile: (text: string, expectedText: string | null) =>
+    call("save_keybindings_file", { text, expectedText }, z.null()),
   saveSettingsFile: (text: string) => call("save_settings", { text }, z.null()),
 };
 export async function subscribe(client: QueryClient): Promise<() => void> {

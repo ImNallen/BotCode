@@ -54,6 +54,8 @@ import {
   eligibleSurfaces,
 } from "./panelState";
 import { usePanelWidth } from "./usePanelWidth";
+import { ErrorView } from "../errors/ErrorView";
+import { RenderErrorBoundary } from "../errors/RenderErrorBoundary";
 
 export type Surface =
   | { kind: "files" }
@@ -399,60 +401,77 @@ export function RightPanel({
             className="flex min-h-0 flex-1 flex-col"
             data-right-panel-surface-content
           >
-            {active?.kind === "pull_requests" && conversationId ? (
-              <PullRequestsSurface
-                key={conversationId}
-                threadId={conversationId}
-                onOpen={(key) => open({ kind: "pull_request", key })}
-              />
-            ) : active?.kind === "pull_request" && conversationId ? (
-              <PullRequestDetail
-                key={`${conversationId}/${active.key}`}
-                prKey={active.key}
-                threadId={conversationId}
-                workspaceId={checkout.workspaceId}
-                canAskCodex={canAskCodex}
-                onAskCodex={onAskCodex}
-                onBack={() => open({ kind: "pull_requests" })}
-              />
-            ) : active?.kind === "terminal" ? (
-              <PersistentThreadTerminalPanel
-                key={`${terminalScope}/${active.id}`}
-                workspaceId={checkout.workspaceId}
-                threadId={threadId}
-                surfaceId={active.id}
-                fontSize={preferences.codeFontSize}
-                fileLinks={fileLinks}
-                onNewTerminal={openTerminal}
-              />
-            ) : view?.unavailable && active && active.kind !== "diff" ? (
-              <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
-                <p className="text-center">{view.unavailable}</p>
-              </div>
-            ) : !active ? (
-              <Launcher actions={actions} />
-            ) : active.kind === "diff" ? (
-              <DiffSurface
-                checkout={checkout}
-                view={view}
-                onOpenFile={handleOpenFile}
-                thread={thread}
-                turnSelection={turnSelection}
-                onSelectTurn={onSelectTurn}
-              />
-            ) : (
-              <FilesSurface
-                key="files"
-                checkout={checkout}
-                view={view}
-                path={active.kind === "file" ? active.path : null}
-                line={active.kind === "file" ? active.line : null}
-                revealSequence={
-                  active.kind === "file" ? active.revealSequence : 0
-                }
-                onOpenFile={handleOpenFile}
-              />
-            )}
+            <RenderErrorBoundary
+              resetKeys={[
+                checkout.workspaceId,
+                checkout.threadId,
+                conversationId,
+                active ? surfaceKey(active) : null,
+              ]}
+              fallback={({ error, reset }) => (
+                <ErrorView
+                  error={error}
+                  onRetry={reset}
+                  area="Panel content"
+                  contained
+                />
+              )}
+            >
+              {active?.kind === "pull_requests" && conversationId ? (
+                <PullRequestsSurface
+                  key={conversationId}
+                  threadId={conversationId}
+                  onOpen={(key) => open({ kind: "pull_request", key })}
+                />
+              ) : active?.kind === "pull_request" && conversationId ? (
+                <PullRequestDetail
+                  key={`${conversationId}/${active.key}`}
+                  prKey={active.key}
+                  threadId={conversationId}
+                  workspaceId={checkout.workspaceId}
+                  canAskCodex={canAskCodex}
+                  onAskCodex={onAskCodex}
+                  onBack={() => open({ kind: "pull_requests" })}
+                />
+              ) : active?.kind === "terminal" ? (
+                <PersistentThreadTerminalPanel
+                  key={`${terminalScope}/${active.id}`}
+                  workspaceId={checkout.workspaceId}
+                  threadId={threadId}
+                  surfaceId={active.id}
+                  fontSize={preferences.codeFontSize}
+                  fileLinks={fileLinks}
+                  onNewTerminal={openTerminal}
+                />
+              ) : view?.unavailable && active && active.kind !== "diff" ? (
+                <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
+                  <p className="text-center">{view.unavailable}</p>
+                </div>
+              ) : !active ? (
+                <Launcher actions={actions} />
+              ) : active.kind === "diff" ? (
+                <DiffSurface
+                  checkout={checkout}
+                  view={view}
+                  onOpenFile={handleOpenFile}
+                  thread={thread}
+                  turnSelection={turnSelection}
+                  onSelectTurn={onSelectTurn}
+                />
+              ) : (
+                <FilesSurface
+                  key="files"
+                  checkout={checkout}
+                  view={view}
+                  path={active.kind === "file" ? active.path : null}
+                  line={active.kind === "file" ? active.line : null}
+                  revealSequence={
+                    active.kind === "file" ? active.revealSequence : 0
+                  }
+                  onOpenFile={handleOpenFile}
+                />
+              )}
+            </RenderErrorBoundary>
           </div>
         </div>
       </div>

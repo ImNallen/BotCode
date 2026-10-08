@@ -31,12 +31,7 @@ import {
   type SelectionActionPoint,
 } from "../lib/selectionActions";
 import { serial } from "../lib/serial";
-import {
-  terminalCloseShortcut,
-  terminalNewShortcut,
-  terminalSplitShortcut,
-  terminalSplitVerticalShortcut,
-} from "../lib/shortcuts";
+import { useShortcutLabel } from "../lib/shortcuts";
 import { PanelTabCloseButton } from "../panel/chrome";
 import { isTerminalUrl } from "../terminal-links";
 import { Button } from "../ui/controls";
@@ -490,6 +485,15 @@ function TerminalViewport({
           return false;
         }
         if (command !== null) return false;
+        if (isTerminalClearShortcut(event)) {
+          event.preventDefault();
+          event.stopPropagation();
+          send(
+            () => ipc.terminalWrite(target, "\u000c"),
+            "Failed to clear terminal",
+          );
+          return false;
+        }
         if (isMacOptionText(event)) return false;
 
         const navigationData = terminalNavigationShortcutData(event);
@@ -514,22 +518,12 @@ function TerminalViewport({
           return false;
         }
 
-        if (!isTerminalClearShortcut(event)) {
-          if (!isMacCommandChord(event) || isTerminalPasteShortcut(event)) {
-            return true;
-          }
-          return (
-            isTerminalCopyShortcut(event) &&
-            terminalRef.current?.hasSelection() === true
-          );
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        send(
-          () => ipc.terminalWrite(target, "\u000c"),
-          "Failed to clear terminal",
+        if (!isMacCommandChord(event) || isTerminalPasteShortcut(event))
+          return true;
+        return (
+          isTerminalCopyShortcut(event) &&
+          terminalRef.current?.hasSelection() === true
         );
-        return false;
       }
 
       function handleLinkActivate(text: string): void {
@@ -785,6 +779,12 @@ function ThreadTerminalDrawer({
   onCloseTerminal,
   onHeightChange,
 }: ThreadTerminalDrawerProps) {
+  const terminalSplitShortcut = useShortcutLabel("terminal.split");
+  const terminalSplitVerticalShortcut = useShortcutLabel(
+    "terminal.splitVertical",
+  );
+  const terminalNewShortcut = useShortcutLabel("terminal.new");
+  const terminalCloseShortcut = useShortcutLabel("terminal.close");
   const isPanel = mode === "panel";
   const [drawerHeight, setDrawerHeight] = useState(() =>
     clampDrawerHeight(height),
@@ -843,12 +843,12 @@ function ThreadTerminalDrawer({
     visibleTerminalIds.length >= MAX_TERMINALS_PER_GROUP;
   const splitTerminalActionLabel = hasReachedSplitLimit
     ? `Split Terminal Horizontally (max ${MAX_TERMINALS_PER_GROUP} per group)`
-    : `Split Terminal Horizontally (${terminalSplitShortcut})`;
+    : `Split Terminal Horizontally${terminalSplitShortcut ? ` (${terminalSplitShortcut})` : ""}`;
   const splitTerminalVerticalActionLabel = hasReachedSplitLimit
     ? `Split Terminal Vertically (max ${MAX_TERMINALS_PER_GROUP} per group)`
-    : `Split Terminal Vertically (${terminalSplitVerticalShortcut})`;
-  const newTerminalActionLabel = `New Terminal (${terminalNewShortcut})`;
-  const closeTerminalActionLabel = `Close Terminal (${terminalCloseShortcut})`;
+    : `Split Terminal Vertically${terminalSplitVerticalShortcut ? ` (${terminalSplitVerticalShortcut})` : ""}`;
+  const newTerminalActionLabel = `New Terminal${terminalNewShortcut ? ` (${terminalNewShortcut})` : ""}`;
+  const closeTerminalActionLabel = `Close Terminal${terminalCloseShortcut ? ` (${terminalCloseShortcut})` : ""}`;
   const onSplitTerminalAction = () => {
     if (hasReachedSplitLimit) return;
     onSplitTerminal();
@@ -1200,7 +1200,9 @@ function ThreadTerminalDrawer({
                           const isActive = terminalId === activeTerminalId;
                           const terminalLabel = getTerminalLabel(terminalId);
                           const closeTerminalLabel = `Close ${terminalLabel}${
-                            isActive ? ` (${terminalCloseShortcut})` : ""
+                            isActive && terminalCloseShortcut
+                              ? ` (${terminalCloseShortcut})`
+                              : ""
                           }`;
                           return (
                             <div
@@ -1313,8 +1315,18 @@ export function PersistentThreadTerminalDrawer({
   };
 
   const handleShortcut = useEffectEvent((event: KeyboardEvent) => {
-    if (isCommandPaletteOpen() || event.isComposing) return;
-    const command = terminalShortcutCommand(event);
+    if (
+      isCommandPaletteOpen() ||
+      event.isComposing ||
+      (event.target instanceof Element &&
+        event.target.closest("[data-keybinding-capture]"))
+    )
+      return;
+    const command = terminalShortcutCommand(
+      event,
+      navigator.platform,
+      getTerminalFocusOwner() !== null,
+    );
     if (command === null || rootRef.current?.closest("[inert]")) return;
     // A held or repeated close must not fall through to the window's own Close.
     if (
@@ -1440,7 +1452,13 @@ export function PersistentThreadTerminalPanel({
   };
 
   const handleShortcut = useEffectEvent((event: KeyboardEvent) => {
-    if (isCommandPaletteOpen() || event.isComposing) return;
+    if (
+      isCommandPaletteOpen() ||
+      event.isComposing ||
+      (event.target instanceof Element &&
+        event.target.closest("[data-keybinding-capture]"))
+    )
+      return;
     const command = terminalShortcutCommand(event);
     if (
       command === null ||

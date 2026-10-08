@@ -25,7 +25,13 @@ import {
 import type { Arrange, OpenTarget, ThreadSummary, Workspace } from "../ipc";
 import { workingSessions } from "./sessions";
 import { resolveSnoozePresets, type SnoozePreset } from "./snooze";
-import { isMacPlatform } from "./utils";
+import { keybindings } from "../keybindings/store";
+import { DEFAULT_KEYBINDINGS, type KeybindingRule } from "../keybindings/rules";
+import {
+  resolveShortcutCommand,
+  shortcutLabelForCommand,
+} from "../keybindings/keyboard";
+import { currentShortcutContext } from "./shortcutContext";
 
 export type SidebarOperation =
   | {
@@ -48,7 +54,11 @@ export type ChatRequest = {
   sequence: number;
   workspaceId: string;
   threadId: string | undefined;
-  kind: "terminal.toggle" | "panel.toggle" | "files.search" | "content.search";
+  kind:
+    | "terminal.toggle"
+    | "rightPanel.toggle"
+    | "filePicker.toggle"
+    | "projectSearch.toggle";
 };
 export type PalettePage =
   | "root"
@@ -94,29 +104,21 @@ export type KeyEventLike = Pick<
   repeat?: boolean;
   defaultPrevented?: boolean;
 };
-type Binding = {
-  key: string;
-  modifier: "mod" | "ctrl" | "none";
-  shift?: boolean;
-  alt?: boolean;
-  physical?: boolean;
-  platform?: "mac";
-};
 type ActionDefinition = {
   title: string;
   icon?: LucideIcon;
   label?: (context: ActionContext) => string;
   keywords?: string;
   shortcutDescription?: string;
-  group: "Navigation" | "Threads" | "Terminal";
+  group: "Navigation" | "Threads" | "Terminal" | "Composer";
   submenu?: boolean;
-  binding?: Binding;
-  shortcutOwner?: "terminal" | "page";
+  defaultBindings?: readonly Omit<KeybindingRule, "command">[];
+  shortcutOwner?: "terminal" | "page" | "composer" | "palette";
   allowTerminal?: boolean;
   available: (context: ActionContext) => boolean;
 } & (
   | { palette: PalettePage | false; run: (context: ActionContext) => void }
-  | { palette: false; shortcutOwner: "terminal"; run?: never }
+  | { palette: false; shortcutOwner: "terminal" | "composer"; run?: never }
 );
 const liveThread = (context: ActionContext) =>
   !context.pageOpen &&
@@ -150,31 +152,41 @@ const snooze = (
 });
 const terminal = (
   title: string,
-  key: string,
-  shift = false,
   shortcutDescription = "Clear the focused terminal without stopping its process.",
 ): ActionDefinition => ({
   title,
   shortcutDescription,
   group: "Terminal",
   palette: false,
-  binding: { key, modifier: "mod", shift },
   shortcutOwner: "terminal",
   available: () => false,
 });
+const local = (title: string): ActionDefinition => ({
+  title,
+  group: "Composer",
+  palette: false,
+  shortcutOwner: "composer",
+  available: () => false,
+});
 const definitions = {
-  "palette.open": {
+  "composer.stash": local("Stash prompt"),
+  "modelPicker.toggle": local("Toggle model picker"),
+  "composer.effort": local("Choose reasoning effort"),
+  "composer.mode": local("Choose permissions"),
+  "composer.workspace": local("Choose workspace"),
+  "composer.branch": local("Choose branch"),
+  "thread.stop": local("Stop thread"),
+  "commandPalette.toggle": {
     shortcutDescription:
       "Search all thread titles, loaded messages, and commands. Command+K clears a focused terminal.",
     title: "Open command palette",
     keywords: "search commands threads",
     group: "Navigation",
     palette: false,
-    binding: { key: "k", modifier: "mod" },
     available: () => true,
     run: (c) => c.openPalette(),
   },
-  "thread.new": {
+  "chat.new": {
     icon: SquarePenIcon,
     title: "New thread",
     group: "Navigation",
@@ -182,7 +194,7 @@ const definitions = {
     available: (c) => !!c.workspace,
     run: (c) => c.newThread(),
   },
-  "thread.scratch": {
+  "chat.newWithoutProject": {
     icon: MessageSquareDashedIcon,
     shortcutDescription:
       "Start a thread in its own folder instead of a project.",
@@ -190,29 +202,28 @@ const definitions = {
     keywords: "scratch no project",
     group: "Navigation",
     palette: "root",
-    binding: { key: "n", modifier: "mod", alt: true, physical: true },
     available: (c) => c.scratchAvailable,
     run: (c) => c.startScratch(),
   },
   "settings.open": {
+    defaultBindings: [{ key: "mod+," }],
     icon: SettingsIcon,
     shortcutDescription:
       "Open General settings from anywhere in the workbench.",
     title: "Open settings",
     group: "Navigation",
     palette: "root",
-    binding: { key: ",", modifier: "mod" },
     allowTerminal: true,
     available: () => true,
     run: (c) => c.openSettings(),
   },
   "page.close": {
+    defaultBindings: [{ key: "esc" }],
     shortcutDescription:
       "Leave settings. Search and open menus handle Escape first.",
     title: "Back to conversation",
     group: "Navigation",
     palette: false,
-    binding: { key: "Escape", modifier: "none" },
     shortcutOwner: "page",
     available: (c) => c.pageOpen,
     run: (c) => c.closePage(),
@@ -223,41 +234,38 @@ const definitions = {
     title: "Toggle sidebar",
     group: "Navigation",
     palette: "root",
-    binding: { key: "b", modifier: "mod" },
     allowTerminal: true,
     available: () => true,
     run: (c) => c.toggleSidebar(),
   },
-  "files.search": {
+  "filePicker.toggle": {
     icon: FileSearchIcon,
     title: "Go to file",
     keywords: "open file file picker find file quick open",
     shortcutDescription: "Find and open a file in the current checkout.",
     group: "Navigation",
     palette: "root",
-    binding: { key: "p", modifier: "mod" },
     available: (c) => !c.pageOpen && c.projectSearchAvailable,
-    run: (c) => c.requestChat("files.search"),
+    run: (c) => c.requestChat("filePicker.toggle"),
   },
-  "content.search": {
+  "projectSearch.toggle": {
     icon: TextSearchIcon,
     title: "Search project contents",
     keywords: "search project find in files grep content search text search",
     shortcutDescription: "Search file contents in the current checkout.",
     group: "Navigation",
     palette: "root",
-    binding: { key: "f", modifier: "mod", shift: true },
     available: (c) => !c.pageOpen && c.projectSearchAvailable,
-    run: (c) => c.requestChat("content.search"),
+    run: (c) => c.requestChat("projectSearch.toggle"),
   },
-  "panel.toggle": {
+  "rightPanel.toggle": {
     icon: PanelRightIcon,
     title: "Toggle right panel",
     keywords: "tools files diff",
     group: "Navigation",
     palette: "root",
     available: (c) => !c.pageOpen && !!c.workspace,
-    run: (c) => c.requestChat("panel.toggle"),
+    run: (c) => c.requestChat("rightPanel.toggle"),
   },
   "editor.openFavorite": {
     icon: SquareArrowOutUpRightIcon,
@@ -268,7 +276,6 @@ const definitions = {
     keywords: "editor ide cursor vscode zed",
     group: "Navigation",
     palette: "root",
-    binding: { key: "o", modifier: "mod" },
     allowTerminal: true,
     available: (c) =>
       !c.pageOpen && c.checkoutTarget !== null && c.editorLabel !== null,
@@ -295,7 +302,6 @@ const definitions = {
     keywords: "shell console",
     group: "Terminal",
     palette: "root",
-    binding: { key: "j", modifier: "mod" },
     shortcutOwner: "terminal",
     available: (c) => !c.pageOpen && c.terminalAvailable,
     run: (c) => c.requestChat("terminal.toggle"),
@@ -310,7 +316,6 @@ const definitions = {
     keywords: "unpin pinned",
     group: "Threads",
     palette: "root",
-    binding: { key: "p", modifier: "mod", shift: true },
     available: liveThread,
     run: (c) => {
       if (c.thread)
@@ -329,7 +334,6 @@ const definitions = {
     keywords: "unsettle settled",
     group: "Threads",
     palette: "root",
-    binding: { key: "s", modifier: "mod", shift: true },
     available: canArrange,
     run: (c) => {
       if (c.thread)
@@ -430,6 +434,7 @@ const definitions = {
     run: (c) => c.openSubmenu("archived"),
   },
   "archive.restore": {
+    shortcutOwner: "palette",
     icon: ArchiveRestoreIcon,
     title: "Unarchive thread",
     group: "Threads",
@@ -440,6 +445,7 @@ const definitions = {
     },
   },
   "archive.delete": {
+    shortcutOwner: "palette",
     icon: Trash2Icon,
     title: "Delete thread",
     group: "Threads",
@@ -456,35 +462,27 @@ const definitions = {
   "snooze.next-week": snooze("next-week", "Next week on Monday at 9 AM"),
   "terminal.split": terminal(
     "Split terminal horizontally",
-    "d",
-    false,
     "Add a terminal beside the focused one, up to four side by side.",
   ),
   "terminal.splitVertical": terminal(
     "Split terminal vertically",
-    "d",
-    true,
     "Add a terminal below the focused one, up to four stacked.",
   ),
   "terminal.new": terminal(
     "New terminal",
-    "n",
-    false,
     "Open another terminal in its own tab.",
   ),
   "terminal.close": terminal(
     "Close terminal",
-    "w",
-    false,
     "Close the focused terminal after confirmation and stop its process.",
   ),
   "terminal.clear": {
-    ...terminal("Clear terminal", "k"),
-    binding: { key: "k", modifier: "mod", platform: "mac" },
+    ...terminal("Clear terminal"),
+    defaultBindings: [{ key: "meta+k", when: "terminalFocus && isMac" }],
   },
   "terminal.clearControl": {
-    ...terminal("Clear terminal", "l"),
-    binding: { key: "l", modifier: "ctrl" },
+    ...terminal("Clear terminal"),
+    defaultBindings: [{ key: "ctrl+l", when: "terminalFocus" }],
   },
 } satisfies Record<string, ActionDefinition>;
 export type ActionId = keyof typeof definitions;
@@ -505,30 +503,42 @@ export function matchesAction(
   event: KeyEventLike,
   id: ActionId,
   platform = navigator.platform,
+  context = currentShortcutContext(platform),
 ) {
-  const binding = actions[id].binding;
-  if (!binding || event.isComposing || (event.type && event.type !== "keydown"))
-    return false;
-  const mac = isMacPlatform(platform);
-  if (binding.platform === "mac" && !mac) return false;
-  const meta = binding.modifier === "mod" && mac;
-  const ctrl =
-    binding.modifier === "ctrl" || (binding.modifier === "mod" && !mac);
-  if (
-    event.metaKey !== meta ||
-    event.ctrlKey !== ctrl ||
-    event.shiftKey !== !!binding.shift ||
-    event.altKey !== !!binding.alt
-  )
-    return false;
-  const key = event.key.toLowerCase();
-  const physical = event.code.match(/^Key([A-Z])$/)?.[1]?.toLowerCase();
+  return resolveCommand(event, platform, context) === id;
+}
+export function resolveCommand(
+  event: KeyEventLike,
+  platform = navigator.platform,
+  context = currentShortcutContext(platform),
+) {
+  if (event.isComposing || (event.type && event.type !== "keydown"))
+    return null;
+  return resolveShortcutCommand(event, runnableBindings(), {
+    platform,
+    context,
+  });
+}
+export const registerScriptCommands = keybindings.registerScriptCommands;
+function runnableBindings() {
+  const snapshot = keybindings.getSnapshot();
+  return snapshot.bindings.filter(
+    (binding) =>
+      (isActionId(binding.command) &&
+        actions[binding.command].shortcutOwner !== "palette") ||
+      snapshot.scriptCommands.has(binding.command),
+  );
+}
+export function commandShortcutLabel(
+  command: string,
+  platform = navigator.platform,
+  context = currentShortcutContext(platform),
+) {
   return (
-    (binding.physical
-      ? physical
-      : /^[a-z]$/.test(key)
-        ? key
-        : (physical ?? key)) === binding.key.toLowerCase()
+    shortcutLabelForCommand(runnableBindings(), command, {
+      platform,
+      context,
+    }) ?? undefined
   );
 }
 export function matchAction(
@@ -539,18 +549,35 @@ export function matchAction(
 ) {
   if (event.defaultPrevented || event.isComposing || event.repeat)
     return undefined;
-  return actionIds.find(
-    (id) =>
-      !actions[id].shortcutOwner &&
-      (!terminalFocused || actions[id].allowTerminal) &&
-      actions[id].available(context) &&
-      matchesAction(event, id, platform),
-  );
+  const command = resolveCommand(event, platform, {
+    ...currentShortcutContext(platform),
+    terminalFocus: terminalFocused,
+  });
+  if (!isActionId(command)) return undefined;
+  const action = actions[command];
+  return !action.shortcutOwner &&
+    (!terminalFocused || action.allowTerminal) &&
+    action.available(context)
+    ? command
+    : undefined;
+}
+export function isActionId(id: string | null | undefined): id is ActionId {
+  return typeof id === "string" && Object.hasOwn(actions, id);
 }
 export function shortcutLabel(id: ActionId, platform = navigator.platform) {
-  const binding = actions[id].binding;
-  if (!binding || (binding.platform === "mac" && !isMacPlatform(platform)))
-    return undefined;
-  const mac = isMacPlatform(platform);
-  return `${binding.modifier === "ctrl" ? (mac ? "⌃" : "Ctrl+") : binding.modifier === "mod" ? (mac ? "" : "Ctrl+") : ""}${binding.alt ? (mac ? "⌥" : "Alt+") : ""}${binding.shift ? (mac ? "⇧" : "Shift+") : ""}${binding.modifier === "mod" && mac ? "⌘" : ""}${binding.key.length === 1 ? binding.key.toUpperCase() : binding.key}`;
+  return commandShortcutLabel(id, platform, {
+    ...currentShortcutContext(platform),
+    terminalFocus: actions[id].shortcutOwner === "terminal",
+  });
 }
+
+export const defaultKeybindings: readonly KeybindingRule[] = [
+  ...DEFAULT_KEYBINDINGS.filter((rule) => isActionId(rule.command)),
+  ...actionIds.flatMap((command) =>
+    (actions[command].defaultBindings ?? []).map((binding) => ({
+      ...binding,
+      command,
+    })),
+  ),
+];
+keybindings.configure(defaultKeybindings, new Set(actionIds));

@@ -5,8 +5,6 @@ import {
   resolveThreadEnvMode,
   primaryProjectScript,
   commandForProjectScript,
-  matchesScriptShortcut,
-  scriptShortcuts,
 } from "./projectScripts.ts";
 const setup = {
   id: "setup",
@@ -63,40 +61,6 @@ it("accepts submodule-only setup and requires failed setup diagnostics", () => {
     false,
   );
 });
-it("matches persisted script shortcuts with every modifier", () => {
-  const bindings = scriptShortcuts.parse({
-    "script.dev.run": {
-      key: "r",
-      meta: true,
-      ctrl: false,
-      alt: true,
-      shift: false,
-    },
-  });
-  const binding = bindings["script.dev.run"];
-  assert.ok(binding);
-  assert.equal(
-    matchesScriptShortcut(
-      {
-        key: "R",
-        metaKey: true,
-        ctrlKey: false,
-        altKey: true,
-        shiftKey: false,
-      },
-      binding,
-    ),
-    true,
-  );
-  assert.equal(
-    matchesScriptShortcut(
-      { key: "R", metaKey: true, ctrlKey: false, altKey: true, shiftKey: true },
-      binding,
-    ),
-    false,
-  );
-});
-
 it("respects a deliberately saved local choice ahead of the project default", () => {
   const options = {
     preference: "local",

@@ -315,11 +315,17 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
     title: "Keyboard shortcuts",
     icon: KeyboardIcon,
     scoped: false,
-    groups: ["Navigation", "Threads", "Terminal"].map((group) => ({
+    groups: ["Navigation", "Threads", "Terminal", "Composer"].map((group) => ({
       id: group.toLowerCase(),
       title: group,
+      hideTitle: true,
       rows: actionIds
-        .filter((id) => actions[id].group === group && actions[id].binding)
+        .filter(
+          (id) =>
+            actions[id].group === group &&
+            !actions[id].submenu &&
+            actions[id].shortcutOwner !== "palette",
+        )
         .map((id) => ({
           id,
           title: actions[id].title,

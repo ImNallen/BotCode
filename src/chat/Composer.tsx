@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { isMacPlatform } from "../lib/utils";
+import { resolveCommand, useShortcutLabel } from "../lib/shortcuts";
 import { isTerminalFocused } from "../terminal/terminalKeys";
 import { ComposerStashBadge } from "./ComposerStashBadge";
 import { ComposerStashMenu } from "./ComposerStashMenu";
@@ -216,6 +217,8 @@ export function Composer({
   onUsageLimits: () => void;
 }) {
   const editor = useRef<ComposerEditorHandle>(null);
+  const composerElement = useRef<HTMLFormElement>(null);
+  const stashShortcutLabel = useShortcutLabel("composer.stash");
   const listId = useId();
   const fileInput = useRef<HTMLInputElement>(null);
   const historyPosition = useRef<ComposerPromptHistoryPosition | null>(null);
@@ -466,6 +469,15 @@ export function Composer({
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
       if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.repeat ||
+        (event.target instanceof Element &&
+          event.target.closest("[data-keybinding-capture]")) ||
+        composerElement.current?.closest("[inert]")
+      )
+        return;
+      if (
         isPasteAsTextShortcut(event, isMacPlatform(navigator.platform)) &&
         !event.isComposing &&
         !disabled &&
@@ -504,30 +516,48 @@ export function Composer({
           );
         } else pasteAsTextUntil.current = Date.now() + 1000;
       }
-      if (
-        event.key.toLowerCase() !== "s" ||
-        event.shiftKey ||
-        event.altKey ||
-        event.isComposing ||
-        !(isMacPlatform(navigator.platform)
-          ? event.metaKey && !event.ctrlKey
-          : event.ctrlKey && !event.metaKey)
-      )
+      const command = resolveCommand(event);
+      if (isTerminalFocused() || !command) return;
+      if (document.querySelector("dialog[open], [data-command-palette]"))
         return;
-      if (isTerminalFocused()) return;
+      if (command === "modelPicker.toggle") {
+        if (settingsDisabled) return;
+        setModelPickerOpen((open) => !open);
+      } else if (command === "thread.stop") {
+        if (!canStop || stopping) return;
+        onStop();
+      } else if (command === "composer.stash") {
+        if (disabled || approval !== null) return;
+        onStash();
+      } else if (
+        [
+          "composer.effort",
+          "composer.mode",
+          "composer.workspace",
+          "composer.branch",
+        ].includes(command)
+      ) {
+        const button = document.querySelector<HTMLButtonElement>(
+          `[data-composer-shortcut="${command}"]`,
+        );
+        if (!button || button.disabled) return;
+        button.click();
+      } else return;
       event.preventDefault();
       event.stopPropagation();
-      if (
-        disabled ||
-        approval !== null ||
-        document.querySelector("dialog[open], [data-command-palette]")
-      )
-        return;
-      onStash();
     };
     window.addEventListener("keydown", handle, true);
     return () => window.removeEventListener("keydown", handle, true);
-  }, [onStash, disabled, approval, onAttachmentNotice]);
+  }, [
+    onStash,
+    disabled,
+    approval,
+    onAttachmentNotice,
+    settingsDisabled,
+    canStop,
+    stopping,
+    onStop,
+  ]);
   const keys = (event: KeyboardEvent) => {
     if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey)
       return false;
@@ -640,6 +670,7 @@ export function Composer({
       <ComposerSurface.Host>
         <div className="relative z-10">
           <form
+            ref={composerElement}
             className="mx-auto w-full min-w-0 max-w-(--chat-max-width)"
             data-chat-composer-form="true"
             onSubmit={(event) => {
@@ -653,9 +684,7 @@ export function Composer({
                   <ComposerBanner.Attachment>
                     <ComposerStashMenu
                       entries={stashEntries}
-                      stashShortcutLabel={
-                        isMacPlatform(navigator.platform) ? "⌘S" : "Ctrl+S"
-                      }
+                      stashShortcutLabel={stashShortcutLabel ?? null}
                       onRestore={onRestoreStash}
                       onDelete={onDeleteStash}
                       onClose={onCloseStash}
@@ -964,6 +993,7 @@ export function Composer({
                               aria-expanded={props["aria-expanded"]}
                               disabled={settingsDisabled}
                               aria-label={`Model: ${selectedModel?.displayName ?? settings.model ?? "Codex default"}`}
+                              data-model-picker-open={modelPickerOpen}
                               className={cn(
                                 composerControl,
                                 "-ms-2.5 min-w-0 shrink",
@@ -1029,6 +1059,7 @@ export function Composer({
                               aria-expanded={props["aria-expanded"]}
                               disabled={settingsDisabled || !selectedModel}
                               aria-label={`Reasoning effort: ${effort ? effortLabel(effort) : "Unavailable"}`}
+                              data-composer-shortcut="composer.effort"
                               className={composerControl}
                             >
                               <span className="capitalize">
@@ -1115,6 +1146,7 @@ export function Composer({
                               }
                               title={selectedMode?.description}
                               aria-label={`Access mode: ${selectedMode?.label ?? settings.permissionMode}`}
+                              data-composer-shortcut="composer.mode"
                               className={composerControl}
                             >
                               <RuntimeIcon
@@ -1216,6 +1248,7 @@ export function Composer({
                           {...props}
                           disabled={settingsDisabled}
                           aria-label="Workspace"
+                          data-composer-shortcut="composer.workspace"
                           className={selectTrigger({
                             variant: "ghost",
                             size: "xs",
