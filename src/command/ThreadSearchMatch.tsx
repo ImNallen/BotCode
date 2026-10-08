@@ -1,46 +1,7 @@
 // Ported from pingdotgg/t3code v0.0.45 components/ThreadSearchMatch.tsx (MIT).
-function foldAsciiCase(value: string): string {
-  return value.replace(/[A-Z]/g, (character) => character.toLowerCase());
-}
-
+import { highlightSearchText } from "./commandPaletteSearch";
 function HighlightedSearchText(props: { text: string; query: string }) {
-  const query = props.query.trim();
-  if (query.length === 0) return props.text;
-
-  const normalizedText = foldAsciiCase(props.text);
-  const normalizedQuery = foldAsciiCase(query);
-  const parts: Array<{
-    readonly text: string;
-    readonly highlighted: boolean;
-    readonly start: number;
-  }> = [];
-  let cursor = 0;
-
-  while (cursor < props.text.length) {
-    const matchIndex = normalizedText.indexOf(normalizedQuery, cursor);
-    if (matchIndex === -1) {
-      parts.push({
-        text: props.text.slice(cursor),
-        highlighted: false,
-        start: cursor,
-      });
-      break;
-    }
-    if (matchIndex > cursor) {
-      parts.push({
-        text: props.text.slice(cursor, matchIndex),
-        highlighted: false,
-        start: cursor,
-      });
-    }
-    parts.push({
-      text: props.text.slice(matchIndex, matchIndex + query.length),
-      highlighted: true,
-      start: matchIndex,
-    });
-    cursor = matchIndex + query.length;
-  }
-
+  const parts = highlightSearchText(props.text, props.query);
   return parts.map((part) =>
     part.highlighted ? (
       <mark

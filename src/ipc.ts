@@ -1,3 +1,4 @@
+import type { SearchInvalidation } from "./command/threadMessageSearch";
 import {
   acknowledgeUncertainUpdate,
   type AcknowledgeUncertainUpdate,
@@ -27,6 +28,22 @@ import {
   pullRequestContextMetadata,
   type MessageContext,
 } from "./chat/composerContext";
+export const threadMessageMatch = z.object({
+  threadId: z.uuid(),
+  workspaceId: z.uuid(),
+  title: z.string(),
+  workspaceLabel: z.string(),
+  updatedAtMs: z.number().int().nonnegative().nullable(),
+  revision: z.number().int().nonnegative(),
+  source: z.enum(["user", "assistant"]),
+  snippet: z.string().refine((value) => Array.from(value).length <= 240),
+});
+export const threadMessageSearch = z.object({
+  matches: threadMessageMatch.array().max(50),
+  hasMore: z.boolean(),
+});
+export type ThreadMessageMatch = z.infer<typeof threadMessageMatch>;
+export type ThreadMessageSearch = z.infer<typeof threadMessageSearch>;
 export const native = isTauri();
 const id = z.uuid();
 const reason = z.object({ kind: z.literal("unavailable"), reason: z.string() });
@@ -788,6 +805,8 @@ async function call<S extends z.ZodType>(
   }
 }
 export const ipc = {
+  searchThreadMessages: (query: string) =>
+    call("search_thread_messages", { query }, threadMessageSearch),
   projectConfig: (workspaceId: string) =>
     call("project_config", { workspaceId }, projectConfig),
   retryWorktreeSetup: (threadId: string) =>
@@ -1120,6 +1139,20 @@ export const ipc = {
     call("save_keybindings_file", { text, expectedText }, z.null()),
   saveSettingsFile: (text: string) => call("save_settings", { text }, z.null()),
 };
+const searchInvalidationListeners = new Set<
+  (change: SearchInvalidation) => void
+>();
+export function onThreadSearchInvalidated(
+  listener: (change: SearchInvalidation) => void,
+) {
+  searchInvalidationListeners.add(listener);
+  return () => {
+    searchInvalidationListeners.delete(listener);
+  };
+}
+function invalidateThreadSearch(change: SearchInvalidation) {
+  for (const listener of searchInvalidationListeners) listener(change);
+}
 export async function subscribe(client: QueryClient): Promise<() => void> {
   const hints = new Set<string>();
   const workspaces = new Set<string>();
@@ -1154,6 +1187,11 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
         summary.revision !== hint.data.revision
       )
         return;
+      invalidateThreadSearch({
+        kind: "thread",
+        threadId: summary.id,
+        revision: summary.revision,
+      });
       notificationHistory.observe(hint.data.workspaceId, summary);
       void client.invalidateQueries({
         queryKey: ["thread-summaries", hint.data.workspaceId],
@@ -1188,6 +1226,7 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
     if (limits.success) client.setQueryData(["usage-limits"], limits.data);
   });
   const offRefresh = await listen("bot:refresh", () => {
+    invalidateThreadSearch({ kind: "all" });
     void client.invalidateQueries();
   });
   const focus = () => {

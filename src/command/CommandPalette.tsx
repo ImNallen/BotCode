@@ -1,3 +1,8 @@
+import {
+  ThreadMessageSearchController,
+  contentQuery,
+  type MessageSearchState,
+} from "./threadMessageSearch";
 import { useKeybindings } from "../keybindings/store";
 // Ported from pingdotgg/t3code v0.0.45 components/CommandPalette.tsx (MIT).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -13,7 +18,13 @@ import {
   MessageSquareDashedIcon,
   MessageSquareIcon,
 } from "lucide-react";
-import { ipc, type BrowseDirectory, type Thread, type Workspace } from "../ipc";
+import {
+  ipc,
+  onThreadSearchInvalidated,
+  type BrowseDirectory,
+  type Workspace,
+  type WorkspaceView,
+} from "../ipc";
 import {
   actionLabel,
   actions,
@@ -104,7 +115,17 @@ export function CommandPalette({
   const browseGeneration = useRef(0);
   const pendingGeneration = useRef<number | null>(null);
   const mounted = useRef(true);
-  const [, refresh] = useState(0);
+  const [messageSearch, setMessageSearch] = useState<MessageSearchState>({
+    kind: "idle",
+  });
+  const [searchClosed, setSearchClosed] = useState(false);
+  const [messageController] = useState(
+    () =>
+      new ThreadMessageSearchController(
+        ipc.searchThreadMessages,
+        setMessageSearch,
+      ),
+  );
   const client = useQueryClient();
   const root = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -168,6 +189,8 @@ export function CommandPalette({
   };
   const close = (restoreFocus: boolean) => {
     invalidateView();
+    messageController.cancel();
+    setSearchClosed(true);
     onClose(restoreFocus);
   };
   const changeQuery = (next: string) => {
@@ -244,13 +267,6 @@ export function CommandPalette({
       }
     }
   };
-  useEffect(
-    () =>
-      client.getQueryCache().subscribe((event) => {
-        if (event.query.queryKey[0] === "thread") refresh((value) => value + 1);
-      }),
-    [client],
-  );
   const archivesOpen =
     location.kind === "archived" || location.kind === "archive-actions";
   const archiveQueries = useQueries({
@@ -325,10 +341,54 @@ export function CommandPalette({
       execute: () => executeAction(id),
     };
   });
-  const snapshots = client
-    .getQueriesData<Thread>({ queryKey: ["thread"] })
-    .flatMap(([, thread]) => (thread ? [thread] : []));
-  const matches = searchThreads(threads, snapshots, needle);
+  const requestedQuery = contentQuery(
+    needle,
+    location.kind === "root" && !actionsOnly && !blocked && !searchClosed,
+  );
+  useLayoutEffect(() => {
+    messageController.update(requestedQuery);
+    return () => messageController.cancel();
+  }, [messageController, requestedQuery]);
+  useEffect(() => {
+    const offInvalidated = onThreadSearchInvalidated((change) =>
+      messageController.invalidate(change),
+    );
+    const unsubscribe = client.getQueryCache().subscribe((event) => {
+      if (
+        event.type === "updated" &&
+        event.action.type === "invalidate" &&
+        event.query.queryKey[0] === "workspace" &&
+        typeof event.query.queryKey[1] === "string"
+      )
+        messageController.invalidate({
+          kind: "workspace",
+          workspaceId: event.query.queryKey[1],
+        });
+    });
+    return () => {
+      offInvalidated();
+      unsubscribe();
+    };
+  }, [messageController, client]);
+  const activeMessageSearch: MessageSearchState =
+    requestedQuery !== null &&
+    messageSearch.kind !== "idle" &&
+    messageSearch.query === requestedQuery
+      ? messageSearch
+      : { kind: "idle" };
+  const loadedWorkspaceIds = new Set(
+    client
+      .getQueriesData<WorkspaceView>({ queryKey: ["workspace"] })
+      .flatMap(([, view]) => (view ? [view.workspace.id] : [])),
+  );
+  const matches = searchThreads(
+    threads,
+    activeMessageSearch.kind === "ready"
+      ? activeMessageSearch.result.matches
+      : [],
+    needle,
+    loadedWorkspaceIds,
+  );
   const threadItems: PaletteItem[] = (
     needle.trim() ? matches : matches.slice(0, 12)
   ).map((row) => ({
@@ -728,6 +788,25 @@ export function CommandPalette({
               </button>
             </div>
           ) : null}
+          {activeMessageSearch.kind === "loading" ? (
+            <p
+              role="status"
+              className="px-4 py-2 text-xs text-muted-foreground"
+            >
+              Searching messages…
+            </p>
+          ) : null}
+          {activeMessageSearch.kind === "error" ? (
+            <div
+              role="alert"
+              className="px-4 py-2 text-sm text-error-foreground"
+            >
+              Could not search saved messages. {activeMessageSearch.message}{" "}
+              <button type="button" onClick={() => messageController.retry()}>
+                Retry
+              </button>
+            </div>
+          ) : null}
           <CommandPaletteResults
             groups={groups}
             activeId={active?.id}
@@ -756,12 +835,21 @@ export function CommandPalette({
                             ? "This archived thread is no longer available."
                             : actionsOnly
                               ? "No matching actions."
-                              : "No matching threads or actions."
+                              : activeMessageSearch.kind === "loading"
+                                ? "Searching messages…"
+                                : activeMessageSearch.kind === "error"
+                                  ? "Message search unavailable. Title and action matches remain available."
+                                  : "No matching threads or actions."
             }
           />
           {location.kind === "root" && !actionsOnly ? (
             <p className="px-4 pb-2 text-xs text-muted-foreground">
-              Searches all thread titles and messages in loaded conversations.
+              {Array.from(needle.trim()).length > 200
+                ? "Message search accepts up to 200 characters. Titles and actions still match."
+                : activeMessageSearch.kind === "ready" &&
+                    activeMessageSearch.result.hasMore
+                  ? "Showing 50 saved message matches. Refine your search for more."
+                  : "Searches all thread titles and saved conversations."}
             </p>
           ) : null}
         </CommandPaletteContent>

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import type { Thread, ThreadSummary } from "../ipc";
+import type { ThreadMessageMatch, ThreadSummary } from "../ipc";
 import {
   matchesSearch,
   searchThreads,
-  snapshotMessages,
+  highlightSearchText,
+  normalizeSearch,
   type SearchThread,
 } from "./commandPaletteSearch";
 function row(
@@ -38,50 +39,16 @@ function row(
   };
   return { thread, workspaceId: "workspace", workspaceLabel: "Project" };
 }
-function snapshot(id: string): Thread {
+function snapshot(id: string): ThreadMessageMatch {
   return {
-    id,
+    threadId: id,
     workspaceId: "workspace",
+    workspaceLabel: "Project",
     title: "Loaded conversation",
-    worktreeSetup: null,
-    nativeThreadId: null,
+    updatedAtMs: 100,
     revision: 1,
-    session: { kind: "ready" },
-    settings: {
-      model: null,
-      effort: null,
-      permissionMode: "full-access",
-      interactionMode: "default",
-    },
-    checkout: { kind: "local" },
-    approvals: [],
-    userQuestions: [],
-    diagnostic: null,
-    pendingRevert: null,
-    lastRevert: null,
-    context: null,
-    turns: [
-      {
-        id: "turn",
-        prompt: "Please inspect login behavior",
-        nativeTurnId: null,
-        delivery: { kind: "accepted" },
-        execution: { kind: "completed" },
-        items: [
-          {
-            id: "answer",
-            kind: "assistant",
-            text: "Fixed café login redirect",
-            complete: true,
-          },
-        ],
-        settings: null,
-        startedAtMs: 1,
-        completedAtMs: 2,
-        attachments: [],
-        checkpoint: { kind: "unavailable", before: null, reason: "No Git" },
-      },
-    ],
+    source: "assistant",
+    snippet: "Fixed café login redirect",
   };
 }
 it("finds unloaded titles, folds accents/compatibility characters and requires every token", () => {
@@ -109,20 +76,36 @@ it("ranks exact titles, title prefixes, other title matches, then cached message
   assert.equal(matches[3]?.excerpt?.source, "assistant");
   assert.ok(matches[3]?.excerpt?.snippet.includes("café login"));
 });
-it("searches cached prompts but excludes archived and orphaned snapshots", () => {
-  const loaded = snapshot("live");
+it("keeps unopened native rows but drops known deleted, archived and revised rows", () => {
+  const content = snapshot("live");
   assert.equal(
-    searchThreads([row("live", "Title")], [loaded], "inspect behavior")[0]
-      ?.excerpt?.source,
-    "user",
+    searchThreads([], [content], "cafe login")[0]?.thread.id,
+    "live",
   );
   assert.deepEqual(
-    searchThreads([row("live", "Title", 1, 5)], [loaded], "login"),
+    searchThreads([], [content], "login", new Set(["workspace"])),
     [],
   );
-  assert.deepEqual(searchThreads([], [loaded], "login"), []);
-  loaded.placement = { kind: "archived" };
-  assert.deepEqual(snapshotMessages(loaded), []);
+  assert.deepEqual(
+    searchThreads([row("live", "Title", 1, 5)], [content], "login"),
+    [],
+  );
+  const current = row("live", "Title");
+  current.thread.revision = 2;
+  assert.deepEqual(searchThreads([current], [content], "login"), []);
+});
+it("highlights every folded query word in original Unicode text", () => {
+  for (const [text, expected] of [
+    ["Ｃａｆé Login", "cafe login"],
+    ["ΟΣ", "ος"],
+    ["a\u0903b\u20dd", "ab"],
+  ])
+    assert.equal(normalizeSearch(text ?? ""), expected);
+  const parts = highlightSearchText("Fixed café and ＬＯＧＩＮ", "login cafe");
+  assert.deepEqual(
+    parts.filter((part) => part.highlighted).map((part) => part.text),
+    ["café", "ＬＯＧＩＮ"],
+  );
 });
 it("uses recency within equal ranks and returns all live titles for empty query", () => {
   assert.deepEqual(
@@ -137,4 +120,42 @@ it("uses recency within equal ranks and returns all live titles for empty query"
     ).map((match) => match.thread.id),
     ["new", "old"],
   );
+});
+
+it("highlights the original match after compatibility and repeated whitespace", () => {
+  for (const text of [
+    "¨".repeat(300) + "needle",
+    "  needle",
+    "a  needle",
+    "a\u00a0\u3000needle",
+  ]) {
+    assert.equal(
+      highlightSearchText(text, "needle")
+        .filter((part) => part.highlighted)
+        .map((part) => part.text)
+        .join(""),
+      "needle",
+    );
+  }
+});
+it("preserves contextual lowercase and original Unicode spans", () => {
+  const cases: [string, string, string][] = [
+    ["¨¨ ΟΣ  needle", "ος needle", "ΟΣneedle"],
+    [
+      "\ufeff  Ｃａｆe\u0301\u0903\u20dd \u3000needle",
+      "cafe needle",
+      "Ｃａｆe\u0301\u0903\u20ddneedle",
+    ],
+    ["👨‍👩‍👧‍👦  needle", "👨‍👩‍👧‍👦 needle", "👨‍👩‍👧‍👦needle"],
+    ["\u0085needle", "\u0085needle", "\u0085needle"],
+  ];
+  for (const [text, query, expected] of cases) {
+    assert.equal(
+      highlightSearchText(text, query)
+        .filter((part) => part.highlighted)
+        .map((part) => part.text)
+        .join(""),
+      expected,
+    );
+  }
 });

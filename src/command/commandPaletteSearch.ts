@@ -1,5 +1,5 @@
 // Adapted from pingdotgg/t3code v0.0.45 components/CommandPalette.logic.ts (MIT).
-import type { Thread, ThreadSummary } from "../ipc";
+import type { ThreadMessageMatch, ThreadSummary } from "../ipc";
 import {
   actionIds,
   actionLabel,
@@ -46,70 +46,107 @@ export type MessageMatch = {
   snippet: string;
   query: string;
 };
-type SearchMessage = { source: MessageMatch["source"]; text: string };
-export function snapshotMessages(thread: Thread): SearchMessage[] {
-  if (thread.placement?.kind === "archived") return [];
-  return thread.turns.flatMap((turn) => [
-    { source: "user", text: turn.prompt },
-    ...turn.items.flatMap((item): SearchMessage[] =>
-      item.kind === "user_input" || item.kind === "assistant"
-        ? [
-            {
-              source: item.kind === "user_input" ? "user" : "assistant",
-              text: item.text,
-            },
-          ]
-        : [],
-    ),
-  ]);
-}
+export type ThreadSearchRow = {
+  thread: { id: string; title: string; updatedAtMs: number | null };
+  workspaceId: string;
+  workspaceLabel: string;
+  rank: number;
+  excerpt?: MessageMatch;
+};
 export function searchThreads(
   rows: SearchThread[],
-  snapshots: Thread[],
+  content: ThreadMessageMatch[],
   query: string,
-) {
+  loadedWorkspaceIds: ReadonlySet<string> = new Set(),
+): ThreadSearchRow[] {
   const needle = normalizeSearch(query);
-  const messages = new Map(
-    snapshots.map((thread) => [thread.id, snapshotMessages(thread)]),
+  const current = new Map(rows.map((row) => [row.thread.id, row]));
+  const results: ThreadSearchRow[] = rows.flatMap((row) => {
+    if (
+      row.thread.archivedAtMs !== null ||
+      !matchesSearch(row.thread.title, needle)
+    )
+      return [];
+    const title = normalizeSearch(row.thread.title);
+    return [
+      { ...row, rank: title === needle ? 0 : title.startsWith(needle) ? 1 : 2 },
+    ];
+  });
+  const titles = new Set(results.map((row) => row.thread.id));
+  for (const match of content) {
+    const row = current.get(match.threadId);
+    if (
+      titles.has(match.threadId) ||
+      (row &&
+        (row.thread.archivedAtMs !== null ||
+          row.thread.revision > match.revision)) ||
+      (!row && loadedWorkspaceIds.has(match.workspaceId))
+    )
+      continue;
+    results.push({
+      thread: row?.thread ?? {
+        id: match.threadId,
+        title: match.title,
+        updatedAtMs: match.updatedAtMs,
+      },
+      workspaceId: match.workspaceId,
+      workspaceLabel: row?.workspaceLabel ?? match.workspaceLabel,
+      rank: 3,
+      excerpt: { source: match.source, snippet: match.snippet, query },
+    });
+  }
+  return results.sort(
+    (a, b) =>
+      a.rank - b.rank ||
+      (b.thread.updatedAtMs ?? 0) - (a.thread.updatedAtMs ?? 0) ||
+      a.thread.id.localeCompare(b.thread.id),
   );
-  return rows
-    .flatMap((row) => {
-      if (row.thread.archivedAtMs !== null) return [];
-      const title = normalizeSearch(row.thread.title);
-      const titleMatch = matchesSearch(title, needle);
-      const message = titleMatch
-        ? undefined
-        : messages
-            .get(row.thread.id)
-            ?.find((message) => matchesSearch(message.text, needle));
-      if (!titleMatch && message === undefined) return [];
-      const rank =
-        title === needle
-          ? 0
-          : title.startsWith(needle)
-            ? 1
-            : titleMatch
-              ? 2
-              : 3;
-      let excerpt: MessageMatch | undefined;
-      if (message) {
-        const text = message.text.replace(/\s+/g, " ");
-        const position = normalizeSearch(text).indexOf(
-          needle.split(" ")[0] ?? "",
-        );
-        const start = Math.max(0, position - 45);
-        excerpt = {
-          source: message.source,
-          query: query.trim(),
-          snippet: `${start ? "…" : ""}${text.slice(start, start + 180)}${text.length > start + 180 ? "…" : ""}`,
-        };
+}
+export function highlightSearchText(text: string, query: string) {
+  const characters = Array.from(text);
+  const decomposed = characters.map((char) =>
+    char.normalize("NFKD").replace(/\p{M}/gu, ""),
+  );
+  const originalOffsets = decomposed.flatMap((part, index) =>
+    Array.from({ length: part.toLowerCase().length }, () => index),
+  );
+  const lower = decomposed.join("").toLowerCase();
+  let folded = "";
+  const offsets: number[] = [];
+  let whitespaceOffset: number | undefined;
+  for (const [index, offset] of originalOffsets.entries()) {
+    const char = lower.charAt(index);
+    if (/\s/u.test(char)) {
+      if (folded && whitespaceOffset === undefined) whitespaceOffset = offset;
+    } else {
+      if (whitespaceOffset !== undefined) {
+        folded += " ";
+        offsets.push(whitespaceOffset);
+        whitespaceOffset = undefined;
       }
-      return [{ ...row, rank, excerpt }];
-    })
-    .sort(
-      (a, b) =>
-        a.rank - b.rank ||
-        (b.thread.updatedAtMs ?? 0) - (a.thread.updatedAtMs ?? 0) ||
-        a.thread.id.localeCompare(b.thread.id),
-    );
+      folded += char;
+      offsets.push(offset);
+    }
+  }
+  const highlighted = new Set<number>();
+  for (const word of normalizeSearch(query).split(" ").filter(Boolean)) {
+    let start = folded.indexOf(word);
+    while (start !== -1) {
+      const first = offsets[start],
+        last = offsets[start + word.length - 1];
+      if (first !== undefined && last !== undefined)
+        for (let i = first; i <= last; i++) highlighted.add(i);
+      start = folded.indexOf(word, start + word.length);
+    }
+  }
+  const parts: { text: string; highlighted: boolean; start: number }[] = [];
+  for (const [index, char] of characters.entries()) {
+    const previous = parts.at(-1);
+    const active =
+      highlighted.has(index) ||
+      (/^\p{M}$/u.test(char) && previous?.highlighted === true);
+    if (previous && previous.highlighted === active) previous.text += char;
+    else parts.push({ text: char, highlighted: active, start: index });
+  }
+  return parts;
 }
