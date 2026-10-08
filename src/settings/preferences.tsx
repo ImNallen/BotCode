@@ -63,6 +63,7 @@ const schema = z.object({
   // Null picks the first installed editor.
   preferredEditor: editorId.nullable(),
   contextWindowMeter: z.boolean(),
+  sidebarWorkingShelfEnabled: z.boolean(),
   favoriteModels: z.array(favoriteModelSchema),
   ...projectSchema.shape,
   projectOverrides: z.record(z.uuid(), projectSchema.partial()),
@@ -84,6 +85,7 @@ const defaults: Preferences = {
   followUpBehavior: "queue",
   preferredEditor: null,
   contextWindowMeter: true,
+  sidebarWorkingShelfEnabled: false,
   favoriteModels: [],
   ...builtInProject,
   projectOverrides: {},
@@ -142,6 +144,7 @@ function readPreferences(): PreferenceState {
         followUpBehavior: z.unknown().optional(),
         preferredEditor: z.unknown().optional(),
         contextWindowMeter: z.unknown().optional(),
+        sidebarWorkingShelfEnabled: z.unknown().optional(),
         notificationMode: z.unknown().optional(),
         inAppNotificationsEnabled: z.unknown().optional(),
         favoriteModels: z.unknown().optional(),
@@ -233,6 +236,9 @@ function readPreferences(): PreferenceState {
           ? defaultPermissionMode.data
           : defaults.defaultPermissionMode,
         favoriteModels,
+        sidebarWorkingShelfEnabled: schema.shape.sidebarWorkingShelfEnabled
+          .catch(false)
+          .parse(object.sidebarWorkingShelfEnabled),
         followUpBehavior: schema.shape.followUpBehavior
           .catch("queue")
           .parse(object.followUpBehavior),

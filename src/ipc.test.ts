@@ -504,3 +504,87 @@ it("stages image bytes as a raw body and submits the staged attachments", async 
     else Reflect.deleteProperty(globalThis, "window");
   }
 });
+
+it("reads legacy turns without tasks and validates new checklist snapshots at IPC", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { crypto: globalThis.crypto },
+  });
+  const threadId = "058478ab-2c41-40e0-83b7-dd2c71b3c368";
+  const turnId = "67ce24cf-70e2-44b3-99f4-53bd8d155d19";
+  const snapshot = {
+    id: threadId,
+    workspaceId: turnId,
+    title: "Tasks",
+    nativeThreadId: "native-thread",
+    revision: 1,
+    session: { kind: "running" },
+    settings: {
+      model: null,
+      effort: null,
+      permissionMode: "full-access",
+      interactionMode: "plan",
+    },
+    checkout: { kind: "local" },
+    approvals: [],
+    diagnostic: null,
+    turns: [
+      {
+        id: turnId,
+        prompt: "Work",
+        nativeTurnId: "native-turn",
+        delivery: { kind: "accepted" },
+        execution: { kind: "running" },
+        items: [],
+        settings: null,
+        startedAtMs: 1,
+        completedAtMs: null,
+      },
+    ],
+  };
+  try {
+    mockIPC(() => snapshot);
+    assert.equal((await ipc.thread(threadId)).turns[0]?.tasks, null);
+    mockIPC(() => ({
+      ...snapshot,
+      turns: [
+        {
+          ...snapshot.turns[0],
+          tasks: {
+            explanation: null,
+            steps: [
+              { step: "Read", status: "completed", durationMs: 10 },
+              { step: "Implement", status: "inProgress" },
+            ],
+            timings: [{ internal: true }],
+          },
+        },
+      ],
+    }));
+    assert.deepEqual((await ipc.thread(threadId)).turns[0]?.tasks, {
+      explanation: null,
+      steps: [
+        { step: "Read", status: "completed", durationMs: 10 },
+        { step: "Implement", status: "inProgress" },
+      ],
+    });
+    mockIPC(() => ({
+      ...snapshot,
+      turns: [
+        {
+          ...snapshot.turns[0],
+          tasks: {
+            explanation: null,
+            steps: [{ step: "Invalid", status: "working" }],
+          },
+        },
+      ],
+    }));
+    await assert.rejects(ipc.thread(threadId), /.*/);
+  } finally {
+    clearMocks();
+    if (previous) Object.defineProperty(globalThis, "window", previous);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});

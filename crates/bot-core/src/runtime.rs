@@ -1605,6 +1605,7 @@ impl Owner {
             worktree_setup: setup,
             created_at_ms: Some(now_ms()),
             latest_user_activity_at_ms: None,
+            unsettled_at_ms: None,
             id: ThreadId::default(),
             workspace_id,
             title: "New conversation".into(),
@@ -2716,6 +2717,7 @@ impl Owner {
             completed_at_ms: None,
             attachments,
             checkpoint: TurnCheckpoint::Pending,
+            tasks: None,
         };
         let receipt = Receipt {
             turn_id: turn.id.clone(),
@@ -3782,6 +3784,19 @@ impl Owner {
                 && t.context.as_ref() != Some(&context)
             {
                 t.context = Some(context);
+                self.dirty.insert(id);
+            }
+            return Ok(());
+        }
+        if method == "turn/plan/updated" {
+            let Some(update) = crate::task_progress::TaskUpdate::parse(p.clone()) else {
+                return Ok(());
+            };
+            if let Some(turn) = t.turns.last_mut()
+                && turn.execution.active()
+                && turn.native_turn_id.as_deref() == Some(update.turn_id.as_str())
+                && turn.update_tasks(update, now_ms())
+            {
                 self.dirty.insert(id);
             }
             return Ok(());

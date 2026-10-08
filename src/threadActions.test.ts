@@ -62,6 +62,8 @@ it("excludes archived threads from search, open rows, shelves, counts and forwar
       assert.deepEqual(groups, {
         pinned: [],
         active: [],
+        working: [],
+        workingTotal: 0,
         snoozed: [],
         settled: [],
         snoozedTotal: 0,

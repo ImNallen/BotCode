@@ -425,6 +425,17 @@ export const worktreeSetup = z.object({
 });
 export type ProjectScript = z.infer<typeof projectScript>;
 export type WorktreeSetup = z.infer<typeof worktreeSetup>;
+export const taskProgressSchema = z.object({
+  explanation: z.string().nullable(),
+  steps: z.array(
+    z.object({
+      step: z.string(),
+      status: z.enum(["pending", "inProgress", "completed"]),
+      durationMs: z.number().int().positive().optional(),
+    }),
+  ),
+});
+export type TaskProgress = z.infer<typeof taskProgressSchema>;
 const thread = z.object({
   worktreeSetup: worktreeSetup.nullable().default(null),
   placement: z
@@ -447,6 +458,7 @@ const thread = z.object({
       nativeTurnId: z.string().nullable(),
       delivery,
       execution,
+      tasks: taskProgressSchema.nullable().default(null),
       items: z.array(item),
       settings: settings.nullable(),
       startedAtMs: z.number().nullable(),
@@ -479,9 +491,15 @@ const thread = z.object({
   context: contextUsage.nullable().default(null),
 });
 const threadSummary = z.object({
+  unsettledAtMs: z.number().nullable().optional(),
   revision: z.number().int().nonnegative(),
   latestTurn: z
-    .object({ id, execution, completedAtMs: z.number().nullable() })
+    .object({
+      id,
+      execution,
+      completedAtMs: z.number().nullable(),
+      startedAtMs: z.number().nullable().optional(),
+    })
     .nullable(),
   pendingApprovalIds: z.array(id),
   pendingUserQuestionIds: z.array(id).default([]),

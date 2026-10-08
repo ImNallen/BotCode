@@ -1,4 +1,5 @@
 // Ported from T3 Code v0.0.45 components/chat/ChatComposer.tsx, ComposerControl.tsx, ComposerPrimaryActions.tsx, BranchToolbar.tsx, BranchToolbarEnvModeSelector.tsx, TraitsPicker.tsx and ui/badge.tsx (MIT).
+import type { Thread } from "../ipc";
 import {
   useEffect,
   useId,
@@ -24,6 +25,12 @@ import { resolveCommand, useShortcutLabel } from "../lib/shortcuts";
 import { isTerminalFocused } from "../terminal/terminalKeys";
 import { ComposerStashBadge } from "./ComposerStashBadge";
 import { ComposerStashMenu } from "./ComposerStashMenu";
+import { composerTasks } from "./taskProgress";
+import {
+  ComposerTasksBadge,
+  ComposerTasksContent,
+  ComposerTasksDrawer,
+} from "./ComposerTasksBadge";
 import { ComposerBanner } from "./ComposerBanner";
 import type { PromptStashEntry } from "./promptStash";
 import {
@@ -124,6 +131,7 @@ export function Composer({
   placeholder,
   approval,
   notice,
+  taskTurn,
   contextUsage,
   disabled,
   context,
@@ -180,6 +188,7 @@ export function Composer({
   placeholder: string;
   approval: ReactNode;
   notice: ReactNode;
+  taskTurn: Thread["turns"][number] | undefined;
   contextUsage: ContextUsage | null;
   disabled: boolean;
   context?: {
@@ -660,6 +669,12 @@ export function Composer({
       max: "Max",
       ultra: "Ultra",
     })[value] ?? value;
+  const tasks = approval ? null : composerTasks(taskTurn);
+  const [tasksExpanded, setTasksExpanded] = useState(false);
+  useEffect(() => {
+    setTasksExpanded(false);
+  }, [tasks === null, taskTurn?.id]);
+  const toggleTasks = () => setTasksExpanded((open) => !open);
   const selectedMode = permissionModes.find(
     (mode) => mode.value === settings.permissionMode,
   );
@@ -690,6 +705,35 @@ export function Composer({
                       onClose={onCloseStash}
                     />
                   </ComposerBanner.Attachment>
+                ) : null}
+                {tasks ? (
+                  tasksExpanded ? (
+                    <ComposerTasksDrawer
+                      progress={tasks.progress}
+                      steps={tasks.steps}
+                      onCollapse={toggleTasks}
+                    />
+                  ) : stashOpen || notice ? (
+                    <ComposerBanner.Attachment>
+                      <ComposerBanner.Root>
+                        <ComposerTasksContent
+                          expanded={false}
+                          onToggle={toggleTasks}
+                          progress={tasks.progress}
+                          steps={tasks.steps}
+                        />
+                      </ComposerBanner.Root>
+                    </ComposerBanner.Attachment>
+                  ) : (
+                    <ComposerBanner.Attachment>
+                      <ComposerTasksBadge
+                        expanded={false}
+                        onToggle={toggleTasks}
+                        progress={tasks.progress}
+                        steps={tasks.steps}
+                      />
+                    </ComposerBanner.Attachment>
+                  )
                 ) : null}
               </ComposerBanner.Column>
               <ComposerStashBadge

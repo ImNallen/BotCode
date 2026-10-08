@@ -17,6 +17,8 @@ pub use composer_context::{
     ComposerContextBase, ComposerContextRecord, MessageContext, OrchestrationMessageContext,
     PullRequestContextMetadata, PullRequestContextState,
 };
+mod task_progress;
+pub use task_progress::{TaskProgress, TaskStatus, TaskStep};
 mod domain;
 mod editors;
 pub use editors::{EditorId, OpenTarget, Position, available_editors};

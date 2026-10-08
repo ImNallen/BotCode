@@ -48,6 +48,13 @@ import {
 } from "lucide-react";
 import { ipc, type Arrange, type Workspace, type WorkspaceView } from "./ipc";
 import { cn } from "./lib/cn";
+import { usePreferences } from "./settings/preferences";
+import {
+  compareInboxReturns,
+  formatWorkingDurationLabel,
+  isSidebarThreadWorking,
+  observeInboxReturns,
+} from "./sidebarWorking";
 import { workingSessions } from "./lib/sessions";
 import { formatSidebarTime } from "./lib/time";
 import { basename } from "./panel/panelState";
@@ -78,6 +85,7 @@ type Row = {
 };
 
 const SCOPE_KEY = "z1:sidebar-project-scope";
+const WORKING_EXPANDED_KEY = "z1:sidebar:working-expanded";
 const SNOOZED_EXPANDED_KEY = "z1:sidebar:snoozed-expanded";
 const SETTLED_EXPANDED_KEY = "z1:sidebar:settled-expanded";
 const SETTLED_TAIL_INITIAL_COUNT = 10;
@@ -86,6 +94,8 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 type SidebarSections = {
   pinned: Row[];
   active: Row[];
+  working: Row[];
+  workingTotal: number;
   snoozed: Row[];
   snoozedTotal: number;
   settled: Row[];
@@ -102,6 +112,9 @@ export function partitionSidebarRows({
   snoozedExpanded,
   settledExpanded,
   settledVisibleCount,
+  workingEnabled = false,
+  workingExpanded = false,
+  observedReturns = new Map(),
 }: {
   rows: Row[];
   query: string;
@@ -111,10 +124,14 @@ export function partitionSidebarRows({
   snoozedExpanded: boolean;
   settledExpanded: boolean;
   settledVisibleCount: number;
+  workingEnabled?: boolean;
+  workingExpanded?: boolean;
+  observedReturns?: ReadonlyMap<string, number>;
 }): SidebarSections {
   const needle = query.trim().toLowerCase();
   const pinned: Row[] = [];
   const active: Row[] = [];
+  const working: Row[] = [];
   const snoozed: Row[] = [];
   const settled: Row[] = [];
   for (const row of rows) {
@@ -128,15 +145,23 @@ export function partitionSidebarRows({
         ? settled
         : pinnedAtMs !== null
           ? pinned
-          : active
+          : workingEnabled && isSidebarThreadWorking(row.thread)
+            ? working
+            : active
     ).push(row);
   }
   pinned.sort(
     (a, b) => (b.thread.pinnedAtMs ?? 0) - (a.thread.pinnedAtMs ?? 0),
   );
+  const byReturn = (a: Row, b: Row) =>
+    compareInboxReturns(a.thread, b.thread, observedReturns) ||
+    a.workspace.id.localeCompare(b.workspace.id);
   active.sort(
-    (a, b) => (b.thread.updatedAtMs ?? 0) - (a.thread.updatedAtMs ?? 0),
+    workingEnabled
+      ? byReturn
+      : (a, b) => (b.thread.updatedAtMs ?? 0) - (a.thread.updatedAtMs ?? 0),
   );
+  working.sort(byReturn);
   snoozed.sort(
     (a, b) => (a.thread.snoozedUntilMs ?? 0) - (b.thread.snoozedUntilMs ?? 0),
   );
@@ -144,11 +169,20 @@ export function partitionSidebarRows({
     (a, b) => (b.thread.settledAtMs ?? 0) - (a.thread.settledAtMs ?? 0),
   );
   const totals = {
+    workingTotal: working.length,
     snoozedTotal: snoozed.length,
     settledTotal: settled.length,
   };
   if (needle)
-    return { pinned, active, snoozed, settled, ...totals, hiddenCount: 0 };
+    return {
+      pinned,
+      active,
+      working,
+      snoozed,
+      settled,
+      ...totals,
+      hiddenCount: 0,
+    };
   // The open thread never hides under Show more or a collapsed shelf.
   const isOpen = (row: Row) => row.thread.id === openThreadId;
   const page = settled.slice(0, settledVisibleCount);
@@ -157,6 +191,7 @@ export function partitionSidebarRows({
   return {
     pinned,
     active,
+    working: workingExpanded ? working : working.filter(isOpen),
     snoozed: snoozedExpanded ? snoozed : snoozed.filter(isOpen),
     settled: settledExpanded ? page : page.filter(isOpen),
     ...totals,
@@ -210,6 +245,7 @@ export function Sidebar({
   onOpenProjectSettings: (workspaceId: string) => void;
   onArrange: (threadId: string, action: Arrange) => Promise<boolean>;
 }) {
+  const { preferences } = usePreferences();
   const client = useQueryClient();
   const router = useRouter();
   const dropFiles = (row: Row, files: File[]) => {
@@ -263,6 +299,9 @@ export function Sidebar({
   const scope = workspaces.find((workspace) => workspace.id === scopeId);
   const searchField = useRef<HTMLLabelElement>(null);
   const scopeTrigger = useRef<HTMLElement | null>(null);
+  const [workingExpanded, setWorkingExpanded] = useState(
+    () => storage.getItem(WORKING_EXPANDED_KEY) === "true",
+  );
   const [snoozedExpanded, setSnoozedExpanded] = useState(
     () => storage.getItem(SNOOZED_EXPANDED_KEY) === "true",
   );
@@ -299,9 +338,16 @@ export function Sidebar({
   // re-renders at the next wake and once a minute for the wake labels.
   const [tick, setTick] = useState(0);
   const now = Date.now();
+  const observedReturns = observeInboxReturns(
+    rows.map((row) => row.thread),
+    preferences.sidebarWorkingShelfEnabled,
+    now,
+  );
   const {
     pinned,
     active,
+    working,
+    workingTotal,
     snoozed,
     snoozedTotal,
     settled,
@@ -316,6 +362,9 @@ export function Sidebar({
     snoozedExpanded,
     settledExpanded,
     settledVisibleCount,
+    workingEnabled: preferences.sidebarWorkingShelfEnabled,
+    workingExpanded,
+    observedReturns,
   });
   const nextWakeMs = Math.min(
     ...rows.flatMap(({ thread }) =>
@@ -342,6 +391,12 @@ export function Sidebar({
     const id = window.setInterval(() => setTick((tick) => tick + 1), 60_000);
     return () => window.clearInterval(id);
   }, [wakeLabelsShown]);
+  const workingShelfExpanded = workingExpanded || searching;
+  const toggleWorking = () => {
+    const next = !workingExpanded;
+    setWorkingExpanded(next);
+    void storage.setItem(WORKING_EXPANDED_KEY, String(next));
+  };
   const snoozedShelfExpanded = snoozedExpanded || searching;
   const settledShelfExpanded = settledExpanded || searching;
   const toggleSnoozed = () => {
@@ -354,7 +409,8 @@ export function Sidebar({
     setSettledExpanded(next);
     void storage.setItem(SETTLED_EXPANDED_KEY, String(next));
   };
-  const cards = [...pinned, ...active];
+  const inboxCards = [...pinned, ...active];
+  const cards = [...inboxCards, ...working];
   const [menu, setMenu] = useState<{
     threadId: string;
     point: { x: number; y: number };
@@ -604,9 +660,49 @@ export function Sidebar({
       <div className="h-auto min-h-0 flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div className="flex w-full min-w-0 flex-col [overflow-anchor:none] min-h-full">
           <div className="relative flex w-full min-w-0 flex-col p-[var(--sidebar-content-inset)] pt-0 flex-1">
-            {cards.length + snoozedTotal + settledTotal > 0 ? (
+            {inboxCards.length + workingTotal + snoozedTotal + settledTotal >
+            0 ? (
               <ul className="relative flex flex-col gap-px flex-1">
-                {cards.map((row) => (
+                {inboxCards.map((row) => (
+                  <ThreadRow
+                    key={row.thread.id}
+                    row={row}
+                    active={row.thread.id === threadId}
+                    onDropFiles={(files) => dropFiles(row, files)}
+                    onSelect={() =>
+                      onSelectThread(row.workspace.id, row.thread.id)
+                    }
+                    onPullRequests={() =>
+                      onSelectThread(
+                        row.workspace.id,
+                        row.thread.id,
+                        pullRequestSurface(row.thread.pullRequests.links),
+                      )
+                    }
+                    onContextMenu={openMenu(row)}
+                    onSettle={() => void park(row, { kind: "settle" })}
+                    onSnooze={(untilMs) =>
+                      void park(row, { kind: "snooze", untilMs })
+                    }
+                    onUnpin={() =>
+                      void onArrange(row.thread.id, { kind: "unpin" })
+                    }
+                  />
+                ))}
+                {workingTotal > 0 ? (
+                  <SectionHeader
+                    className="mt-auto"
+                    label={
+                      workingShelfExpanded
+                        ? "Working"
+                        : `Working (${workingTotal})`
+                    }
+                    expanded={workingShelfExpanded}
+                    disabled={searching}
+                    onToggle={toggleWorking}
+                  />
+                ) : null}
+                {working.map((row) => (
                   <ThreadRow
                     key={row.thread.id}
                     row={row}
@@ -635,7 +731,7 @@ export function Sidebar({
                 {snoozedTotal > 0 ? (
                   <SectionHeader
                     snoozed
-                    className="mt-auto"
+                    className={cn(workingTotal === 0 && "mt-auto")}
                     label={
                       snoozedShelfExpanded
                         ? "Snoozed"
@@ -677,7 +773,9 @@ export function Sidebar({
                   />
                 ))}
                 <SectionHeader
-                  className={cn(snoozedTotal === 0 && "mt-auto")}
+                  className={cn(
+                    workingTotal === 0 && snoozedTotal === 0 && "mt-auto",
+                  )}
                   label={
                     settledShelfExpanded
                       ? "Settled"
@@ -1043,6 +1141,20 @@ function SnoozeMenuButton({
   );
 }
 
+function WorkingDuration({ startedAt }: { startedAt: number | null }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (startedAt === null) return;
+    const id = window.setInterval(() => setTick((tick) => tick + 1), 1_000);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+  return startedAt === null ? null : (
+    <span className="tabular-nums">
+      {formatWorkingDurationLabel(Date.now() - startedAt)}
+    </span>
+  );
+}
+
 function ThreadRow({
   row,
   onDropFiles,
@@ -1064,7 +1176,7 @@ function ThreadRow({
   onSnooze: (untilMs: number) => void;
   onUnpin: () => void;
 }) {
-  const isWorking = workingSessions.has(row.thread.session.kind);
+  const isWorking = isSidebarThreadWorking(row.thread);
   const recede = !active;
   const { fileDrop, isDragOver } = useThreadFileDrop(onDropFiles);
   // Settling and snoozing are refused while an approval waits, so the buttons stay hidden.
@@ -1142,6 +1254,14 @@ function ThreadRow({
                   <span className="inline-flex items-center gap-1 font-medium text-info">
                     <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
                     <span role="status">Working</span>
+                    <span aria-hidden>
+                      <WorkingDuration
+                        startedAt={
+                          row.thread.latestTurn?.startedAtMs ??
+                          row.thread.updatedAtMs
+                        }
+                      />
+                    </span>
                   </span>
                 ) : row.thread.updatedAtMs !== null ? (
                   formatSidebarTime(row.thread.updatedAtMs)

@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PreferencesProvider, usePreferences } from "./preferences";
-import { categories } from "./settingsCatalog";
+import { categories, visibleRows } from "./settingsCatalog";
 
 function storedMeter(stored: unknown) {
   let observed: boolean | undefined;
@@ -188,6 +188,92 @@ it("starts the preferred editor automatic, persists a choice and restores automa
           (row) =>
             row.id === "preferred-editor" && row.title === "Preferred editor",
         ),
+    );
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+it("defaults Working off, saves it on this device, and resets it without a project override", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  let stored: unknown = {};
+  let observed: boolean | undefined;
+  let update: ReturnType<typeof usePreferences>["update"] | undefined;
+  let reset: (() => void) | undefined;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: () => JSON.stringify(stored),
+      setItem: (_key: string, text: string) => {
+        stored = JSON.parse(text);
+      },
+    },
+  });
+  function Inspect() {
+    const state = usePreferences();
+    observed = state.preferences.sidebarWorkingShelfEnabled;
+    update = state.update;
+    reset = state.reset;
+    return null;
+  }
+  const render = () =>
+    renderToStaticMarkup(
+      createElement(PreferencesProvider, { children: createElement(Inspect) }),
+    );
+  try {
+    render();
+    assert.equal(observed, false);
+    stored = { sidebarWorkingShelfEnabled: "yes" };
+    render();
+    assert.equal(observed, false);
+    assert.ok(update);
+    update({ sidebarWorkingShelfEnabled: true });
+    render();
+    assert.equal(observed, true);
+    update({ sidebarWorkingShelfEnabled: false });
+    render();
+    assert.equal(observed, false);
+    update({ sidebarWorkingShelfEnabled: true });
+    assert.ok(reset);
+    reset();
+    render();
+    assert.equal(observed, false);
+    const row = categories.general.groups
+      .flatMap((group) => group.rows)
+      .find((row) => row.id === "working-shelf");
+    assert.equal(row?.title, "Working section (beta)");
+    assert.equal(row?.setting, undefined);
+    const organization = categories.general.groups.find(
+      (group) => group.id === "organization",
+    );
+    assert.ok(organization);
+    for (const scope of [
+      { kind: "all" },
+      {
+        kind: "project",
+        workspace: {
+          id: "67ce24cf-70e2-44b3-99f4-53bd8d155d19",
+          root: "/project",
+          label: "Project",
+          kind: "repository",
+        },
+      },
+    ] satisfies Array<import("./settingsScope").SettingsScope>) {
+      assert.ok(
+        visibleRows(organization, scope)?.some(
+          (row) => row.id === "working-shelf",
+        ),
+      );
+    }
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(stored, "projectOverrides"),
+      true,
+    );
+    assert.ok(
+      /hide fold running monitoring threads inbox sidebar shelf/.test(
+        row?.keywords ?? "",
+      ),
     );
   } finally {
     if (previous) Object.defineProperty(globalThis, "localStorage", previous);
