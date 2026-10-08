@@ -270,16 +270,16 @@ pub async fn thread_snapshot(app: State<'_, App>, thread_id: ThreadId) -> Result
 pub async fn open_thread(app: State<'_, App>, thread_id: ThreadId) -> Result<ThreadSnapshot> {
     app.open_thread(thread_id).await
 }
-/// The image arrives as the raw request body, so 10 MiB is not JSON-encoded as a number array.
+// Ported from T3 Code v0.0.45 apps/server/src/attachmentStore.ts.
 #[tauri::command]
 pub async fn stage_attachment(
     app: State<'_, App>,
     request: tauri::ipc::Request<'_>,
-) -> Result<ImageAttachment> {
+) -> Result<Attachment> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err(AppError::new(
             "invalid_request",
-            "Expected the image bytes.",
+            "Expected the attachment bytes.",
         ));
     };
     let name = request
@@ -293,7 +293,49 @@ pub async fn stage_attachment(
         })
         .unwrap_or_default()
         .into_owned();
-    app.stage_attachment(name, bytes.clone()).await
+    let header = |key| {
+        request
+            .headers()
+            .get(key)
+            .and_then(|value| value.to_str().ok())
+    };
+    let kind = match header("x-attachment-kind") {
+        None | Some("image") => AttachmentKind::Image,
+        Some("file") => AttachmentKind::File {
+            mime_type: header("x-attachment-mime")
+                .unwrap_or("application/octet-stream")
+                .into(),
+            source: match header("x-attachment-source") {
+                None => None,
+                Some("pasted-text") => Some(AttachmentSource::PastedText),
+                _ => {
+                    return Err(AppError::new(
+                        "invalid_attachment",
+                        "Invalid attachment source.",
+                    ));
+                }
+            },
+        },
+        _ => {
+            return Err(AppError::new(
+                "invalid_attachment",
+                "Invalid attachment kind.",
+            ));
+        }
+    };
+    if matches!(kind, AttachmentKind::Image) && bytes.len() > 10 * 1024 * 1024 {
+        return Err(AppError::new(
+            "image_too_large",
+            format!("'{name}' is too large to attach, even after compression."),
+        ));
+    }
+    if bytes.len() > 50 * 1024 * 1024 {
+        return Err(bot_core::AppError::new(
+            "file_too_large",
+            format!("'{name}' exceeds the 50 MB attachment limit."),
+        ));
+    }
+    app.stage_attachment(name, bytes.clone(), kind).await
 }
 #[tauri::command]
 pub async fn submit(
@@ -301,7 +343,7 @@ pub async fn submit(
     thread_id: ThreadId,
     request_id: String,
     text: String,
-    attachments: Vec<ImageAttachment>,
+    attachments: Vec<Attachment>,
     context: Option<MessageContext>,
     expected_turn_id: Option<TurnId>,
 ) -> Result<Receipt> {
@@ -374,6 +416,17 @@ pub async fn ui_state(app: State<'_, App>) -> Result<std::collections::BTreeMap<
 #[tauri::command]
 pub async fn set_ui_state(app: State<'_, App>, key: String, value: Option<String>) -> Result<()> {
     app.set_ui_state(key, value).await
+}
+#[tauri::command]
+pub fn clipboard_text() -> Result<Option<String>> {
+    let clipboard_error =
+        |error: arboard::Error| AppError::new("clipboard_unavailable", error.to_string());
+    let mut clipboard = arboard::Clipboard::new().map_err(clipboard_error)?;
+    match clipboard.get_text() {
+        Ok(text) => Ok(Some(text)),
+        Err(arboard::Error::ContentNotAvailable) => Ok(None),
+        Err(error) => Err(clipboard_error(error)),
+    }
 }
 #[tauri::command]
 pub async fn settings(app: State<'_, App>) -> Result<Option<String>> {

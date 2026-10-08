@@ -1,4 +1,5 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/ChatView.tsx, chat/ChatHeader.tsx, chat/PanelLayoutControls.tsx and DraftHeroHeadline.tsx at 6b286ae8a (MIT).
+import { Toast, ToastViewport, type ToastType } from "../ui/toast";
 import { Dialog } from "../ui/dialog";
 import { ProjectFilePicker } from "../search/ProjectFilePicker";
 import { ProjectContentSearchDialog } from "../search/ProjectContentSearchDialog";
@@ -31,7 +32,8 @@ import {
 import type {
   ApprovalDecision,
   CheckoutRef,
-  ImageAttachment,
+  Attachment,
+  AttachmentSource,
   Thread,
   Workspace,
   SessionSettings,
@@ -89,9 +91,21 @@ import {
   useProviderCapabilities,
   type DraftSessionSettings,
 } from "./permissionModes";
-import { classifyComposerAttachmentFile } from "./composerAttachmentFiles";
+import { sidebarPendingFileDrops } from "./sidebarPendingFileDrops";
 import {
-  type ComposerImage,
+  promptStash,
+  composerHasContent,
+  type PromptStashEntry,
+} from "./promptStash";
+import { threadPromptHistoryMessages } from "./composerPromptHistory";
+import {
+  reserveAttachments,
+  prepareComposerFile,
+  totalImageBytes,
+  MAX_TOTAL_IMAGE_BYTES,
+  IMAGE_TOTAL_ERROR,
+} from "./composerAttachmentIngestion";
+import {
   finishComposerStaging,
   readyAttachments,
   type SendAttempt,
@@ -102,9 +116,8 @@ import {
   mergeRecoveredInput,
   recoveryFit,
   restoreFollowUps,
-  MAX_IMAGES,
   type ComposerInput,
-} from "./composerImages";
+} from "./composerAttachments";
 import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import { isUsageLimitsCommand, usageNoticeKey } from "../usage/limits";
 import { Timeline } from "./Timeline";
@@ -131,6 +144,7 @@ import {
 } from "./composerDrafts";
 import {
   appendContext,
+  contextReferences,
   referencedContext,
   type ComposerContextRecord,
 } from "./composerContext";
@@ -149,8 +163,6 @@ import { resolveThreadEnvMode } from "./projectScripts";
 import { ProjectScriptsControl } from "./ProjectScriptsControl";
 import type { ProjectScript } from "../ipc";
 import { createPanelTerminal } from "../terminal/terminalStore";
-
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 type DraftCheckout = {
   mode: CheckoutMode;
@@ -210,7 +222,14 @@ export function ChatView({
     });
   const composerRef = useRef(composer);
   composerRef.current = composer;
-  const { text: draft, images, records } = composer;
+  const updateComposer = (
+    update: (current: ComposerInput) => ComposerInput,
+  ) => {
+    const next = update(composerRef.current);
+    composerRef.current = next;
+    setComposer(next);
+  };
+  const { text: draft, attachments: slots, records } = composer;
   useSyncExternalStore(
     followUps.subscribe,
     followUps.snapshot,
@@ -221,18 +240,91 @@ export function ChatView({
     update: string | ((text: string) => string),
     changedRecords?: ComposerContextRecord[],
   ) =>
-    setComposer((current) => ({
+    updateComposer((current) => ({
       ...current,
       text: typeof update === "function" ? update(current.text) : update,
       records: changedRecords ?? current.records,
       generation: current.generation + 1,
     }));
-  const setImages = (update: (images: ComposerImage[]) => ComposerImage[]) =>
-    setComposer((current) => ({
-      ...current,
-      images: update(current.images),
-      generation: current.generation + 1,
-    }));
+  const [dropRequest, setDropRequest] = useState<{
+    id: string;
+    scopeKey: string;
+    files: File[];
+  }>();
+  const dropVersion = useSyncExternalStore(
+    sidebarPendingFileDrops.subscribe,
+    sidebarPendingFileDrops.snapshot,
+    sidebarPendingFileDrops.snapshot,
+  );
+  const stashEntries = useSyncExternalStore(
+    promptStash.subscribe,
+    promptStash.snapshot,
+    promptStash.snapshot,
+  );
+  const [stashOpen, setStashOpen] = useState(false);
+  const [stashPulse, setStashPulse] = useState(0);
+  const stashBusy = useRef(false);
+  const restoreStash = async (entry: PromptStashEntry) => {
+    if (stashBusy.current) return;
+    const started = composerRef.current;
+    stashBusy.current = true;
+    try {
+      if (
+        await promptStash.restore(
+          entry.id,
+          started,
+          () => composerRef.current,
+          (input) => updateComposer(() => input),
+        )
+      ) {
+        setStashOpen(false);
+        setComposerFocusRequest((current) => current + 1);
+      }
+    } catch (cause) {
+      if (acceptsCompletion(composerRef.current, started))
+        setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      stashBusy.current = false;
+    }
+  };
+  const stashPrompt = async () => {
+    if (stashBusy.current) return;
+    const started = composerRef.current;
+    if (!composerHasContent(started)) {
+      const entries = promptStash.snapshot();
+      if (entries.length === 1 && entries[0]) await restoreStash(entries[0]);
+      else setStashOpen((current) => !current);
+      return;
+    }
+    stashBusy.current = true;
+    try {
+      const result = await promptStash.stash(started);
+      if (!result) return;
+      updateComposer((current) => clearAcceptedInput(current, started));
+      if (acceptsCompletion(composerRef.current, started)) {
+        setStashOpen(false);
+        setStashPulse((current) => current + 1);
+        setComposerFocusRequest((current) => current + 1);
+        if (result.evicted)
+          setAttachmentNotice({
+            title: "Oldest stashed prompt discarded",
+            description:
+              "The stash holds 20 prompts; the oldest was removed to make room.",
+            type: "warning",
+          });
+      }
+    } catch (cause) {
+      if (acceptsCompletion(composerRef.current, started))
+        setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      stashBusy.current = false;
+    }
+  };
+  const [attachmentNotice, setAttachmentNotice] = useState<{
+    title: string;
+    description: string;
+    type: ToastType;
+  }>();
   const lastAttempt = useRef<SendAttempt | null>(null);
   const [usageNotice, setUsageNotice] = useState<{
     key: string;
@@ -321,17 +413,17 @@ export function ChatView({
       : null;
   const recoveryNotice =
     recovery && composer.appliedRevertId !== recovery.requestId
-      ? recoveryFit(images, recovery, records)
+      ? recoveryFit(slots, recovery, records)
       : null;
   useEffect(() => {
-    setComposer((current) => {
+    updateComposer((current) => {
       if (current.threadId !== thread?.id) return current;
       if (recovery) return mergeRecoveredInput(current, recovery);
       return current.appliedRevertId === null
         ? current
         : { ...current, appliedRevertId: null };
     });
-  }, [thread?.id, recovery, images, records]);
+  }, [thread?.id, recovery, slots, records]);
   useEffect(() => {
     if (composer.appliedRevertId)
       setComposerFocusRequest((current) => current + 1);
@@ -452,7 +544,7 @@ export function ChatView({
       newThreadSource,
     }: {
       text: string;
-      attachments: ImageAttachment[];
+      attachments: Attachment[];
       started: ComposerInput;
       settings: SessionSettings;
       newThreadSource?: Thread;
@@ -538,7 +630,7 @@ export function ChatView({
       if (newThreadSource) implementationTarget.current = null;
       if (acceptsCompletion(composerRef.current, started, true))
         setCreatedDraft(undefined);
-      setComposer((current) => clearAcceptedInput(current, started));
+      updateComposer((current) => clearAcceptedInput(current, started));
       setError(undefined);
       if (
         (!threadId || newThreadSource) &&
@@ -557,7 +649,7 @@ export function ChatView({
     onError: (e, { started, text, newThreadSource }) => {
       if (!acceptsCompletion(composerRef.current, started)) return;
       if (!newThreadSource && !started.text.trim() && text.trim())
-        setComposer((current) =>
+        updateComposer((current) =>
           acceptsCompletion(current, started, true)
             ? { ...current, text, generation: current.generation + 1 }
             : current,
@@ -599,7 +691,7 @@ export function ChatView({
       setError(recovered.error);
       return;
     }
-    setComposer(recovered.input);
+    updateComposer(() => recovered.input);
     for (const row of rows) followUps.remove(threadId, row.id);
     setComposerFocusRequest((current) => current + 1);
   };
@@ -787,7 +879,7 @@ export function ChatView({
     !approval &&
     !questionRequest &&
     !queued.length &&
-    !images.length,
+    !slots.length,
   );
   const noticeKey = usageNoticeKey(
     threadId ?? `draft:${workspaceId}`,
@@ -830,46 +922,78 @@ export function ChatView({
   const isDraft = !threadId;
   const dormant =
     thread && ["dormant", "unavailable"].includes(thread.session.kind);
-  const addImages = (files: File[]) => {
-    const accepted: ComposerImage[] = [];
-    const staging: [string, File][] = [];
-    let rejection: string | undefined;
-    for (const file of files) {
-      if (classifyComposerAttachmentFile(file) !== "image") {
-        rejection = `'${file.name}' is not a supported image type. Attach GIF, JPEG, PNG, or WebP images.`;
-      } else if (file.size > MAX_IMAGE_BYTES) {
-        rejection = `'${file.name}' is larger than 10 MiB. Attach a smaller image.`;
-      } else if (images.length + accepted.length >= MAX_IMAGES) {
-        rejection = `You can attach up to ${MAX_IMAGES} images per message.`;
-      } else {
-        const key = crypto.randomUUID();
-        accepted.push({ key, name: file.name || "image", status: "staging" });
-        staging.push([key, file]);
-      }
-    }
-    if (rejection) setError(rejection);
-    if (accepted.length === 0) return;
-    setImages((current) => [...current, ...accepted]);
-    const started = composer;
-    for (const [key, file] of staging) {
-      ipc.stageAttachment(file).then(
-        (attachment) =>
-          setComposer((current) =>
-            finishComposerStaging(current, started, key, attachment),
-          ),
-        (error: Error) => {
-          if (
-            !acceptsCompletion(composerRef.current, started) ||
-            !composerRef.current.images.some((image) => image.key === key)
-          )
-            return;
-          setImages((current) => current.filter((image) => image.key !== key));
-          setError(error.message);
-        },
-      );
-    }
+  const addAttachments = async (
+    files: File[],
+    source?: AttachmentSource,
+  ): Promise<Attachment[]> => {
+    const started = composerRef.current;
+    const admitted = reserveAttachments(started, files, source);
+    updateComposer(() => admitted.input);
+    if (admitted.errors.length) setError(admitted.errors.join("\n"));
+    return (
+      await Promise.all(
+        admitted.reservations.map(async (reservation) => {
+          try {
+            const file = await prepareComposerFile(reservation);
+            const attachment = await ipc.stageAttachment(
+              file,
+              reservation.kind,
+              reservation.source,
+            );
+            const current = composerRef.current;
+            if (
+              !acceptsCompletion(current, started) ||
+              !current.attachments.some(
+                (slot) =>
+                  slot.key === reservation.key && slot.status === "staging",
+              )
+            )
+              return null;
+            const next = finishComposerStaging(
+              current,
+              started,
+              reservation.key,
+              attachment,
+            );
+            if (totalImageBytes(next) > MAX_TOTAL_IMAGE_BYTES)
+              throw new Error(IMAGE_TOTAL_ERROR);
+            updateComposer(() => next);
+            return attachment;
+          } catch (cause) {
+            const current = composerRef.current;
+            if (
+              !acceptsCompletion(current, started) ||
+              !current.attachments.some((slot) => slot.key === reservation.key)
+            )
+              return null;
+            updateComposer((current) => ({
+              ...current,
+              attachments: current.attachments.filter(
+                (slot) => slot.key !== reservation.key,
+              ),
+              generation: current.generation + 1,
+            }));
+            setError(cause instanceof Error ? cause.message : String(cause));
+            return null;
+          }
+        }),
+      )
+    ).filter((attachment) => attachment !== null);
   };
-  const attachments = readyAttachments(images);
+  useEffect(() => {
+    if (
+      !threadId ||
+      thread?.id !== threadId ||
+      composer.threadId !== threadId ||
+      composer.scopeKey !== draftKey ||
+      !settings
+    )
+      return;
+    const files = sidebarPendingFileDrops.consume(threadId);
+    if (files.length)
+      setDropRequest({ id: crypto.randomUUID(), scopeKey: draftKey, files });
+  }, [dropVersion, thread?.id, composer.activation, settings]);
+  const attachments = readyAttachments(slots);
   const submit = () => {
     if (!settings) return;
     if (!threadId && !isScratch) {
@@ -919,7 +1043,7 @@ export function ChatView({
         attachments,
         settings,
       });
-      setComposer((current) => clearAcceptedInput(current, composer));
+      updateComposer((current) => clearAcceptedInput(current, composer));
       setError(undefined);
       if (busy && effectiveFollowUpBehavior === "steer")
         sendFollowUpNow(client, thread, id);
@@ -1021,7 +1145,7 @@ export function ChatView({
     try {
       const content = appendContext(composer, record);
       const started = composer;
-      setComposer((current) =>
+      updateComposer((current) =>
         acceptsCompletion(current, started, true)
           ? { ...current, ...content, generation: current.generation + 1 }
           : current,
@@ -1361,6 +1485,39 @@ export function ChatView({
                     {settings ? (
                       <Composer
                         key={threadId ?? "draft"}
+                        scopeKey={draftKey}
+                        activation={composer.activation}
+                        dropRequest={dropRequest}
+                        historyMessages={threadPromptHistoryMessages(thread)}
+                        stashEntries={stashEntries}
+                        stashOpen={stashOpen}
+                        stashPulse={stashPulse}
+                        onStash={() => {
+                          void stashPrompt();
+                        }}
+                        onToggleStash={() =>
+                          setStashOpen((current) => !current)
+                        }
+                        onCloseStash={() => setStashOpen(false)}
+                        onRestoreStash={(entry) => {
+                          void restoreStash(entry);
+                        }}
+                        onDeleteStash={(entry) => {
+                          if (!stashBusy.current)
+                            void promptStash
+                              .delete(entry.id)
+                              .catch((cause: Error) => setError(cause.message));
+                        }}
+                        onAttachmentNotice={(message) => {
+                          const [title = "", ...detail] = message.split("\n");
+                          setAttachmentNotice({
+                            title,
+                            description: detail.join("\n"),
+                            type: title.startsWith("Large paste attached as")
+                              ? "info"
+                              : "error",
+                          });
+                        }}
                         value={draft}
                         records={records}
                         pullRequestScope={
@@ -1368,12 +1525,47 @@ export function ChatView({
                         }
                         focusRequest={composerFocusRequest}
                         onChange={setDraft}
-                        images={images}
-                        onAddImages={addImages}
-                        onRemoveImage={(key) =>
-                          setImages((current) =>
-                            current.filter((image) => image.key !== key),
-                          )
+                        attachments={slots}
+                        onAddAttachments={addAttachments}
+                        onRemoveAttachment={(key) =>
+                          updateComposer((current) => {
+                            const slot = current.attachments.find(
+                              (slot) => slot.key === key,
+                            );
+                            const removed =
+                              slot?.status === "ready"
+                                ? current.records.filter(
+                                    (record) =>
+                                      (record.kind === "file" ||
+                                        record.kind === "image") &&
+                                      record.attachmentId ===
+                                        slot.attachment.id &&
+                                      record.name === slot.attachment.name,
+                                  )
+                                : [];
+                            let text = current.text;
+                            const ids = new Set(
+                              removed.map((record) => record.contextId),
+                            );
+                            for (const ref of contextReferences(
+                              text,
+                            ).toReversed())
+                              if (ids.has(ref.contextId))
+                                text =
+                                  text.slice(0, ref.start) +
+                                  text.slice(ref.end);
+                            return {
+                              ...current,
+                              text,
+                              records: current.records.filter(
+                                (record) => !ids.has(record.contextId),
+                              ),
+                              attachments: current.attachments.filter(
+                                (slot) => slot.key !== key,
+                              ),
+                              generation: current.generation + 1,
+                            };
+                          })
                         }
                         onSubmit={submit}
                         searchCheckout={
@@ -1404,7 +1596,7 @@ export function ChatView({
                           isUsageLimitsCommand(draft) ||
                           ((showPlanFollowUp ||
                             Boolean(draft.trim()) ||
-                            images.length > 0) &&
+                            slots.length > 0) &&
                             attachments !== null &&
                             !reverting &&
                             !send.isPending &&
@@ -1612,6 +1804,17 @@ export function ChatView({
       value={reverting || send.isPending ? null : addComposerContext}
     >
       {content}
+      {attachmentNotice ? (
+        <ToastViewport>
+          <Toast
+            title={attachmentNotice.title}
+            description={attachmentNotice.description}
+            type={attachmentNotice.type}
+            onDismiss={() => setAttachmentNotice(undefined)}
+            dismissAfterVisibleMs={5000}
+          />
+        </ToastViewport>
+      ) : null}
     </ComposerContextProvider>
   );
 }

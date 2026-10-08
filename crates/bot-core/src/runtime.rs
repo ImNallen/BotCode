@@ -73,7 +73,7 @@ impl RuntimeConfig {
 type Reply<T> = oneshot::Sender<Result<T>>;
 struct SubmittedMessage<'a> {
     text: &'a str,
-    attachments: Vec<ImageAttachment>,
+    attachments: Vec<Attachment>,
     context: Option<MessageContext>,
 }
 
@@ -157,8 +157,6 @@ impl Hold {
         }
     }
 }
-/// T3's PROVIDER_SEND_TURN_MAX_ATTACHMENTS.
-const MAX_ATTACHMENTS: usize = 100;
 fn turn_running() -> AppError {
     AppError::new(
         "checkout_busy",
@@ -245,7 +243,7 @@ enum Command {
         ThreadId,
         String,
         String,
-        Vec<ImageAttachment>,
+        Vec<Attachment>,
         Option<MessageContext>,
         Option<PathBuf>,
         Option<TurnId>,
@@ -345,7 +343,7 @@ impl App {
         }
         // Codex reads images by absolute path.
         let attachments = Attachments::new(&config.data_dir.canonicalize()?);
-        let referenced = threads
+        let mut referenced: HashSet<AttachmentId> = threads
             .values()
             .flat_map(|thread| {
                 thread
@@ -366,10 +364,49 @@ impl App {
                             .flat_map(|result| &result.attachments),
                     )
             })
-            .map(|a| a.id.clone())
+            .map(|a| a.id().clone())
             .collect();
-        if let Err(e) = attachments.sweep(&referenced, std::time::SystemTime::now()) {
-            eprintln!("Attachment sweep failed: {}", e.message);
+        for thread in threads.values() {
+            let contexts = thread
+                .turns
+                .iter()
+                .flat_map(|turn| {
+                    turn.context
+                        .iter()
+                        .chain(turn.items.iter().filter_map(|item| match item {
+                            Item::UserInput { context, .. } => context.as_ref(),
+                            _ => None,
+                        }))
+                })
+                .chain(
+                    thread
+                        .last_revert
+                        .iter()
+                        .filter_map(|revert| revert.context.as_ref()),
+                );
+            for record in contexts.flat_map(|context| &context.records) {
+                if let crate::ComposerContextRecord::Image { attachment_id, .. }
+                | crate::ComposerContextRecord::File { attachment_id, .. } = record
+                    && let Ok(id) = attachment_id.parse()
+                {
+                    referenced.insert(id);
+                }
+            }
+        }
+        match store
+            .ui_state()
+            .and_then(|rows| attachments::ui_references(&rows))
+        {
+            Ok(ui) => {
+                referenced.extend(ui);
+                if let Err(e) = attachments.sweep(&referenced, std::time::SystemTime::now()) {
+                    eprintln!("Attachment sweep failed: {}", e.message);
+                }
+            }
+            Err(e) => eprintln!(
+                "Attachment sweep skipped because the reference census is incomplete: {}",
+                e.message
+            ),
         }
         let worktrees = config.data_dir.join("worktrees");
         let gh = config.gh_binary.clone();
@@ -1014,13 +1051,18 @@ impl App {
     ) -> Result<ThreadSnapshot> {
         self.call(|r| Command::Settings(id, settings, r)).await
     }
-    pub async fn stage_attachment(&self, name: String, bytes: Vec<u8>) -> Result<ImageAttachment> {
+    pub async fn stage_attachment(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+        kind: AttachmentKind,
+    ) -> Result<Attachment> {
         let attachments = self.attachments.clone();
-        tokio::task::spawn_blocking(move || attachments.stage(&name, &bytes))
+        tokio::task::spawn_blocking(move || attachments.stage(&name, &bytes, kind))
             .await
             .map_err(|e| AppError::new("attachment", e))?
     }
-    pub fn read_attachment(&self, file: &str) -> Result<(Vec<u8>, ImageMime)> {
+    pub fn read_attachment(&self, file: &str) -> Result<(Vec<u8>, String)> {
         self.attachments.read(file)
     }
     pub async fn submit(
@@ -1028,7 +1070,7 @@ impl App {
         id: ThreadId,
         request_id: String,
         text: String,
-        attachments: Vec<ImageAttachment>,
+        attachments: Vec<Attachment>,
     ) -> Result<Receipt> {
         self.submit_to(id, request_id, text, attachments, None)
             .await
@@ -1038,7 +1080,7 @@ impl App {
         id: ThreadId,
         request_id: String,
         text: String,
-        attachments: Vec<ImageAttachment>,
+        attachments: Vec<Attachment>,
         expected_turn_id: Option<TurnId>,
     ) -> Result<Receipt> {
         self.submit_with_context(id, request_id, text, attachments, None, expected_turn_id)
@@ -1049,7 +1091,7 @@ impl App {
         id: ThreadId,
         request_id: String,
         text: String,
-        attachments: Vec<ImageAttachment>,
+        attachments: Vec<Attachment>,
         context: Option<MessageContext>,
         expected_turn_id: Option<TurnId>,
     ) -> Result<Receipt> {
@@ -2540,7 +2582,7 @@ impl Owner {
         id: &ThreadId,
         request_id: &str,
         text: &str,
-        attachments: Vec<ImageAttachment>,
+        attachments: Vec<Attachment>,
         context: Option<MessageContext>,
         expected: Option<&TurnId>,
     ) -> Result<(Receipt, bool)> {
@@ -2557,12 +2599,7 @@ impl Owner {
                 "Enter a prompt up to 100,000 bytes.",
             ));
         }
-        if attachments.len() > MAX_ATTACHMENTS {
-            return Err(AppError::new(
-                "invalid_attachments",
-                format!("You can attach up to {MAX_ATTACHMENTS} images per message."),
-            ));
-        }
+        attachments::validate_total(&attachments)?;
         let input = match (&context, expected) {
             (None, Some(turn)) => serde_json::to_string(&(id, text, &attachments, turn))?,
             (None, None) => serde_json::to_string(&(id, text, &attachments))?,
@@ -2582,21 +2619,7 @@ impl Owner {
             ));
         }
         for attachment in &attachments {
-            let name = attachment.name.trim();
-            if name.is_empty() || name.chars().count() > attachments::MAX_NAME_CHARS {
-                return Err(AppError::new(
-                    "invalid_attachments",
-                    "Image names must be 1 to 255 characters.",
-                ));
-            }
-            let staged = std::fs::metadata(self.attachments.path(attachment))
-                .is_ok_and(|m| m.is_file() && m.len() == attachment.size_bytes);
-            if !staged {
-                return Err(AppError::new(
-                    "missing_attachment",
-                    format!("'{name}' is no longer available. Attach the image again."),
-                ));
-            }
+            self.attachments.validate(attachment)?;
         }
         if let Some(expected) = expected {
             return self.accept_steer(
@@ -2665,7 +2688,15 @@ impl Owner {
         if t.turns.len() == 1 && t.title == "New conversation" {
             let first = &t.turns[0];
             t.title = match first.attachments.first() {
-                Some(image) if text.is_empty() => format!("Image: {}", image.name),
+                Some(attachment) if text.is_empty() => format!(
+                    "{}: {}",
+                    if matches!(attachment, Attachment::Image(_)) {
+                        "Image"
+                    } else {
+                        "File"
+                    },
+                    attachment.name()
+                ),
                 _ => text.into(),
             }
             .chars()

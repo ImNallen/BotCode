@@ -120,6 +120,7 @@ fn main() {
             ipc::list_thread_summaries,
             ipc::ui_state,
             ipc::set_ui_state,
+            ipc::clipboard_text,
             ipc::settings,
             ipc::save_settings,
             ipc::terminal_attach,

@@ -8,6 +8,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "=2.3.3"
+arboard = { version = "=3.6.1", default-features = false }
 percent-encoding = "2"
 bot-core = { path = "../crates/bot-core" }
 serde.workspace = true

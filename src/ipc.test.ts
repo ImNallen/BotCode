@@ -452,6 +452,7 @@ it("stages image bytes as a raw body and submits the staged attachments", async 
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const attachment = {
     id: "0c25346db1c2a63fcc299515e33ca8fb44d8d4cdb6ad376e04aa20a8928293cb",
+    kind: "image",
     mimeType: "image/png",
     name: "skärm bild.png",
     sizeBytes: 12,
@@ -472,13 +473,19 @@ it("stages image bytes as a raw body and submits the staged attachments", async 
   });
   try {
     const file = new File([new Uint8Array([137, 80, 78, 71])], attachment.name);
-    assert.deepEqual(await ipc.stageAttachment(file), attachment);
+    assert.deepEqual(await ipc.stageAttachment(file, "image"), attachment);
     await ipc.submit("thread", "", "request", [attachment]);
     assert.deepEqual(calls, [
       [
         "stage_attachment",
         new Uint8Array([137, 80, 78, 71]),
-        { headers: { "x-attachment-name": "sk%C3%A4rm%20bild.png" } },
+        {
+          headers: {
+            "x-attachment-name": "sk%C3%A4rm%20bild.png",
+            "x-attachment-kind": "image",
+            "x-attachment-mime": "application/octet-stream",
+          },
+        },
       ],
       [
         "submit",

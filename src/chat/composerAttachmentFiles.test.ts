@@ -32,7 +32,7 @@ it("rejects unsupported image types instead of attaching them as generic files",
   );
   assert.equal(
     classifyComposerAttachmentFile({ name: "photo.heic", type: "image/heic" }),
-    "unsupported-image",
+    "image",
   );
   assert.equal(
     classifyComposerAttachmentFile({

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import type { ImageAttachment } from "../ipc";
+import type { Attachment } from "../ipc";
 import {
-  type ComposerImage,
+  type ComposerAttachment,
   finishStaging,
   finishComposerStaging,
   readyAttachments,
@@ -12,15 +12,17 @@ import {
   clearAcceptedInput,
   mergeRecoveredInput,
   recoveryFit,
-} from "./composerImages";
+} from "./composerAttachments";
 
-const shot: ImageAttachment = {
+const shot: Attachment = {
+  kind: "image",
   id: "0c25346db1c2a63fcc299515e33ca8fb44d8d4cdb6ad376e04aa20a8928293cb",
   mimeType: "image/png",
   name: "shot.png",
   sizeBytes: 12,
 };
-const clip: ImageAttachment = {
+const clip: Attachment = {
+  kind: "image",
   id: "f791cfdafdc956edbeb3f12bfa69771c4a594ba3fe46f3873c39fe1aa85d407f",
   mimeType: "image/gif",
   name: "clip.gif",
@@ -39,7 +41,7 @@ it("reuses the operation id when the same message is sent again", () => {
   assert.equal(retry.requestId, "first");
 });
 
-it("mints a new operation id when the target, text or images change", () => {
+it("mints a new operation id when the target, text or attachments change", () => {
   const mint = ids(["first", "second", "third", "fourth"]);
   const attempt = sendAttempt(null, "thread-1", "Look", [shot], mint);
   assert.equal(
@@ -57,15 +59,18 @@ it("mints a new operation id when the target, text or images change", () => {
 });
 
 it("folds a second copy of the same image into the first", () => {
-  const images: ComposerImage[] = [
+  const attachments: ComposerAttachment[] = [
     { key: "a", name: "shot.png", status: "ready", attachment: shot },
     { key: "b", name: "copy.png", status: "staging" },
     { key: "c", name: "clip.gif", status: "staging" },
   ];
-  const deduped = finishStaging(images, "b", { ...shot, name: "copy.png" });
-  assert.deepEqual(deduped, [images[0], images[2]]);
+  const deduped = finishStaging(attachments, "b", {
+    ...shot,
+    name: "copy.png",
+  });
+  assert.deepEqual(deduped, [attachments[0], attachments[2]]);
   assert.deepEqual(finishStaging(deduped, "c", clip), [
-    images[0],
+    attachments[0],
     { key: "c", name: "clip.gif", status: "ready", attachment: clip },
   ]);
 });
@@ -87,15 +92,15 @@ it("holds the send until every image is staged", () => {
   assert.deepEqual(readyAttachments([]), []);
 });
 
-it("merges recovered text and images atomically in existing order, deduplicating hashes", () => {
+it("merges recovered text and attachments atomically in existing order, deduplicating hashes", () => {
   const current = {
     ...activateComposer("a"),
     text: "Unsent",
-    images: [ready(shot)],
+    attachments: [ready(shot)],
   };
   const restored = mergeRecoveredInput(current, recovery);
   assert.equal(restored.text, "Unsent\n\nRecovered");
-  assert.deepEqual(readyAttachments(restored.images), [shot, clip]);
+  assert.deepEqual(readyAttachments(restored.attachments), [shot, clip]);
   assert.equal(restored.appliedRevertId, recovery.requestId);
   assert.equal(
     mergeRecoveredInput({ ...current, text: "Recovered" }, recovery).text,
@@ -111,19 +116,21 @@ it("defers the entire recovery while staging and retries when staging completes"
   const current = {
     ...activateComposer("a"),
     text: "Unsent",
-    images: [
+    attachments: [
       {
         key: "upload",
         name: "shot",
         status: "staging",
-      } satisfies ComposerImage,
+      } satisfies ComposerAttachment,
     ],
   };
-  assert.ok((recoveryFit(current.images, recovery) ?? "").includes("Wait"));
+  assert.ok(
+    (recoveryFit(current.attachments, recovery) ?? "").includes("Wait"),
+  );
   assert.equal(mergeRecoveredInput(current, recovery), current);
   const staged = {
     ...current,
-    images: finishStaging(current.images, "upload", shot),
+    attachments: finishStaging(current.attachments, "upload", shot),
   };
   assert.equal(
     mergeRecoveredInput(staged, recovery).text,
@@ -132,30 +139,32 @@ it("defers the entire recovery while staging and retries when staging completes"
 });
 
 it("uses deduplicated capacity and retries the whole merge after removal", () => {
-  const images = Array.from({ length: 100 }, (_, index) =>
+  const attachments = Array.from({ length: 100 }, (_, index) =>
     ready({ ...shot, id: String(index) }),
   );
-  const current = { ...activateComposer("a"), text: "Keep", images };
-  assert.ok((recoveryFit(images, recovery) ?? "").includes("Remove images"));
+  const current = { ...activateComposer("a"), text: "Keep", attachments };
+  assert.ok(
+    (recoveryFit(attachments, recovery) ?? "").includes("Remove files"),
+  );
   assert.equal(mergeRecoveredInput(current, recovery), current);
   const fits = mergeRecoveredInput(
-    { ...current, images: images.slice(2) },
+    { ...current, attachments: attachments.slice(2) },
     recovery,
   );
-  assert.equal(fits.images.length, 100);
+  assert.equal(fits.attachments.length, 100);
   assert.equal(fits.text, "Keep\n\nRecovered");
   const duplicate = { ...recovery, attachments: [{ ...shot, id: "0" }] };
-  assert.equal(recoveryFit(images, duplicate), null);
+  assert.equal(recoveryFit(attachments, duplicate), null);
 });
 
 it("does not replay removed input during an activation, but restores on return", () => {
   const restored = mergeRecoveredInput(activateComposer("a"), recovery);
-  const removed = { ...restored, text: "", images: [] };
+  const removed = { ...restored, text: "", attachments: [] };
   assert.equal(mergeRecoveredInput(removed, recovery), removed);
   const away = activateComposer("b", restored.activation + 1);
   const returned = activateComposer("a", away.activation + 1);
   assert.deepEqual(
-    readyAttachments(mergeRecoveredInput(returned, recovery).images),
+    readyAttachments(mergeRecoveredInput(returned, recovery).attachments),
     [shot, clip],
   );
   assert.equal(acceptsCompletion(returned, restored), false);
@@ -172,14 +181,14 @@ it("accepted sends preserve in-flight edits and keep recovery applied until its 
   assert.equal(clearAcceptedInput(edited, started), edited);
   const cleared = clearAcceptedInput(started, started);
   assert.equal(cleared.text, "");
-  assert.deepEqual(cleared.images, []);
+  assert.deepEqual(cleared.attachments, []);
   assert.equal(mergeRecoveredInput(cleared, recovery), cleared);
   assert.equal(acceptsCompletion(edited, started), true);
   assert.equal(acceptsCompletion(edited, started, true), false);
   assert.equal(clearAcceptedInput(edited, edited).text, "");
 });
 
-const ready = (attachment: ImageAttachment): ComposerImage => ({
+const ready = (attachment: Attachment): ComposerAttachment => ({
   key: attachment.id,
   name: attachment.name,
   status: "ready",
@@ -196,8 +205,12 @@ const recovery = {
 it("rejects stale stage replies after A to B to A and after removing an upload", () => {
   const started = {
     ...activateComposer("a"),
-    images: [
-      { key: "stage", name: "shot", status: "staging" } satisfies ComposerImage,
+    attachments: [
+      {
+        key: "stage",
+        name: "shot",
+        status: "staging",
+      } satisfies ComposerAttachment,
     ],
   };
   const returned = activateComposer(
@@ -208,10 +221,10 @@ it("rejects stale stage replies after A to B to A and after removing an upload",
     finishComposerStaging(returned, started, "stage", shot),
     returned,
   );
-  const removed = { ...started, images: [], generation: 1 };
+  const removed = { ...started, attachments: [], generation: 1 };
   assert.equal(finishComposerStaging(removed, started, "stage", shot), removed);
   const edited = { ...started, text: "Typed while uploading", generation: 1 };
   const finished = finishComposerStaging(edited, started, "stage", shot);
   assert.equal(finished.text, edited.text);
-  assert.deepEqual(readyAttachments(finished.images), [shot]);
+  assert.deepEqual(readyAttachments(finished.attachments), [shot]);
 });

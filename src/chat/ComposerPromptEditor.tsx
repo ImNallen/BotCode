@@ -9,7 +9,6 @@ import {
 } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Slice } from "@tiptap/pm/model";
-import { closeHistory } from "@tiptap/pm/history";
 import type { EditorView } from "@tiptap/pm/view";
 import {
   useImperativeHandle,
@@ -26,6 +25,7 @@ import {
   composerDocumentMap,
   editorCursor,
   promptCursor,
+  replaceComposerText,
 } from "./composerDocument";
 import type { Skill } from "../ipc";
 import { ContextRecordChip } from "./ContextRecordChip";
@@ -129,6 +129,9 @@ export type ComposerSnapshot = {
 export type ComposerEditorHandle = {
   focus: () => void;
   readSnapshot: () => ComposerSnapshot;
+  isCaretOnVisualEdge: (edge: "start" | "end") => boolean;
+  containsFocus: () => boolean;
+  readRecords: () => ComposerContextRecord[];
   replaceRange: (input: {
     start: number;
     end: number;
@@ -146,7 +149,8 @@ export function ComposerPromptEditor(props: {
   onChange: (value: string, records: ComposerContextRecord[]) => void;
   onSelectionChange: (snapshot: ComposerSnapshot) => void;
   onKeyDown: (event: KeyboardEvent) => boolean;
-  onPasteFiles: (event: ClipboardEvent) => boolean;
+  onPasteFiles: (event: ClipboardEvent, structured: boolean) => boolean;
+  onBlur?: () => void;
   placeholder: string;
   disabled: boolean;
   approvalState: boolean;
@@ -203,10 +207,13 @@ export function ComposerPromptEditor(props: {
         return latest.current.onKeyDown(event);
       },
       handlePaste: (view, event) => {
-        if (latest.current.onPasteFiles(event)) return true;
         const fragment = event.clipboardData
           ? readContextClipboard(event.clipboardData)
           : null;
+        if (
+          latest.current.onPasteFiles(event, Boolean(fragment?.records.length))
+        )
+          return true;
         if (!fragment) return false;
         const existing = composerDocumentMap(view.state.doc).records;
         if (
@@ -245,6 +252,7 @@ export function ComposerPromptEditor(props: {
           return false;
         },
         blur: () => {
+          latest.current.onBlur?.();
           latest.current.onSelectionChange({
             ...readSnapshot(),
             composing: true,
@@ -291,6 +299,47 @@ export function ComposerPromptEditor(props: {
         publishSelection();
       },
       readSnapshot,
+      containsFocus: () => editor?.isFocused ?? false,
+      readRecords: () =>
+        editor
+          ? composerDocumentMap(editor.state.doc).records
+          : latest.current.records,
+      isCaretOnVisualEdge: (edge) => {
+        const snapshot = readSnapshot();
+        const root = editor?.view.dom;
+        const selection = window.getSelection();
+        if (
+          !editor ||
+          !root ||
+          !selection?.isCollapsed ||
+          selection.rangeCount === 0 ||
+          !selection.anchorNode ||
+          !root.contains(selection.anchorNode) ||
+          snapshot.start !== snapshot.end
+        )
+          return false;
+        if (!snapshot.value) return true;
+        if (
+          (edge === "start"
+            ? snapshot.value.slice(0, snapshot.start)
+            : snapshot.value.slice(snapshot.start)
+          ).includes("\n")
+        )
+          return false;
+        const caret = editor.view.coordsAtPos(
+          editor.state.selection.from,
+          edge === "start" ? 1 : -1,
+        );
+        const threshold = (caret.bottom - caret.top) / 2;
+        const bounds =
+          (edge === "start"
+            ? root.firstElementChild
+            : root.lastElementChild
+          )?.getBoundingClientRect() ?? root.getBoundingClientRect();
+        return edge === "start"
+          ? caret.top - bounds.top < threshold
+          : bounds.bottom - caret.bottom < threshold;
+      },
       replaceRange: ({
         start,
         end,
@@ -305,18 +354,18 @@ export function ComposerPromptEditor(props: {
             expectedText
         )
           return false;
-        const from = editorCursor(editor.state.doc, start);
-        const to = editorCursor(editor.state.doc, end);
-        const doc = buildComposerDocument(replacement, records);
-        const inline = doc.content?.[0]?.content ?? [];
         return editor
           .chain()
           .focus()
           .command(({ tr }) => {
-            closeHistory(tr);
-            return true;
+            return replaceComposerText(tr, {
+              start,
+              end,
+              expectedText,
+              replacement,
+              records,
+            });
           })
-          .insertContentAt({ from, to }, inline, { updateSelection: true })
           .run();
       },
     }),
@@ -326,7 +375,9 @@ export function ComposerPromptEditor(props: {
     if (
       !editor ||
       composing.current ||
-      composerDocumentMap(editor.state.doc).text === props.value
+      (composerDocumentMap(editor.state.doc).text === props.value &&
+        JSON.stringify(composerDocumentMap(editor.state.doc).records) ===
+          JSON.stringify(props.records))
     )
       return;
     editor.commands.setContent(

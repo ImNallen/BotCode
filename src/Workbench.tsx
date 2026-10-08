@@ -317,7 +317,7 @@ export function Workbench() {
           ? { threadId: thread, surface: panel, nonce: Date.now() }
           : undefined,
       );
-      void navigate({
+      const navigation = navigate({
         to: "/",
         search: (previous) => ({
           ...previous,
@@ -330,6 +330,7 @@ export function Workbench() {
         .resume(thread)
         .then((snapshot) => setThreadSnapshot(client, snapshot))
         .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      return navigation;
     },
     [client, navigate],
   );

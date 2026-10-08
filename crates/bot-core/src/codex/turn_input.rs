@@ -1,4 +1,4 @@
-// Ported from T3 Code v0.0.45 packages/shared/src/composerContextReferences.ts and assistantCitations.ts.
+// Ported from T3 Code v0.0.45 apps/server/src/provider/Layers/ProviderService.ts and CodexAdapter.ts.
 use crate::{
     ComposerContextRecord, MessageContext, attachments::Attachments, composer_context::context_id,
     domain::*,
@@ -10,20 +10,41 @@ use std::collections::{HashMap, HashSet};
 pub(crate) fn turn_input(
     text: &str,
     context: Option<&MessageContext>,
-    images: &[ImageAttachment],
+    files: &[Attachment],
     attachments: &Attachments,
 ) -> Vec<Value> {
-    let text = project(
+    let mut text = project(
         text,
         context.map_or(&[], |context| context.records.as_slice()),
     );
+    for attachment in files {
+        let path = attachments.path(attachment);
+        let path = path.to_string_lossy();
+        let note = match attachment {
+            Attachment::Image(image) => {
+                format!("[Attached image \"{}\" is saved at: {path}]", image.name)
+            }
+            Attachment::File(file) if file.source == Some(AttachmentSource::PastedText) => format!(
+                "[Pasted text \"{}\" is saved at: {path}. Inspect it as needed.]",
+                file.name
+            ),
+            Attachment::File(file) => {
+                format!("[Attached file \"{}\" is saved at: {path}]", file.name)
+            }
+        };
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(&note);
+    }
     let mut input = Vec::new();
     if !text.is_empty() {
         input.push(json!({"type":"text", "text":text, "text_elements":[]}));
     }
     input.extend(
-        images
+        files
             .iter()
+            .filter(|file| matches!(file, Attachment::Image(_)))
             .map(|image| json!({"type":"localImage", "path":attachments.path(image)})),
     );
     input

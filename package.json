@@ -29,6 +29,7 @@
     "@tiptap/react": "3.31.4",
     "@tiptap/starter-kit": "3.31.4",
     "class-variance-authority": "0.7.1",
+    "heic-to": "1.5.2",
     "lucide-react": "^0.577.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",

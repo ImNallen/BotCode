@@ -1,46 +1,62 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/ChatView.tsx attachment recovery (MIT).
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { ImageAttachment, Thread } from "../ipc";
+import type { Attachment, ImageAttachment, Thread } from "../ipc";
 
 import type { ComposerContextRecord, MessageContext } from "./composerContext";
 import { importContext } from "./composerContext";
 
-export const MAX_IMAGES = 100;
+export const MAX_ATTACHMENTS = 100;
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+export const MAX_TOTAL_IMAGE_BYTES = 80 * 1024 * 1024;
+export const ATTACHMENT_COUNT_ERROR =
+  "You can attach up to 100 files per message.";
+export const IMAGE_TOTAL_ERROR =
+  "Images can total up to 80 MiB per message or question response. Use smaller images or send fewer at once.";
 
-export type ComposerImage =
+export type ComposerAttachment =
   | { key: string; name: string; status: "staging" }
   | {
       key: string;
       name: string;
       status: "ready";
-      attachment: ImageAttachment;
+      attachment: Attachment;
     };
 
-/** A staged copy of the same bytes has the same id, so the second entry folds into the first. */
+export function attachmentIdentity(attachment: Attachment): string {
+  return attachment.kind === "image"
+    ? `image:${attachment.id}`
+    : JSON.stringify([
+        attachment.kind,
+        attachment.id,
+        attachment.extension,
+        attachment.source,
+        attachment.name,
+      ]);
+}
 export function finishStaging(
-  images: ComposerImage[],
+  attachments: ComposerAttachment[],
   key: string,
-  attachment: ImageAttachment,
-): ComposerImage[] {
-  const duplicate = images.some(
-    (image) =>
-      image.status === "ready" && image.attachment.id === attachment.id,
-  );
-  return duplicate
-    ? images.filter((image) => image.key !== key)
-    : images.map((image) =>
-        image.key === key
-          ? { key, name: image.name, status: "ready", attachment }
-          : image,
+  attachment: Attachment,
+): ComposerAttachment[] {
+  return attachments.some(
+    (slot) =>
+      slot.status === "ready" &&
+      attachmentIdentity(slot.attachment) === attachmentIdentity(attachment),
+  )
+    ? attachments.filter((slot) => slot.key !== key)
+    : attachments.map((slot) =>
+        slot.key === key
+          ? { key, name: attachment.name, status: "ready", attachment }
+          : slot,
       );
 }
-
 /** The attachments to send, or null while any image is still staging. */
 export function readyAttachments(
-  images: ComposerImage[],
-): ImageAttachment[] | null {
-  const attachments: ImageAttachment[] = [];
-  for (const image of images) {
+  slots: ComposerAttachment[],
+): Attachment[] | null {
+  const attachments: Attachment[] = [];
+  for (const image of slots) {
     if (image.status === "staging") return null;
     attachments.push(image.attachment);
   }
@@ -54,7 +70,7 @@ export function sendAttempt(
   previous: SendAttempt | null,
   target: string,
   text: string,
-  attachments: ImageAttachment[],
+  attachments: Attachment[],
   mint: () => string,
   context?: MessageContext,
 ): SendAttempt {
@@ -69,9 +85,9 @@ const extensions: Record<ImageAttachment["mimeType"], string> = {
   "image/webp": "webp",
 };
 
-export const attachmentUrl = (attachment: ImageAttachment) =>
+export const attachmentUrl = (attachment: Attachment) =>
   convertFileSrc(
-    `${attachment.id}.${extensions[attachment.mimeType]}`,
+    `${attachment.id}.${attachment.kind === "image" ? extensions[attachment.mimeType] : attachment.extension}`,
     "botcode-attachment",
   );
 
@@ -81,7 +97,7 @@ export type ComposerInput = {
   activation: number;
   generation: number;
   text: string;
-  images: ComposerImage[];
+  attachments: ComposerAttachment[];
   records: ComposerContextRecord[];
   appliedRevertId: string | null;
 };
@@ -95,7 +111,7 @@ export function activateComposer(
     activation,
     generation: 0,
     text: "",
-    images: [],
+    attachments: [],
     records: [],
     appliedRevertId: null,
   };
@@ -116,18 +132,18 @@ export function finishComposerStaging(
   current: ComposerInput,
   started: Pick<ComposerInput, "activation" | "generation">,
   key: string,
-  attachment: ImageAttachment,
+  attachment: Attachment,
 ): ComposerInput {
   if (
     !acceptsCompletion(current, started) ||
-    !current.images.some(
+    !current.attachments.some(
       (image) => image.key === key && image.status === "staging",
     )
   )
     return current;
   return {
     ...current,
-    images: finishStaging(current.images, key, attachment),
+    attachments: finishStaging(current.attachments, key, attachment),
     generation: current.generation + 1,
   };
 }
@@ -140,7 +156,7 @@ export function clearAcceptedInput(
     ? {
         ...current,
         text: "",
-        images: [],
+        attachments: [],
         records: [],
         generation: current.generation + 1,
       }
@@ -153,19 +169,32 @@ type RecoveredInput = Pick<
 >;
 
 export function recoveryFit(
-  images: ComposerImage[],
+  attachments: ComposerAttachment[],
   recovered: RecoveredInput,
   records: ComposerContextRecord[] = [],
 ): string | null {
   if (records.length + (recovered.context?.records.length ?? 0) > 200)
     return "Remove context chips until the restored message fits the 200-chip limit.";
-  if (images.some((image) => image.status === "staging"))
-    return "Wait for images to finish attaching to restore this message.";
-  const ids = new Set(readyAttachments(images)?.map((image) => image.id));
-  for (const image of recovered.attachments) ids.add(image.id);
-  return ids.size > MAX_IMAGES
-    ? "Remove images until the restored message fits the 100-image limit."
-    : null;
+  if (attachments.some((image) => image.status === "staging"))
+    return "Wait for files to finish attaching to restore this message.";
+  const all = new Map(
+    [...(readyAttachments(attachments) ?? []), ...recovered.attachments].map(
+      (attachment) => [attachmentIdentity(attachment), attachment],
+    ),
+  );
+  if (all.size > MAX_ATTACHMENTS)
+    return "Remove files until the restored message fits the 100-file limit.";
+  const imageBytes = [...all.values()].reduce(
+    (sum, attachment) =>
+      attachment.kind === "image" ||
+      ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(
+        attachment.mimeType,
+      )
+        ? sum + attachment.sizeBytes
+        : sum,
+    0,
+  );
+  return imageBytes > MAX_TOTAL_IMAGE_BYTES ? IMAGE_TOTAL_ERROR : null;
 }
 
 export function mergeRecoveredInput(
@@ -174,16 +203,16 @@ export function mergeRecoveredInput(
 ): ComposerInput {
   if (
     current.appliedRevertId === result.requestId ||
-    recoveryFit(current.images, result, current.records)
+    recoveryFit(current.attachments, result, current.records)
   )
     return current;
-  const images = [...current.images];
-  const ids = new Set(readyAttachments(images)?.map((image) => image.id));
+  const attachments = [...current.attachments];
+  const ids = new Set(readyAttachments(attachments)?.map(attachmentIdentity));
   for (const attachment of result.attachments) {
-    if (ids.has(attachment.id)) continue;
-    ids.add(attachment.id);
-    images.push({
-      key: `revert:${result.requestId}:${attachment.id}`,
+    if (ids.has(attachmentIdentity(attachment))) continue;
+    ids.add(attachmentIdentity(attachment));
+    attachments.push({
+      key: `revert:${result.requestId}:${attachmentIdentity(attachment)}`,
       name: attachment.name,
       status: "ready",
       attachment,
@@ -201,7 +230,7 @@ export function mergeRecoveredInput(
   return {
     ...current,
     text,
-    images,
+    attachments,
     records: [...current.records, ...recovered.records],
     appliedRevertId: result.requestId,
     generation: current.generation + 1,
@@ -213,7 +242,7 @@ export function restoreFollowUps(
   inputs: {
     id: string;
     text: string;
-    attachments: ImageAttachment[];
+    attachments: Attachment[];
     context?: MessageContext;
   }[],
 ): { input: ComposerInput; error: string | null } {
@@ -237,15 +266,15 @@ export function restoreFollowUps(
       .join("\n\n"),
     attachments: inputs.flatMap((input) => input.attachments),
   };
-  const error = recoveryFit(current.images, recovered);
+  const error = recoveryFit(current.attachments, recovered);
   if (error) return { input: current, error };
-  const images = [...current.images];
-  const ids = new Set(readyAttachments(images)?.map((image) => image.id));
+  const attachments = [...current.attachments];
+  const ids = new Set(readyAttachments(attachments)?.map(attachmentIdentity));
   for (const attachment of recovered.attachments) {
-    if (ids.has(attachment.id)) continue;
-    ids.add(attachment.id);
-    images.push({
-      key: `queue:${attachment.id}`,
+    if (ids.has(attachmentIdentity(attachment))) continue;
+    ids.add(attachmentIdentity(attachment));
+    attachments.push({
+      key: `queue:${attachmentIdentity(attachment)}`,
       name: attachment.name,
       status: "ready",
       attachment,
@@ -255,7 +284,7 @@ export function restoreFollowUps(
     input: {
       ...current,
       text: [current.text, recovered.prompt].filter(Boolean).join("\n\n"),
-      images,
+      attachments,
       records: [
         ...current.records,
         ...fragments.flatMap((fragment) => fragment.records),

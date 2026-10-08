@@ -1,7 +1,9 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/chat/composerAttachmentFiles.ts (MIT): image classification only.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/chat/composerAttachmentFiles.ts (MIT).
 type ComposerAttachmentFileKind = "image" | "file" | "unsupported-image";
 
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/heic",
+  "image/heif",
   "image/gif",
   "image/jpeg",
   "image/png",
@@ -9,6 +11,8 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
 ]);
 
 const IMAGE_MIME_TYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
+  heic: "image/heic",
+  heif: "image/heif",
   gif: "image/gif",
   jpeg: "image/jpeg",
   jpg: "image/jpeg",

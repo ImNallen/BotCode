@@ -11,6 +11,7 @@ import {
   composerDocumentMap,
   editorCursor,
   promptCursor,
+  replaceComposerText,
 } from "./composerDocument";
 import {
   appendContext,
@@ -31,7 +32,7 @@ import {
   recoveryFit,
   mergeRecoveredInput,
   sendAttempt,
-} from "./composerImages";
+} from "./composerAttachments";
 import { detectComposerTrigger } from "./composer-logic";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { readComposerDraft, writeComposerDraft } from "./composerDrafts";
@@ -125,6 +126,81 @@ it("restores deleted chip payloads through ProseMirror undo", () => {
   );
   assert.equal(composerDocumentMap(state.doc).text, text);
   assert.deepEqual(composerDocumentMap(state.doc).records, [terminal]);
+});
+
+it("replaces the selected prompt with every pasted line and preserves surrounding chips and undo", () => {
+  const original = `Before ${contextReference(terminal)} selected after`;
+  let state = EditorState.create({
+    schema,
+    doc: schema.nodeFromJSON(buildComposerDocument(original, [terminal])),
+    plugins: [history()],
+  });
+  const start = original.indexOf("selected");
+  const tr = state.tr;
+  assert.equal(
+    replaceComposerText(tr, {
+      start,
+      end: start + "selected".length,
+      expectedText: "selected",
+      replacement: "first\n\nthird",
+    }),
+    true,
+  );
+  state = state.apply(tr);
+  assert.equal(
+    composerDocumentMap(state.doc).text,
+    original.replace("selected", "first\n\nthird"),
+  );
+  assert.deepEqual(composerDocumentMap(state.doc).records, [terminal]);
+  assert.equal(promptCursor(state.doc, state.selection.from), start + 12);
+  assert.ok(
+    undo(state, (transaction) => {
+      state = state.apply(transaction);
+    }),
+  );
+  assert.equal(composerDocumentMap(state.doc).text, original);
+  assert.deepEqual(composerDocumentMap(state.doc).records, [terminal]);
+});
+
+it("keeps a full chip draft valid when a staged file cannot fit an inline chip", () => {
+  const records = Array.from({ length: 200 }, (_, i) => ({
+    ...terminal,
+    contextId: `full_${i}`,
+  }));
+  const text = records.map(contextReference).join(" ");
+  const state = EditorState.create({
+    schema,
+    doc: schema.nodeFromJSON(buildComposerDocument(text, records)),
+  });
+  const file: ComposerContextRecord = {
+    version: 1,
+    kind: "file",
+    contextId: "file_new",
+    label: "report.pdf",
+    attachmentId: "a".repeat(64),
+    name: "report.pdf",
+    mimeType: "application/pdf",
+    sizeBytes: 4,
+  };
+  const tr = state.tr;
+  assert.equal(
+    replaceComposerText(tr, {
+      start: text.length,
+      end: text.length,
+      expectedText: "",
+      replacement: ` ${contextReference(file)}`,
+      records: [file],
+    }),
+    false,
+  );
+  assert.equal(tr.doc, state.doc);
+  assert.equal(
+    messageContext.safeParse({
+      version: 1,
+      records: composerDocumentMap(tr.doc).records,
+    }).success,
+    true,
+  );
 });
 
 it("pastes HTML clipboard chips with their complete captured content and new identities", () => {
@@ -315,7 +391,7 @@ it("retains full paths and skill names behind bounded chip labels", () => {
   }
 });
 
-it("retains recovered images and their recovery marker across draft reload", async () => {
+it("retains recovered attachments and their recovery marker across draft reload", async () => {
   const previous = globalThis.localStorage;
   const values = new Map<string, string>();
   globalThis.localStorage = {
@@ -337,6 +413,7 @@ it("retains recovered images and their recovery marker across draft reload", asy
       id: "a".repeat(64),
       name: "image.png",
       mimeType: "image/png" as const,
+      kind: "image" as const,
       sizeBytes: 1,
     };
     const recovery = {
@@ -354,7 +431,7 @@ it("retains recovered images and their recovery marker across draft reload", asy
       ...readComposerDraft("draft-test"),
     };
     const merged = mergeRecoveredInput(reloaded, recovery);
-    assert.equal(merged.images.length, 1);
+    assert.equal(merged.attachments.length, 1);
     assert.equal(merged.records.length, 1);
     assert.equal(merged.text, recovered.text);
     assert.equal(merged.appliedRevertId, recovery.requestId);
@@ -362,7 +439,7 @@ it("retains recovered images and their recovery marker across draft reload", asy
       ...merged,
       text: "",
       records: [],
-      images: [],
+      attachments: [],
     });
     const cleared = {
       ...activateComposer("thread"),

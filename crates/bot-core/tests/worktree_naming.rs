@@ -735,7 +735,11 @@ async fn an_image_only_first_message_keeps_the_temporary_branch() {
     let (_, temporary) = checkout(&t);
     let temporary = temporary.to_owned();
     let image = app
-        .stage_attachment("shot.png".into(), b"\x89PNG\r\n\x1a\nshot".to_vec())
+        .stage_attachment(
+            "shot.png".into(),
+            b"\x89PNG\r\n\x1a\nshot".to_vec(),
+            AttachmentKind::Image,
+        )
         .await
         .unwrap();
     app.submit(t.id.clone(), "image".into(), "".into(), vec![image])
