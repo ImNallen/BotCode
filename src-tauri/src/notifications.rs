@@ -1,7 +1,7 @@
 use bot_core::{App, ThreadId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, EventTarget, Manager, State};
+use tauri::{AppHandle, State};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -33,6 +33,7 @@ pub async fn notification_actions(
 
 #[cfg(target_os = "macos")]
 pub fn install(app: &AppHandle) {
+    use tauri::{Emitter, EventTarget, Manager};
     use tauri_plugin_notification::NotificationExt;
     let handle = app.clone();
     app.notification().on_action(move |notification| {

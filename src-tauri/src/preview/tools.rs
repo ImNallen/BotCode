@@ -313,7 +313,7 @@ fn write_png(
     if cancelled() {
         return Err("Preview screenshot save was cancelled.".into());
     }
-    let root = data_dir.canonicalize().map_err(|error| error.to_string())?;
+    let root = dunce::canonicalize(data_dir).map_err(|error| error.to_string())?;
     let mut directory = root.clone();
     for component in ["preview", "screenshots"] {
         directory.push(component);
@@ -322,9 +322,7 @@ fn write_png(
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.to_string()),
         }
-        directory = directory
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
+        directory = dunce::canonicalize(&directory).map_err(|error| error.to_string())?;
         if !directory.starts_with(&root) {
             return Err("Preview screenshot directory is outside the app data directory.".into());
         }
@@ -413,8 +411,7 @@ mod tests {
         assert!(path.is_absolute());
         assert_eq!(
             path.parent().unwrap(),
-            directory
-                .canonicalize()
+            dunce::canonicalize(&directory)
                 .unwrap()
                 .join("preview/screenshots")
         );

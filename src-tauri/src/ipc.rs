@@ -230,9 +230,13 @@ pub fn open_url(url: String) -> Result<()> {
             "Only web links can be opened.",
         ));
     }
-    let status = std::process::Command::new("/usr/bin/open")
-        .arg(&url)
-        .status()?;
+    #[cfg(not(windows))]
+    let mut opener = bot_core::process::command("/usr/bin/open");
+    #[cfg(windows)]
+    let mut opener = bot_core::process::command("rundll32.exe");
+    #[cfg(windows)]
+    opener.arg("url.dll,FileProtocolHandler");
+    let status = opener.arg(&url).status()?;
     if !status.success() {
         return Err(AppError::new(
             "open_failed",

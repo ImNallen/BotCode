@@ -20,11 +20,16 @@ pub struct BrowseDirectory {
 
 fn resolve_path(path: &str, cwd: Option<&str>) -> Result<PathBuf> {
     let path = path.trim();
-    let resolved = if path == "~" || path.starts_with("~/") {
-        let home = std::env::var_os("HOME")
+    // Windows also separates with `\`, as in `~\src`.
+    let under = |prefix: &str| {
+        path.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix(std::path::is_separator))
+    };
+    let resolved = if path == "~" || under("~").is_some() {
+        let home = std::env::home_dir()
             .ok_or_else(|| AppError::new("browse", "The home directory is unavailable."))?;
-        PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or(""))
-    } else if path.starts_with("./") || path.starts_with("../") {
+        home.join(under("~").unwrap_or(""))
+    } else if under(".").is_some() || under("..").is_some() {
         let cwd = cwd
             .filter(|cwd| Path::new(cwd).is_absolute())
             .ok_or_else(|| AppError::new("browse", "Select a project to use a relative path."))?;
@@ -37,7 +42,7 @@ fn resolve_path(path: &str, cwd: Option<&str>) -> Result<PathBuf> {
             "Enter an absolute or home-relative directory path.",
         ));
     };
-    let resolved = std::fs::canonicalize(resolved)?;
+    let resolved = dunce::canonicalize(resolved)?;
     if !resolved.is_dir() {
         return Err(AppError::new(
             "browse",
@@ -123,7 +128,7 @@ mod tests {
         );
         assert_eq!(
             Path::new(&result.path),
-            std::fs::canonicalize(&directory.0).unwrap()
+            dunce::canonicalize(&directory.0).unwrap()
         );
         assert_eq!(
             result.parent_path.as_deref(),
@@ -143,20 +148,20 @@ mod tests {
         let cwd = directory.0.to_str().unwrap();
         assert_eq!(
             resolve_path("./nested", Some(cwd)).unwrap(),
-            std::fs::canonicalize(&nested).unwrap()
+            dunce::canonicalize(&nested).unwrap()
         );
         assert_eq!(
             resolve_path("../", nested.to_str()).unwrap(),
-            std::fs::canonicalize(&directory.0).unwrap()
+            dunce::canonicalize(&directory.0).unwrap()
         );
         assert!(resolve_path("./nested", None).is_err());
         assert!(resolve_path("./missing", Some(cwd)).is_err());
         std::fs::write(directory.0.join("file"), "contents").unwrap();
         assert!(resolve_path("./file", Some(cwd)).is_err());
-        let home = std::env::var_os("HOME").unwrap();
+        let home = std::env::home_dir().unwrap();
         assert_eq!(
             resolve_path("~/", None).unwrap(),
-            std::fs::canonicalize(home).unwrap()
+            dunce::canonicalize(home).unwrap()
         );
     }
 }

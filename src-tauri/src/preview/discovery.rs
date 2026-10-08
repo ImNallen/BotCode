@@ -38,27 +38,53 @@ pub fn loopback(url: &Url) -> bool {
     })
 }
 
+fn local_port(address: &str) -> Option<u16> {
+    let (host, port) = address.rsplit_once(':')?;
+    let local = matches!(host, "*" | "0.0.0.0" | "[::]" | "::" | "localhost")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    let port = port.parse::<u16>().ok()?;
+    (local && port > 0).then_some(port)
+}
+
+#[cfg_attr(windows, allow(dead_code))]
 fn parse_listeners(output: &str) -> BTreeSet<u16> {
     output
         .lines()
+        .filter_map(|line| local_port(line.strip_prefix('n')?))
+        .collect()
+}
+
+/// Reads `netstat -ano` rows. The state column is localized, so a listening TCP socket is
+/// recognized by its zero foreign port.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_netstat(output: &str) -> BTreeSet<u16> {
+    output
+        .lines()
         .filter_map(|line| {
-            let address = line.strip_prefix('n')?;
-            let (host, port) = address.rsplit_once(':')?;
-            let local = matches!(host, "*" | "0.0.0.0" | "[::]" | "::" | "localhost")
-                || host
-                    .trim_matches(['[', ']'])
-                    .parse::<IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback());
-            let port = port.parse::<u16>().ok()?;
-            (local && port > 0).then_some(port)
+            let mut columns = line.split_whitespace();
+            let (protocol, local, foreign) = (columns.next()?, columns.next()?, columns.next()?);
+            (protocol == "TCP" && foreign.ends_with(":0"))
+                .then(|| local_port(local))
+                .flatten()
         })
         .collect()
 }
 
 async fn listener_ports() -> BTreeSet<u16> {
     let query = async {
-        let mut child = Command::new("/usr/sbin/lsof")
-            .args(["-iTCP", "-sTCP:LISTEN", "-P", "-n", "-F", "pcn"])
+        #[cfg(not(windows))]
+        let (program, args, parse) = (
+            "/usr/sbin/lsof",
+            ["-iTCP", "-sTCP:LISTEN", "-P", "-n", "-F", "pcn"].as_slice(),
+            parse_listeners,
+        );
+        #[cfg(windows)]
+        let (program, args, parse) = ("netstat", ["-ano"].as_slice(), parse_netstat);
+        let mut child = Command::from(bot_core::process::command(program))
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -76,7 +102,7 @@ async fn listener_ports() -> BTreeSet<u16> {
         if !status.success() {
             return None;
         }
-        Some(parse_listeners(&String::from_utf8_lossy(&bytes)))
+        Some(parse(&String::from_utf8_lossy(&bytes)))
     };
     tokio::time::timeout(Duration::from_secs(2), query)
         .await
@@ -262,6 +288,25 @@ mod tests {
             &Url::parse("http://127.0.0.1.evil.test:3000").unwrap()
         ));
         assert!(loopback(&Url::parse("http://[::1]:3000").unwrap()));
+    }
+
+    #[test]
+    fn netstat_parsing_keeps_local_tcp_listeners_in_any_language() {
+        let ports = parse_netstat(
+            "
+Aktive Verbindungen
+
+  Proto  Lokale Adresse         Remoteadresse          Status           PID
+  TCP    0.0.0.0:8000           0.0.0.0:0              ABHÖREN          4
+  TCP    127.0.0.1:5173         0.0.0.0:0              LISTENING        812
+  TCP    127.0.0.1:5173         127.0.0.1:51234        ESTABLISHED      812
+  TCP    192.168.1.5:9000       0.0.0.0:0              LISTENING        90
+  TCP    [::]:8080              [::]:0                 LISTENING        4
+  TCP    [::1]:3000             [::]:0                 LISTENING        77
+  UDP    127.0.0.1:4200         *:*                                     12
+",
+        );
+        assert_eq!(ports, BTreeSet::from([3000, 5173, 8000, 8080]));
     }
 
     #[tokio::test]

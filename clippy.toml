@@ -1,0 +1,7 @@
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "use bot_core::process::command, which opens no console window on Windows" },
+  { path = "tokio::process::Command::new", reason = "use bot_core::process::command, which opens no console window on Windows" },
+  { path = "std::fs::canonicalize", reason = "use dunce::canonicalize, which keeps \\\\?\\ prefixes out of Windows paths" },
+  { path = "tokio::fs::canonicalize", reason = "use dunce::canonicalize, which keeps \\\\?\\ prefixes out of Windows paths" },
+  { path = "std::path::Path::canonicalize", reason = "use dunce::canonicalize, which keeps \\\\?\\ prefixes out of Windows paths" },
+]
