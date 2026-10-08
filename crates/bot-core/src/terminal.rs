@@ -1,5 +1,5 @@
 mod history;
-use crate::domain::*;
+use crate::{domain::*, process::Kill};
 use history::History;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
@@ -137,10 +137,18 @@ impl Session {
     fn running(&self) -> bool {
         matches!(lock(&self.child).try_wait(), Ok(None))
     }
-    fn signal(&self, signal: i32) {
+    /// A polite stop hangs up, since interactive shells ignore SIGTERM.
+    fn signal(&self, kill: Kill) {
+        #[cfg(unix)]
         unsafe {
+            let signal = match kill {
+                Kill::Polite => libc::SIGHUP,
+                Kill::Force => libc::SIGKILL,
+            };
             libc::kill(-self.pid, signal);
         }
+        #[cfg(windows)]
+        crate::process::kill_tree(self.pid as u32, kill);
     }
     fn reap(&self) -> Option<i32> {
         loop {
@@ -156,11 +164,11 @@ impl Session {
     }
 }
 
-/// Interactive shells ignore SIGTERM, so each group gets SIGHUP and, a second later, SIGKILL.
+/// Each group gets a hangup and, a second later, a kill.
 fn terminate(sessions: &[Arc<Session>]) {
     let live: Vec<&Arc<Session>> = sessions.iter().filter(|s| s.running()).collect();
     for session in &live {
-        session.signal(libc::SIGHUP);
+        session.signal(Kill::Polite);
     }
     let deadline = Instant::now() + KILL_GRACE;
     while live.iter().any(|s| s.running()) && Instant::now() < deadline {
@@ -168,10 +176,10 @@ fn terminate(sessions: &[Arc<Session>]) {
     }
     for session in &live {
         if session.running() {
-            session.signal(libc::SIGKILL);
+            session.signal(Kill::Force);
         }
         session.reap();
-        session.signal(libc::SIGKILL);
+        session.signal(Kill::Force);
     }
 }
 
@@ -346,11 +354,8 @@ fn spawn(
         ));
     }
     let pair = native_pty_system().openpty(size.pty()).map_err(pty_error)?;
-    let candidates = shell_candidates(pinned, std::env::var_os("SHELL"), cfg!(target_os = "macos"));
     let environment = shell_environment(std::env::vars_os());
-    let (program, args) = candidates
-        .into_iter()
-        .find(|(program, _)| program.exists())
+    let (program, args) = resolve_shell(pinned)
         .ok_or_else(|| AppError::new("terminal_unavailable", "No shell was found."))?;
     let mut command = CommandBuilder::new(&program);
     command.args(args);
@@ -382,6 +387,45 @@ fn spawn(
     Ok((session, reader))
 }
 
+pub(crate) fn resolve_shell(pinned: Option<&Path>) -> Option<(PathBuf, Vec<&'static str>)> {
+    #[cfg(windows)]
+    let candidates = windows_shell_candidates(pinned);
+    #[cfg(not(windows))]
+    let candidates = shell_candidates(pinned, std::env::var_os("SHELL"), cfg!(target_os = "macos"));
+    candidates.into_iter().find(|(program, _)| program.exists())
+}
+
+/// PowerShell 7 when installed, then the Windows PowerShell every Windows ships, then cmd.exe.
+#[cfg(windows)]
+fn windows_shell_candidates(pinned: Option<&Path>) -> Vec<(PathBuf, Vec<&'static str>)> {
+    let system =
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("System32");
+    let paths: Vec<PathBuf> = match pinned {
+        Some(shell) => vec![shell.to_path_buf()],
+        None => crate::vcs::bin_dirs()
+            .into_iter()
+            .find_map(|dir| crate::vcs::executable(dir.join("pwsh")))
+            .into_iter()
+            .chain([
+                system.join("WindowsPowerShell\\v1.0\\powershell.exe"),
+                std::env::var_os("ComSpec").map_or_else(|| system.join("cmd.exe"), PathBuf::from),
+            ])
+            .collect(),
+    };
+    paths
+        .into_iter()
+        .map(|path| {
+            let args = match crate::project::Dialect::of(&path) {
+                crate::project::Dialect::PowerShell => vec!["-NoLogo"],
+                _ => vec![],
+            };
+            (path, args)
+        })
+        .collect()
+}
+
+#[cfg_attr(windows, allow(dead_code))]
 fn shell_candidates(
     pinned: Option<&Path>,
     env_shell: Option<OsString>,
@@ -435,7 +479,7 @@ mod tests {
     #[test]
     fn deleted_thread_gate_prevents_stale_checkout_attach() {
         let directory = tempfile::tempdir().unwrap();
-        let terminals = Terminals::new(Some("/bin/sh".into()));
+        let terminals = Terminals::new(cfg!(unix).then(|| "/bin/sh".into()));
         let id = ThreadId::default();
         let key = TerminalKey {
             workspace: WorkspaceId::default(),
@@ -499,6 +543,7 @@ mod tests {
             env(&[("COLORTERM", "24bit"), ("TERM", "xterm-256color")])
         );
     }
+    #[cfg(unix)]
     #[test]
     fn shell_candidates_prefer_shell_then_system_shells() {
         let paths = |c: Vec<(PathBuf, Vec<&str>)>| {

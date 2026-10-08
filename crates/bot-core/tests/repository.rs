@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)]
 use bot_core::*;
 use std::{path::Path, process::Command};
 fn git(root: &Path, args: &[&str]) {
@@ -83,6 +84,7 @@ fn reads_real_index_worktree_untracked_and_rename_diffs() {
         other => panic!("{other:?}"),
     }
 }
+#[cfg(unix)]
 #[test]
 fn refuses_traversal_external_symlinks_binary_and_large_text() {
     let dir = tempfile::tempdir().unwrap();
@@ -105,22 +107,38 @@ fn refuses_traversal_external_symlinks_binary_and_large_text() {
         FileView::Unavailable { .. }
     ));
 }
+#[test]
+fn reads_refuse_git_metadata_under_another_spelling() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q"]);
+    let root = repo::open(dir.path()).unwrap();
+    // On a case-sensitive volume `.GIT` names nothing, so there is no alias to refuse.
+    if !root.join(".GIT").exists() {
+        return;
+    }
+    let error = repo::read_file(&root, ".GIT/config").unwrap_err();
+    assert_eq!(error.message, "Choose a file inside the repository.");
+}
+#[cfg(unix)]
 fn refusal(result: Result<()>) -> (String, String) {
     let e = result.unwrap_err();
     (e.code, e.message)
 }
+#[cfg(unix)]
 fn inside() -> (String, String) {
     (
         "invalid_path".into(),
         "Choose a file inside the repository.".into(),
     )
 }
+#[cfg(unix)]
 fn outside() -> (String, String) {
     (
         "invalid_path".into(),
         "This symlink points outside the repository.".into(),
     )
 }
+#[cfg(unix)]
 #[test]
 fn writes_tracked_files_in_place_through_in_repo_symlinks_and_new_parents() {
     use std::os::unix::fs::PermissionsExt;
@@ -183,6 +201,7 @@ fn writes_tracked_files_in_place_through_in_repo_symlinks_and_new_parents() {
         FileView::Text { contents, .. } if contents == limit
     ));
 }
+#[cfg(unix)]
 #[test]
 fn write_refuses_paths_outside_the_repository_and_inside_git() {
     let dir = tempfile::tempdir().unwrap();
@@ -264,6 +283,7 @@ fn write_refuses_paths_outside_the_repository_and_inside_git() {
         "small\n"
     );
 }
+#[cfg(unix)]
 #[test]
 fn write_refuses_symlinks_that_escape_the_repository() {
     let dir = tempfile::tempdir().unwrap();

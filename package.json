@@ -10,10 +10,10 @@
     "typecheck": "tsc --noEmit",
     "tauri": "node scripts/tauri.mjs",
     "test:core": "cargo test -p bot-core",
-    "test:ui": "node --import ./src/test/tsx.mjs --test 'src/**/*.test.ts'",
+    "test:ui": "node --import ./src/test/tsx.mjs --test \"src/**/*.test.ts\"",
     "smoke": "cargo run -p bot-core --bin smoke",
-    "format": "prettier --write 'src/**/*.{ts,tsx,css}' '*.{json,ts,yaml}' 'src-tauri/*.json' 'src-tauri/capabilities/*.json'",
-    "format:check": "prettier --check 'src/**/*.{ts,tsx,css}' '*.{json,ts,yaml}' 'src-tauri/*.json' 'src-tauri/capabilities/*.json'"
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{json,ts,yaml}\" \"src-tauri/*.json\" \"src-tauri/capabilities/*.json\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{json,ts,yaml}\" \"src-tauri/*.json\" \"src-tauri/capabilities/*.json\""
   },
   "dependencies": {
     "@pierre/diffs": "1.5.1",

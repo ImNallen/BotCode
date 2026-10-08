@@ -29,7 +29,7 @@ import { fileQuery, setFileDraft, useFileDraft } from "./fileDrafts";
 import { FileEntryIcon } from "./FileEntryIcon";
 import { clampFileLine, useFileLineReveal } from "./fileLineReveal";
 import { FileExplorer } from "./FileExplorer";
-import { basename } from "./panelState";
+import { pathBasename } from "../chat/composer-logic";
 import { FILE_VIEW_UNSAFE_CSS } from "./surfaceCss";
 import { useFileSaveCoordinator } from "./useFileSaveCoordinator";
 import { useResolvedTheme, type ResolvedTheme } from "./useResolvedTheme";
@@ -372,7 +372,7 @@ function FileBreadcrumbs({
             title={path}
             className="block max-w-40 truncate rounded-sm px-0.5 font-medium text-foreground"
           >
-            {basename(path)}
+            {pathBasename(path)}
           </span>
         </span>
       </div>
@@ -423,7 +423,7 @@ function DirectoryCrumb({
           <MenuItem data-keep-open onClick={() => setDirectory(parent)}>
             <ArrowLeftIcon />
             <span className="truncate">
-              Back to {parent ? basename(parent) : projectName}
+              Back to {parent ? pathBasename(parent) : projectName}
             </span>
           </MenuItem>
           <MenuSeparator />

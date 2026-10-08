@@ -1,6 +1,7 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/chat/MessagesTimeline.logic.ts, MessagesTimeline.tsx, agentSpawnSummary.ts, packages/client-runtime/src/work-log/presentation.ts and apps/server/src/orchestration/ActivityPayloadProjection.ts (MIT).
 import type { Approval, Attachment, Item, Thread } from "../ipc";
 import type { ComposerContextRecord } from "./composerContext";
+import { pathBasename } from "./composer-logic";
 import { formatDuration } from "../lib/time";
 
 type Turn = Thread["turns"][number];
@@ -147,7 +148,18 @@ export type TimelineRow =
   | { kind: "context-compaction"; id: string; label: string }
   | { kind: "error"; id: string; text: string };
 
-const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ash", "ksh", "fish"]);
+const SHELLS = new Set([
+  "sh",
+  "bash",
+  "zsh",
+  "dash",
+  "ash",
+  "ksh",
+  "fish",
+  "pwsh",
+  "powershell",
+  "cmd",
+]);
 
 function tokens(command: string): string[] {
   return (
@@ -161,9 +173,11 @@ export function commandProgramName(command: string): string | null {
   const parts = tokens(command.trim());
   const first = parts[0];
   if (!first) return null;
-  const program = first.split("/").at(-1) ?? first;
-  if (SHELLS.has(program)) {
-    const flag = parts.findIndex((part) => /^-[a-z]*c$/.test(part));
+  const program = pathBasename(first).replace(/\.exe$/i, "");
+  if (SHELLS.has(program.toLowerCase())) {
+    const flag = parts.findIndex((part) =>
+      /^(?:-[a-z]*c|-command|\/c)$/i.test(part),
+    );
     const payload = flag >= 0 ? parts[flag + 1] : undefined;
     if (payload) return commandProgramName(payload);
   }

@@ -2,7 +2,6 @@
 use super::*;
 use crate::project::{self, ProjectConfig, SetupState, WorktreeSetup};
 use std::io::{Read, Seek, SeekFrom};
-use std::os::{fd::AsRawFd, unix::process::CommandExt};
 
 impl Owner {
     pub(super) fn setup_busy(&self, root: &Path) -> bool {
@@ -54,59 +53,30 @@ impl Owner {
         setup.started_at_ms = Some(now_ms());
         let root = self.workspaces[&thread.workspace_id].root.clone();
         let cwd = setup.cwd.clone();
-        let command = setup
-            .script
-            .as_ref()
-            .map(|s| s.command.as_str())
-            .unwrap_or(":");
-        let submodules = match setup.submodules.as_str() {
-            "recursive" => "git submodule update --init --recursive",
-            "top-level" => "git submodule update --init",
-            _ => ":",
-        };
-        let quote = project::quote;
-        let run_script = setup.script.as_ref().map_or_else(String::new, |_| {
-            format!(
-                "{} -c {}; code=$?; ",
-                quote(&project::shell(self.config.shell.as_deref()).to_string_lossy()),
-                quote(command)
-            )
-        });
-        let wrapper = format!(
-            "echo $$ > {pid}; {submodules}; code=$?; if [ \"$code\" -ne 0 ]; then printf 'Submodule checkout failed with code %s.\\n' \"$code\"; fi; {run_script}printf '%s\\n' \"$code\" > {temp}; mv {temp} {receipt}; exit \"$code\"",
-            pid = quote(&attempt_dir.join("pid").to_string_lossy()),
-            temp = quote(&attempt_dir.join("receipt.tmp").to_string_lossy()),
-            receipt = quote(&attempt_dir.join("receipt").to_string_lossy())
-        );
+        let script = setup.script.as_ref().map(|s| s.command.clone());
+        let submodules = setup.submodules.clone();
         let lock = lock_attempt(&attempt_dir)?
             .ok_or_else(|| AppError::new("setup_busy", "Setup is already running."))?;
-        let output = std::fs::File::create(attempt_dir.join("output"))?;
-        let lock_fd = lock.as_raw_fd();
+        let stderr = std::fs::File::create(attempt_dir.join("output"))?;
+        let stdout = stderr.try_clone()?;
         self.install(thread)?;
-        let mut process = std::process::Command::new("/bin/sh");
-        unsafe {
-            process.pre_exec(move || {
-                if libc::dup2(lock_fd, 198) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::fcntl(198, libc::F_SETFD, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let result = process
-            .arg("-c")
-            .arg(wrapper)
-            .current_dir(cwd.clone())
-            .env("T3CODE_PROJECT_ROOT", root)
-            .env("T3CODE_WORKTREE_PATH", cwd)
-            .env("NO_COLOR", "1")
-            .env("FORCE_COLOR", "0")
-            .stdin(std::process::Stdio::null())
-            .stdout(output.try_clone()?)
-            .stderr(output)
-            .spawn();
+        let attempt = SetupAttempt {
+            dir: &attempt_dir,
+            shell: &project::shell(self.config.shell.as_deref()),
+            script: script.as_deref(),
+            submodules: &submodules,
+        };
+        let result = attempt.spawn(lock, |process| {
+            process
+                .current_dir(cwd.clone())
+                .env("T3CODE_PROJECT_ROOT", root)
+                .env("T3CODE_WORKTREE_PATH", cwd)
+                .env("NO_COLOR", "1")
+                .env("FORCE_COLOR", "0")
+                .stdin(std::process::Stdio::null())
+                .stdout(stdout)
+                .stderr(stderr);
+        });
         match result {
             Ok(mut child) => {
                 std::thread::spawn(move || {
@@ -159,21 +129,22 @@ impl Owner {
                 .collect();
         }
         if let Ok(receipt) = std::fs::read_to_string(dir.join("receipt")) {
-            if let Ok(code) = receipt.trim().parse::<i32>() {
-                setup.state = if code == 0 {
-                    SetupState::Succeeded
-                } else {
-                    SetupState::Failed {
-                        reason: format!("Setup exited with code {code}."),
-                        exit_code: Some(code),
-                    }
-                };
-                setup.completed_at_ms = Some(now_ms());
-            }
-        } else if setup
-            .started_at_ms
-            .is_none_or(|at| now_ms().saturating_sub(at) > 2000)
-            && lock_attempt(&dir)?.is_some()
+            setup.state = match receipt.trim().parse::<i32>() {
+                Ok(0) => SetupState::Succeeded,
+                Ok(code) => SetupState::Failed {
+                    reason: format!("Setup exited with code {code}."),
+                    exit_code: Some(code),
+                },
+                Err(_) => SetupState::Failed {
+                    reason: "Setup finished without recording its exit code.".into(),
+                    exit_code: None,
+                },
+            };
+            setup.completed_at_ms = Some(now_ms());
+        } else if setup.started_at_ms.is_none_or(|at| {
+            let elapsed = now_ms().saturating_sub(at);
+            elapsed > 2000 && (dir.join("pid").exists() || elapsed > 60_000)
+        }) && lock_attempt(&dir)?.is_some()
         {
             setup.state = SetupState::Interrupted {
                 reason: "The setup process stopped without recording its result.".into(),
@@ -273,19 +244,106 @@ pub(super) fn setup_for(checkout: &Checkout, config: ProjectConfig) -> Option<Wo
     })
 }
 fn lock_attempt(dir: &Path) -> Result<Option<std::fs::File>> {
-    let file = std::fs::OpenOptions::new()
+    let file = match std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(dir.join("lock"))?;
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-        return Ok(Some(file));
+        .open(dir.join("lock"))
+    {
+        Ok(file) => file,
+        // ERROR_SHARING_VIOLATION: the Windows setup wrapper holds the file open unshared.
+        Err(error) if cfg!(windows) && error.raw_os_error() == Some(32) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
     }
-    let error = std::io::Error::last_os_error();
-    if error.kind() == std::io::ErrorKind::WouldBlock {
-        Ok(None)
-    } else {
-        Err(error.into())
+}
+
+/// A detached setup run that records its exit code in `receipt`. It holds the attempt's lock
+/// until it exits, so a held lock without a receipt means it is still running.
+struct SetupAttempt<'a> {
+    dir: &'a Path,
+    #[cfg_attr(windows, allow(dead_code))]
+    shell: &'a Path,
+    script: Option<&'a str>,
+    submodules: &'a str,
+}
+impl SetupAttempt<'_> {
+    #[cfg(unix)]
+    fn spawn(
+        &self,
+        lock: std::fs::File,
+        configure: impl FnOnce(&mut std::process::Command),
+    ) -> std::io::Result<std::process::Child> {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let quote = project::quote;
+        let submodules = match self.submodules {
+            "recursive" => "git submodule update --init --recursive",
+            "top-level" => "git submodule update --init",
+            _ => ":",
+        };
+        let run_script = self.script.map_or_else(String::new, |command| {
+            format!(
+                "{} -c {}; code=$?; ",
+                quote(&self.shell.to_string_lossy()),
+                quote(command)
+            )
+        });
+        let wrapper = format!(
+            "echo $$ > {pid}; {submodules}; code=$?; if [ \"$code\" -ne 0 ]; then printf 'Submodule checkout failed with code %s.\\n' \"$code\"; fi; {run_script}printf '%s\\n' \"$code\" > {temp}; mv {temp} {receipt}; exit \"$code\"",
+            pid = quote(&self.dir.join("pid").to_string_lossy()),
+            temp = quote(&self.dir.join("receipt.tmp").to_string_lossy()),
+            receipt = quote(&self.dir.join("receipt").to_string_lossy())
+        );
+        let mut process = crate::process::command("/bin/sh");
+        let lock_fd = lock.as_raw_fd();
+        unsafe {
+            process.pre_exec(move || {
+                if libc::dup2(lock_fd, 198) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::fcntl(198, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        process.arg("-c").arg(wrapper);
+        configure(&mut process);
+        process.spawn()
+    }
+
+    /// Windows cannot hand a lock to a child, so the PowerShell wrapper takes it by opening
+    /// the lock file unshared. The script runs as a batch file in cmd.exe.
+    #[cfg(windows)]
+    fn spawn(
+        &self,
+        lock: std::fs::File,
+        configure: impl FnOnce(&mut std::process::Command),
+    ) -> std::io::Result<std::process::Child> {
+        std::fs::write(self.dir.join("setup.ps1"), include_str!("setup.ps1"))?;
+        let script = match self.script {
+            Some(command) => {
+                let path = self.dir.join("script.cmd");
+                std::fs::write(&path, project::batch_script(command))?;
+                path.into_os_string()
+            }
+            None => Default::default(),
+        };
+        drop(lock);
+        let mut process = crate::process::command("powershell.exe");
+        process
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive"])
+            .args(["-ExecutionPolicy", "Bypass", "-File"])
+            .arg(self.dir.join("setup.ps1"))
+            .env("BOT_CODE_SETUP_DIR", self.dir)
+            .env("BOT_CODE_SETUP_SUBMODULES", self.submodules)
+            .env("BOT_CODE_SETUP_SCRIPT", script);
+        configure(&mut process);
+        process.spawn()
     }
 }

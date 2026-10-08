@@ -4,6 +4,7 @@ import {
   type TerminalPanelSurface,
   type TerminalSurfaceId,
 } from "../terminal/terminalState";
+import { pathBasename } from "../chat/composer-logic";
 import type { PanelState, Surface } from "./RightPanel";
 import type { ThreadPrSummary } from "./pullRequests";
 
@@ -112,8 +113,6 @@ export function reconcileTerminalSurfaces(
   };
 }
 
-export const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
-
 export function eligibleSurfaces(
   state: PanelState,
   repository: boolean,
@@ -160,7 +159,7 @@ export function surfaceTitle(
     case "pull_request":
       return `#${surface.key.split("/").at(-1)}`;
     case "file":
-      return basename(surface.path);
+      return pathBasename(surface.path);
     case "terminal":
       return getTerminalLabel(
         terminals.find((terminal) => terminal.id === surface.id)

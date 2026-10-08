@@ -1,3 +1,5 @@
+#![cfg(unix)]
+#![allow(clippy::disallowed_methods)]
 use bot_core::*;
 use serde_json::{Value, json};
 use std::{
@@ -302,14 +304,20 @@ async fn shutdown_reaps_hanging_github_descendants_and_releases_database() {
     f.state(json!({"mode":"hang"}));
     app.list_thread_pull_requests(thread, true).await.unwrap();
     let pid_file = f.dir.path().join("gh.pid");
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while !pid_file.exists() {
+    // The fixture creates the file before it writes the pid.
+    let pid: i32 = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.parse().ok())
+            {
+                return pid;
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .unwrap();
-    let pid: i32 = std::fs::read_to_string(pid_file).unwrap().parse().unwrap();
     tokio::time::timeout(Duration::from_secs(5), app.shutdown())
         .await
         .unwrap()

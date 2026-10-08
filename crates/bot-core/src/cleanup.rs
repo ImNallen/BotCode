@@ -9,7 +9,6 @@ use crate::{
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 const DAY_MS: u64 = 86_400_000;
@@ -127,7 +126,7 @@ impl Sweep<'_> {
         let Some(default_ref) = default_ref else {
             return Ok(false);
         };
-        let status = Command::new("git")
+        let status = crate::process::command("git")
             .arg("-C")
             .arg(&candidate.path)
             .args(["merge-base", "--is-ancestor", head, default_ref])
@@ -147,11 +146,9 @@ impl Sweep<'_> {
     /// workspace root and no ignored files beyond `node_modules/`.
     fn inspect(&self, candidate: &Candidate) -> Checked<String> {
         let path = &candidate.path;
-        let worktrees = self
-            .worktrees
-            .canonicalize()
-            .map_err(|e| format!("worktrees directory: {e}"))?;
-        let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+        let worktrees =
+            dunce::canonicalize(self.worktrees).map_err(|e| format!("worktrees directory: {e}"))?;
+        let canonical = dunce::canonicalize(path).map_err(|e| e.to_string())?;
         if !canonical.starts_with(&worktrees) || canonical == worktrees {
             return Err("path is outside the worktrees directory".into());
         }
@@ -160,7 +157,7 @@ impl Sweep<'_> {
             return Err("path is a symlink or not canonical".into());
         }
         for root in self.roots {
-            let real = root.canonicalize().unwrap_or_else(|_| root.clone());
+            let real = dunce::canonicalize(root).unwrap_or_else(|_| root.clone());
             if root.starts_with(path) || real.starts_with(path) {
                 return Err("a workspace root is inside this worktree".into());
             }
@@ -230,7 +227,7 @@ fn default_ref(root: &Path) -> Checked<String> {
         return Ok(format!("refs/heads/{default}"));
     }
     let refspec = format!("+refs/heads/{default}:refs/remotes/origin/{default}");
-    let fetch = Command::new("git")
+    let fetch = crate::process::command("git")
         .arg("-C")
         .arg(root)
         .args(["fetch", "--quiet", "--no-tags", "origin", &refspec])
@@ -277,7 +274,7 @@ mod tests {
     #[test]
     fn untracked_files_fail_inspection() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
         let repository = root.join("repository");
         let worktrees = root.join("worktrees");
         std::fs::create_dir_all(&repository).unwrap();

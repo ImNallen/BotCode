@@ -1,10 +1,7 @@
 use bot_core::*;
-use std::{
-    process::Command,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 fn git(path: &std::path::Path, args: &[&str]) -> Result<()> {
-    let output = Command::new("git")
+    let output = bot_core::process::command("git")
         .arg("-C")
         .arg(path)
         .args(args)
@@ -134,7 +131,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         std::fs::read_to_string(repository.join("README.md"))?,
         "# Disposable Bot Code smoke checkout\n"
     );
-    let status = Command::new("git")
+    let status = bot_core::process::command("git")
         .arg("-C")
         .arg(&repository)
         .args(["status", "--porcelain"])

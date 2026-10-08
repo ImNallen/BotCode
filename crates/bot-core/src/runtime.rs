@@ -57,8 +57,7 @@ impl RuntimeConfig {
         let data_dir = std::env::var_os("BOT_CODE_DATA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
+                std::env::home_dir()
                     .unwrap_or_default()
                     // The Z1 Code directory, kept so existing threads survive the rename.
                     .join(".z1")
@@ -286,6 +285,7 @@ pub struct App {
     network_timeout: Duration,
     codex: PathBuf,
     script_shell: PathBuf,
+    script_dialect: crate::project::Dialect,
     log: RotatingLog,
     terminals: Terminals,
     attachments: Attachments,
@@ -320,7 +320,7 @@ impl App {
         let scratch = if repo::inside_work_tree(&config.data_dir) {
             None
         } else {
-            Some(config.data_dir.canonicalize()?.join("scratch"))
+            Some(dunce::canonicalize(&config.data_dir)?.join("scratch"))
         };
         let mut threads: HashMap<ThreadId, ThreadSnapshot> = store
             .threads()?
@@ -366,7 +366,7 @@ impl App {
             store.save(thread)?;
         }
         // Codex reads images by absolute path.
-        let attachments = Attachments::new(&config.data_dir.canonicalize()?);
+        let attachments = Attachments::new(&dunce::canonicalize(&config.data_dir)?);
         let mut referenced: HashSet<AttachmentId> = threads
             .values()
             .flat_map(|thread| {
@@ -436,6 +436,10 @@ impl App {
         let gh = config.gh_binary.clone();
         let codex = config.codex_binary.clone();
         let script_shell = crate::project::shell(config.shell.as_deref());
+        let script_dialect = crate::terminal::resolve_shell(config.shell.as_deref())
+            .map_or(crate::project::Dialect::Posix, |(shell, _)| {
+                crate::project::Dialect::of(&shell)
+            });
         let terminals = Terminals::new(config.shell.clone());
         let settings = config.data_dir.join("settings.json");
         let keybindings = Arc::new(crate::keybindings::Keybindings::new(
@@ -519,6 +523,7 @@ impl App {
             network_timeout,
             codex,
             script_shell,
+            script_dialect,
             log,
             terminals,
             attachments,
@@ -1018,18 +1023,26 @@ impl App {
             )
             .await?;
         self.terminal_detach(subscription);
-        let q = crate::project::quote;
-        let worktree_env = if cwd != w.root {
-            format!("T3CODE_WORKTREE_PATH={} ", q(&cwd.to_string_lossy()))
-        } else {
-            String::new()
+        let mut env = vec![("T3CODE_PROJECT_ROOT", w.root.as_path())];
+        if cwd != w.root {
+            env.push(("T3CODE_WORKTREE_PATH", cwd.as_path()));
+        }
+        use crate::project::Dialect;
+        let command = match self.script_dialect {
+            Dialect::Posix => {
+                crate::project::posix_script_line(&self.script_shell, &env, &script.command)
+            }
+            dialect => {
+                let batch = std::env::temp_dir()
+                    .join(format!("bot-code-script-{}.cmd", uuid::Uuid::new_v4()));
+                std::fs::write(&batch, crate::project::batch_script(&script.command))?;
+                if dialect == Dialect::PowerShell {
+                    crate::project::powershell_script_line(&env, &batch)
+                } else {
+                    crate::project::cmd_script_line(&env, &batch)
+                }
+            }
         };
-        let command = format!(
-            " T3CODE_PROJECT_ROOT={} {worktree_env}{} -c {}\n",
-            q(&w.root.to_string_lossy()),
-            q(&self.script_shell.to_string_lossy()),
-            q(&script.command)
-        );
         self.terminal_write(workspace, thread, terminal, command)
             .await
     }

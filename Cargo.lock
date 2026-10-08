@@ -340,6 +340,7 @@ dependencies = [
  "base64 0.22.1",
  "block2",
  "bot-core",
+ "dunce",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -361,6 +362,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-tz",
+ "dunce",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",

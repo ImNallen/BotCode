@@ -1,12 +1,11 @@
 // Ported from T3 Code v0.0.45 packages/contracts/src/editor.ts, packages/shared/src/editor.ts and apps/server/src/process/externalLauncher.ts (MIT).
-use crate::{domain::*, repo, vcs};
+use crate::{domain::*, process, repo, vcs};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
     num::NonZeroU32,
-    os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,7 +163,10 @@ const EDITORS: [Editor; 21] = {
     ]
 };
 
+#[cfg(not(windows))]
 const OPEN: &str = "/usr/bin/open";
+#[cfg(windows)]
+const OPEN: &str = "explorer.exe";
 
 fn editor(id: EditorId) -> &'static Editor {
     EDITORS
@@ -180,7 +182,16 @@ struct Roots {
 }
 impl Roots {
     fn from_env() -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        #[cfg(windows)]
+        return Self {
+            bins: vcs::bin_dirs(),
+            applications: Vec::new(),
+            toolbox_scripts: std::env::var_os("LOCALAPPDATA")
+                .map(|local| PathBuf::from(local).join(r"JetBrains\Toolbox\scripts")),
+        };
+        #[cfg(not(windows))]
+        let home = std::env::home_dir();
+        #[cfg(not(windows))]
         Self {
             bins: vcs::bin_dirs(),
             applications: home
@@ -224,7 +235,7 @@ fn resolve(editor: &Editor, roots: &Roots) -> Option<Resolved> {
             in_bundles.extend(in_bundle.iter().map(|binary| contents.join(binary)));
         }
     }
-    if let Some(program) = in_bundles.into_iter().find(|path| vcs::is_executable(path)) {
+    if let Some(program) = in_bundles.into_iter().find_map(vcs::executable) {
         return Some(Resolved {
             program,
             base_args: if editor.bundle_drops_base_args {
@@ -244,7 +255,7 @@ fn resolve(editor: &Editor, roots: &Roots) -> Option<Resolved> {
         .iter()
         .flat_map(|command| roots.bins.iter().map(move |dir| dir.join(command)))
         .chain(toolbox)
-        .find(|path| vcs::is_executable(path))?;
+        .find_map(vcs::executable)?;
     Some(Resolved {
         program,
         base_args: editor.base_args,
@@ -307,7 +318,7 @@ pub(crate) fn launch(id: EditorId, path: &Path, position: Option<Position>) -> R
         resolved.program,
         launch_args(id, resolved.base_args, path, position),
     );
-    spawn_and_watch(&program, &args, editor.label)
+    spawn_and_watch(&program, &args, editor)
 }
 /// A JetBrains bundle binary is the IDE itself. Started directly, it would run as Bot Code's
 /// child and macOS would ask for its file access in Bot Code's name, so it goes through
@@ -327,21 +338,23 @@ fn command_line(
     open_args.extend(args);
     (OPEN.into(), open_args)
 }
-fn spawn_and_watch(program: &Path, args: &[OsString], label: &str) -> Result<()> {
-    let mut child = Command::new(program)
+fn spawn_and_watch(program: &Path, args: &[OsString], editor: &Editor) -> Result<()> {
+    let label = editor.label;
+    let mut child = process::grouped(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .process_group(0)
         .spawn()
         .map_err(|e| AppError::new("editor_launch", format!("Could not start {label}: {e}")))?;
     // CLI launchers hand off and exit at once, while a JetBrains binary may run as the IDE.
     // Waiting briefly surfaces a launcher that failed without blocking on one that did not.
     let deadline = std::time::Instant::now() + LAUNCH_GRACE;
+    // explorer.exe exits 1 even after it opens the folder.
+    let reports_failure = !(cfg!(windows) && editor.style == LaunchStyle::FileManager);
     while std::time::Instant::now() < deadline {
         match child.try_wait()? {
-            Some(status) if status.success() => return Ok(()),
+            Some(status) if status.success() || !reports_failure => return Ok(()),
             Some(status) => {
                 return Err(AppError::new(
                     "editor_launch",
@@ -357,15 +370,22 @@ fn spawn_and_watch(program: &Path, args: &[OsString], label: &str) -> Result<()>
 const LAUNCH_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub(crate) async fn reveal(path: &Path) -> Result<()> {
-    let status = tokio::process::Command::new(OPEN)
-        .arg("-R")
-        .arg(path)
+    let mut command = process::command(OPEN);
+    #[cfg(not(windows))]
+    command.arg("-R").arg(path);
+    // Explorer reads `/select,` and the quoted path as one argument, and exits 1 on success.
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::raw_arg(
+        &mut command,
+        format!("/select,\"{}\"", path.display()),
+    );
+    let status = tokio::process::Command::from(command)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .await?;
-    if !status.success() {
+    if cfg!(not(windows)) && !status.success() {
         return Err(AppError::new(
             "open_failed",
             format!("Could not reveal {} in Finder.", path.display()),
@@ -427,6 +447,7 @@ fn continues_path(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn args(id: EditorId, base: &[&str], position: Option<(u32, Option<u32>)>) -> Vec<String> {
@@ -519,12 +540,14 @@ mod tests {
         assert!(serde_json::from_str::<Position>(r#"{"line":0,"column":null}"#).is_err());
     }
 
+    #[cfg(unix)]
     fn touch(path: &Path, mode: u32) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn detection_reads_path_app_bundles_and_toolbox_and_needs_the_executable_bit() {
         let dir = tempfile::tempdir().unwrap();
@@ -589,6 +612,7 @@ mod tests {
         assert_eq!(resolved(EditorId::Kiro).base_args, ["ide"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn jetbrains_bundle_binaries_launch_through_launchservices() {
         let rider = PathBuf::from("/Applications/Rider.app/Contents/MacOS/rider");
@@ -631,13 +655,14 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_launcher_that_exits_nonzero_reports_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let failing = dir.path().join("fails");
         std::fs::write(&failing, "#!/bin/sh\nexit 1\n").unwrap();
         std::fs::set_permissions(&failing, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let error = spawn_and_watch(&failing, &[], "Cursor").unwrap_err();
+        let error = spawn_and_watch(&failing, &[], editor(EditorId::Cursor)).unwrap_err();
         assert_eq!(error.code, "editor_launch");
         assert_eq!(
             error.message,
@@ -646,7 +671,7 @@ mod tests {
         let succeeding = dir.path().join("succeeds");
         std::fs::write(&succeeding, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&succeeding, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(spawn_and_watch(&succeeding, &[], "Cursor").is_ok());
+        assert!(spawn_and_watch(&succeeding, &[], editor(EditorId::Cursor)).is_ok());
     }
 
     #[test]

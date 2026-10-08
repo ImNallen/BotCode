@@ -122,7 +122,7 @@ impl Tool<'_> {
         if *cancel.borrow() {
             return Err(AppError::new("cancelled", "Tool work cancelled."));
         }
-        let mut command = tokio::process::Command::new(self.program);
+        let mut command = tokio::process::Command::from(crate::process::grouped(self.program));
         command
             .args(args)
             .current_dir(self.cwd)
@@ -134,8 +134,7 @@ impl Tool<'_> {
                 Stdio::null()
             })
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0);
+            .stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => AppError::new(
                 "tool_missing",
@@ -258,23 +257,19 @@ impl Tool<'_> {
     }
 }
 async fn stop(child: &mut Child, pid: Option<u32>) -> Result<()> {
-    let group = |signal| {
-        if let Some(pid) = pid {
-            unsafe {
-                libc::kill(-(pid as i32), signal);
-            }
-        }
-    };
-    group(libc::SIGTERM);
+    use crate::process::{Kill, kill_tree, tree_alive};
+    if let Some(pid) = pid {
+        kill_tree(pid, Kill::Polite);
+    }
     if tokio::time::timeout(GRACE, child.wait()).await.is_err() {
         let _ = child.kill().await;
     }
-    group(libc::SIGKILL);
     let Some(pid) = pid else {
         return Ok(());
     };
+    kill_tree(pid, Kill::Force);
     let reaped = tokio::time::timeout(GRACE, async {
-        while unsafe { libc::kill(-(pid as i32), 0) } == 0 {
+        while tree_alive(pid) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -294,8 +289,7 @@ pub(crate) fn installed_binary(name: &str, env: &str) -> PathBuf {
     }
     bin_dirs()
         .into_iter()
-        .map(|dir| dir.join(name))
-        .find(|path| is_executable(path))
+        .find_map(|dir| executable(dir.join(name)))
         .unwrap_or_else(|| name.into())
 }
 /// An app launched from Finder gets launchd's minimal PATH, so the usual install locations
@@ -304,14 +298,46 @@ pub(crate) fn bin_dirs() -> Vec<PathBuf> {
     let path = std::env::var_os("PATH")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>());
-    let home = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/bin"));
+    let home = std::env::home_dir().map(|home| home.join(".local/bin"));
+    let fallbacks: &[&str] = if cfg!(unix) {
+        &["/opt/homebrew/bin", "/usr/local/bin"]
+    } else {
+        &[]
+    };
     path.chain(home)
-        .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
+        .chain(fallbacks.iter().map(PathBuf::from))
         .collect()
 }
-pub(crate) fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+/// The runnable file `path` names. Windows runs `code` as `code.cmd` or `code.exe`, so there
+/// the first `PATHEXT` extension that exists completes a bare name.
+pub(crate) fn executable(path: PathBuf) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(&path)
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .then_some(path)
+    }
+    #[cfg(windows)]
+    {
+        let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        let extensions: Vec<&str> = extensions.split(';').filter(|e| !e.is_empty()).collect();
+        let listed = path.extension().is_some_and(|ext| {
+            extensions
+                .iter()
+                .any(|e| e[1..].eq_ignore_ascii_case(&ext.to_string_lossy()))
+        });
+        let mut candidates = Vec::new();
+        if listed {
+            candidates.push(path.clone());
+        }
+        candidates.extend(extensions.iter().map(|e| {
+            let mut name = path.clone().into_os_string();
+            name.push(e.to_ascii_lowercase());
+            PathBuf::from(name)
+        }));
+        candidates.into_iter().find(|candidate| candidate.is_file())
+    }
 }
 
 const LOCAL: Duration = Duration::from_secs(30);
@@ -1034,6 +1060,7 @@ async fn open_pr(cx: &Context, step: PrStep, warnings: &mut Vec<String>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::time::Instant;
 
     #[test]
@@ -1180,6 +1207,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_timed_out_tool_is_stopped_with_its_children() {
         let dir = tempfile::tempdir().unwrap();
@@ -1221,6 +1249,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn oversized_tool_output_stops_the_process_group() {
         let dir = tempfile::tempdir().unwrap();
@@ -1252,6 +1281,7 @@ mod tests {
         panic!("bounded output left the tool's background child alive");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn tools_run_without_prompts_and_report_failures() {
         let dir = tempfile::tempdir().unwrap();

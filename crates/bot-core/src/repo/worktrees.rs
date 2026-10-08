@@ -1,14 +1,19 @@
 use super::*;
-use std::os::unix::ffi::OsStrExt;
+
+/// Git prints paths as raw bytes on Unix and as UTF-8 on Windows.
+fn git_path(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    return PathBuf::from(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(bytes));
+    #[cfg(windows)]
+    PathBuf::from(String::from_utf8_lossy(bytes).as_ref())
+}
 
 fn common_dir(path: &Path) -> Result<PathBuf> {
     let bytes = git(
         path,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )?;
-    PathBuf::from(std::ffi::OsStr::from_bytes(bytes.trim_ascii_end()))
-        .canonicalize()
-        .map_err(Into::into)
+    dunce::canonicalize(git_path(bytes.trim_ascii_end())).map_err(Into::into)
 }
 
 pub(crate) fn registered_worktrees(root: &Path) -> Result<Vec<RegisteredWorktree>> {
@@ -22,7 +27,7 @@ pub(crate) fn registered_worktrees(root: &Path) -> Result<Vec<RegisteredWorktree
                 rows.push(row);
             }
             row = Some(RegisteredWorktree {
-                path: PathBuf::from(std::ffi::OsStr::from_bytes(path)),
+                path: git_path(path),
                 branch: None,
                 head: String::new(),
                 unavailable: None,
@@ -43,7 +48,7 @@ pub(crate) fn registered_worktrees(root: &Path) -> Result<Vec<RegisteredWorktree
         rows.push(row);
     }
     for row in &mut rows {
-        match row.path.canonicalize() {
+        match dunce::canonicalize(&row.path) {
             Ok(path)
                 if open(&path).is_ok_and(|actual| actual == path)
                     && common_dir(&path).is_ok_and(|dir| dir == common) =>
@@ -60,7 +65,7 @@ pub(crate) fn registered_worktrees(root: &Path) -> Result<Vec<RegisteredWorktree
 }
 
 pub(crate) fn registered_worktree(root: &Path, path: &Path) -> Result<RegisteredWorktree> {
-    let path = path.canonicalize().map_err(|_| {
+    let path = dunce::canonicalize(path).map_err(|_| {
         AppError::new(
             "missing_checkout",
             "The selected worktree no longer exists.",

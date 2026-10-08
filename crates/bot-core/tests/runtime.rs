@@ -1,3 +1,5 @@
+#![cfg(unix)]
+#![allow(clippy::disallowed_methods)]
 use bot_core::*;
 use std::{os::unix::fs::PermissionsExt, process::Command, time::Duration};
 struct Fixture {

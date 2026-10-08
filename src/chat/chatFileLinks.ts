@@ -12,6 +12,19 @@ const decode = (value: string) => {
   }
 };
 
+const WINDOWS_ABSOLUTE = /^[A-Za-z]:[\\/]/;
+
+// Windows paths compare without case and may mix separators.
+function within(path: string, root: string): string | null {
+  if (!WINDOWS_ABSOLUTE.test(root))
+    return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : null;
+  const slashed = path.replaceAll("\\", "/");
+  const prefix = `${root.replaceAll("\\", "/").replace(/\/$/, "")}/`;
+  return slashed.toLowerCase().startsWith(prefix.toLowerCase())
+    ? slashed.slice(prefix.length)
+    : null;
+}
+
 // Inline code stays a chip only for files in the checkout. A link href in a
 // sent thread may also name an absolute path elsewhere.
 export function parseChatFileLink(
@@ -30,7 +43,8 @@ export function parseChatFileLink(
 ): ChatFileLink | null {
   let path = raw.trim();
   const fileUrl = /^file:\/\//i.test(path);
-  if (fileUrl) path = path.slice("file://".length);
+  if (fileUrl)
+    path = path.slice("file://".length).replace(/^\/(?=[A-Za-z]:\/)/, "");
   if (source === "href" || fileUrl) path = decode(path);
   let line: number | undefined;
   let column: number | undefined;
@@ -46,13 +60,12 @@ export function parseChatFileLink(
     ...(line !== undefined ? { line } : {}),
     ...(column !== undefined ? { column } : {}),
   };
-  const absolute = path.startsWith("/");
-  const relative =
-    absolute && root && path.startsWith(`${root}/`)
-      ? path.slice(root.length + 1)
-      : absolute
-        ? null
-        : path.replace(/^\.\//, "");
+  const absolute = path.startsWith("/") || WINDOWS_ABSOLUTE.test(path);
+  const relative = absolute
+    ? root
+      ? within(path, root)
+      : null
+    : path.replace(/^\.[\\/]/, "").replaceAll("\\", "/");
   if (relative !== null && files.has(relative))
     return { kind: "workspace", path: relative, ...at };
   if (absolute && threadId !== undefined && source === "href")

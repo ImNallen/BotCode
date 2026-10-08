@@ -402,7 +402,7 @@ async fn rename(path: &Path, old: &str, requested: &str) -> Result<String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

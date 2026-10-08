@@ -75,7 +75,7 @@ pub fn read(path: &Path) -> Result<Option<String>> {
 }
 // Writing to the resolved target keeps a symlinked settings file linked.
 pub fn write(path: &Path, text: &str) -> Result<()> {
-    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let target = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let sibling = |suffix: &str| {
         let mut name = target.clone().into_os_string();
         name.push(suffix);

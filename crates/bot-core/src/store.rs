@@ -386,6 +386,7 @@ mod tests {
             kind: WorkspaceKind::Repository,
         }
     }
+    #[cfg(unix)]
     #[test]
     fn shutdown_releases_lock_even_when_a_child_inherits_its_file_description() {
         use std::os::fd::{AsRawFd, FromRawFd};

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { createServer } from "node:net";
 
 const host = "127.0.0.1";
@@ -24,6 +25,11 @@ if (args[0] === "dev") {
   if (port !== 1420) console.log(`Port 1420 is in use. Using ${port}.`);
 }
 
-spawn("tauri", args, { stdio: "inherit" }).on("exit", (code, signal) => {
-  process.exitCode = code ?? (signal ? 1 : 0);
-});
+// Windows cannot spawn the tauri.cmd shim without a shell, which would mangle the JSON config.
+const cli = createRequire(import.meta.url).resolve("@tauri-apps/cli/tauri.js");
+spawn(process.execPath, [cli, ...args], { stdio: "inherit" }).on(
+  "exit",
+  (code, signal) => {
+    process.exitCode = code ?? (signal ? 1 : 0);
+  },
+);

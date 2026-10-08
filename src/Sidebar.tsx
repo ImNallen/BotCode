@@ -57,7 +57,7 @@ import {
 } from "./sidebarWorking";
 import { workingSessions } from "./lib/sessions";
 import { formatSidebarTime } from "./lib/time";
-import { basename } from "./panel/panelState";
+import { pathBasename } from "./chat/composer-logic";
 import { WorkspaceBadge } from "./ProjectBadge";
 import { OpenAI } from "./ui/icons";
 import { Button } from "./ui/controls";
@@ -1440,7 +1440,7 @@ function SlimRow({
 }
 
 function WorktreeIndicator({ path, branch }: { path: string; branch: string }) {
-  const label = `Worktree: ${basename(path)} (${branch})`;
+  const label = `Worktree: ${pathBasename(path)} (${branch})`;
   return (
     <span
       role="img"
