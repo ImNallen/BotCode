@@ -4,6 +4,8 @@ import { Dialog } from "../ui/dialog";
 import { ProjectFilePicker } from "../search/ProjectFilePicker";
 import { ProjectContentSearchDialog } from "../search/ProjectContentSearchDialog";
 import type { ChatRequest } from "../lib/actions";
+import { ErrorView } from "../errors/ErrorView";
+import { RenderErrorBoundary } from "../errors/RenderErrorBoundary";
 import {
   type ComponentProps,
   useEffect,
@@ -41,7 +43,7 @@ import type {
 } from "../ipc";
 import { cn } from "../lib/cn";
 import { workingSessions } from "../lib/sessions";
-import { terminalToggleShortcut } from "../lib/shortcuts";
+import { useShortcutLabel } from "../lib/shortcuts";
 import {
   type CheckoutMode,
   projectSetting,
@@ -195,6 +197,7 @@ export function ChatView({
 }) {
   const isScratch = scratch?.id === workspaceId;
   const client = useQueryClient();
+  const terminalToggleShortcut = useShortcutLabel("terminal.toggle");
   const navigate = useNavigate({ from: "/" });
   const [panelOpen, setPanelOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
@@ -780,7 +783,7 @@ export function ChatView({
       );
   };
   const [searchDialog, setSearchDialog] = useState<
-    "files.search" | "content.search" | null
+    "filePicker.toggle" | "projectSearch.toggle" | null
   >(null);
   const searchFocus = useRef<HTMLElement | null>(null);
   const closeSearch = () => {
@@ -811,12 +814,12 @@ export function ChatView({
       commandRequest.threadId !== threadId
     )
       return;
-    if (commandRequest.kind === "panel.toggle") {
+    if (commandRequest.kind === "rightPanel.toggle") {
       setPanelOpen((value) => !value);
       setMaximized(false);
     } else if (
-      commandRequest.kind === "files.search" ||
-      commandRequest.kind === "content.search"
+      commandRequest.kind === "filePicker.toggle" ||
+      commandRequest.kind === "projectSearch.toggle"
     ) {
       if (!view || view.unavailable || (isScratch && !threadId)) return;
       if (searchDialog === commandRequest.kind) {
@@ -1207,7 +1210,7 @@ export function ChatView({
                     updateTerminalState(terminalScope, toggleTerminalOpen)
                   }
                   aria-label="Toggle terminal drawer"
-                  title={`Toggle terminal drawer (${terminalToggleShortcut})`}
+                  title={`Toggle terminal drawer${terminalToggleShortcut ? ` (${terminalToggleShortcut})` : ""}`}
                   variant="ghost"
                   size="sm"
                 >
@@ -1718,36 +1721,77 @@ export function ChatView({
           </div>
         </div>
         {terminalAvailable ? (
-          <PersistentThreadTerminalDrawer
-            key={terminalScope}
-            workspaceId={workspaceId}
-            threadId={threadId ?? null}
-            fontSize={preferences.codeFontSize}
-            fileLinks={fileLinks}
-            onClosed={() => setComposerFocusRequest((current) => current + 1)}
-          />
+          <RenderErrorBoundary
+            resetKeys={[terminalScope, terminalOpen]}
+            fallback={({ error, reset }) =>
+              terminalOpen ? (
+                <div
+                  className="flex min-h-0 shrink-0 flex-col border-t border-border"
+                  style={{ height: terminalState.terminalHeight }}
+                >
+                  <ErrorView
+                    error={error}
+                    onRetry={reset}
+                    area="Terminal drawer"
+                    contained
+                  />
+                </div>
+              ) : null
+            }
+          >
+            <PersistentThreadTerminalDrawer
+              key={terminalScope}
+              workspaceId={workspaceId}
+              threadId={threadId ?? null}
+              fontSize={preferences.codeFontSize}
+              fileLinks={fileLinks}
+              onClosed={() => setComposerFocusRequest((current) => current + 1)}
+            />
+          </RenderErrorBoundary>
         ) : null}
       </div>
       {panelOpen ? (
-        <RightPanel
-          checkout={checkout}
-          git={!isScratch}
-          view={view}
-          state={panel}
-          onChange={setPanel}
-          maximized={maximized}
-          conversationId={threadId}
-          pullRequests={pullRequests}
-          canAskCodex={reviewDraftTarget.current.canAccept}
-          onAskCodex={askCodex}
-          terminalAvailable={terminalAvailable}
-          fileLinks={fileLinks}
-          thread={thread}
-          turnSelection={
-            selectedCheckpointTurn(thread, turnSelection) ? turnSelection : null
-          }
-          onSelectTurn={selectTurnDiff}
-        />
+        <RenderErrorBoundary
+          resetKeys={[checkout.workspaceId, checkout.threadId, threadId]}
+          fallback={({ error, reset }) => (
+            <div
+              className={cn(
+                "flex h-full min-h-0 min-w-0 max-w-full flex-col border-l border-border bg-background pt-(--workspace-topbar-height)",
+                maximized ? "flex-1" : "shrink-0",
+              )}
+              style={{ width: maximized ? "100%" : 540 }}
+            >
+              <ErrorView
+                error={error}
+                onRetry={reset}
+                area="Right panel"
+                contained
+              />
+            </div>
+          )}
+        >
+          <RightPanel
+            checkout={checkout}
+            git={!isScratch}
+            view={view}
+            state={panel}
+            onChange={setPanel}
+            maximized={maximized}
+            conversationId={threadId}
+            pullRequests={pullRequests}
+            canAskCodex={reviewDraftTarget.current.canAccept}
+            onAskCodex={askCodex}
+            terminalAvailable={terminalAvailable}
+            fileLinks={fileLinks}
+            thread={thread}
+            turnSelection={
+              selectedCheckpointTurn(thread, turnSelection)
+                ? turnSelection
+                : null
+            }
+            onSelectTurn={selectTurnDiff}
+          />
+        </RenderErrorBoundary>
       ) : null}
       {searchDialog ? (
         <Dialog
@@ -1755,7 +1799,7 @@ export function ChatView({
           variant="command"
           projectSearch={searchDialog}
           className={
-            searchDialog === "content.search"
+            searchDialog === "projectSearch.toggle"
               ? "h-[min(44rem,80vh)] max-h-[80vh]"
               : "max-h-[min(42rem,80vh)]"
           }
@@ -1763,7 +1807,7 @@ export function ChatView({
             if (!open) closeSearch();
           }}
         >
-          {searchDialog === "files.search" ? (
+          {searchDialog === "filePicker.toggle" ? (
             <ProjectFilePicker
               checkout={checkout}
               projectName={label}

@@ -13,7 +13,9 @@ pub use composer_context::{
 mod domain;
 mod editors;
 pub use editors::{EditorId, OpenTarget, Position, available_editors};
+mod keybindings;
 mod log;
+pub use keybindings::KeybindingsFile;
 mod pr_review;
 mod project_search;
 mod pull_requests;

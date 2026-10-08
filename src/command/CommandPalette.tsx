@@ -1,3 +1,4 @@
+import { useKeybindings } from "../keybindings/store";
 // Ported from pingdotgg/t3code v0.0.45 components/CommandPalette.tsx (MIT).
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -45,6 +46,7 @@ export function CommandPalette({
   onClose: (restoreFocus: boolean) => void;
   onSelectThread: (workspaceId: string, threadId: string) => void;
 }) {
+  useKeybindings();
   const [location, setLocation] = useState<Location>({ kind: "root" });
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState<string>();
@@ -101,8 +103,8 @@ export function CommandPalette({
     flushSync(() =>
       onClose(
         ![
-          "files.search",
-          "content.search",
+          "filePicker.toggle",
+          "projectSearch.toggle",
           "thread.rename",
           "settings.open",
           "terminal.toggle",

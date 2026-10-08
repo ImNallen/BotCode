@@ -1,5 +1,6 @@
-// Shell geometry follows pingdotgg/t3code v0.0.45 components/AppSidebarLayout.tsx and
-// components/ui/sidebar.tsx, and components/NoProjectsHero.tsx at 6b286ae8a (MIT).
+// Shell geometry follows pingdotgg/t3code v0.0.45 components/AppSidebarLayout.tsx and components/ui/sidebar.tsx, and components/NoProjectsHero.tsx at 6b286ae8a (MIT).
+import { useKeybindings } from "./keybindings/store";
+import { KeybindingErrors } from "./keybindings/KeybindingErrors";
 import { ThreadNotificationCoordinator } from "./notifications/ThreadNotificationCoordinator";
 import {
   useCallback,
@@ -78,6 +79,7 @@ function clampSidebar(width: number) {
 }
 
 export function Workbench() {
+  useKeybindings();
   const selection = useSearch({ from: "__root__" });
   const navigate = useNavigate();
   const page = useLocation({
@@ -398,7 +400,7 @@ export function Workbench() {
       });
     },
     requestChat: (kind) => {
-      if (kind === "files.search" || kind === "content.search") {
+      if (kind === "filePicker.toggle" || kind === "projectSearch.toggle") {
         const dialogs = Array.from(
           document.querySelectorAll<HTMLDialogElement>("dialog[open]"),
         );
@@ -452,8 +454,15 @@ export function Workbench() {
     revealInFinder: editors.reveal,
   };
   const onShortcut = useEffectEvent((event: KeyboardEvent) => {
+    if (
+      event.defaultPrevented ||
+      event.isComposing ||
+      (event.target instanceof Element &&
+        event.target.closest("[data-keybinding-capture]"))
+    )
+      return;
     if (isCommandPaletteOpen()) {
-      if (!event.repeat && matchesAction(event, "palette.open")) {
+      if (!event.repeat && matchesAction(event, "commandPalette.toggle")) {
         event.preventDefault();
         closePalette(true);
       }
@@ -463,14 +472,14 @@ export function Workbench() {
     if (dialog) {
       if (
         !event.repeat &&
-        matchesAction(event, "palette.open") &&
+        matchesAction(event, "commandPalette.toggle") &&
         !isTerminalFocused()
       ) {
         event.preventDefault();
         openPalette();
       } else if (dialog.dataset.projectSearch) {
         const id = matchAction(event, actionContext, false);
-        if (id === "files.search" || id === "content.search") {
+        if (id === "filePicker.toggle" || id === "projectSearch.toggle") {
           event.preventDefault();
           const current = dialog.dataset.projectSearch;
           flushSync(() =>
@@ -489,6 +498,8 @@ export function Workbench() {
   const onPageEscape = useEffectEvent((event: KeyboardEvent) => {
     if (
       isCommandPaletteOpen() ||
+      (event.target instanceof Element &&
+        event.target.closest("[data-keybinding-capture]")) ||
       event.defaultPrevented ||
       !matchesAction(event, "page.close") ||
       !actions["page.close"].available(actionContext)
@@ -545,6 +556,7 @@ export function Workbench() {
         }
       >
         <EditorToasts />
+        <KeybindingErrors />
         <ThreadNotificationCoordinator
           workspaces={views.flatMap((view) => (view.data ? [view.data] : []))}
           workspaceIds={list.map((workspace) => workspace.id)}
@@ -747,7 +759,7 @@ export function Workbench() {
             variant="ghost"
             size="icon"
             aria-label="Toggle main sidebar"
-            title={`Toggle main sidebar (${shortcutLabel("sidebar.toggle")})`}
+            title={`Toggle main sidebar${shortcutLabel("sidebar.toggle") ? ` (${shortcutLabel("sidebar.toggle")})` : ""}`}
             aria-pressed={sidebarOpen}
             className="size-[var(--workspace-titlebar-control-size)]! [-webkit-app-region:no-drag] pointer-events-auto"
             onClick={() => setSidebarOpen((value) => !value)}

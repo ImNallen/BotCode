@@ -1,6 +1,6 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/keybindings.ts, lib/terminalFocus.ts and the
-// terminal rows of packages/shared/src/keybindings.ts DEFAULT_KEYBINDINGS (MIT).
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/keybindings.ts, lib/terminalFocus.ts and the terminal rows of packages/shared/src/keybindings.ts DEFAULT_KEYBINDINGS (MIT).
 import { actionIds, matchesAction } from "../lib/actions";
+import { currentShortcutContext } from "../lib/shortcutContext";
 import { isMacPlatform } from "../lib/utils";
 
 type KeyEventLike = Pick<
@@ -30,6 +30,7 @@ function normalizeEventKey(key: string): string {
 export function terminalShortcutCommand(
   event: KeyEventLike,
   platform = navigator.platform,
+  terminalFocus = true,
 ): TerminalCommand | null {
   for (const id of actionIds) {
     if (
@@ -38,7 +39,10 @@ export function terminalShortcutCommand(
         id === "terminal.splitVertical" ||
         id === "terminal.new" ||
         id === "terminal.close") &&
-      matchesAction(event, id, platform)
+      matchesAction(event, id, platform, {
+        ...currentShortcutContext(platform),
+        terminalFocus,
+      })
     )
       return id;
   }
@@ -50,8 +54,14 @@ export function isTerminalClearShortcut(
   platform = navigator.platform,
 ): boolean {
   return (
-    matchesAction(event, "terminal.clear", platform) ||
-    matchesAction(event, "terminal.clearControl", platform)
+    matchesAction(event, "terminal.clear", platform, {
+      ...currentShortcutContext(platform),
+      terminalFocus: true,
+    }) ||
+    matchesAction(event, "terminal.clearControl", platform, {
+      ...currentShortcutContext(platform),
+      terminalFocus: true,
+    })
   );
 }
 

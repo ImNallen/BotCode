@@ -272,6 +272,7 @@ pub struct App {
     worktrees: PathBuf,
     scratch: Option<PathBuf>,
     settings: PathBuf,
+    keybindings: Arc<crate::keybindings::Keybindings>,
     sweeps: Arc<Mutex<()>>,
     wake: Arc<Notify>,
     gh: PathBuf,
@@ -414,6 +415,9 @@ impl App {
         let script_shell = crate::project::shell(config.shell.as_deref());
         let terminals = Terminals::new(config.shell.clone());
         let settings = config.data_dir.join("settings.json");
+        let keybindings = Arc::new(crate::keybindings::Keybindings::new(
+            config.data_dir.join("keybindings.json"),
+        ));
         let auto_settle = settings::auto_settle(&settings);
         let (commands, rx) = mpsc::channel(128);
         let (changes, _) = broadcast::channel(256);
@@ -481,6 +485,7 @@ impl App {
             worktrees,
             scratch,
             settings,
+            keybindings,
             sweeps: Arc::new(Mutex::new(())),
             wake: Arc::new(Notify::new()),
             gh,
@@ -1167,6 +1172,12 @@ impl App {
     }
     pub fn settings(&self) -> Result<Option<String>> {
         settings::read(&self.settings)
+    }
+    pub fn keybindings_file(&self) -> Result<crate::KeybindingsFile> {
+        self.keybindings.read()
+    }
+    pub fn save_keybindings_file(&self, text: &str, expected_text: Option<&str>) -> Result<()> {
+        self.keybindings.write(text, expected_text)
     }
     pub async fn save_settings(&self, text: &str) -> Result<()> {
         settings::write(&self.settings, text)?;

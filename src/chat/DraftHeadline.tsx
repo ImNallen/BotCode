@@ -2,7 +2,7 @@
 import { FolderPlusIcon } from "lucide-react";
 import type { Workspace } from "../ipc";
 import { WorkspaceBadge } from "../ProjectBadge";
-import { newWithoutProjectShortcut } from "../lib/shortcuts";
+import { useShortcutLabel } from "../lib/shortcuts";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 
 export function DraftHeadline({
@@ -24,6 +24,7 @@ export function DraftHeadline({
   onStartScratch: () => void;
   onOpenRepository: () => void;
 }) {
+  const newWithoutProjectShortcut = useShortcutLabel("chat.newWithoutProject");
   const picker = (
     <Menu
       align="center"

@@ -5,6 +5,7 @@ import { useProjectSearch } from "../lib/projectSearch";
 import { cn } from "../lib/cn";
 import { FileEntryIcon } from "../panel/FileEntryIcon";
 import { Toggle } from "../ui/controls";
+import { RenderErrorBoundary } from "../errors/RenderErrorBoundary";
 import type { CheckoutRef, ContentSearchResult } from "../ipc";
 
 type Match = ContentSearchResult["matches"][number];
@@ -234,7 +235,12 @@ export function ProjectContentSearchDialog({
                         {match.lineNumber}
                       </span>
                       <span className="min-w-0 flex-1 truncate whitespace-pre">
-                        <HighlightedSearchLine match={match} />
+                        <RenderErrorBoundary
+                          fallback={match.line}
+                          resetKeys={[match]}
+                        >
+                          <HighlightedSearchLine match={match} />
+                        </RenderErrorBoundary>
                       </span>
                     </button>
                   ))}

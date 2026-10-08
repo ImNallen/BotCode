@@ -25,6 +25,7 @@ import type { ChatFileLink } from "./chatFileLinks";
 import { renderSkillInlineMarkdownChildren } from "./SkillInlineText";
 import type { ComposerContextRecord } from "./composerContext";
 import { ContextRecordChip } from "./ContextRecordChip";
+import { RenderErrorBoundary } from "../errors/RenderErrorBoundary";
 
 export type FileLinks = {
   resolve: (target: string, source: "code" | "href") => ChatFileLink | null;
@@ -191,7 +192,18 @@ function CodeBlock({
           </Button>
         </span>
       </div>
-      <div className="chat-markdown-shiki">{children}</div>
+      <div className="chat-markdown-shiki">
+        <RenderErrorBoundary
+          resetKeys={[code, language]}
+          fallback={
+            <pre>
+              <code>{code}</code>
+            </pre>
+          }
+        >
+          {children}
+        </RenderErrorBoundary>
+      </div>
     </div>
   );
 }
@@ -293,31 +305,38 @@ export const ChatMarkdown = memo(function ChatMarkdown({
       )}
       data-streaming={streaming ? "" : undefined}
     >
-      <ContextRecords value={records}>
-        <ReactMarkdown
-          urlTransform={(url) =>
-            url.startsWith("t3-context://v1/") ? url : keepFileUrls(url)
-          }
-          remarkPlugins={lineBreaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
-          components={
-            skills
-              ? {
-                  ...components,
-                  p: ({ children }) => (
-                    <p>{renderSkillInlineMarkdownChildren(children, skills)}</p>
-                  ),
-                  li: ({ children }) => (
-                    <li>
-                      {renderSkillInlineMarkdownChildren(children, skills)}
-                    </li>
-                  ),
-                }
-              : components
-          }
-        >
-          {text}
-        </ReactMarkdown>
-      </ContextRecords>
+      <RenderErrorBoundary
+        resetKeys={[text, lineBreaks, streaming, skills, records]}
+        fallback={<div className="whitespace-pre-wrap">{text}</div>}
+      >
+        <ContextRecords value={records}>
+          <ReactMarkdown
+            urlTransform={(url) =>
+              url.startsWith("t3-context://v1/") ? url : keepFileUrls(url)
+            }
+            remarkPlugins={lineBreaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
+            components={
+              skills
+                ? {
+                    ...components,
+                    p: ({ children }) => (
+                      <p>
+                        {renderSkillInlineMarkdownChildren(children, skills)}
+                      </p>
+                    ),
+                    li: ({ children }) => (
+                      <li>
+                        {renderSkillInlineMarkdownChildren(children, skills)}
+                      </li>
+                    ),
+                  }
+                : components
+            }
+          >
+            {text}
+          </ReactMarkdown>
+        </ContextRecords>
+      </RenderErrorBoundary>
     </div>
   );
 });

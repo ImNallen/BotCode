@@ -140,26 +140,37 @@ it("does not advertise queued, archived, hidden-page or pending-rename operation
   assert.equal(actions["thread.rename"].available(ctx), false);
   ctx.pageOpen = true;
   assert.equal(actions["thread.pin"].available(ctx), false);
-  assert.equal(actions["panel.toggle"].available(ctx), false);
+  assert.equal(actions["rightPanel.toggle"].available(ctx), false);
   ctx.pageOpen = false;
   assert.ok(ctx.thread);
   ctx.thread.archivedAtMs = 12;
   assert.equal(runAction("thread.pin", ctx), false);
 });
 it("matches exact modifiers, platform primary modifier, physical scratch key and punctuation", () => {
-  assert.equal(matchesAction(key("k"), "palette.open", "MacIntel"), true);
   assert.equal(
-    matchesAction(key("k", { shiftKey: true }), "palette.open", "MacIntel"),
+    matchesAction(key("k"), "commandPalette.toggle", "MacIntel"),
+    true,
+  );
+  assert.equal(
+    matchesAction(
+      key("k", { shiftKey: true }),
+      "commandPalette.toggle",
+      "MacIntel",
+    ),
     false,
   );
   assert.equal(
-    matchesAction(key("k", { ctrlKey: true }), "palette.open", "MacIntel"),
+    matchesAction(
+      key("k", { ctrlKey: true }),
+      "commandPalette.toggle",
+      "MacIntel",
+    ),
     false,
   );
   assert.equal(
     matchesAction(
       key("k", { metaKey: false, ctrlKey: true }),
-      "palette.open",
+      "commandPalette.toggle",
       "Linux",
     ),
     true,
@@ -167,7 +178,7 @@ it("matches exact modifiers, platform primary modifier, physical scratch key and
   assert.equal(
     matchesAction(
       key("Dead", { code: "KeyN", altKey: true }),
-      "thread.scratch",
+      "chat.newWithoutProject",
       "MacIntel",
     ),
     true,
@@ -184,13 +195,13 @@ it("matches exact modifiers, platform primary modifier, physical scratch key and
     ),
     false,
   );
-  assert.equal(shortcutLabel("palette.open", "MacIntel"), "⌘K");
-  assert.equal(shortcutLabel("thread.scratch", "Linux"), "Ctrl+Alt+N");
+  assert.equal(shortcutLabel("commandPalette.toggle", "MacIntel"), "⌘K");
+  assert.equal(shortcutLabel("chat.newWithoutProject", "Linux"), "Ctrl+Alt+N");
 });
 it("leaves clear and new-terminal keys to the focused terminal and ignores composition/repeats", () => {
   const ctx = context();
   assert.equal(matchAction(key("k"), ctx, true, "MacIntel"), undefined);
-  assert.equal(matchAction(key("n"), ctx, false, "MacIntel"), undefined);
+  assert.equal(matchAction(key("n"), ctx, false, "MacIntel"), "chat.new");
   assert.equal(matchAction(key("n"), ctx, true, "MacIntel"), undefined);
   assert.equal(
     matchAction(key("k", { isComposing: true }), ctx, false, "MacIntel"),
@@ -240,7 +251,7 @@ it("opens the checkout in the preferred editor from the palette and Command+O, e
   );
   assert.equal(
     matchAction(key("o", { shiftKey: true }), ctx, false, "MacIntel"),
-    undefined,
+    "chat.new",
   );
   assert.equal(runAction("editor.openFavorite", ctx), true);
   assert.deepEqual(opened, [
@@ -270,12 +281,18 @@ it("project search has T3 labels, exact platform shortcuts and checkout eligibil
   const ctx = context();
   const calls: string[] = [];
   ctx.requestChat = (kind) => calls.push(kind);
-  assert.equal(actions["files.search"].title, "Go to file");
-  assert.equal(actions["content.search"].title, "Search project contents");
-  assert.equal(matchAction(key("p"), ctx, false, "MacIntel"), "files.search");
+  assert.equal(actions["filePicker.toggle"].title, "Go to file");
+  assert.equal(
+    actions["projectSearch.toggle"].title,
+    "Search project contents",
+  );
+  assert.equal(
+    matchAction(key("p"), ctx, false, "MacIntel"),
+    "filePicker.toggle",
+  );
   assert.equal(
     matchAction(key("f", { shiftKey: true }), ctx, false, "MacIntel"),
-    "content.search",
+    "projectSearch.toggle",
   );
   assert.equal(
     matchAction(
@@ -284,21 +301,25 @@ it("project search has T3 labels, exact platform shortcuts and checkout eligibil
       false,
       "Linux",
     ),
-    "files.search",
+    "filePicker.toggle",
   );
   assert.equal(matchAction(key("p"), ctx, true, "MacIntel"), undefined);
   assert.equal(matchAction(key("f"), ctx, false, "MacIntel"), undefined);
-  assert.ok(searchActions(ctx, "root", "quick open").includes("files.search"));
-  assert.ok(searchActions(ctx, "root", "grep").includes("content.search"));
-  runAction("files.search", ctx);
-  runAction("content.search", ctx);
-  assert.deepEqual(calls, ["files.search", "content.search"]);
+  assert.ok(
+    searchActions(ctx, "root", "quick open").includes("filePicker.toggle"),
+  );
+  assert.ok(
+    searchActions(ctx, "root", "grep").includes("projectSearch.toggle"),
+  );
+  runAction("filePicker.toggle", ctx);
+  runAction("projectSearch.toggle", ctx);
+  assert.deepEqual(calls, ["filePicker.toggle", "projectSearch.toggle"]);
   ctx.thread = undefined;
-  assert.equal(actions["files.search"].available(ctx), true);
+  assert.equal(actions["filePicker.toggle"].available(ctx), true);
   ctx.projectSearchAvailable = false;
-  assert.equal(runAction("files.search", ctx), false);
-  assert.equal(runAction("content.search", ctx), false);
+  assert.equal(runAction("filePicker.toggle", ctx), false);
+  assert.equal(runAction("projectSearch.toggle", ctx), false);
   ctx.projectSearchAvailable = true;
   ctx.pageOpen = true;
-  assert.equal(actions["files.search"].available(ctx), false);
+  assert.equal(actions["filePicker.toggle"].available(ctx), false);
 });

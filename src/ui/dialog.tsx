@@ -25,7 +25,7 @@ export function Dialog({
   projectSearch,
 }: {
   variant?: "default" | "command";
-  projectSearch?: "files.search" | "content.search";
+  projectSearch?: "filePicker.toggle" | "projectSearch.toggle";
   open: boolean;
   onOpenChange: (open: boolean) => void;
   className?: string;
@@ -52,7 +52,7 @@ function ModalDialog({
   children,
 }: {
   variant: "default" | "command";
-  projectSearch?: "files.search" | "content.search";
+  projectSearch?: "filePicker.toggle" | "projectSearch.toggle";
   onClose: () => void;
   className?: string;
   children: ReactNode;
@@ -67,9 +67,9 @@ function ModalDialog({
     <dialog
       ref={ref}
       aria-label={
-        projectSearch === "files.search"
+        projectSearch === "filePicker.toggle"
           ? "File picker"
-          : projectSearch === "content.search"
+          : projectSearch === "projectSearch.toggle"
             ? "Search project contents"
             : variant === "command"
               ? "Command palette"

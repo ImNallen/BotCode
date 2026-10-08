@@ -18,10 +18,10 @@ import {
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
-import { actionIds } from "../lib/actions";
 import { useEditorActions } from "../lib/editorActions";
 import { editorById } from "../lib/editors";
-import { shortcutLabel } from "../lib/shortcuts";
+import { KeybindingsSettings, revealKeybinding } from "./KeybindingsSettings";
+import { useKeybindings } from "../keybindings/store";
 
 import { cn } from "../lib/cn";
 import { ProjectSettingRow } from "./ProjectSettingRow";
@@ -49,6 +49,7 @@ function useCategory() {
 }
 
 export function SettingsSidebar() {
+  const keybindings = useKeybindings();
   const category = useCategory();
   const navigate = useNavigate();
   const selection = useSearch({ from: "__root__" });
@@ -88,14 +89,20 @@ export function SettingsSidebar() {
                   text: `${item.title} ${group.title}`,
                 },
               ]),
-          ...rows.map((row) => ({
-            section: item.section,
-            category: item.title,
-            icon: item.icon,
-            id: row.id,
-            title: row.title,
-            text: `${item.title} ${group.title} ${row.title} ${row.description} ${row.keywords ?? ""}`,
-          })),
+          ...rows
+            .filter(
+              (row) =>
+                item.section !== "keybindings" ||
+                keybindings.effective.some((rule) => rule.command === row.id),
+            )
+            .map((row) => ({
+              section: item.section,
+              category: item.title,
+              icon: item.icon,
+              id: row.id,
+              title: row.title,
+              text: `${item.title} ${group.title} ${row.title} ${row.description} ${row.keywords ?? ""}`,
+            })),
         ];
       }),
     ])
@@ -104,6 +111,8 @@ export function SettingsSidebar() {
   const go = (section: SettingsSection, hash = "") => {
     setQuery("");
     setActiveIndex(0);
+    if (section === "keybindings" && category.section === "keybindings")
+      revealKeybinding(hash);
     void navigate({
       to: "/settings/$section",
       params: { section },
@@ -517,14 +526,6 @@ export function SettingsPage() {
           Restore defaults
         </Button>
       );
-    const actionId = actionIds.find((actionId) => actionId === id);
-    const shortcut = actionId ? shortcutLabel(actionId) : undefined;
-    if (shortcut)
-      return (
-        <kbd className="rounded-md border border-border bg-muted px-2 py-1 font-mono text-xs">
-          {shortcut}
-        </kbd>
-      );
     return null;
   };
   const row = (info: SettingsRowInfo) =>
@@ -600,6 +601,8 @@ export function SettingsPage() {
             <ArchivedThreadsPanel />
           ) : category.section === "projects" ? (
             scope && <ProjectsSettings scope={scope} workspaces={workspaces} />
+          ) : category.section === "keybindings" ? (
+            <KeybindingsSettings />
           ) : (
             category.groups.map((group) => {
               const rows = visibleRows(group, scope);

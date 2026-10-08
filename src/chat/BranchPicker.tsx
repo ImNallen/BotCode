@@ -178,6 +178,7 @@ export function BranchPicker({
             <button
               type="button"
               {...props}
+              data-composer-shortcut="composer.branch"
               className={trigger}
               disabled={disabled || !branches || switchBranch.isPending}
             >
