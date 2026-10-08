@@ -124,11 +124,11 @@ main
 					94 button Open
 					95 pop up button Choose editor
 				96 heading What should we build in Persistence Alpha?, Value: 1
-					97 text What should we build in 
+					97 text What should we build in
 					98 pop up button Persistence Alpha
 					99 text ?
 				100 button or start without a project, Help: ⌥⌘N
-				101 text entry area (settable) Message, Placeholder: Ask for changes or send follow-ups, Secondary Actions: Show Writing Tools, Value: 
+				101 text entry area (settable) Message, Placeholder: Ask for changes or send follow-ups, Secondary Actions: Show Writing Tools, Value:
 
 				102 pop up button Model: Model One
 				103 pop up button Reasoning effort: Low
@@ -148,4 +148,3 @@ main
 	117 View
 	118 Window
 	119 Help
-
