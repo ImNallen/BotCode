@@ -7,13 +7,14 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
-    net::{UnixListener, UnixStream},
+    io::{
+        AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt,
+        BufReader,
+    },
     sync::{mpsc, oneshot},
     task::{JoinHandle, JoinSet},
 };
@@ -38,33 +39,19 @@ pub(crate) struct Envelope {
 }
 
 pub(crate) struct BridgeServer {
-    directory: tempfile::TempDir,
+    endpoint: transport::Endpoint,
     task: JoinHandle<()>,
 }
 impl BridgeServer {
     pub fn open(data_dir: &Path) -> Result<(Self, mpsc::Receiver<Envelope>)> {
-        let directory = if data_dir.as_os_str().as_bytes().len() + 28 < 104 {
-            tempfile::Builder::new()
-                .prefix(".agent-tools-")
-                .tempdir_in(data_dir)?
-        } else {
-            tempfile::Builder::new()
-                .prefix("botcode-agent-")
-                .tempdir_in("/tmp")?
-        };
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
-        let listener = UnixListener::bind(directory.path().join("socket"))?;
-        std::fs::set_permissions(
-            directory.path().join("socket"),
-            std::fs::Permissions::from_mode(0o600),
-        )?;
+        let (endpoint, mut listener) = transport::Endpoint::open(data_dir)?;
         let (incoming, receiver) = mpsc::channel(MAX_CONNECTIONS);
         let task = tokio::spawn(async move {
             let mut connections = JoinSet::new();
             loop {
                 tokio::select! {
                     accepted = listener.accept(), if connections.len() < MAX_CONNECTIONS => {
-                        let Ok((stream, _)) = accepted else { break };
+                        let Ok(stream) = accepted else { break };
                         let incoming = incoming.clone();
                         connections.spawn(async move { let _ = serve_connection(stream, incoming).await; });
                     }
@@ -72,10 +59,10 @@ impl BridgeServer {
                 }
             }
         });
-        Ok((Self { directory, task }, receiver))
+        Ok((Self { endpoint, task }, receiver))
     }
     pub fn path(&self) -> PathBuf {
-        self.directory.path().join("socket")
+        self.endpoint.path()
     }
 }
 impl Drop for BridgeServer {
@@ -84,8 +71,109 @@ impl Drop for BridgeServer {
     }
 }
 
-async fn serve_connection(stream: UnixStream, incoming: mpsc::Sender<Envelope>) -> Result<()> {
-    let (read, mut write) = stream.into_split();
+/// A private local endpoint: a Unix socket in a 0700 directory, or a Windows named pipe that
+/// refuses remote clients. Either way, requests also carry the bridge credential.
+#[cfg(unix)]
+mod transport {
+    use crate::Result;
+    use std::{
+        os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+        path::{Path, PathBuf},
+    };
+    use tokio::net::{UnixListener, UnixStream};
+
+    pub(super) struct Endpoint(tempfile::TempDir);
+    pub(super) struct Listener(UnixListener);
+    impl Endpoint {
+        pub fn open(data_dir: &Path) -> Result<(Self, Listener)> {
+            let directory = if data_dir.as_os_str().as_bytes().len() + 28 < 104 {
+                tempfile::Builder::new()
+                    .prefix(".agent-tools-")
+                    .tempdir_in(data_dir)?
+            } else {
+                tempfile::Builder::new()
+                    .prefix("botcode-agent-")
+                    .tempdir_in("/tmp")?
+            };
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+            let listener = UnixListener::bind(directory.path().join("socket"))?;
+            std::fs::set_permissions(
+                directory.path().join("socket"),
+                std::fs::Permissions::from_mode(0o600),
+            )?;
+            Ok((Self(directory), Listener(listener)))
+        }
+        pub fn path(&self) -> PathBuf {
+            self.0.path().join("socket")
+        }
+    }
+    impl Listener {
+        pub async fn accept(&mut self) -> std::io::Result<UnixStream> {
+            Ok(self.0.accept().await?.0)
+        }
+    }
+    pub(super) async fn connect(path: &Path) -> std::io::Result<UnixStream> {
+        UnixStream::connect(path).await
+    }
+}
+
+#[cfg(windows)]
+mod transport {
+    use crate::Result;
+    use std::{
+        path::{Path, PathBuf},
+        time::Duration,
+    };
+    use tokio::net::windows::named_pipe::{
+        ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
+    };
+
+    pub(super) struct Endpoint(String);
+    pub(super) struct Listener {
+        name: String,
+        next: NamedPipeServer,
+    }
+    impl Endpoint {
+        pub fn open(_data_dir: &Path) -> Result<(Self, Listener)> {
+            let name = format!(r"\\.\pipe\botcode-agent-{}", uuid::Uuid::new_v4().simple());
+            let next = ServerOptions::new()
+                .first_pipe_instance(true)
+                .reject_remote_clients(true)
+                .create(&name)?;
+            Ok((Self(name.clone()), Listener { name, next }))
+        }
+        pub fn path(&self) -> PathBuf {
+            PathBuf::from(&self.0)
+        }
+    }
+    impl Listener {
+        /// Each pipe instance serves one client, so a fresh one waits before this one returns.
+        pub async fn accept(&mut self) -> std::io::Result<NamedPipeServer> {
+            self.next.connect().await?;
+            let next = ServerOptions::new()
+                .reject_remote_clients(true)
+                .create(&self.name)?;
+            Ok(std::mem::replace(&mut self.next, next))
+        }
+    }
+    pub(super) async fn connect(path: &Path) -> std::io::Result<NamedPipeClient> {
+        const ERROR_PIPE_BUSY: i32 = 231;
+        loop {
+            match ClientOptions::new().open(path) {
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                result => return result,
+            }
+        }
+    }
+}
+
+async fn serve_connection(
+    stream: impl AsyncRead + AsyncWrite,
+    incoming: mpsc::Sender<Envelope>,
+) -> Result<()> {
+    let (read, mut write) = tokio::io::split(stream);
     let mut reader = BufReader::new(read);
     let request = tokio::time::timeout(
         Duration::from_secs(5),
@@ -275,8 +363,7 @@ async fn handle_tool_request(socket: &Path, credential: String, frame: &Value) -
 }
 
 async fn forward(socket: &Path, request: BridgeRequest) -> Result<Value> {
-    let stream = UnixStream::connect(socket).await?;
-    let (read, mut write) = stream.into_split();
+    let (read, mut write) = tokio::io::split(transport::connect(socket).await?);
     write_json_line(&mut write, &serde_json::to_value(request)?, INPUT_LIMIT).await?;
     let response = read_json_line(&mut BufReader::new(read), SOCKET_FRAME_LIMIT)
         .await?
@@ -358,12 +445,11 @@ mod tests {
     async fn stdio_roundtrip_preserves_scope_metadata_and_mcp_images() {
         let directory = tempfile::tempdir().unwrap();
         let (server, mut incoming) = BridgeServer::open(directory.path()).unwrap();
+        #[cfg(unix)]
         assert_eq!(
-            std::fs::metadata(server.path())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
+            std::os::unix::fs::PermissionsExt::mode(
+                &std::fs::metadata(server.path()).unwrap().permissions()
+            ) & 0o777,
             0o600
         );
         let (client, bridge) = tokio::io::duplex(16384);

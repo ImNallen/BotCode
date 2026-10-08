@@ -248,3 +248,104 @@ pub(crate) fn shell(configured: Option<&Path>) -> std::path::PathBuf {
         .filter(|path| path.is_file())
         .unwrap_or_else(|| "/bin/sh".into())
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Dialect {
+    Posix,
+    PowerShell,
+    Cmd,
+}
+impl Dialect {
+    /// Only Windows shells call batch files, so elsewhere every shell counts as POSIX.
+    pub(crate) fn of(shell: &Path) -> Self {
+        if cfg!(not(windows)) {
+            return Self::Posix;
+        }
+        let stem = shell
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_ascii_lowercase());
+        match stem.as_deref() {
+            Some("pwsh" | "powershell") => Self::PowerShell,
+            Some("cmd") => Self::Cmd,
+            _ => Self::Posix,
+        }
+    }
+}
+
+pub(crate) fn posix_script_line(shell: &Path, env: &[(&str, &Path)], command: &str) -> String {
+    let assignments: String = env
+        .iter()
+        .map(|(key, value)| format!("{key}={} ", quote(&value.to_string_lossy())))
+        .collect();
+    format!(
+        " {assignments}{} -c {}\n",
+        quote(&shell.to_string_lossy()),
+        quote(command)
+    )
+}
+
+/// A project script as a batch file. Windows shells call it instead of passing the command
+/// as an argument: cmd.exe expands `%VAR%` once per line, so an argument would keep its
+/// references literal, and Windows PowerShell 5.1 lacks `&&`.
+pub(crate) fn batch_script(command: &str) -> String {
+    format!("@echo off\r\n{command}\r\n")
+}
+
+pub(crate) fn powershell_script_line(env: &[(&str, &Path)], batch: &Path) -> String {
+    let literal = |value: &Path| format!("'{}'", value.to_string_lossy().replace('\'', "''"));
+    let assignments: String = env
+        .iter()
+        .map(|(key, value)| format!("$env:{key}={}; ", literal(value)))
+        .collect();
+    format!("{assignments}& {}\r", literal(batch))
+}
+
+pub(crate) fn cmd_script_line(env: &[(&str, &Path)], batch: &Path) -> String {
+    let assignments: String = env
+        .iter()
+        .map(|(key, value)| format!("set \"{key}={}\"\r", value.display()))
+        .collect();
+    format!("{assignments}call \"{}\"\r", batch.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn script_lines_set_the_project_environment_in_each_shell_dialect() {
+        let env = [
+            ("T3CODE_PROJECT_ROOT", Path::new(r"C:\Users\me\it's")),
+            ("T3CODE_WORKTREE_PATH", Path::new(r"C:\wt")),
+        ];
+        let batch = Path::new(r"C:\data\scripts\dev.cmd");
+        let (powershell, cmd) = if cfg!(windows) {
+            (Dialect::PowerShell, Dialect::Cmd)
+        } else {
+            (Dialect::Posix, Dialect::Posix)
+        };
+        assert_eq!(Dialect::of(Path::new("pwsh.exe")), powershell);
+        assert_eq!(Dialect::of(Path::new("CMD.EXE")), cmd);
+        assert_eq!(Dialect::of(Path::new("/bin/zsh")), Dialect::Posix);
+        assert_eq!(
+            powershell_script_line(&env, batch),
+            "$env:T3CODE_PROJECT_ROOT='C:\\Users\\me\\it''s'; $env:T3CODE_WORKTREE_PATH='C:\\wt'; & 'C:\\data\\scripts\\dev.cmd'\r"
+        );
+        assert_eq!(
+            cmd_script_line(&env[..1], batch),
+            "set \"T3CODE_PROJECT_ROOT=C:\\Users\\me\\it's\"\rcall \"C:\\data\\scripts\\dev.cmd\"\r"
+        );
+        assert_eq!(
+            batch_script("cd %T3CODE_WORKTREE_PATH% && pnpm dev"),
+            "@echo off\r\ncd %T3CODE_WORKTREE_PATH% && pnpm dev\r\n"
+        );
+        assert_eq!(
+            posix_script_line(
+                Path::new("/bin/zsh"),
+                &[("T3CODE_PROJECT_ROOT", Path::new("/repo"))],
+                "pnpm i && echo 'ok'"
+            ),
+            " T3CODE_PROJECT_ROOT='/repo' '/bin/zsh' -c 'pnpm i && echo '\\''ok'\\'''\n"
+        );
+    }
+}

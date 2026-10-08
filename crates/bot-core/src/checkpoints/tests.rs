@@ -596,6 +596,7 @@ fn filesystem_case_and_unicode_aliases_cannot_overwrite_ignored_contents() {
         assert_eq!(index_bytes(root), index);
     }
 }
+#[cfg(unix)]
 #[test]
 fn target_directory_symlinks_never_write_into_an_external_repository() {
     let dir = repository();

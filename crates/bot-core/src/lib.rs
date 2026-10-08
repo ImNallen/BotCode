@@ -26,6 +26,7 @@ mod keybindings;
 mod log;
 pub use keybindings::KeybindingsFile;
 mod pr_review;
+pub mod process;
 mod project_search;
 mod pull_requests;
 pub mod repo;

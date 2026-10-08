@@ -2,7 +2,11 @@
 pub(crate) mod approvals;
 pub(crate) mod tools;
 mod turn_input;
-use crate::{domain::*, log::RotatingLog};
+use crate::{
+    domain::*,
+    log::RotatingLog,
+    process::{Kill, kill_tree},
+};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
@@ -147,7 +151,7 @@ impl Codex {
         events: mpsc::Sender<Signal>,
         log: RotatingLog,
     ) -> Result<Self> {
-        let mut command = Command::new(binary);
+        let mut command = Command::from(crate::process::grouped(binary));
         command
             .arg("app-server")
             .stdin(std::process::Stdio::piped())
@@ -155,10 +159,6 @@ impl Codex {
             .stderr(std::process::Stdio::piped())
             // Covers runtime teardown, which drops the owning task without running it.
             .kill_on_drop(true);
-        #[cfg(unix)]
-        {
-            command.process_group(0);
-        }
         let mut child = command.spawn()?;
         let pid = child
             .id()
@@ -182,7 +182,7 @@ impl Codex {
             let exited = tokio::select! {
                 exited = child.wait() => exited,
                 _ = dropped => {
-                    signal_group(pid, Kill::Force);
+                    kill_tree(pid, Kill::Force);
                     let _ = child.start_kill();
                     child.wait().await
                 }
@@ -291,31 +291,17 @@ impl Codex {
     }
     pub async fn terminate(&self) -> Result<()> {
         let mut status = self.status.clone();
-        signal_group(self.pid, Kill::Polite);
+        kill_tree(self.pid, Kill::Polite);
         if timeout(Duration::from_secs(2), exited(&mut status))
             .await
             .is_err()
         {
-            signal_group(self.pid, Kill::Force);
+            kill_tree(self.pid, Kill::Force);
             let _ = timeout(Duration::from_secs(2), exited(&mut status)).await;
         }
         // A same-group tool can outlive its leader.
-        signal_group(self.pid, Kill::Force);
+        kill_tree(self.pid, Kill::Force);
         Ok(())
-    }
-}
-enum Kill {
-    Polite,
-    Force,
-}
-fn signal_group(pid: u32, kill: Kill) {
-    #[cfg(unix)]
-    unsafe {
-        let signal = match kill {
-            Kill::Polite => libc::SIGTERM,
-            Kill::Force => libc::SIGKILL,
-        };
-        libc::kill(-(pid as i32), signal);
     }
 }
 /// Resolves once the process has exited, or when its status can no longer be known.

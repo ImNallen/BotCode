@@ -1,5 +1,5 @@
 mod worktrees;
-use crate::{domain::*, vcs};
+use crate::{domain::*, process, vcs};
 use std::{
     path::{Component, Path, PathBuf},
     process::Command,
@@ -7,7 +7,7 @@ use std::{
 pub(crate) use worktrees::{registered_worktree, registered_worktrees};
 pub(crate) const TEXT_LIMIT: usize = 1_000_000;
 fn command(root: &Path) -> Command {
-    let mut command = Command::new("git");
+    let mut command = process::command("git");
     command.arg("-C").arg(root).envs(vcs::NON_INTERACTIVE);
     command
 }
@@ -19,9 +19,9 @@ pub(crate) fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 pub fn open(path: &Path) -> Result<PathBuf> {
-    let path = path.canonicalize()?;
+    let path = dunce::canonicalize(path)?;
     let bytes = git(&path, &["rev-parse", "--show-toplevel"])?;
-    let root = PathBuf::from(String::from_utf8_lossy(&bytes).trim()).canonicalize()?;
+    let root = dunce::canonicalize(String::from_utf8_lossy(&bytes).trim())?;
     Ok(root)
 }
 pub fn inside_work_tree(path: &Path) -> bool {
@@ -120,7 +120,7 @@ pub fn add_worktree(
     )?;
     git(root, &["config", &merge_base_key(&branch), base])?;
     Ok(Checkout::Worktree {
-        path: path.canonicalize()?,
+        path: dunce::canonicalize(path)?,
         branch,
     })
 }
@@ -192,11 +192,8 @@ pub fn branches(root: &Path) -> Result<Branches> {
             remote,
             current: head == "*",
             default: false,
-            worktree: (!worktree.is_empty()).then(|| {
-                Path::new(worktree)
-                    .canonicalize()
-                    .unwrap_or(worktree.into())
-            }),
+            worktree: (!worktree.is_empty())
+                .then(|| dunce::canonicalize(worktree).unwrap_or(worktree.into())),
         };
         if let Some(name) = refname.strip_prefix("refs/heads/") {
             local.push(branch(name, false));
@@ -270,7 +267,7 @@ fn relative(path: &str) -> Result<&Path> {
     Ok(p)
 }
 pub(crate) fn existing(path: &Path) -> Result<PathBuf> {
-    path.canonicalize().map_err(|e| match e.kind() {
+    dunce::canonicalize(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
             AppError::new("invalid_path", "This file no longer exists.")
         }
@@ -280,10 +277,20 @@ pub(crate) fn existing(path: &Path) -> Result<PathBuf> {
 pub(crate) fn contained(root: &Path, path: &str) -> Result<PathBuf> {
     let p = root.join(relative(path)?);
     let canonical = existing(&p)?;
-    if !canonical.starts_with(root.canonicalize()?) {
+    let Ok(inner) = canonical.strip_prefix(dunce::canonicalize(root)?) else {
         return Err(AppError::new(
             "invalid_path",
             "This symlink points outside the repository.",
+        ));
+    };
+    // Case-insensitive volumes and Windows aliases such as `.GIT` or `GIT~1` resolve to `.git`.
+    if inner
+        .components()
+        .any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
+    {
+        return Err(AppError::new(
+            "invalid_path",
+            "Choose a file inside the repository.",
         ));
     }
     Ok(canonical)
@@ -319,14 +326,14 @@ pub fn read_file(root: &Path, path: &str) -> Result<FileView> {
 }
 fn writable(root: &Path, path: &str) -> Result<PathBuf> {
     let inside = || AppError::new("invalid_path", "Choose a file inside the repository.");
-    let root = root.canonicalize()?;
+    let root = dunce::canonicalize(root)?;
     let mut existing = root.join(relative(path)?);
     let mut missing = Vec::new();
     while existing.symlink_metadata().is_err() {
         missing.push(existing.file_name().ok_or_else(inside)?.to_owned());
         existing.pop();
     }
-    let real_existing = existing.canonicalize().map_err(|_| inside())?;
+    let real_existing = dunce::canonicalize(existing).map_err(|_| inside())?;
     let mut inner = real_existing
         .strip_prefix(&root)
         .map_err(|_| {

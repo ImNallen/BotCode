@@ -47,9 +47,7 @@ impl Owner {
                 PrCheckoutDestination::Dedicated => {
                     let parent = self.config.data_dir.join("worktrees").join("pull-requests");
                     std::fs::create_dir_all(&parent)?;
-                    parent
-                        .canonicalize()?
-                        .join(uuid::Uuid::new_v4().to_string())
+                    dunce::canonicalize(&parent)?.join(uuid::Uuid::new_v4().to_string())
                 }
             };
             self.claim_path(path.clone(), Hold::PullRequest)?;

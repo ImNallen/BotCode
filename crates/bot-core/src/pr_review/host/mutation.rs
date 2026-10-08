@@ -1,6 +1,6 @@
 use super::*;
 use serde_json::json;
-use std::{io::Write, os::unix::fs::OpenOptionsExt, path::PathBuf};
+use std::{io::Write, path::PathBuf};
 
 struct PrivateInput(PathBuf);
 impl Drop for PrivateInput {
@@ -10,11 +10,11 @@ impl Drop for PrivateInput {
 }
 fn input_file(value: &Value) -> Result<PrivateInput> {
     let path = std::env::temp_dir().join(format!("bot-code-pr-{}.json", uuid::Uuid::new_v4()));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&path)?;
     let input = PrivateInput(path);
     file.write_all(&serde_json::to_vec(value)?)?;
     Ok(input)

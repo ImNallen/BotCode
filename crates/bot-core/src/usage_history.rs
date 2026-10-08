@@ -146,16 +146,11 @@ impl UsageHistory {
         let home = std::env::var_os("CODEX_HOME")
             .filter(|p| !p.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_default()
-                    .join(".codex")
-            });
+            .unwrap_or_else(|| std::env::home_dir().unwrap_or_default().join(".codex"));
         Self::new(home, data_dir)
     }
     fn new(home: PathBuf, data_dir: PathBuf) -> Self {
-        let home = home.canonicalize().unwrap_or_else(|_| {
+        let home = dunce::canonicalize(&home).unwrap_or_else(|_| {
             if home.is_absolute() {
                 home
             } else {

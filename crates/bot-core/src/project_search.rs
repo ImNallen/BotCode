@@ -213,7 +213,7 @@ impl ProjectSearch {
         }
     }
     async fn snapshot(&self, root: &Path, refresh: bool) -> Result<Arc<Snapshot>> {
-        let root = root.canonicalize()?;
+        let root = dunce::canonicalize(root)?;
         let entry = {
             let mut roots = self.roots.lock().unwrap();
             roots.retain(|_, entry| {
@@ -706,6 +706,7 @@ fn excerpt(line: &str, ranges: &[(usize, usize)]) -> (String, Vec<[usize; 2]>) {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::process::Command;

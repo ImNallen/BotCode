@@ -1,3 +1,5 @@
+#![cfg(unix)]
+#![allow(clippy::disallowed_methods)]
 use bot_core::*;
 use std::{
     process::Command,

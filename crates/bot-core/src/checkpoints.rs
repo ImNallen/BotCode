@@ -1,12 +1,14 @@
 // Ported from T3 Code v0.0.45 apps/server/src/vcs/GitVcsDriver.ts and checkpointing/CheckpointDiffQuery.ts.
-use crate::{domain::*, vcs};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
+use crate::{
+    domain::*,
+    process::{self, Kill, kill_tree},
+    vcs,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
+    process::{ExitStatus, Stdio},
     time::{Duration, Instant},
 };
 
@@ -37,20 +39,12 @@ fn read_bounded(pipe: impl Read) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 fn stop(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGTERM);
-    }
-    #[cfg(not(unix))]
-    let _ = child.kill();
+    kill_tree(child.id(), Kill::Polite);
     let grace = Instant::now() + Duration::from_secs(2);
     while matches!(child.try_wait(), Ok(None)) && Instant::now() < grace {
         std::thread::sleep(Duration::from_millis(5));
     }
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGKILL);
-    }
+    kill_tree(child.id(), Kill::Force);
     let _ = child.kill();
     let deadline = Instant::now() + Duration::from_secs(2);
     while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
@@ -67,7 +61,7 @@ fn run_with_limit(
     input: &[u8],
     limit: Duration,
 ) -> Result<GitOutput> {
-    let mut command = Command::new("git");
+    let mut command = process::grouped("git");
     command
         .arg("-C")
         .arg(root)
@@ -95,8 +89,6 @@ fn run_with_limit(
     } else {
         command.env_remove("GIT_INDEX_FILE");
     }
-    #[cfg(unix)]
-    command.process_group(0);
     let mut child = command.spawn()?;
     let (out_send, out_recv) = std::sync::mpsc::channel();
     let (err_send, err_recv) = std::sync::mpsc::channel();
@@ -622,7 +614,7 @@ fn file_identity(path: &Path) -> Result<Option<FileIdentity>> {
             #[cfg(not(unix))]
             {
                 let _ = metadata;
-                Ok(Some(path.canonicalize()?))
+                Ok(Some(dunce::canonicalize(path)?))
             }
         }
         Err(error)
