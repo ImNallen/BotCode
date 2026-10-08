@@ -448,6 +448,11 @@ mod tests {
         let error = generation.await.unwrap_err();
         assert_eq!(error.code, "timeout");
         for (file, pid) in files.into_iter().zip(pids) {
+            // A killed orphan can still answer kill(pid, 0) briefly after its group empties.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            while unsafe { libc::kill(pid, 0) } == 0 && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
             assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "{file} was left alive");
         }
     }
