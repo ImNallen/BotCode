@@ -1,4 +1,5 @@
 // Shell geometry follows pingdotgg/t3code v0.0.45 components/AppSidebarLayout.tsx and components/ui/sidebar.tsx, and components/NoProjectsHero.tsx at 6b286ae8a (MIT).
+import { usePreviewApplicationShortcuts } from "./preview/applicationShortcuts";
 import { useKeybindings } from "./keybindings/store";
 import { KeybindingErrors } from "./keybindings/KeybindingErrors";
 import { ThreadNotificationCoordinator } from "./notifications/ThreadNotificationCoordinator";
@@ -453,6 +454,14 @@ export function Workbench() {
     openInEditor: (target) => editors.open(target),
     revealInFinder: editors.reveal,
   };
+  const onPreviewShortcut = useEffectEvent(
+    (id: Parameters<typeof runAction>[0]) => {
+      if (isCommandPaletteOpen() || document.querySelector("dialog[open]"))
+        return;
+      runAction(id, actionContext);
+    },
+  );
+  usePreviewApplicationShortcuts(actionContext, onPreviewShortcut);
   const onShortcut = useEffectEvent((event: KeyboardEvent) => {
     if (
       event.defaultPrevented ||

@@ -4,6 +4,7 @@ import {
   FileDiffIcon,
   GitPullRequestIcon,
   FilesIcon,
+  GlobeIcon,
   PlusIcon,
   TerminalSquareIcon,
   type LucideIcon,
@@ -56,10 +57,13 @@ import {
 import { usePanelWidth } from "./usePanelWidth";
 import { ErrorView } from "../errors/ErrorView";
 import { RenderErrorBoundary } from "../errors/RenderErrorBoundary";
+import { PreviewSurface } from "../preview/PreviewSurface";
+import { previewScopeKey, scopeForPreview } from "../preview/model";
 
 export type Surface =
   | { kind: "files" }
   | { kind: "diff" }
+  | { kind: "preview" }
   | { kind: "pull_requests" }
   | { kind: "pull_request"; key: PullRequestKey }
   | { kind: "file"; path: string; line: number | null; revealSequence: number }
@@ -202,6 +206,12 @@ export function RightPanel({
     onSelect: () => open(surface),
   });
   const actions: SurfaceAction[] = [
+    surfaceAction({
+      label: "Preview",
+      icon: GlobeIcon,
+      shortcut: "B",
+      surface: { kind: "preview" },
+    }),
     ...(conversationId && pullRequests.length > 0
       ? [
           surfaceAction({
@@ -417,7 +427,14 @@ export function RightPanel({
                 />
               )}
             >
-              {active?.kind === "pull_requests" && conversationId ? (
+              {active?.kind === "preview" ? (
+                <PreviewSurface
+                  key={previewScopeKey(
+                    scopeForPreview(checkout.workspaceId, conversationId),
+                  )}
+                  scope={scopeForPreview(checkout.workspaceId, conversationId)}
+                />
+              ) : active?.kind === "pull_requests" && conversationId ? (
                 <PullRequestsSurface
                   key={conversationId}
                   threadId={conversationId}
@@ -489,6 +506,8 @@ function SurfaceIcon({
   switch (surface.kind) {
     case "diff":
       return <FileDiffIcon className="size-3 shrink-0" />;
+    case "preview":
+      return <GlobeIcon className="size-3 shrink-0" />;
     case "pull_requests":
       return <GitPullRequestIcon className="size-3 shrink-0" />;
     case "pull_request": {

@@ -314,7 +314,13 @@ name = "bot-code"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
+ "block2",
  "bot-core",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
  "percent-encoding",
  "serde",
  "serde_json",
@@ -323,6 +329,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

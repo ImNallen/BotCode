@@ -56,6 +56,19 @@ it("hides pull request tabs the conversation does not link", () => {
   assert.deepEqual(eligibleSurfaces(state, true, undefined), emptyPanel);
 });
 
+it("keeps one Preview tab available without a checkout or PR links", () => {
+  const preview: Surface = { kind: "preview" };
+  const opened = openSurface(emptyPanel, preview);
+  assert.equal(surfaceTitle(preview), "Preview");
+  assert.deepEqual(eligibleSurfaces(opened, false), opened);
+  assert.deepEqual(openSurface(opened, preview), opened);
+  const withDiff = openSurface(opened, { kind: "diff" });
+  assert.deepEqual(eligibleSurfaces(withDiff, false), {
+    surfaces: [preview],
+    active: null,
+  });
+});
+
 describe("terminal tabs", () => {
   const files: Surface = { kind: "files" };
   const diff: Surface = { kind: "diff" };

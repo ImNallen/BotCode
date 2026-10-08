@@ -215,7 +215,7 @@ for line in sys.stdin:
             elif scenario in ('token-refresh', 'tool-call'):
                 method = 'account/chatgptAuthTokens/refresh' if scenario == 'token-refresh' else 'item/tool/call'
                 params = {'reason': 'unauthorized', 'previousAccountId': None} if scenario == 'token-refresh' else {**target, 'tool': 'fixture-tool', 'arguments': {}}
-                approval_expected = {'errorCode': -32601}
+                approval_expected = {'errorCode': -32601 if scenario == 'token-refresh' else -32602}
             elif scenario == 'malformed':
                 method = 'item/permissions/requestApproval'
                 params = {**target, 'turnId': 123, 'permissions': {'network': {'enabled': True}}}

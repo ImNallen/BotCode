@@ -27,6 +27,7 @@ import {
   checkoutKey,
   invalidateCheckouts,
   ipc,
+  native,
   readThreadSnapshot,
   setThreadSnapshot,
   workspaceTarget,
@@ -165,6 +166,13 @@ import { resolveThreadEnvMode } from "./projectScripts";
 import { ProjectScriptsControl } from "./ProjectScriptsControl";
 import type { ProjectScript } from "../ipc";
 import { createPanelTerminal } from "../terminal/terminalStore";
+import { previewIpc, subscribePreview } from "../preview/ipc";
+import {
+  acceptsPreviewEvent,
+  previewScopeKey,
+  scopeForPreview,
+} from "../preview/model";
+import { openProjectScriptPreview } from "../preview/projectScriptPreview";
 
 type DraftCheckout = {
   mode: CheckoutMode;
@@ -202,6 +210,44 @@ export function ChatView({
   const [panelOpen, setPanelOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [panel, setPanel] = useState<PanelState>(emptyPanel);
+  const previewScope = scopeForPreview(workspaceId, threadId);
+  const previewScopeRef = useRef(previewScope);
+  previewScopeRef.current = previewScope;
+  const previewActive = useRef(false);
+  useEffect(() => {
+    previewActive.current = true;
+    if (!native)
+      return () => {
+        previewActive.current = false;
+      };
+    let disposed = false;
+    let off: (() => void) | undefined;
+    void subscribePreview((event) => {
+      if (
+        disposed ||
+        !event.openPanel ||
+        !acceptsPreviewEvent(previewScopeRef.current, event)
+      )
+        return;
+      setPanel((current) => openSurface(current, { kind: "preview" }));
+      setPanelOpen(true);
+      setMaximized(false);
+    }).then(
+      (unsubscribe) => {
+        if (disposed) unsubscribe();
+        else off = unsubscribe;
+      },
+      (cause: unknown) => {
+        if (!disposed)
+          setError(cause instanceof Error ? cause.message : String(cause));
+      },
+    );
+    return () => {
+      disposed = true;
+      previewActive.current = false;
+      off?.();
+    };
+  }, []);
   const [turnSelection, setTurnSelection] = useState<TurnDiffSelection | null>(
     null,
   );
@@ -765,6 +811,7 @@ export function ChatView({
   const terminalState = useTerminalState(terminalScope);
   const terminalOpen = terminalState.terminalOpen;
   const runScript = (script: ProjectScript) => {
+    const capturedScope = previewScopeRef.current;
     const surfaceId = createPanelTerminal(terminalScope);
     setPanelOpen(true);
     setMaximized(false);
@@ -778,9 +825,23 @@ export function ChatView({
         script.id,
         surfaceId.slice("terminal:".length),
       )
-      .catch((error) =>
-        setError(error instanceof Error ? error.message : String(error)),
-      );
+      .then(() =>
+        openProjectScriptPreview({
+          script,
+          scope: capturedScope,
+          currentScope: () =>
+            previewActive.current ? previewScopeRef.current : null,
+          open: previewIpc.open,
+        }),
+      )
+      .catch((error: unknown) => {
+        if (
+          previewActive.current &&
+          previewScopeKey(capturedScope) ===
+            previewScopeKey(previewScopeRef.current)
+        )
+          setError(error instanceof Error ? error.message : String(error));
+      });
   };
   const [searchDialog, setSearchDialog] = useState<
     "filePicker.toggle" | "projectSearch.toggle" | null

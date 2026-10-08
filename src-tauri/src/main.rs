@@ -1,8 +1,16 @@
 mod ipc;
 mod notifications;
-use bot_core::{App, RuntimeConfig};
-use tauri::{Emitter, Manager};
+mod preview;
+use bot_core::{AgentTools, App, Registration, RuntimeConfig};
+use tauri::{Emitter, EventTarget, Manager};
 fn main() {
+    if std::env::args().any(|argument| argument == "--agent-tools") {
+        if let Err(error) = tauri::async_runtime::block_on(bot_core::run_agent_tools_stdio()) {
+            eprintln!("{}", error.message);
+            std::process::exit(1);
+        }
+        return;
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -10,6 +18,15 @@ fn main() {
         .register_asynchronous_uri_scheme_protocol(
             "botcode-attachment",
             |ctx, request, responder| {
+                if ctx.webview_label() != "main" {
+                    responder.respond(
+                        tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new())
+                            .expect("static response parts are valid"),
+                    );
+                    return;
+                }
                 let app = ctx.app_handle().state::<App>().inner().clone();
                 let file = request.uri().path().trim_start_matches('/').to_owned();
                 tauri::async_runtime::spawn_blocking(move || {
@@ -28,18 +45,31 @@ fn main() {
         )
         .setup(|app| {
             notifications::install(app.handle());
-            let runtime =
-                tauri::async_runtime::block_on(App::open(RuntimeConfig::from_environment()?))?;
+            let config = RuntimeConfig::from_environment()?;
+            let preview = preview::PreviewManager::new(app.handle().clone());
+            let backend =
+                preview::tools::PreviewTools::new(preview.clone(), config.data_dir.clone());
+            app.manage(preview);
+            let runtime = tauri::async_runtime::block_on(App::open_with_tools(
+                config,
+                AgentTools {
+                    registration: Registration::Stdio {
+                        executable: std::env::current_exe()?,
+                    },
+                    backend: Some(std::sync::Arc::new(backend)),
+                },
+            ))?;
             let mut changes = runtime.subscribe();
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
                     match changes.recv().await {
                         Ok(change) => {
-                            let _ = handle.emit("bot:changed", change);
+                            let _ =
+                                handle.emit_to(EventTarget::webview("main"), "bot:changed", change);
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            let _ = handle.emit("bot:refresh", ());
+                            let _ = handle.emit_to(EventTarget::webview("main"), "bot:refresh", ());
                         }
                         Err(_) => break,
                     }
@@ -51,89 +81,115 @@ fn main() {
                 while limits.changed().await.is_ok() {
                     let value = limits.borrow_and_update().clone();
                     if let Some(value) = value {
-                        let _ = handle.emit("bot:usage-limits", value);
+                        let _ =
+                            handle.emit_to(EventTarget::webview("main"), "bot:usage-limits", value);
                     }
                 }
             });
             app.manage(runtime);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            notifications::notification_actions,
-            ipc::project_config,
-            ipc::retry_worktree_setup,
-            ipc::run_project_script,
-            ipc::list_workspaces,
-            ipc::open_workspace,
-            ipc::rename_workspace,
-            ipc::remove_workspace,
-            ipc::scratch_available,
-            ipc::ensure_scratch,
-            ipc::workspace_view,
-            ipc::search_paths,
-            ipc::search_contents,
-            ipc::cancel_project_search,
-            ipc::read_file,
-            ipc::write_file,
-            ipc::read_diff,
-            ipc::read_turn_diff,
-            ipc::revert_thread,
-            ipc::list_branches,
-            ipc::switch_branch,
-            ipc::git_status,
-            ipc::current_branch_pull_request,
-            ipc::search_composer_pull_requests,
-            ipc::list_thread_pull_requests,
-            ipc::link_pull_request,
-            ipc::unlink_pull_request,
-            ipc::read_pull_request,
-            ipc::change_pull_request,
-            ipc::reconcile_pull_request,
-            ipc::acknowledge_uncertain_update,
-            ipc::pull_request_operations,
-            ipc::set_review_disposition,
-            ipc::run_git_action,
-            ipc::begin_commit_message,
-            ipc::await_commit_message,
-            ipc::cancel_commit_message,
-            ipc::open_url,
-            ipc::available_editors,
-            ipc::open_in_editor,
-            ipc::reveal_in_finder,
-            ipc::create_thread,
-            ipc::thread_snapshot,
-            ipc::open_thread,
-            ipc::stage_attachment,
-            ipc::submit,
-            ipc::list_models,
-            ipc::provider_capabilities,
-            ipc::list_skills,
-            ipc::collaboration_modes,
-            ipc::answer_user_questions,
-            ipc::usage_limits,
-            ipc::update_thread_settings,
-            ipc::answer_approval,
-            ipc::interrupt,
-            ipc::arrange_thread,
-            ipc::rename_thread,
-            ipc::delete_thread,
-            ipc::list_thread_summaries,
-            ipc::ui_state,
-            ipc::set_ui_state,
-            ipc::clipboard_text,
-            ipc::settings,
-            ipc::keybindings_file,
-            ipc::save_keybindings_file,
-            ipc::save_settings,
-            ipc::terminal_attach,
-            ipc::terminal_detach,
-            ipc::terminal_write,
-            ipc::terminal_resize,
-            ipc::terminal_close
-        ])
+        .invoke_handler({
+            let commands: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                preview::preview_state,
+                preview::preview_open,
+                preview::preview_navigate,
+                preview::preview_viewport,
+                preview::preview_attach,
+                preview::preview_layout,
+                preview::preview_detach,
+                preview::preview_discover,
+                preview::preview_application_shortcuts,
+                notifications::notification_actions,
+                ipc::project_config,
+                ipc::retry_worktree_setup,
+                ipc::run_project_script,
+                ipc::list_workspaces,
+                ipc::open_workspace,
+                ipc::rename_workspace,
+                ipc::remove_workspace,
+                ipc::scratch_available,
+                ipc::ensure_scratch,
+                ipc::workspace_view,
+                ipc::search_paths,
+                ipc::search_contents,
+                ipc::cancel_project_search,
+                ipc::read_file,
+                ipc::write_file,
+                ipc::read_diff,
+                ipc::read_turn_diff,
+                ipc::revert_thread,
+                ipc::list_branches,
+                ipc::switch_branch,
+                ipc::git_status,
+                ipc::current_branch_pull_request,
+                ipc::search_composer_pull_requests,
+                ipc::list_thread_pull_requests,
+                ipc::link_pull_request,
+                ipc::unlink_pull_request,
+                ipc::read_pull_request,
+                ipc::change_pull_request,
+                ipc::reconcile_pull_request,
+                ipc::acknowledge_uncertain_update,
+                ipc::pull_request_operations,
+                ipc::set_review_disposition,
+                ipc::run_git_action,
+                ipc::begin_commit_message,
+                ipc::await_commit_message,
+                ipc::cancel_commit_message,
+                ipc::open_url,
+                ipc::available_editors,
+                ipc::open_in_editor,
+                ipc::reveal_in_finder,
+                ipc::create_thread,
+                ipc::thread_snapshot,
+                ipc::open_thread,
+                ipc::stage_attachment,
+                ipc::submit,
+                ipc::list_models,
+                ipc::provider_capabilities,
+                ipc::list_skills,
+                ipc::collaboration_modes,
+                ipc::answer_user_questions,
+                ipc::usage_limits,
+                ipc::update_thread_settings,
+                ipc::answer_approval,
+                ipc::interrupt,
+                ipc::arrange_thread,
+                ipc::rename_thread,
+                ipc::delete_thread,
+                ipc::list_thread_summaries,
+                ipc::ui_state,
+                ipc::set_ui_state,
+                ipc::clipboard_text,
+                ipc::settings,
+                ipc::keybindings_file,
+                ipc::save_keybindings_file,
+                ipc::save_settings,
+                ipc::terminal_attach,
+                ipc::terminal_detach,
+                ipc::terminal_write,
+                ipc::terminal_resize,
+                ipc::terminal_close
+            ];
+            move |invoke| {
+                if invoke.message.webview_ref().label() != "main" {
+                    invoke
+                        .resolver
+                        .reject("Application commands require the main webview.");
+                    return true;
+                }
+                commands(invoke)
+            }
+        })
         .build(tauri::generate_context!())
         .expect("Bot Code could not start");
     app.run(|handle, event| {
+        if matches!(&event, tauri::RunEvent::Exit)
+            || matches!(&event, tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } if label == "main")
+        {
+            preview::shutdown_keyboard();
+        }
         if matches!(event, tauri::RunEvent::Exit) {
             let runtime = handle.state::<App>();
             let _ = tauri::async_runtime::block_on(runtime.shutdown());

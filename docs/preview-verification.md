@@ -1,0 +1,53 @@
+# Preview verification
+
+The verification uses a disposable repository at `/tmp/botcode-preview-verification/repository` and `BOT_CODE_DATA_DIR=/tmp/botcode-preview-verification/data`. The native bundle has the separate identifier `dev.bot.code.previewverify`. All verification turns, screenshots, links, and repository actions use that isolated state.
+
+## Baseline and prototypes
+
+The baseline passed 405 UI tests, the frontend build, and `cargo test -p bot-core`. Logs are `/tmp/botcode-preview-baseline-ui.log`, `/tmp/botcode-preview-baseline-build.log`, and `/tmp/botcode-preview-baseline-core.log`.
+
+The baseline native app created conversation `8b956a15-ccd5-4bd1-b9be-34667dee1ead` through installed Codex 0.160.1 and received `baseline ready`. This conversation predates tool registration and is the existing-history upgrade check.
+
+The browser prototype ran both a Tauri child webview and a separate webview window on macOS. Each filled an input, clicked a button, returned the changed DOM, hid and showed its view, and captured a PNG. Native zoom fitted a measured 1280 by 720 CSS viewport into a 375-pixel-wide frame. Both PNGs matched. Evidence is `/tmp/botcode-preview-prototype/evidence.json` and `report.md`.
+
+Protocol probes used installed Codex with isolated `CODEX_HOME` directories and a deterministic local Responses endpoint. Dynamic tools persisted across process restart but could not be added on resume or fork. Stdio MCP tools worked on an existing conversation, after restart, and with separate scopes for two live conversations. Per-tool `approval_mode: approve` worked with truthful mutation annotations. Evidence and runners are named in `/tmp/botcode-preview-design/dynamic.md` and `mcp.md`.
+
+## Delivery checks
+
+| Unit | Native workflow | Required checks | State |
+| --- | --- | --- | --- |
+| a. Transport and PR tools | Existing Codex conversation links and lists a PR; link persists across restart. | UI tests, build, format, workspace Clippy, core tests. | Passed. |
+| b. Preview panel | Local script opens the preview; navigation, discovery, responsive size, overlay hiding, and page-focused shortcuts work. | UI tests, build, format, workspace Clippy, core tests. | Passed. |
+| c. Automation | A Codex turn links a PR, opens, snapshots, types, clicks, and observes the changed local page. | UI tests, build, format, workspace Clippy, core tests. | Passed. |
+
+## Repeat the local page
+
+The disposable page has an input named **Name**, an **Apply name** button, a status region initially reading **Ready**, a second page, and a media query that shows **Desktop layout** at widths of at least 700 CSS pixels. Its project script serves the repository on `127.0.0.1:43127` and sets `previewUrl` and `autoOpenPreview`.
+
+Unit a passed 405 UI tests, `pnpm build`, `cargo fmt --check`, workspace Clippy with warnings denied, and all core tests. Logs are `/tmp/botcode-preview-verification/unit-a-{ui,build,format,clippy,core}.log`. The actual native bundle was rebuilt, closed, and relaunched using the same isolated data directory. In the existing conversation, Codex linked PR #67 twice (first `alreadyLinked: false`, then `true`) and listed one membership. After restart it listed that saved link and returned `alreadyLinked: true` again. The original `agent_discovered` source, generation 1, and timestamp were unchanged. The earlier `baseline ready` response remained in the same native history.
+
+Independent review identified four transport defects. Regressions now cover a split next MCP frame while an image result completes, provider-originated completion cancellation, a disconnected queued caller, and a near-limit tool result inside the provider notification envelope. Scope and restart tests reject another thread and revoked credentials, preserve a manually linked PR's original source, and cancel pending browser futures without replay.
+
+With tiktoken 0.14.0 `o200k_base`, PR-only guidance is **46 UTF-8 bytes / 10 tokens**. The full preview and PR guidance is **163 bytes / 32 tokens**, injected only when preview tools are registered. Unit a's three tool schemas and descriptions serialize to **1,443 bytes / 340 tokens**. The complete fifteen-tool catalog is **9,766 bytes / 2,231 tokens**, measured separately from guidance. These are reproducible static counts, not provider billing or an exact GPT-6.1 tokenizer. The records are `/tmp/botcode-preview-verification/unit-a-token-counts.json` and `unit-c-token-counts.json`; `unit-c-tool-catalog.json` contains the compact catalog measured by tiktoken 0.14.0 using `o200k_base`.
+
+Unit b passed 418 UI tests, the build, format, workspace Clippy with warnings denied, and all core tests. Logs are `/tmp/botcode-preview-verification/unit-b-{ui,build,format,clippy,core}.log`. The final native bundle opened the script URL in the right panel. Desktop, mobile, rotation, and custom Enter changed the page's measured CSS viewport. Custom 900 by 600 measured exactly 900 by 600. Back, reload, and forward retained the forward entry. A History API route updated the URL bar and Back state. Local discovery listed the fixture server. Draft and conversation previews retained separate state, including a switch during browser startup. Menus and the command palette covered the page without a native view covering them. Command+K from a focused page input opened the application palette; ordinary typing stayed in the input.
+
+The keyboard relay uses an AppKit local event monitor. It registers effective application bindings, checks the main window and native first responder, and rejects events from an old preview scope. It needs no OS input permission. The prototype evidence is `/tmp/botcode-preview-keyboard/design.md` and `prototype-native.log`. Independent panel review found notification activation, SPA state, pre-commit navigation timeout, late panel reopening, and reload-history defects. All were repaired before this gate. Temporary native visibility diagnostics were removed.
+
+A final slow-server check requested `http://127.0.0.1:43128/` with no listener, then closed the panel during readiness polling. The timeout did not reopen the panel. Reopening showed that same requested address and the local-server error.
+
+## Automation and final build
+
+The final build passed **422 UI tests**, `pnpm build` through Tauri's before-build command, `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and **405 core tests**. The native adapter also passed **24 tests**. Logs are `/tmp/botcode-preview-verification/unit-c-final-{ui,native-build,format,clippy,core,native-tests}.log`. The native build log includes the frontend build and the signed debug `.app` bundle.
+
+After relaunching that bundle with the isolated data directory, the original pre-tools conversation linked PR #67, listed its saved membership, opened the local server, saved a PNG, typed **Final verified** using a current snapshot reference, clicked **Apply name**, and observed exactly **Applied Final verified**. The WKWebView fixture then reported **21 passed / 0 failed**. Returning to the root with Fit panel reported `visible: true`, `loading: false`, `error: null`, and measured size **483 × 656**. The final snapshot is `/tmp/botcode-preview-verification/data/preview/screenshots/5eebe051caa64c7b8ec0bae27c1db13b.png`. All fifteen tools appear in the actual native history, including PR unlink/relink and the twelve preview operations. The exported calls and results are in `unit-c-native-tool-results.json`; conversation identities and durable memberships are in `unit-c-thread.json` and `unit-c-final-pr-links.json`.
+
+The fixture covers current and stale references, ambiguous/hidden/disabled/inert targets, password omission, literal text and input events, canceled edits, explicit keyboard defaults, scroll targets, synchronous evaluation limits, and wait conditions. It also passed at **375 × 667**. WebKit zoom can round a requested scroll position, so the fixture checks the returned actual DOM coordinates. Native calls separately verified mobile sizing, dark `matchMedia`, system appearance restoration, PNG saving, Enter submission, scrolling, and refusal of Promise results. Automation dispatches untrusted main-frame DOM events; it does not guarantee native input behavior or inspect frames and shadow roots. PNG capture and appearance overrides currently require macOS.
+
+Cancellation and restart checks used the real app. Interrupting a local-server readiness call settled its matching navigation with a retryable error. On an 18-second first load, an immediate mutation failed readiness, was never retried, and did not execute later; a 60-second wait survived that first commit and observed an empty hash. Existing PR membership and conversation history persisted across provider and app restart. External-page probes could neither call a known application command nor read a seeded attachment. Non-finite viewport results and poisoned `JSON.stringify` returned bounded errors without crashing; restoring the original descriptors and serializer recovered normal status and evaluation without reloading.
+
+Independent review repaired pre-commit script queuing, native JSON serialization, canceled navigation state, attachment acquisition ordering, and keyboard normalization. The final visible-panel regression came from WKWebView reporting the main document hidden and pausing animation frames while the native window remained visible. Diagnostic logs show a valid visible child layout at **483 × 656** despite `document.hidden: true`. Coalesced microtasks now apply geometry. A page-focused Command+K hid the child for the palette; Escape restored it. Switching conversations hid the old child and restored it on return. The native parent still controls hiding and minimization. Temporary diagnostics were removed before the final build. Review evidence is `/tmp/botcode-preview-unit-c/review.md`; visibility evidence is `/tmp/botcode-preview-verification/unit-c-visibility-{before,after}.log`.
+
+## Verified unit patches
+
+Reviewable patches from the original uncommitted handoff are `/tmp/botcode-preview-units/unit-a.patch`, `unit-b.patch`, and `unit-c.patch`, applied in that order from the original HEAD. Unit a adds transport and PR links; unit b adds native preview and UI; unit c adds automation and final integration repairs. Each unit's native workflow and required gates passed before the next began. `combined.patch` represents that verified handoff. The patches were written with temporary Git indexes. At that handoff, the real index, HEAD, and commit history were unchanged. The subsequent PR retains these unit boundaries as three ordered commits.

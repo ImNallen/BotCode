@@ -1,7 +1,7 @@
 {
   "identifier": "main",
   "description": "Bot Code workbench window",
-  "windows": ["main"],
+  "webviews": ["main"],
   "permissions": [
     "core:default",
     "notification:allow-notify",
