@@ -1134,3 +1134,6 @@ async fn check_conclusions_preserve_startup_failure_and_stale_states() {
 }
 #[path = "reviews/edit.rs"]
 mod edit_tests;
+
+#[path = "reviews/checkout.rs"]
+mod checkout;

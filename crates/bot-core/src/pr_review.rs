@@ -4,6 +4,7 @@ use crate::{
     domain::*,
     pull_requests::{PrSnapshot, PullRequestKey},
 };
+pub(crate) use host::checkout_snapshot;
 pub(crate) use host::{Confirmation, acknowledge_update, change, confirm, read};
 pub use lifecycle::*;
 use serde::{Deserialize, Serialize};

@@ -887,3 +887,27 @@ fn parse_patch(patch: &str) -> Vec<PrLine> {
     }
     result
 }
+
+pub(crate) async fn checkout_snapshot(
+    program: &Path,
+    target: &PrObservation,
+    timeout: Duration,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<PrSnapshot> {
+    let mut fetch = Fetch {
+        program,
+        deadline: Instant::now() + timeout.min(Duration::from_secs(30)),
+        bytes: 0,
+        calls: 0,
+        section_deadline: None,
+        cancel,
+    };
+    let meta = fetch.meta(&target.key).await?;
+    if meta.observation != *target {
+        return Err(AppError::new(
+            "pr_review_stale",
+            "The pull request head or GitHub account changed. Refresh before checking it out.",
+        ));
+    }
+    Ok(meta.snapshot)
+}
