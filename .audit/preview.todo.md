@@ -3,9 +3,9 @@
 - [x] Read the Principles section of poteto-mode.
 - [x] Phase A: Frame
 - [x] Phase B: Design the workflow
-- [ ] Phase C: Run the loop
-- [ ] Phase D: Keep the audit trail
-- [ ] Phase E: Verify and hand back
+- [x] Phase C: Run the loop
+- [x] Phase D: Keep the audit trail
+- [x] Phase E: Verify and hand back
 
 ## Designed units
 
@@ -15,11 +15,11 @@
 - [x] Ground and compare two architecture sketches, then save the chosen contracts.
 - [x] Unit a. Provider-neutral tools and PR links. Verify native Codex and all required checks.
 - [x] Unit b. Preview tab, navigation, discovery, responsive viewport, and project scripts. Verify native layout and all required checks.
-- [ ] Unit c. Automation tools. Verify a native Codex turn links, opens, snapshots, and clicks. Verify restart isolation and all required checks.
-- [ ] Measure injected guidance and tool schema tokens.
-- [ ] Update README, UI baseline, and architecture.
-- [ ] Independent review and trail review.
+- [x] Unit c. Automation tools. Verify a native Codex turn links, opens, snapshots, and clicks. Verify restart isolation and all required checks.
+- [x] Measure injected guidance and tool schema tokens.
+- [x] Update README, UI baseline, and architecture.
+- [x] Independent review and trail review.
 
-Each unit must pass its checks before the next begins. Commits, pushes, and PR creation are excluded by the user's instruction. The unit boundaries will be recorded with saved patches and verification results.
+Each unit must pass its checks before the next begins. The initial instruction excluded commits, pushes, and PR creation. The later "Create pr" request authorizes those actions. Saved patches and verification results record the unit boundaries, which the PR retains as three ordered commits.
 
 Throughput checkpoint. The riskiest work is WKWebView automation and native layout ownership. Prototype those first. Keep provider callbacks in the core owner, browser state in the Tauri adapter, and UI tab intent in React. Delegate only independent designs or isolated units.

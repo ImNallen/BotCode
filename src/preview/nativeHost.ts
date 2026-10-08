@@ -7,7 +7,10 @@ export type PreviewRect = {
   width: number;
   height: number;
 };
-export type PreviewLayout = { rect: PreviewRect | null; visible: boolean };
+export type PreviewLayout = {
+  rect: PreviewRect | null;
+  visible: boolean;
+};
 type HostTransport = {
   attach: (scope: PreviewScope) => Promise<PreviewAttachment>;
   layout: (
@@ -17,6 +20,8 @@ type HostTransport = {
   ) => Promise<unknown>;
   detach: (lease: number) => Promise<unknown>;
 };
+let pendingAttachment = Promise.resolve();
+
 export function intersectPreviewRect(
   rect: PreviewRect,
   bounds: PreviewRect,
@@ -53,9 +58,17 @@ export function attachPreviewHost({
     const encoded = JSON.stringify(layout);
     if (lastLayout === encoded) return;
     lastLayout = encoded;
-    void transport.layout(lease, ++sequence, layout).catch(report);
+    const requestSequence = ++sequence;
+    void transport
+      .layout(lease, requestSequence, layout)
+      .catch((error: unknown) => {
+        if (sequence === requestSequence) lastLayout = "";
+        report(error);
+      });
   };
-  void transport.attach(scope).then((attachment) => {
+  const acquisition = pendingAttachment.then(async () => {
+    if (disposed) return;
+    const attachment = await transport.attach(scope);
     if (disposed) {
       void transport.detach(attachment.lease).catch(() => {});
       return;
@@ -63,7 +76,9 @@ export function attachPreviewHost({
     lease = attachment.lease;
     onState(attachment.state);
     refresh();
-  }, report);
+  });
+  pendingAttachment = acquisition.catch(() => {});
+  void acquisition.catch(report);
   return {
     refresh,
     dispose: () => {
@@ -78,7 +93,6 @@ export const coveringLayers =
 export function measurePreviewHost(host: HTMLElement): PreviewLayout {
   if (
     !host.isConnected ||
-    document.hidden ||
     document.querySelector(coveringLayers) ||
     host.closest('[inert],[aria-hidden="true"]')
   )

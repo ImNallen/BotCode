@@ -115,17 +115,23 @@ it("a native preview frame stays inside the renderer host and window", () => {
 });
 
 it("closing the Preview tab before native attach completes releases its lease without showing it", async () => {
+  const started = deferred<void>();
   const attached = deferred<PreviewAttachment>();
+  const released = deferred<void>();
   const detached: number[] = [];
   const binding = attachPreviewHost({
     scope,
     transport: {
-      attach: () => attached.promise,
+      attach: () => {
+        started.resolve();
+        return attached.promise;
+      },
       layout: async () => {
         assert.fail("A closed preview must not send a visible layout");
       },
       detach: async (lease) => {
         detached.push(lease);
+        released.resolve();
       },
     },
     measure: () => ({
@@ -139,14 +145,152 @@ it("closing the Preview tab before native attach completes releases its lease wi
       throw error;
     },
   });
+  await started.promise;
   binding.dispose();
   attached.resolve({ lease: 10, state: initialPreview });
-  await attached.promise;
-  await Promise.resolve();
+  await released.promise;
   assert.deepEqual(detached, [10]);
 });
 
+it("a disposed queued mount is skipped before the next conversation acquires the host", async () => {
+  const started = deferred<void>();
+  const release = deferred<PreviewAttachment>();
+  const ready = deferred<void>();
+  const requests: PreviewScope[] = [];
+  const currentScope = scopeForPreview(workspace, other);
+  const mount = (target: PreviewScope) =>
+    attachPreviewHost({
+      scope: target,
+      transport: {
+        attach: async (next) => {
+          requests.push(next);
+          if (next === scope) {
+            started.resolve();
+            return release.promise;
+          }
+          return { lease: 2, state: initialPreview };
+        },
+        layout: async () => {},
+        detach: async () => {},
+      },
+      measure: () => ({ rect: null, visible: false }),
+      onState: () => {
+        if (target === currentScope) ready.resolve();
+      },
+      onError: (error) => {
+        throw error;
+      },
+    });
+  const first = mount(scope);
+  await started.promise;
+  const skipped = mount(scopeForPreview(workspace, undefined));
+  skipped.dispose();
+  const current = mount(currentScope);
+  release.resolve({ lease: 1, state: initialPreview });
+  await ready.promise;
+  assert.deepEqual(requests, [scope, currentScope]);
+  first.dispose();
+  current.dispose();
+});
+
+it("a late acquisition from a disposed mount cannot retire the current conversation's host", async () => {
+  const started = deferred<void>();
+  const release = deferred<void>();
+  const retired = deferred<void>();
+  const ready = deferred<void>();
+  const currentScope = scopeForPreview(workspace, other);
+  const requests: PreviewScope[] = [];
+  let nextLease = 0;
+  let nativeLease: number | null = null;
+  let visibleLease: number | null = null;
+  const mount = (target: PreviewScope) =>
+    attachPreviewHost({
+      scope: target,
+      transport: {
+        attach: async (next) => {
+          requests.push(next);
+          if (next === scope) {
+            started.resolve();
+            await release.promise;
+          }
+          nativeLease = ++nextLease;
+          return { lease: nativeLease, state: initialPreview };
+        },
+        layout: async (lease) => {
+          if (nativeLease === lease) visibleLease = lease;
+          ready.resolve();
+        },
+        detach: async (lease) => {
+          if (nativeLease === lease) {
+            nativeLease = null;
+            visibleLease = null;
+          }
+          retired.resolve();
+        },
+      },
+      measure: () => ({
+        rect: { x: 500, y: 100, width: 400, height: 600 },
+        visible: true,
+      }),
+      onState: () => {},
+      onError: (error) => {
+        throw error;
+      },
+    });
+  const old = mount(scope);
+  await started.promise;
+  old.dispose();
+  const current = mount(currentScope);
+  release.resolve();
+  await retired.promise;
+  await ready.promise;
+  assert.deepEqual(requests, [scope, currentScope]);
+  assert.equal(nativeLease, 2);
+  assert.equal(visibleLease, 2);
+  current.dispose();
+});
+
+it("a failed native layout can be retried at the same geometry", async () => {
+  const failure = deferred<unknown>();
+  const started = deferred<void>();
+  const reported = deferred<void>();
+  const sequences: number[] = [];
+  const errors: unknown[] = [];
+  const binding = attachPreviewHost({
+    scope,
+    transport: {
+      attach: async () => ({ lease: 12, state: initialPreview }),
+      layout: async (_lease, sequence) => {
+        sequences.push(sequence);
+        if (sequence === 1) {
+          started.resolve();
+          await failure.promise;
+          throw new Error("Native layout timed out");
+        }
+      },
+      detach: async () => {},
+    },
+    measure: () => ({
+      rect: { x: 500, y: 100, width: 400, height: 600 },
+      visible: true,
+    }),
+    onState: () => {},
+    onError: (error: unknown) => {
+      errors.push(error);
+      reported.resolve();
+    },
+  });
+  await started.promise;
+  failure.resolve(undefined);
+  await reported.promise;
+  binding.refresh();
+  assert.deepEqual(sequences, [1, 2]);
+  assert.equal(errors.length, 1);
+  binding.dispose();
+});
+
 it("native geometry carries a monotonic sequence and hiding a menu does not repeat an unchanged layout", async () => {
+  const ready = deferred<void>();
   let layout: PreviewLayout = {
     rect: { x: 500, y: 100, width: 400, height: 600 },
     visible: true,
@@ -163,6 +307,7 @@ it("native geometry carries a monotonic sequence and hiding a menu does not repe
       attach: async () => ({ lease: 11, state: initialPreview }),
       layout: async (lease, sequence, layout) => {
         writes.push({ lease, sequence, layout });
+        ready.resolve();
       },
       detach: async (lease) => {
         detached.push(lease);
@@ -174,7 +319,7 @@ it("native geometry carries a monotonic sequence and hiding a menu does not repe
       throw error;
     },
   });
-  await Promise.resolve();
+  await ready.promise;
   binding.refresh();
   layout = { rect: null, visible: false };
   binding.refresh();

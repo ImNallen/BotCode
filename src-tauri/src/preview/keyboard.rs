@@ -33,8 +33,9 @@ pub fn validate(shortcuts: &[Shortcut]) -> Result<()> {
 mod macos {
     use std::{cell::RefCell, collections::HashMap, ptr::NonNull};
 
-    use objc2::{MainThreadMarker, rc::Retained, runtime::AnyObject};
+    use objc2::{MainThreadMarker, rc::Retained, runtime::AnyObject, sel};
     use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSView};
+    use objc2_foundation::NSObjectProtocol;
     use objc2_web_kit::WKWebView;
     use tauri::{Emitter, EventTarget, Manager, Webview};
 
@@ -149,17 +150,24 @@ mod macos {
             return false;
         }
         let flags = event.modifierFlags();
-        let mut key = event
-            .charactersIgnoringModifiers()
-            .map(|text| text.to_string().to_lowercase())
-            .unwrap_or_default();
+        let characters = if event.respondsToSelector(sel!(charactersByApplyingModifiers:)) {
+            event.charactersByApplyingModifiers(
+                flags & !(NSEventModifierFlags::Control | NSEventModifierFlags::Command),
+            )
+        } else if flags.contains(NSEventModifierFlags::Option) {
+            if flags.contains(NSEventModifierFlags::Control) {
+                return false;
+            }
+            event.characters()
+        } else {
+            event.charactersIgnoringModifiers()
+        };
+        let Some(key) =
+            characters.and_then(|text| normalize_key(&text.to_string(), event.keyCode()))
+        else {
+            return false;
+        };
         let physical = physical_key(event.keyCode());
-        if key
-            .chars()
-            .any(|key| key.is_control() || ('\u{f700}'..='\u{f8ff}').contains(&key))
-        {
-            key = physical.unwrap_or("").to_owned();
-        }
         let shortcut = Shortcut {
             key: key.clone(),
             meta_key: flags.contains(NSEventModifierFlags::Command),
@@ -221,6 +229,19 @@ mod macos {
                 .is_ok()
     }
 
+    fn normalize_key(characters: &str, code: u16) -> Option<String> {
+        let key = characters.to_lowercase();
+        if key.is_empty()
+            || key
+                .chars()
+                .any(|key| key.is_control() || ('\u{f700}'..='\u{f8ff}').contains(&key))
+        {
+            physical_key(code).map(str::to_owned)
+        } else {
+            Some(key)
+        }
+    }
+
     fn physical_key(code: u16) -> Option<&'static str> {
         Some(match code {
             0 => "a",
@@ -275,6 +296,11 @@ mod macos {
             50 => "`",
             51 => "backspace",
             53 => "escape",
+            64 => "f17",
+            76 => "enter",
+            79 => "f18",
+            80 => "f19",
+            90 => "f20",
             96 => "f5",
             97 => "f6",
             98 => "f7",
@@ -282,8 +308,12 @@ mod macos {
             100 => "f8",
             101 => "f9",
             103 => "f11",
+            105 => "f13",
+            106 => "f16",
+            107 => "f14",
             109 => "f10",
             111 => "f12",
+            113 => "f15",
             115 => "home",
             116 => "pageup",
             117 => "delete",
@@ -298,6 +328,35 @@ mod macos {
             126 => "arrowup",
             _ => return None,
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::normalize_key;
+
+        #[test]
+        fn normalizes_native_keypad_enter_and_extended_function_keys() {
+            assert_eq!(normalize_key("\u{3}", 76).as_deref(), Some("enter"));
+            for (code, key) in [
+                (105, "f13"),
+                (107, "f14"),
+                (113, "f15"),
+                (106, "f16"),
+                (64, "f17"),
+                (79, "f18"),
+                (80, "f19"),
+                (90, "f20"),
+            ] {
+                assert_eq!(normalize_key("\u{f710}", code).as_deref(), Some(key));
+            }
+        }
+
+        #[test]
+        fn preserves_option_text_and_uses_the_keycode_for_dead_keys() {
+            assert_eq!(normalize_key("ø", 1).as_deref(), Some("ø"));
+            assert_eq!(normalize_key("", 14).as_deref(), Some("e"));
+            assert_eq!(normalize_key("\u{10}", 255), None);
+        }
     }
 }
 

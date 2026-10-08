@@ -1,5 +1,5 @@
 // Ported from T3 v0.0.45 apps/desktop/src/preview/Manager.ts; native scope and lease adaptation.
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use bot_core::{ThreadId, WorkspaceId};
 use serde::{Deserialize, Serialize};
@@ -115,7 +115,15 @@ pub struct Entry {
     pub state: PreviewState,
     pub navigation: u64,
     pub pending_url: Option<String>,
+    pub initial_commit: tokio::sync::watch::Sender<bool>,
+    automation: Arc<tokio::sync::Mutex<()>>,
+    automation_key: String,
     touched: u64,
+}
+
+pub struct AutomationPin {
+    pub gate: Arc<tokio::sync::Mutex<()>>,
+    pub key: String,
 }
 
 pub struct Attachment {
@@ -136,6 +144,19 @@ pub struct Model {
 }
 
 impl Model {
+    pub fn cancel_navigation(&mut self, scope: &PreviewScope, generation: u64) -> bool {
+        let Some(entry) = self.entries.get_mut(scope) else {
+            return false;
+        };
+        if entry.navigation != generation || entry.pending_url.is_none() {
+            return false;
+        }
+        entry.pending_url = None;
+        entry.state.loading = false;
+        entry.state.error = Some("Preview navigation did not complete. Reload to retry.".into());
+        true
+    }
+
     pub fn ensure(&mut self, scope: &PreviewScope) -> Result<Option<String>> {
         self.clock = self
             .clock
@@ -149,11 +170,14 @@ impl Model {
             let victim = self
                 .entries
                 .iter()
-                .filter(|(scope, _)| self.attachment.as_ref().is_none_or(|a| &a.scope != *scope))
+                .filter(|(scope, entry)| {
+                    Arc::strong_count(&entry.automation) == 1
+                        && self.attachment.as_ref().is_none_or(|a| &a.scope != *scope)
+                })
                 .min_by_key(|(_, entry)| entry.touched)
                 .map(|(scope, _)| scope.clone())
                 .ok_or(
-                    "Every preview is attached. Close a panel before opening another preview.",
+                    "Every preview is attached or busy. Wait for a browser operation to finish.",
                 )?;
             self.entries.remove(&victim).and_then(|entry| entry.label)
         } else {
@@ -166,10 +190,24 @@ impl Model {
                 state: PreviewState::default(),
                 navigation: 0,
                 pending_url: None,
+                initial_commit: tokio::sync::watch::channel(false).0,
+                automation: Arc::new(tokio::sync::Mutex::new(())),
+                automation_key: format!("__botcode_{}", uuid::Uuid::new_v4().simple()),
                 touched: self.clock,
             },
         );
         Ok(evicted)
+    }
+
+    pub fn pin(&self, scope: &PreviewScope) -> Result<AutomationPin> {
+        let entry = self
+            .entries
+            .get(scope)
+            .ok_or("Preview scope disappeared.")?;
+        Ok(AutomationPin {
+            gate: entry.automation.clone(),
+            key: entry.automation_key.clone(),
+        })
     }
 
     pub fn state(&self, scope: &PreviewScope) -> PreviewState {
@@ -275,6 +313,23 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_navigation_settles_only_its_own_pending_generation() {
+        let mut model = Model::default();
+        let scope = scope();
+        model.ensure(&scope).unwrap();
+        let entry = model.entries.get_mut(&scope).unwrap();
+        entry.navigation = 2;
+        entry.pending_url = Some("http://localhost:3000/".into());
+        entry.state.loading = true;
+        assert!(!model.cancel_navigation(&scope, 1));
+        assert!(model.state(&scope).loading);
+        assert!(model.cancel_navigation(&scope, 2));
+        assert!(!model.state(&scope).loading);
+        assert!(model.state(&scope).error.is_some());
+        assert!(!model.cancel_navigation(&scope, 2));
+    }
+
+    #[test]
     fn stale_cleanup_and_layout_cannot_hide_a_new_mount() {
         let mut model = Model::default();
         let scope = scope();
@@ -334,6 +389,65 @@ mod tests {
         assert_eq!(model.entries.len(), VIEW_LIMIT);
         assert!(model.entries.contains_key(&active));
         assert!(!model.entries.contains_key(&oldest));
+    }
+
+    #[tokio::test]
+    async fn pinned_previews_survive_eviction_until_the_operation_releases_them() {
+        let mut model = Model::default();
+        let pinned = scope();
+        model.ensure(&pinned).unwrap();
+        model.entries.get_mut(&pinned).unwrap().label = Some("pinned".into());
+        let pin = model.pin(&pinned).unwrap();
+        let guard = pin.gate.lock().await;
+        for _ in 1..VIEW_LIMIT {
+            model.ensure(&scope()).unwrap();
+        }
+        model.ensure(&scope()).unwrap();
+        assert!(model.entries.contains_key(&pinned));
+        drop(guard);
+        model.ensure(&scope()).unwrap();
+        assert!(model.entries.contains_key(&pinned));
+        drop(pin);
+        assert_eq!(model.ensure(&scope()).unwrap().as_deref(), Some("pinned"));
+        assert!(!model.entries.contains_key(&pinned));
+    }
+
+    #[tokio::test]
+    async fn one_conversations_calls_serialize_while_another_can_run() {
+        let mut model = Model::default();
+        let first = scope();
+        let second = scope();
+        model.ensure(&first).unwrap();
+        model.ensure(&second).unwrap();
+        let first_pin = model.pin(&first).unwrap();
+        let queued_pin = model.pin(&first).unwrap();
+        let second_pin = model.pin(&second).unwrap();
+        let first_guard = first_pin.gate.lock().await;
+        assert!(queued_pin.gate.try_lock().is_err());
+        assert!(second_pin.gate.try_lock().is_ok());
+        drop(first_guard);
+        let queued_guard = queued_pin.gate.try_lock().unwrap();
+        assert_eq!(first_pin.key, queued_pin.key);
+        assert_ne!(first_pin.key, second_pin.key);
+        drop(queued_guard);
+    }
+
+    #[test]
+    fn all_pinned_previews_refuse_new_entries_without_destroying_browsers() {
+        let mut model = Model::default();
+        let mut pins = Vec::new();
+        for _ in 0..VIEW_LIMIT {
+            let current = scope();
+            model.ensure(&current).unwrap();
+            pins.push(model.pin(&current).unwrap());
+        }
+        let new_scope = scope();
+        assert!(model.ensure(&new_scope).is_err());
+        assert_eq!(model.entries.len(), VIEW_LIMIT);
+        pins.pop();
+        model.ensure(&new_scope).unwrap();
+        assert!(model.entries.contains_key(&new_scope));
+        assert_eq!(model.entries.len(), VIEW_LIMIT);
     }
 
     #[test]

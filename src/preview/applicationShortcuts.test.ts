@@ -116,3 +116,24 @@ it("preserves application navigation chords available in the preview", () => {
     6,
   );
 });
+
+it("routes Option-modified non-Latin text by physical key without selecting the layout letter's action", () => {
+  const bindings = compileResolvedKeybindingsConfig([
+    { key: "mod+alt+s", command: "sidebar.toggle" },
+    { key: "mod+alt+o", command: "settings.open" },
+  ]);
+  const chord = { ...event("ø"), code: "KeyS", altKey: true };
+  assert.equal(
+    previewApplicationAction(chord, bindings, context, "MacIntel"),
+    "sidebar.toggle",
+  );
+  assert.equal(
+    previewApplicationAction(
+      { ...chord, key: "o" },
+      bindings,
+      context,
+      "MacIntel",
+    ),
+    "settings.open",
+  );
+});

@@ -262,7 +262,12 @@ async fn handle_tool_request(socket: &Path, credential: String, frame: &Value) -
         credential,
         operation,
     };
-    match tokio::time::timeout(Duration::from_secs(65), forward(socket, request)).await {
+    match tokio::time::timeout(
+        Duration::from_secs(crate::tools::BRIDGE_TIMEOUT_SECONDS),
+        forward(socket, request),
+    )
+    .await
+    {
         Ok(Ok(value)) => ok(id, value),
         Ok(Err(problem)) => error(id, -32000, &problem.message),
         Err(_) => error(id, -32000, "Bot Code tool timed out."),

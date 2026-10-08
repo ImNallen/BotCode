@@ -314,6 +314,7 @@ name = "bot-code"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
  "block2",
  "bot-core",
  "objc2",
@@ -328,6 +329,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

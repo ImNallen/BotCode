@@ -67,12 +67,13 @@ export function PreviewSurface({ scope }: { scope: PreviewScope }) {
       },
       onError: report,
     });
-    let frame = 0;
+    let scheduled = false;
     const refresh = () => {
-      if (disposed || frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        binding.refresh();
+      if (disposed || scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        if (!disposed) binding.refresh();
       });
     };
     refreshGeometry.current = refresh;
@@ -93,7 +94,6 @@ export function PreviewSurface({ scope }: { scope: PreviewScope }) {
       active.current = false;
       operation.current++;
       off?.();
-      cancelAnimationFrame(frame);
       size.disconnect();
       overlays.disconnect();
       window.removeEventListener("resize", refresh);

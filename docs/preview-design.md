@@ -53,7 +53,7 @@ The renderer and native adapter use `PreviewScope = {kind: "thread", threadId} |
 
 The panel uses `preview_state`, `preview_open`, `preview_navigate`, `preview_viewport`, and `preview_discover`. Navigation is a tagged URL, back, forward, or reload operation. A `botcode-preview` event carries `{scope, state, openPanel}`; React opens the panel only for the currently selected scope.
 
-A mount acquires a monotonic lease with `preview_attach`. `preview_layout` carries that lease, a monotonic sequence, measured logical bounds, and visibility. `preview_detach` releases only its matching lease. A later mount invalidates earlier geometry and cleanup calls. The manager displays at most one child view; the hidden views retain conversation browser state. A finite view limit bounds native resources. Renderer observers hide the view during covering dialogs and menus.
+A mount acquires a monotonic lease with `preview_attach`. `preview_layout` carries that lease, a monotonic sequence, measured logical bounds, and visibility. `preview_detach` releases only its matching lease. Renderer attachment acquisition is serialized, and disposed queued mounts are skipped. A later mount invalidates earlier geometry and cleanup calls. The manager displays at most one child view; the hidden views retain conversation browser state. A finite view limit bounds native resources. Renderer observers hide the view during covering dialogs and menus. Geometry updates use coalesced microtasks: WKWebView can report the main document hidden and pause animation frames while the containing window remains visible. Native child visibility still follows that parent window.
 
 
 The concrete IPC payloads are:
@@ -90,4 +90,4 @@ The twelve operations are:
 | `preview_wait_for` | All supplied target, text and URL conditions; bounded, cancelable polling. |
 | `preview_set_appearance` | Native light, dark, or system color scheme. |
 
-DOM actions reject ambiguous, hidden, disabled, read-only or stale targets. A new snapshot invalidates earlier references, and navigation replaces the document that owns them. Snapshots inspect the main frame and omit password values. They report their omissions. DOM-dispatched events are untrusted. Browser actions that require trusted user activation, native shortcuts, cross-origin frame inspection and closed shadow roots remain unsupported. Native PNG capture and appearance overrides are implemented for macOS.
+DOM actions reject ambiguous, hidden, disabled, read-only or stale targets. A new snapshot invalidates earlier references, and navigation replaces the document that owns them. Snapshots inspect the main frame and omit password values. They report their omissions. DOM-dispatched events are untrusted; trusted-input-only behavior is not guaranteed. Native shortcuts, cross-origin frame inspection and closed shadow roots remain unsupported. Native PNG capture and appearance overrides are implemented for macOS.

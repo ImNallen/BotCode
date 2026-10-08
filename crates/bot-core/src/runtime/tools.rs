@@ -4,7 +4,7 @@ use crate::{
     AgentTools, Registration, ToolContext, ToolResult,
     codex::tools::{self as adapter, Caller},
     tool_bridge::{BridgeOperation, BridgeServer, Envelope, mcp_result},
-    tools::{AGENT_TOOL_GUIDANCE, Action, PR_TOOL_GUIDANCE, Registry},
+    tools::{AGENT_TOOL_GUIDANCE, Action, EXECUTION_TIMEOUT_SECONDS, PR_TOOL_GUIDANCE, Registry},
 };
 use sha2::{Digest, Sha256};
 use tokio::task::{AbortHandle, JoinSet};
@@ -378,10 +378,10 @@ impl Owner {
                     let mut reply = reply;
                     if reply.is_closed() { return ToolCompletion { context, caller, reply, result:ToolResult::failure("The tool caller disconnected.") } }
                     let result = tokio::select! {
-                        result = tokio::time::timeout(Duration::from_secs(60), backend.execute(context.clone(), call)) => match result {
+                        result = tokio::time::timeout(Duration::from_secs(EXECUTION_TIMEOUT_SECONDS), backend.execute(context.clone(), call)) => match result {
                             Ok(Ok(result)) => result.bounded(),
                             Ok(Err(problem)) => ToolResult::failure(problem.message),
-                            Err(_) => ToolResult::failure("Preview tool timed out after 60 seconds."),
+                            Err(_) => ToolResult::failure(format!("Preview tool timed out after {EXECUTION_TIMEOUT_SECONDS} seconds.")),
                         },
                         _ = reply.closed() => ToolResult::failure("The tool caller disconnected."),
                     };

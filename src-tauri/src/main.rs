@@ -45,14 +45,18 @@ fn main() {
         )
         .setup(|app| {
             notifications::install(app.handle());
-            app.manage(preview::PreviewManager::new(app.handle().clone()));
+            let config = RuntimeConfig::from_environment()?;
+            let preview = preview::PreviewManager::new(app.handle().clone());
+            let backend =
+                preview::tools::PreviewTools::new(preview.clone(), config.data_dir.clone());
+            app.manage(preview);
             let runtime = tauri::async_runtime::block_on(App::open_with_tools(
-                RuntimeConfig::from_environment()?,
+                config,
                 AgentTools {
                     registration: Registration::Stdio {
                         executable: std::env::current_exe()?,
                     },
-                    backend: None,
+                    backend: Some(std::sync::Arc::new(backend)),
                 },
             ))?;
             let mut changes = runtime.subscribe();

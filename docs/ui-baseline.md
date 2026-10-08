@@ -32,6 +32,10 @@ The browser is a Tauri child webview positioned within the measured content host
 
 The URL bar accepts HTTP and HTTPS addresses without embedded credentials. Back, Forward and Refresh reflect native navigation, including SPA history. Refresh preserves forward history. Failed or stalled loads show a bounded error and allow retry. Desktop, Tablet and Mobile choose CSS sizes; custom inputs and rotation use the same native viewport operation. Fit panel follows the available rectangle. The toolbar displays the measured CSS size. Fixed sizes scale to fit while retaining the desktop user agent. Browser state is scoped to a conversation or project draft and lasts for this app session; hidden views retain it within a finite cache.
 
+Agent browser tools operate on their own conversation's preview. Open requests may expose that tab; navigation and background opens retain the user's panel intent. Snapshots return current element references and optional PNGs, and actions refuse stale or ambiguous targets. The same browser remains usable through its toolbar and page controls. Automation is limited to main-frame DOM events; native input parity is not guaranteed. Native PNG capture and appearance overrides currently run on macOS.
+
+Application navigation shortcuts remain available while the preview page has focus. Command palette and other covering dialogs hide the native page until dismissed. Ordinary page typing and composer-local shortcuts stay in their own controls.
+
 Recording, simulators, cookie import, annotation and picture-in-picture controls are omitted. Native history and the final browser verification currently target macOS WKWebView.
 
 ## Thread lifecycle
@@ -238,5 +242,3 @@ The Keybindings page ports `components/settings/KeybindingsSettings.tsx` and its
 The file at `BOT_CODE_DATA_DIR/keybindings.json` is an ordered JSON array of `{ key, command, when? }` rules. The normal data directory applies when the environment variable is unset. It accepts T3's comments, trailing commas, key grammar and condition grammar. Known T3 command IDs remain unchanged; Bot Code adds IDs for its settings page, page close, terminal clear and other existing local actions. The settings page displays the resolved file path. Bot Code does not inspect T3's data directory.
 
 One TypeScript parser validates file entries before input handlers see them. Invalid entries produce indexed diagnostics and leave their command's default active unless another valid rule overrides it. A malformed whole document keeps all defaults and blocks settings writes. Rust owns fixed-path file reads and conditional atomic writes. A settings edit rereads the current file, preserves unrelated raw entries, and retries if another writer changed it. Confirmed saves update the shared action, terminal, composer and project-script resolver and their labels. The last matching rule wins. File edits reload on focus and every two seconds. Legacy device script shortcuts migrate into the file before their old UI-state entry is removed.
-
-Application navigation shortcuts remain available while the preview page has focus. Command palette and other covering dialogs hide the native page until dismissed. Ordinary page typing and composer-local shortcuts stay in their own controls.

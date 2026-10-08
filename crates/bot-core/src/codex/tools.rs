@@ -109,7 +109,7 @@ pub(crate) fn stdio_config(
     json!({"mcp_servers.botcode": {
         "command": executable, "args": ["--agent-tools"],
         "env": {"BOT_CODE_AGENT_SOCKET": socket, "BOT_CODE_AGENT_TOKEN": credential},
-        "startup_timeout_sec": 10, "tool_timeout_sec": 65,
+        "startup_timeout_sec": 10, "tool_timeout_sec": crate::tools::MCP_TIMEOUT_SECONDS,
         "tools": approvals
     }})
 }

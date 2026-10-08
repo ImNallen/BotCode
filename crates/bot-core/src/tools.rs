@@ -8,6 +8,9 @@ pub const AGENT_TOOL_GUIDANCE: &str = "Use Bot Code preview tools for browser wo
 pub(crate) const PR_TOOL_GUIDANCE: &str = "Link pull requests you work on to this thread.";
 pub(crate) const INPUT_LIMIT: usize = 1024 * 1024;
 pub(crate) const OUTPUT_LIMIT: usize = 6_000_000;
+pub(crate) const EXECUTION_TIMEOUT_SECONDS: u64 = 65;
+pub(crate) const BRIDGE_TIMEOUT_SECONDS: u64 = EXECUTION_TIMEOUT_SECONDS + 5;
+pub(crate) const MCP_TIMEOUT_SECONDS: u64 = BRIDGE_TIMEOUT_SECONDS + 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

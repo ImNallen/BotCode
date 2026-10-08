@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Preview automation behavior fixture</title>
+    <style>
+      body {
+        margin: 24px;
+        font: 16px system-ui;
+        min-height: 1800px;
+      }
+      #fixture {
+        min-height: 500px;
+      }
+      input,
+      textarea,
+      button,
+      select,
+      [contenteditable] {
+        display: block;
+        margin: 8px;
+      }
+      [contenteditable] {
+        width: 240px;
+        min-height: 32px;
+        border: 1px solid;
+      }
+      #scroll-box {
+        width: 100px;
+        height: 100px;
+        overflow: auto;
+      }
+      #scroll-content {
+        width: 500px;
+        height: 800px;
+      }
+      #report {
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Preview automation behavior fixture</h1>
+    <div id="fixture"></div>
+    <pre id="report">Running behavior checks...</pre>
+    <script type="module" src="./automation.fixture.mjs"></script>
+  </body>
+</html>

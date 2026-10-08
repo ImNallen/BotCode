@@ -1,5 +1,5 @@
 // Adapted from T3 Code v0.0.45 apps/web/src/keybindings.ts and apps/desktop/src/preview/Manager.ts (MIT).
-import { useEffect, useEffectEvent } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { z } from "zod";
@@ -84,10 +84,21 @@ export function usePreviewApplicationShortcuts(
   context: ActionContext,
   execute: (action: ActionId) => void,
 ) {
-  const snapshot = useKeybindings();
-  const signature = JSON.stringify(
-    previewApplicationShortcuts(snapshot.bindings, context, navigator.platform),
-  );
+  useKeybindings();
+  const registered = useRef<string | null>(null);
+  const refresh = useEffectEvent(() => {
+    const shortcuts = previewApplicationShortcuts(
+      keybindings.getSnapshot().bindings,
+      context,
+      navigator.platform,
+    );
+    const signature = JSON.stringify(shortcuts);
+    if (registered.current === signature) return;
+    registered.current = signature;
+    void enqueue(() =>
+      invoke("preview_application_shortcuts", { shortcuts }),
+    ).catch(keybindings.reportError);
+  });
   const receive = useEffectEvent((payload: unknown) => {
     const parsed = shortcutEvent.safeParse(payload);
     if (!parsed.success || context.pageOpen) return;
@@ -113,16 +124,24 @@ export function usePreviewApplicationShortcuts(
   });
   useEffect(() => {
     if (!native) return;
-    void enqueue(() =>
-      invoke("preview_application_shortcuts", {
-        shortcuts: JSON.parse(signature),
-      }),
-    ).catch(keybindings.reportError);
-  }, [signature]);
+    refresh();
+  });
   useEffect(() => {
     if (!native) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    const observer = new MutationObserver(() => refresh());
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: [
+        "inert",
+        "hidden",
+        "data-terminal-owner",
+        "data-model-picker-open",
+      ],
+    });
     void listen<unknown>("botcode-preview-shortcut", ({ payload }) => {
       if (!disposed) receive(payload);
     })
@@ -133,7 +152,9 @@ export function usePreviewApplicationShortcuts(
       .catch(keybindings.reportError);
     return () => {
       disposed = true;
+      observer.disconnect();
       unlisten?.();
+      registered.current = null;
       void enqueue(() =>
         invoke("preview_application_shortcuts", {
           shortcuts: [],

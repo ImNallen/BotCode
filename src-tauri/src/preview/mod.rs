@@ -1,8 +1,10 @@
 // Ported from T3 v0.0.45 apps/desktop/src/preview/Manager.ts; Tauri child-webview adapter.
+mod catalog;
 mod discovery;
 mod keyboard;
 mod model;
 mod platform;
+pub mod tools;
 
 use std::{
     sync::{Arc, Mutex},
@@ -26,6 +28,33 @@ struct Inner {
     app: AppHandle,
     model: Mutex<Model>,
     shortcuts: Mutex<Vec<keyboard::Shortcut>>,
+}
+
+struct PendingNavigation {
+    manager: PreviewManager,
+    scope: PreviewScope,
+    generation: u64,
+    complete: bool,
+}
+
+impl Drop for PendingNavigation {
+    fn drop(&mut self) {
+        if self.complete {
+            return;
+        }
+        let manager = self.manager.clone();
+        let scope = self.scope.clone();
+        let generation = self.generation;
+        let _ = self.manager.0.app.run_on_main_thread(move || {
+            let changed = manager
+                .lock()
+                .is_ok_and(|mut model| model.cancel_navigation(&scope, generation));
+            if changed {
+                let _ = manager.apply_layout();
+                manager.emit(&scope, false);
+            }
+        });
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -114,6 +143,15 @@ impl PreviewManager {
             .ok_or_else(|| "Open a URL in this preview first.".into())
     }
 
+    fn initial_commit(&self, label: &str) -> Result<tokio::sync::watch::Receiver<bool>> {
+        self.lock()?
+            .entries
+            .values()
+            .find(|entry| entry.label.as_deref() == Some(label))
+            .map(|entry| entry.initial_commit.subscribe())
+            .ok_or_else(|| "Preview was closed before evaluation.".into())
+    }
+
     pub fn state(&self, scope: &PreviewScope) -> Result<PreviewState> {
         Ok(self.lock()?.state(scope))
     }
@@ -152,10 +190,18 @@ impl PreviewManager {
     }
 
     pub async fn open(&self, scope: PreviewScope, raw_url: String) -> Result<PreviewState> {
-        let url = parse_url(&raw_url)?;
+        self.open_url(scope, parse_url(&raw_url)?, true).await
+    }
+
+    async fn open_url(
+        &self,
+        scope: PreviewScope,
+        url: tauri::Url,
+        open_panel: bool,
+    ) -> Result<PreviewState> {
         let prepare_scope = scope.clone();
         let requested_url = url.to_string();
-        let navigation = self
+        let (navigation, mut pending) = self
             .on_main(move |manager| {
                 manager.ensure(&prepare_scope)?;
                 let navigation = {
@@ -174,60 +220,69 @@ impl PreviewManager {
                     entry.state.error = None;
                     entry.navigation
                 };
-                manager.emit(&prepare_scope, true);
-                Ok(navigation)
+                let pending = PendingNavigation {
+                    manager: manager.clone(),
+                    scope: prepare_scope.clone(),
+                    generation: navigation,
+                    complete: false,
+                };
+                manager.emit(&prepare_scope, open_panel);
+                Ok((navigation, pending))
             })
             .await?;
         let ready = discovery::wait_local_ready(&url).await;
         let manager_scope = scope.clone();
-        self.on_main(move |manager| {
-            let current = manager
-                .lock()?
-                .entries
-                .get(&manager_scope)
-                .map(|entry| entry.navigation);
-            if current != Some(navigation) {
-                return manager.state(&manager_scope);
-            }
-            if !ready {
-                {
-                    let mut model = manager.lock()?;
-                    let entry = model
-                        .entries
-                        .get_mut(&manager_scope)
-                        .ok_or("Preview scope disappeared.")?;
-                    entry.state.loading = false;
-                    entry.pending_url = None;
-                    entry.state.error = Some(
-                        "Local server is not listening yet. Start it and reload the preview."
-                            .into(),
-                    );
+        let result = self
+            .on_main(move |manager| {
+                let current = manager
+                    .lock()?
+                    .entries
+                    .get(&manager_scope)
+                    .map(|entry| entry.navigation);
+                if current != Some(navigation) {
+                    return manager.state(&manager_scope);
+                }
+                if !ready {
+                    {
+                        let mut model = manager.lock()?;
+                        let entry = model
+                            .entries
+                            .get_mut(&manager_scope)
+                            .ok_or("Preview scope disappeared.")?;
+                        entry.state.loading = false;
+                        entry.pending_url = None;
+                        entry.state.error = Some(
+                            "Local server is not listening yet. Start it and reload the preview."
+                                .into(),
+                        );
+                    }
+                    manager.apply_layout()?;
+                    manager.emit(&manager_scope, false);
+                    return manager.state(&manager_scope);
+                }
+                match manager.view(&manager_scope) {
+                    Ok(view) => {
+                        view.navigate(url).map_err(|error| error.to_string())?;
+                    }
+                    Err(_) => {
+                        manager.create(&manager_scope, url)?;
+                    }
                 }
                 manager.apply_layout()?;
+                if let Ok(view) = manager.view(&manager_scope) {
+                    manager.watch_requested(
+                        manager_scope.clone(),
+                        view.label().to_owned(),
+                        navigation,
+                        view,
+                    );
+                }
                 manager.emit(&manager_scope, false);
-                return manager.state(&manager_scope);
-            }
-            match manager.view(&manager_scope) {
-                Ok(view) => {
-                    view.navigate(url).map_err(|error| error.to_string())?;
-                }
-                Err(_) => {
-                    manager.create(&manager_scope, url)?;
-                }
-            }
-            manager.apply_layout()?;
-            if let Ok(view) = manager.view(&manager_scope) {
-                manager.watch_requested(
-                    manager_scope.clone(),
-                    view.label().to_owned(),
-                    navigation,
-                    view,
-                );
-            }
-            manager.emit(&manager_scope, false);
-            manager.state(&manager_scope)
-        })
-        .await
+                manager.state(&manager_scope)
+            })
+            .await;
+        pending.complete = result.is_ok();
+        result
     }
 
     fn create(&self, scope: &PreviewScope, url: tauri::Url) -> Result<()> {
@@ -239,6 +294,7 @@ impl PreviewManager {
                 .get_mut(scope)
                 .ok_or("Preview scope disappeared.")?;
             entry.label = Some(label.clone());
+            entry.initial_commit = tokio::sync::watch::channel(false).0;
         }
         let navigation_manager = self.clone();
         let navigation_scope = scope.clone();
@@ -251,12 +307,16 @@ impl PreviewManager {
         let title_manager = self.clone();
         let title_scope = scope.clone();
         let title_label = label.clone();
+        let initializing_blank = std::sync::atomic::AtomicBool::new(url.as_str() == "about:blank");
         let builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
             .incognito(true)
             .focused(false)
             .zoom_hotkeys_enabled(false)
             .on_navigation(move |url| {
-                if parse_url(url.as_str()).is_ok() {
+                if parse_url(url.as_str()).is_ok()
+                    || (url.as_str() == "about:blank"
+                        && initializing_blank.swap(false, std::sync::atomic::Ordering::Relaxed))
+                {
                     return true;
                 }
                 navigation_manager.set_error(
@@ -271,7 +331,7 @@ impl PreviewManager {
                     let manager = window_manager.clone();
                     let scope = window_scope.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = manager.open(scope, url.to_string()).await;
+                        let _ = manager.open_url(scope, url, false).await;
                     });
                 }
                 NewWindowResponse::Deny
@@ -373,6 +433,7 @@ impl PreviewManager {
                 return;
             }
             if event == PageLoadEvent::Started {
+                entry.initial_commit.send_replace(true);
                 entry.navigation = entry.navigation.saturating_add(1);
                 entry.state.loading = true;
                 entry.pending_url = None;
@@ -463,7 +524,8 @@ impl PreviewManager {
         if entry.label.as_deref() != Some(label) || entry.navigation != navigation {
             return false;
         }
-        if entry.state.error.is_some() && state.url != entry.state.url {
+        let blank = state.url.as_deref() == Some("about:blank") && entry.state.url.is_none();
+        if entry.state.error.is_some() && state.url != entry.state.url && !blank {
             return false;
         }
         let previous = entry.state.clone();
@@ -486,18 +548,22 @@ impl PreviewManager {
         entry.state.can_go_back = state.can_go_back;
         entry.state.can_go_forward = state.can_go_forward;
         entry.state.measured_viewport = measured;
-        let failed = !state.loading && (!valid_url || entry.state.measured_viewport.is_none());
+        let failed =
+            !state.loading && ((!valid_url && !blank) || entry.state.measured_viewport.is_none());
         if failed {
             entry.state.error =
                 Some("The page could not load. Check the address and reload.".into());
+        } else if !state.loading {
+            entry.state.error = None;
         }
         let loading = entry.state.loading;
         let changed = entry.state != previous;
+        let error_changed = entry.state.error != previous.error;
         drop(model);
         if changed {
             self.emit(scope, false);
         }
-        if failed {
+        if failed || error_changed {
             let manager = self.clone();
             let _ = self.0.app.run_on_main_thread(move || {
                 let _ = manager.apply_layout();
