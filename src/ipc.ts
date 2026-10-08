@@ -1,3 +1,14 @@
+import {
+  usageHistoryReportSchema,
+  usageHistoryRequestSchema,
+  type UsageHistoryRequest,
+} from "./usage/schema";
+export type {
+  UsageHistoryReport,
+  UsageHistoryRequest,
+  UsagePeriod,
+  UsageTotals,
+} from "./usage/schema";
 import type { SearchInvalidation } from "./command/threadMessageSearch";
 import {
   acknowledgeUncertainUpdate,
@@ -1126,6 +1137,12 @@ export const ipc = {
   skills: (cwd: string) => call("list_skills", { cwd }, z.array(skill)),
   collaborationModes: () =>
     call("collaboration_modes", {}, z.array(z.enum(["default", "plan"]))),
+  usageHistory: (request: UsageHistoryRequest) =>
+    call(
+      "usage_history",
+      { request: usageHistoryRequestSchema.parse(request) },
+      usageHistoryReportSchema,
+    ),
   usageLimits: (refresh = false) =>
     call("usage_limits", { refresh }, usageLimits),
   settings: (threadId: string, value: SessionSettings) =>
