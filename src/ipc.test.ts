@@ -588,3 +588,124 @@ it("reads legacy turns without tasks and validates new checklist snapshots at IP
     else Reflect.deleteProperty(globalThis, "window");
   }
 });
+
+it("commit IPC preserves selection and destination and preview receives the same selection", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { crypto: globalThis.crypto },
+  });
+  try {
+    const calls: unknown[] = [];
+    mockIPC((command, args) => {
+      if (command === "begin_commit_message") {
+        calls.push({ command, args });
+        return "preview-job";
+      }
+      assert.equal(command, "run_git_action");
+      assert.ok(args && typeof args === "object" && "action" in args);
+      calls.push({ command, action: args.action });
+      return {
+        branch: "feature/selected",
+        commit: null,
+        push: null,
+        pr: null,
+        pull: null,
+        failure: {
+          phase: { kind: "commit" },
+          error: { code: "git", message: "hook failed" },
+        },
+      };
+    });
+    const selection = {
+      kind: "paths",
+      paths: ["literal*.txt"],
+    } satisfies import("./ipc.ts").CommitSelection;
+    const request = {
+      message: "Selected",
+      selection,
+      destination: { kind: "new_branch" },
+    } satisfies import("./ipc.ts").CommitRequest;
+    assert.equal(
+      await ipc.beginCommitMessage("thread", selection),
+      "preview-job",
+    );
+    const out = await ipc.runGitAction(
+      { workspaceId: "workspace" },
+      "thread",
+      { kind: "commit", request },
+      () => {},
+    );
+    assert.equal(out.branch, "feature/selected");
+    assert.deepEqual(calls, [
+      {
+        command: "begin_commit_message",
+        args: { threadId: "thread", selection },
+      },
+      { command: "run_git_action", action: { kind: "commit", request } },
+    ]);
+  } finally {
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+it("Git progress IPC accepts tagged hook and output events and rejects malformed messages", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { crypto: globalThis.crypto },
+  });
+  const events: import("./ipc.ts").GitProgress[] = [];
+  let channelId: number | undefined;
+  try {
+    mockIPC((command, args) => {
+      assert.equal(command, "run_git_action");
+      assert.ok(args && typeof args === "object" && "onProgress" in args);
+      const channel = args.onProgress;
+      assert.ok(
+        channel &&
+          typeof channel === "object" &&
+          "id" in channel &&
+          typeof channel.id === "number",
+      );
+      channelId = channel.id;
+      return { commit: null, push: null, pr: null, pull: null, failure: null };
+    });
+    await ipc.runGitAction(
+      { workspaceId: "workspace" },
+      "thread",
+      { kind: "push" },
+      (event) => events.push(event),
+    );
+    const internals: unknown = Reflect.get(window, "__TAURI_INTERNALS__");
+    assert.ok(
+      internals &&
+        typeof internals === "object" &&
+        "runCallback" in internals &&
+        typeof internals.runCallback === "function",
+    );
+    assert.ok(channelId !== undefined);
+    const messages = [
+      { kind: "phase", phase: { kind: "push", remote: "origin" } },
+      { kind: "hook_started", name: "pre-push" },
+      { kind: "output", stream: "stderr", line: "validation failed" },
+      { kind: "hook_finished", name: "pre-push", code: 7 },
+    ];
+    for (const [index, message] of [
+      ...messages,
+      { kind: "output", line: "missing stream" },
+      { kind: "hook_finished", name: "pre-push" },
+    ].entries()) {
+      internals.runCallback(channelId, { index, message });
+    }
+    assert.deepEqual(events, messages);
+  } finally {
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});

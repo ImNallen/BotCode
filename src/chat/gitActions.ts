@@ -1,6 +1,8 @@
+import type { GitRunProgress } from "./gitProgress";
 import type {
   Checkout,
   GitAction,
+  CommitRequest,
   GitOutcome,
   GitPhase,
   GitStatus,
@@ -196,8 +198,7 @@ export function codexBusy(
 
 export interface Pending {
   target: GitTarget;
-  message?: string;
-  composed?: boolean;
+  request?: CommitRequest;
   confirmed?: boolean;
 }
 
@@ -214,6 +215,7 @@ export function nextStep(pending: Pending, vcs: VcsStatus): Step {
     target !== "pull" &&
     target !== "commit" &&
     vcs.refName !== null &&
+    pending.request?.destination.kind !== "new_branch" &&
     !pending.confirmed &&
     requiresDefaultBranchConfirmation(target, vcs.isDefaultRef)
   ) {
@@ -222,7 +224,7 @@ export function nextStep(pending: Pending, vcs: VcsStatus): Step {
       copy: resolveDefaultBranchActionDialogCopy({
         action: target,
         branchName: vcs.refName,
-        includesCommit: "message" in action,
+        includesCommit: "request" in action,
       }),
     };
   }
@@ -230,9 +232,11 @@ export function nextStep(pending: Pending, vcs: VcsStatus): Step {
 }
 
 function toAction(
-  { target, message, composed }: Pending,
+  { target, request }: Pending,
   vcs: VcsStatus,
 ): GitAction | null {
+  if (request?.destination.kind === "new_branch")
+    return { kind: "commit", request };
   switch (target) {
     case "pull":
     case "push":
@@ -245,8 +249,8 @@ function toAction(
       if (!vcs.hasWorkingTreeChanges) return { kind: "create_pr" };
       break;
   }
-  const text = message?.trim();
-  return text || composed ? { kind: target, message: text || null } : null;
+  if (!request) return null;
+  return { kind: target, request };
 }
 
 const commitLabels: Partial<Record<GitTarget, string>> = {
@@ -278,7 +282,7 @@ export type ToastCta =
   | { kind: "run"; label: "Commit" | "Push" | "Create PR"; target: GitTarget };
 
 export interface GitToast {
-  type: "loading" | "success" | "error" | "info";
+  type: "loading" | "success" | "error" | "info" | "warning";
   title: string;
   description?: string;
   cta: ToastCta;
@@ -342,7 +346,7 @@ export function outcomeToast(
     };
   }
   return {
-    type: "success",
+    type: outcome.warnings.length > 0 ? "warning" : "success",
     ...(landed ?? { title: "Done" }),
     ...(outcome.warnings.length > 0
       ? { description: outcome.warnings.join(" ") }
@@ -370,10 +374,11 @@ function summarize(
   }
   if (outcome.commit) {
     return withDescription(
-      `Committed ${shortenSha(outcome.commit.sha)}`,
+      `Committed ${shortenSha(outcome.commit.sha)}${outcome.branch ? ` on ${outcome.branch}` : ""}`,
       truncateText(outcome.commit.subject),
     );
   }
+  if (outcome.branch) return { title: `Created branch ${outcome.branch}` };
   if (outcome.pull) {
     const ref = before.refName ?? "HEAD";
     return outcome.pull.updated
@@ -410,12 +415,10 @@ function completionCta(
   return { kind: "none" };
 }
 
-export type GitRun =
+export type GitRun = { progress: GitRunProgress } & (
   | {
       state: "running";
       action: GitAction;
-      phase: GitPhase | null;
-      phaseStartedAtMs: number;
     }
   | {
       state: "done";
@@ -427,7 +430,8 @@ export type GitRun =
       state: "refused";
       action: GitAction;
       error: { code: string; message: string };
-    };
+    }
+);
 
 function formatElapsed(startedAtMs: number, nowMs: number): string {
   const elapsedSeconds = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
@@ -440,11 +444,13 @@ function formatElapsed(startedAtMs: number, nowMs: number): string {
 export function runToast(run: GitRun, nowMs: number): GitToast {
   switch (run.state) {
     case "running":
-      return run.phase
+      return run.progress.phase
         ? {
             type: "loading",
-            title: phaseLabel(run.phase),
-            description: formatElapsed(run.phaseStartedAtMs, nowMs),
+            title: run.progress.hooks.length
+              ? `Running ${run.progress.hooks.join(", ")} hook...`
+              : phaseLabel(run.progress.phase),
+            description: formatElapsed(run.progress.phaseStartedAtMs, nowMs),
             cta: { kind: "none" },
           }
         : {

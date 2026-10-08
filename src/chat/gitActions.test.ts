@@ -1,6 +1,13 @@
+import { initialGitProgress } from "./gitProgress.ts";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { GitOutcome, GitStatus, PrLookup, ThreadSummary } from "../ipc";
+import {
+  commitRequest,
+  type GitOutcome,
+  type GitStatus,
+  type PrLookup,
+  type ThreadSummary,
+} from "../ipc";
 import {
   codexBusy,
   commitButtonLabel,
@@ -16,6 +23,13 @@ type Branch = NonNullable<GitStatus["branch"]>;
 
 const INSTALL_GH = "Install GitHub CLI (gh) to create pull requests.";
 const LOGIN_GH = "Run `gh auth login` to create pull requests.";
+const request = (message: string | null = null) =>
+  commitRequest.parse({
+    message: message?.trim() || null,
+    selection: { kind: "all" },
+    destination: { kind: "current" },
+  });
+
 const SHA = "abc1234def567890";
 
 function status(
@@ -354,44 +368,41 @@ describe("nextStep", () => {
     assert.deepEqual(nextStep({ target: "commit_push_pr" }, feature), {
       kind: "compose",
     });
-    assert.deepEqual(
-      nextStep({ target: "commit_push_pr", message: "  \n" }, feature),
-      {
-        kind: "compose",
-      },
-    );
+    assert.deepEqual(nextStep({ target: "commit_push_pr" }, feature), {
+      kind: "compose",
+    });
   });
 
   it("submitting an empty message advances to an automatic commit without reopening the dialog", () => {
     assert.deepEqual(
-      nextStep(
-        { target: "commit_push_pr", composed: true, message: "  " },
-        feature,
-      ),
+      nextStep({ target: "commit_push_pr", request: request() }, feature),
       {
         kind: "run",
-        action: { kind: "commit_push_pr", message: null },
+        action: { kind: "commit_push_pr", request: request() },
       },
     );
     assert.equal(
-      nextStep({ target: "commit_push", composed: true }, main).kind,
+      nextStep({ target: "commit_push", request: request() }, main).kind,
       "confirm",
     );
   });
 
   it("runs the stacked commit with the trimmed message on a feature branch", () => {
     assert.deepEqual(
-      nextStep({ target: "commit_push_pr", message: "  feat: x\n" }, feature),
+      nextStep(
+        { target: "commit_push_pr", request: request("  feat: x\n") },
+        feature,
+      ),
       {
         kind: "run",
-        action: { kind: "commit_push_pr", message: "feat: x" },
+        action: { kind: "commit_push_pr", request: request("feat: x") },
       },
     );
   });
 
   it("confirms a commit & push on the default branch after the message", () => {
     assert.deepEqual(
-      nextStep({ target: "commit_push", message: "fix: y" }, main),
+      nextStep({ target: "commit_push", request: request("fix: y") }, main),
       {
         kind: "confirm",
         copy: {
@@ -477,6 +488,7 @@ describe("outcomeToast", () => {
   function outcome(fields: Partial<GitOutcome>): GitOutcome {
     return {
       warnings: [],
+      branch: null,
       commit: null,
       push: null,
       pr: null,
@@ -727,8 +739,7 @@ describe("runToast", () => {
         {
           state: "running",
           action: { kind: "push" },
-          phase: null,
-          phaseStartedAtMs: started,
+          progress: { ...initialGitProgress, phaseStartedAtMs: started },
         },
         started + 400,
       ),
@@ -745,8 +756,11 @@ describe("runToast", () => {
     const pushing = {
       state: "running" as const,
       action: { kind: "push" as const },
-      phase: { kind: "push" as const, remote: "origin" },
-      phaseStartedAtMs: started,
+      progress: {
+        ...initialGitProgress,
+        phase: { kind: "push" as const, remote: "origin" },
+        phaseStartedAtMs: started,
+      },
     };
     assert.deepEqual(runToast(pushing, started + 4_900), {
       type: "loading",
@@ -765,7 +779,8 @@ describe("runToast", () => {
       runToast(
         {
           state: "refused",
-          action: { kind: "commit", message: "wip" },
+          progress: initialGitProgress,
+          action: { kind: "commit", request: request("wip") },
           error: {
             code: "checkout_busy",
             message:
@@ -787,7 +802,12 @@ describe("runToast", () => {
     const error = { code: "not_repository", message: "Not a Git repository." };
     assert.deepEqual(
       runToast(
-        { state: "refused", action: { kind: "create_pr" }, error },
+        {
+          state: "refused",
+          progress: initialGitProgress,
+          action: { kind: "create_pr" },
+          error,
+        },
         started,
       ),
       {
@@ -798,9 +818,50 @@ describe("runToast", () => {
       },
     );
     assert.equal(
-      runToast({ state: "refused", action: { kind: "pull" }, error }, started)
-        .title,
+      runToast(
+        {
+          state: "refused",
+          progress: initialGitProgress,
+          action: { kind: "pull" },
+          error,
+        },
+        started,
+      ).title,
       "Pull failed",
     );
   });
+});
+
+it("Commit on new branch stays commit-only even from a stacked action or a refreshed clean status", () => {
+  const commit = commitRequest.parse({
+    message: "New feature",
+    selection: { kind: "paths", paths: ["literal*.txt"] },
+    destination: { kind: "new_branch" },
+  });
+  for (const changes of [dirty, {}]) {
+    const vcs = toVcsStatus(status(onMain, changes), undefined);
+    assert.deepEqual(
+      nextStep({ target: "commit_push_pr", request: commit }, vcs),
+      { kind: "run", action: { kind: "commit", request: commit } },
+    );
+  }
+});
+
+it("a post-commit warning keeps the landed commit visible without saying the commit failed", () => {
+  const toast = outcomeToast(
+    {
+      branch: null,
+      commit: { sha: SHA, subject: "Commit selected files" },
+      push: null,
+      pr: null,
+      pull: null,
+      failure: null,
+      warnings: ["post-commit hook failed (exit 9)."],
+    },
+    toVcsStatus(status({}, dirty), undefined),
+    undefined,
+  );
+  assert.equal(toast.type, "warning");
+  assert.ok(toast.title.startsWith("Committed "));
+  assert.equal(toast.description, "post-commit hook failed (exit 9).");
 });

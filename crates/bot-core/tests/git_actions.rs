@@ -150,7 +150,9 @@ async fn run(
     let sink = phases.clone();
     let outcome = app
         .run_git_action(workspace.clone(), thread.cloned(), action, move |phase| {
-            sink.lock().unwrap().push(phase)
+            if let GitProgress::Phase { phase } = phase {
+                sink.lock().unwrap().push(phase);
+            }
         })
         .await?;
     let phases = phases.lock().unwrap().clone();
@@ -354,7 +356,10 @@ async fn commit_includes_untracked_files_and_reports_its_subject() {
         &workspace,
         None,
         GitAction::Commit {
-            message: Some(message("  Add new.txt\n\nWith a body.  ")),
+            request: CommitRequest {
+                message: Some(message("  Add new.txt\n\nWith a body.  ")),
+                ..CommitRequest::default()
+            },
         },
     )
     .await
@@ -397,7 +402,10 @@ async fn commit_push_publishes_a_branch_and_records_its_base() {
         &workspace,
         None,
         GitAction::CommitPush {
-            message: Some(message("Add a")),
+            request: CommitRequest {
+                message: Some(message("Add a")),
+                ..CommitRequest::default()
+            },
         },
     )
     .await
@@ -434,7 +442,10 @@ async fn commit_push_publishes_a_branch_and_records_its_base() {
         &workspace,
         None,
         GitAction::CommitPush {
-            message: Some(message("Add b")),
+            request: CommitRequest {
+                message: Some(message("Add b")),
+                ..CommitRequest::default()
+            },
         },
     )
     .await
@@ -471,7 +482,10 @@ async fn commit_push_pr_opens_one_pull_request_against_the_worktree_base() {
         &workspace,
         Some(&thread.id),
         GitAction::CommitPushPr {
-            message: Some(message("Add the feature")),
+            request: CommitRequest {
+                message: Some(message("Add the feature")),
+                ..CommitRequest::default()
+            },
         },
     )
     .await
@@ -575,7 +589,10 @@ async fn pull_request_actions_are_refused_before_the_commit_without_gh() {
     std::fs::write(f.dir.path().join("peers/unauthenticated"), "").unwrap();
     let (app, workspace) = f.open().await;
     let commit_push_pr = || GitAction::CommitPushPr {
-        message: Some(message("Add a")),
+        request: CommitRequest {
+            message: Some(message("Add a")),
+            ..CommitRequest::default()
+        },
     };
     let (outcome, phases) = run(&app, &workspace, None, commit_push_pr()).await.unwrap();
     assert_eq!(failure(&outcome), (GitPhase::Pr, "gh_unauthenticated"));
@@ -615,7 +632,10 @@ async fn pull_request_actions_are_refused_before_the_commit_without_gh() {
         &workspace,
         None,
         GitAction::CommitPush {
-            message: Some(message("Add a")),
+            request: CommitRequest {
+                message: Some(message("Add a")),
+                ..CommitRequest::default()
+            },
         },
     )
     .await
@@ -647,7 +667,10 @@ async fn a_rejected_push_keeps_the_commit_and_a_rerun_converges() {
         &workspace,
         None,
         GitAction::CommitPushPr {
-            message: Some(message("Add a")),
+            request: CommitRequest {
+                message: Some(message("Add a")),
+                ..CommitRequest::default()
+            },
         },
     )
     .await
@@ -721,7 +744,10 @@ async fn refusals_are_decided_before_anything_runs() {
         async move { code(run(app, workspace, None, action).await.unwrap().0) }
     };
     let commit = || GitAction::Commit {
-        message: Some(message("Nothing")),
+        request: CommitRequest {
+            message: Some(message("Nothing")),
+            ..CommitRequest::default()
+        },
     };
     assert_eq!(attempt(commit()).await, "nothing_to_commit");
     assert_eq!(attempt(GitAction::Push).await, "nothing_to_push");
@@ -733,7 +759,10 @@ async fn refusals_are_decided_before_anything_runs() {
     assert_eq!(attempt(GitAction::Push).await, "behind_upstream");
     assert_eq!(
         attempt(GitAction::CommitPush {
-            message: Some(message("Ours")),
+            request: CommitRequest {
+                message: Some(message("Ours")),
+                ..CommitRequest::default()
+            },
         })
         .await,
         "behind_upstream"
@@ -804,7 +833,10 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let commit = || GitAction::Commit {
-        message: Some(message("Add a")),
+        request: CommitRequest {
+            message: Some(message("Add a")),
+            ..CommitRequest::default()
+        },
     };
     let refused = run(&app, &workspace, None, commit()).await.unwrap_err();
     assert_eq!(
@@ -930,7 +962,10 @@ async fn the_checkout_is_released_when_the_caller_stops_waiting() {
             &workspace,
             None,
             GitAction::Commit {
-                message: Some(message("Add a")),
+                request: CommitRequest {
+                    message: Some(message("Add a")),
+                    ..CommitRequest::default()
+                },
             },
         ),
     )
@@ -1002,7 +1037,10 @@ async fn preview_uses_selected_model_and_private_split_index_without_changing_st
     );
     let (app, workspace) = f.open().await;
     let t = selected_thread(&app, &workspace).await;
-    let job = app.begin_commit_message(t.id).await.unwrap();
+    let job = app
+        .begin_commit_message(t.id, CommitSelection::All)
+        .await
+        .unwrap();
     assert_eq!(
         app.await_commit_message(job).await.unwrap(),
         "Describe the staged changes\n\n- Include the new file"
@@ -1044,7 +1082,10 @@ async fn preview_supports_an_unborn_repository_without_creating_its_index() {
         .create_thread(workspace.id, NewCheckout::Local)
         .await
         .unwrap();
-    let job = app.begin_commit_message(t.id).await.unwrap();
+    let job = app
+        .begin_commit_message(t.id, CommitSelection::All)
+        .await
+        .unwrap();
     assert_eq!(
         app.await_commit_message(job).await.unwrap(),
         "Add the first file"
@@ -1067,7 +1108,10 @@ async fn cancelling_preview_reaps_process_group_and_manual_commit_never_waits_fo
     generation_file(&f, "commit_descendant", "");
     let (app, workspace) = f.open().await;
     let t = selected_thread(&app, &workspace).await;
-    let job = app.begin_commit_message(t.id.clone()).await.unwrap();
+    let job = app
+        .begin_commit_message(t.id.clone(), CommitSelection::All)
+        .await
+        .unwrap();
     wait_until(|| f.dir.path().join("peers/commit_child.pid").exists()).await;
     let pids: Vec<i32> = ["commit.pid", "commit_child.pid"]
         .into_iter()
@@ -1089,7 +1133,10 @@ async fn cancelling_preview_reaps_process_group_and_manual_commit_never_waits_fo
             &workspace,
             Some(&t.id),
             GitAction::Commit {
-                message: Some(message("Use the edited message")),
+                request: CommitRequest {
+                    message: Some(message("Use the edited message")),
+                    ..CommitRequest::default()
+                },
             },
         ),
     )
@@ -1121,7 +1168,10 @@ async fn cancelling_the_acknowledged_job_before_await_stops_generation() {
     generation_file(&f, "commit_stall", "");
     let (app, workspace) = f.open().await;
     let t = selected_thread(&app, &workspace).await;
-    let job = app.begin_commit_message(t.id).await.unwrap();
+    let job = app
+        .begin_commit_message(t.id, CommitSelection::All)
+        .await
+        .unwrap();
     app.cancel_commit_message(job.clone()).await.unwrap();
     assert_eq!(
         app.await_commit_message(job).await.unwrap_err().code,
@@ -1154,7 +1204,10 @@ async fn worktree_cleanup_cancels_a_running_commit_preview() {
     };
     let changed = path.join("preview.txt");
     std::fs::write(&changed, "preview content\n").unwrap();
-    let job = app.begin_commit_message(thread.id).await.unwrap();
+    let job = app
+        .begin_commit_message(thread.id, CommitSelection::All)
+        .await
+        .unwrap();
     wait_until(|| f.dir.path().join("peers/commit_child.pid").exists()).await;
     let pids: Vec<i32> = ["commit.pid", "commit_child.pid"]
         .into_iter()
@@ -1201,7 +1254,10 @@ async fn thread_deletion_cancels_a_running_commit_preview() {
     };
     let changed = path.join("preview.txt");
     std::fs::write(&changed, "preview content\n").unwrap();
-    let job = app.begin_commit_message(thread.id.clone()).await.unwrap();
+    let job = app
+        .begin_commit_message(thread.id.clone(), CommitSelection::All)
+        .await
+        .unwrap();
     wait_until(|| f.dir.path().join("peers/commit_child.pid").exists()).await;
     let pids: Vec<i32> = ["commit.pid", "commit_child.pid"]
         .into_iter()
@@ -1267,7 +1323,12 @@ async fn blank_combined_action_generates_from_actual_index_and_new_commit_agains
         &app,
         &workspace,
         Some(&t.id),
-        GitAction::CommitPushPr { message: None },
+        GitAction::CommitPushPr {
+            request: CommitRequest {
+                message: None,
+                ..CommitRequest::default()
+            },
+        },
     )
     .await
     .unwrap();
@@ -1337,7 +1398,12 @@ async fn blank_commit_generation_failure_requires_a_message_and_stops_the_stack(
             &app,
             &workspace,
             None,
-            GitAction::CommitPushPr { message: None },
+            GitAction::CommitPushPr {
+                request: CommitRequest {
+                    message: None,
+                    ..CommitRequest::default()
+                },
+            },
         )
         .await
         .unwrap();
@@ -1402,7 +1468,12 @@ async fn preflight_denial_of_blank_stack_never_starts_generation_or_commits() {
             &app,
             &workspace,
             None,
-            GitAction::CommitPushPr { message: None },
+            GitAction::CommitPushPr {
+                request: CommitRequest {
+                    message: None,
+                    ..CommitRequest::default()
+                },
+            },
         ),
     )
     .await
@@ -1424,7 +1495,10 @@ async fn a_stalled_preview_does_not_delay_or_reorder_a_denied_blank_stack() {
     let before = git_output(&f.repository, &["rev-parse", "HEAD"]);
     let (app, workspace) = f.open().await;
     let t = selected_thread(&app, &workspace).await;
-    let job = app.begin_commit_message(t.id.clone()).await.unwrap();
+    let job = app
+        .begin_commit_message(t.id.clone(), CommitSelection::All)
+        .await
+        .unwrap();
     wait_until(|| f.dir.path().join("peers/commit_ready").exists()).await;
     generation_file(&f, "unauthenticated", "");
     let (outcome, phases) = tokio::time::timeout(
@@ -1433,7 +1507,12 @@ async fn a_stalled_preview_does_not_delay_or_reorder_a_denied_blank_stack() {
             &app,
             &workspace,
             Some(&t.id),
-            GitAction::CommitPushPr { message: None },
+            GitAction::CommitPushPr {
+                request: CommitRequest {
+                    message: None,
+                    ..CommitRequest::default()
+                },
+            },
         ),
     )
     .await
@@ -1452,5 +1531,533 @@ async fn a_stalled_preview_does_not_delay_or_reorder_a_denied_blank_stack() {
         app.await_commit_message(job).await.unwrap_err().code,
         "cancelled"
     );
+    app.shutdown().await.unwrap();
+}
+
+fn paths(names: &[&str]) -> CommitSelection {
+    CommitSelection::Paths {
+        paths: SelectedPaths::try_from(
+            names
+                .iter()
+                .map(|name| RepoPath::try_from((*name).to_owned()).unwrap())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap(),
+    }
+}
+fn selected_commit(names: &[&str]) -> GitAction {
+    GitAction::Commit {
+        request: CommitRequest {
+            message: Some(message("Commit selected files")),
+            selection: paths(names),
+            destination: CommitDestination::Current,
+        },
+    }
+}
+
+#[tokio::test]
+async fn selected_files_commit_current_contents_and_unstage_every_excluded_change() {
+    let f = Fixture::new();
+    for name in ["selected.txt", "staged.txt", "unstaged.txt"] {
+        commit_in(&f.repository, name);
+    }
+    std::fs::write(f.repository.join("selected.txt"), "selected staged\n").unwrap();
+    std::fs::write(f.repository.join("staged.txt"), "excluded staged\n").unwrap();
+    git_output(&f.repository, &["add", "selected.txt", "staged.txt"]);
+    std::fs::write(f.repository.join("selected.txt"), "selected working tree\n").unwrap();
+    std::fs::write(f.repository.join("unstaged.txt"), "excluded unstaged\n").unwrap();
+    std::fs::write(f.repository.join("untracked.txt"), "excluded untracked\n").unwrap();
+    std::fs::write(
+        f.repository.join("new-selected.txt"),
+        "selected untracked\n",
+    )
+    .unwrap();
+    let (app, workspace) = f.open().await;
+    let (out, _) = run(
+        &app,
+        &workspace,
+        None,
+        selected_commit(&["selected.txt", "new-selected.txt"]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.failure, None);
+    assert_eq!(
+        git_output(&f.repository, &["show", "HEAD:selected.txt"]),
+        "selected working tree"
+    );
+    assert_eq!(
+        git_output(&f.repository, &["show", "HEAD:staged.txt"]),
+        "staged.txt"
+    );
+    assert_eq!(
+        git_output(&f.repository, &["show", "HEAD:unstaged.txt"]),
+        "unstaged.txt"
+    );
+    assert_eq!(
+        git_output(
+            &f.repository,
+            &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]
+        ),
+        "new-selected.txt\nselected.txt"
+    );
+    assert_eq!(git_output(&f.repository, &["diff", "--cached"]), "");
+    let status = git_output(&f.repository, &["status", "--porcelain"]);
+    assert!(
+        status.contains("M staged.txt")
+            && status.contains(" M unstaged.txt")
+            && status.contains("?? untracked.txt"),
+        "{status}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repository.join("staged.txt")).unwrap(),
+        "excluded staged\n"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn selected_paths_are_literal_and_include_deletions_and_rename_sources() {
+    let f = Fixture::new();
+    for name in [
+        "old.txt",
+        "deleted.txt",
+        "[literal]*.txt",
+        "matched.txt",
+        "exclude.txt",
+    ] {
+        commit_in(&f.repository, name);
+    }
+    git_output(&f.repository, &["mv", "old.txt", "new.txt"]);
+    std::fs::remove_file(f.repository.join("deleted.txt")).unwrap();
+    for name in ["[literal]*.txt", "matched.txt", "exclude.txt"] {
+        std::fs::write(f.repository.join(name), "changed\n").unwrap();
+    }
+    std::fs::write(f.repository.join(":(glob)*"), "literal magic\n").unwrap();
+    git_output(&f.repository, &["add", "exclude.txt"]);
+    let (app, workspace) = f.open().await;
+    let (out, _) = run(
+        &app,
+        &workspace,
+        None,
+        selected_commit(&["new.txt", "deleted.txt", "[literal]*.txt", ":(glob)*"]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.failure, None);
+    let tree = git_output(&f.repository, &["ls-tree", "--name-only", "HEAD"]);
+    assert!(
+        !tree
+            .lines()
+            .any(|name| matches!(name, "old.txt" | "deleted.txt"))
+    );
+    assert!(tree.lines().any(|name| name == "new.txt"));
+    assert_eq!(
+        git_output(&f.repository, &["show", "HEAD:[literal]*.txt"]),
+        "changed"
+    );
+    assert_eq!(
+        git_output(&f.repository, &["show", "HEAD::(glob)*"]),
+        "literal magic"
+    );
+    assert_eq!(
+        git_output(&f.repository, &["show", "HEAD:matched.txt"]),
+        "matched.txt"
+    );
+    assert_eq!(
+        git_output(&f.repository, &["show", "HEAD:exclude.txt"]),
+        "exclude.txt"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn displayed_paths_preview_and_commit_an_ambiguous_rename_and_independent_deletion() {
+    let f = Fixture::new();
+    for name in ["old name.txt", "deleted.txt"] {
+        std::fs::write(f.repository.join(name), "identical content\n").unwrap();
+    }
+    git_output(&f.repository, &["add", "."]);
+    git_output(&f.repository, &["commit", "-qm", "Identical files"]);
+    git_output(&f.repository, &["mv", "old name.txt", "new name.txt"]);
+    std::fs::remove_file(f.repository.join("deleted.txt")).unwrap();
+    std::fs::write(f.repository.join("README.md"), "excluded content\n").unwrap();
+    let numstat = git_output(&f.repository, &["diff", "HEAD", "--numstat", "-z"]);
+    assert!(
+        numstat.contains("deleted.txt\0new name.txt\0"),
+        "{numstat:?}"
+    );
+    assert!(numstat.contains("0\t1\told name.txt\0"), "{numstat:?}");
+    generation_file(
+        &f,
+        "commit_output",
+        r#"{"subject":"Rename and delete","body":""}"#,
+    );
+    let (app, workspace) = f.open().await;
+    let status = app.git_status(workspace.clone(), None).await.unwrap();
+    let displayed: Vec<_> = status.files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(displayed, ["README.md", "deleted.txt", "new name.txt"]);
+    let selected: Vec<_> = displayed
+        .into_iter()
+        .filter(|path| *path != "README.md")
+        .collect();
+    let index = std::fs::read(f.repository.join(".git/index")).unwrap();
+    let t = selected_thread(&app, &workspace).await;
+    let job = app
+        .begin_commit_message(t.id, paths(&selected))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.await_commit_message(job).await.unwrap(),
+        "Rename and delete"
+    );
+    let calls = generation_calls(&f, "commit");
+    let prompt = calls[0]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("new name.txt"));
+    assert!(!prompt.contains("excluded content"));
+    assert_eq!(
+        std::fs::read(f.repository.join(".git/index")).unwrap(),
+        index
+    );
+    let (out, _) = run(&app, &workspace, None, selected_commit(&selected))
+        .await
+        .unwrap();
+    assert_eq!(out.failure, None);
+    assert_eq!(
+        git_output(&f.repository, &["ls-tree", "--name-only", "HEAD"]),
+        "README.md\nnew name.txt"
+    );
+    assert_eq!(
+        git_output(&f.repository, &["show", "HEAD:new name.txt"]),
+        "identical content"
+    );
+    assert_eq!(
+        git_output(&f.repository, &["show", "HEAD:README.md"]),
+        "README.md"
+    );
+    assert_eq!(git_output(&f.repository, &["diff", "--cached"]), "");
+    assert_eq!(
+        std::fs::read_to_string(f.repository.join("README.md")).unwrap(),
+        "excluded content\n"
+    );
+    assert_eq!(
+        app.git_status(workspace, None)
+            .await
+            .unwrap()
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        ["README.md"]
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn empty_invalid_and_stale_selections_are_refused_before_index_changes() {
+    for value in [
+        serde_json::json!({"kind":"paths", "paths": []}),
+        serde_json::json!({"kind":"paths", "paths": ["../outside"]}),
+        serde_json::json!({"kind":"paths", "paths": ["/absolute"]}),
+        serde_json::json!({"kind":"paths", "paths": [".git/config"]}),
+        serde_json::json!({"kind":"paths", "paths": ["nul\u{0}byte"]}),
+    ] {
+        assert!(serde_json::from_value::<CommitSelection>(value).is_err());
+    }
+    let f = Fixture::new();
+    std::fs::write(f.repository.join("README.md"), "staged\n").unwrap();
+    git_output(&f.repository, &["add", "README.md"]);
+    let index = std::fs::read(f.repository.join(".git/index")).unwrap();
+    let (app, workspace) = f.open().await;
+    let (out, _) = run(&app, &workspace, None, selected_commit(&["vanished.txt"]))
+        .await
+        .unwrap();
+    assert_eq!(failure(&out), (GitPhase::Commit, "stale_commit_selection"));
+    assert_eq!(
+        std::fs::read(f.repository.join(".git/index")).unwrap(),
+        index
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn selected_preview_uses_private_split_index_and_excludes_staged_content() {
+    let f = Fixture::new();
+    std::fs::write(
+        f.repository.join("README.md"),
+        "exclude this staged content\n",
+    )
+    .unwrap();
+    git_output(&f.repository, &["add", "README.md"]);
+    git_output(&f.repository, &["update-index", "--split-index"]);
+    std::fs::write(
+        f.repository.join("selected.txt"),
+        "selected preview content\n",
+    )
+    .unwrap();
+    let index = std::fs::read(f.repository.join(".git/index")).unwrap();
+    let staged = git_output(&f.repository, &["diff", "--cached"]);
+    generation_file(
+        &f,
+        "commit_output",
+        r#"{"subject":"Selected preview","body":""}"#,
+    );
+    let (app, workspace) = f.open().await;
+    let t = selected_thread(&app, &workspace).await;
+    let job = app
+        .begin_commit_message(t.id, paths(&["selected.txt"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.await_commit_message(job).await.unwrap(),
+        "Selected preview"
+    );
+    let calls = generation_calls(&f, "commit");
+    let prompt = calls[0]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("+selected preview content"));
+    assert!(!prompt.contains("exclude this staged content"));
+    assert_eq!(
+        std::fs::read(f.repository.join(".git/index")).unwrap(),
+        index
+    );
+    assert_eq!(git_output(&f.repository, &["diff", "--cached"]), staged);
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn selected_unborn_preview_and_commit_leave_excluded_added_file_unstaged() {
+    let f = Fixture::new();
+    let unborn = f.dir.path().join("unborn-selected");
+    std::fs::create_dir(&unborn).unwrap();
+    git_output(&unborn, &["init", "-q", "-b", "main"]);
+    git_output(&unborn, &["config", "user.name", "Test"]);
+    git_output(&unborn, &["config", "user.email", "test@example.invalid"]);
+    std::fs::write(unborn.join("selected.txt"), "first selected content\n").unwrap();
+    std::fs::write(unborn.join("excluded.txt"), "excluded first content\n").unwrap();
+    git_output(&unborn, &["add", "excluded.txt"]);
+    let index = std::fs::read(unborn.join(".git/index")).unwrap();
+    generation_file(
+        &f,
+        "commit_output",
+        r#"{"subject":"First selected file","body":""}"#,
+    );
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(unborn.clone()).await.unwrap();
+    let t = selected_thread(&app, &workspace.id).await;
+    let job = app
+        .begin_commit_message(t.id, paths(&["selected.txt"]))
+        .await
+        .unwrap();
+    app.await_commit_message(job).await.unwrap();
+    assert_eq!(std::fs::read(unborn.join(".git/index")).unwrap(), index);
+    let calls = generation_calls(&f, "commit");
+    assert!(
+        !calls[0]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("excluded first content")
+    );
+    let (out, _) = run(
+        &app,
+        &workspace.id,
+        None,
+        selected_commit(&["selected.txt"]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.failure, None);
+    assert_eq!(
+        git_output(&unborn, &["ls-tree", "--name-only", "HEAD"]),
+        "selected.txt"
+    );
+    assert_eq!(
+        git_output(&unborn, &["status", "--porcelain"]),
+        "?? excluded.txt"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn new_branch_collision_and_hook_failure_preserve_worktree_metadata() {
+    let f = Fixture::new();
+    git_output(&f.repository, &["branch", "FEATURE/add-file"]);
+    git_output(&f.repository, &["branch", "feature/add-file-2"]);
+    let (app, workspace) = f.open().await;
+    let thread = app
+        .create_thread(
+            workspace.clone(),
+            NewCheckout::Worktree {
+                base: "main".into(),
+                from_origin: false,
+            },
+        )
+        .await
+        .unwrap();
+    let Checkout::Worktree { path, .. } = &thread.checkout else {
+        panic!("expected worktree");
+    };
+    std::fs::write(path.join("selected.txt"), "branch change\n").unwrap();
+    f.hook(
+        &f.repository.join(".git"),
+        "pre-commit",
+        "echo validation-failed >&2; exit 1",
+    );
+    let (out, _) = run(
+        &app,
+        &workspace,
+        Some(&thread.id),
+        GitAction::Commit {
+            request: CommitRequest {
+                message: Some(message("Add 'file'")),
+                selection: paths(&["selected.txt"]),
+                destination: CommitDestination::NewBranch,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.branch.as_deref(), Some("feature/add-file-3"));
+    assert!(out.commit.is_none());
+    assert_eq!(failure(&out), (GitPhase::Commit, "git"));
+    assert_eq!(
+        git_output(path, &["branch", "--show-current"]),
+        "feature/add-file-3"
+    );
+    let saved = app.thread(thread.id.clone()).await.unwrap();
+    assert!(
+        matches!(saved.checkout, Checkout::Worktree { branch, .. } if branch == "feature/add-file-3")
+    );
+    std::fs::remove_file(f.repository.join(".git/hooks/pre-commit")).unwrap();
+    let (retried, _) = run(
+        &app,
+        &workspace,
+        Some(&thread.id),
+        selected_commit(&["selected.txt"]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(retried.failure, None);
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn hook_output_streams_while_blocked_and_named_lifecycle_flushes_before_completion() {
+    let f = Fixture::new();
+    std::fs::write(f.repository.join("selected.txt"), "content\n").unwrap();
+    let go = f.dir.path().join("release-streaming-hook");
+    f.hook(&f.repository.join(".git"), "pre-commit", &format!("printf 'first\\rsecond\\n'; echo error-line >&2; while [ ! -e '{}' ]; do sleep 0.05; done; printf trailing", go.display()));
+    let (app, workspace) = f.open().await;
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let running = app.run_git_action(
+        workspace.clone(),
+        None,
+        selected_commit(&["selected.txt"]),
+        move |event| sink.lock().unwrap().push(event),
+    );
+    tokio::pin!(running);
+    tokio::select! {
+        result = &mut running => panic!("hook unexpectedly finished: {result:?}"),
+        _ = wait_until(|| {
+            let events = events.lock().unwrap();
+            events.iter().any(|e| matches!(e, GitProgress::HookStarted { name } if name == "pre-commit")) &&
+            ["first", "second", "error-line"].iter().all(|expected| events.iter().any(|e| matches!(e, GitProgress::Output { line, .. } if line == expected)))
+        }) => {}
+    }
+    assert!(
+        !events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, GitProgress::HookFinished { .. }))
+    );
+    assert_eq!(
+        run(&app, &workspace, None, GitAction::Push)
+            .await
+            .unwrap_err()
+            .code,
+        "checkout_busy"
+    );
+    std::fs::write(go, "").unwrap();
+    let out = running.await.unwrap();
+    assert_eq!(out.failure, None);
+    let events = events.lock().unwrap().clone();
+    assert!(events.iter().any(
+        |e| matches!(e, GitProgress::HookFinished { name, code: Some(0) } if name == "pre-commit")
+    ));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, GitProgress::Output { line, .. } if line.contains("trailing")))
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn pre_push_hook_failure_reports_landed_selected_commit_and_hook_exit() {
+    let f = Fixture::new();
+    std::fs::write(f.repository.join("selected.txt"), "content\n").unwrap();
+    f.hook(
+        &f.repository.join(".git"),
+        "pre-push",
+        "echo push-validation-failed >&2; exit 7",
+    );
+    let (app, workspace) = f.open().await;
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let out = app
+        .run_git_action(
+            workspace,
+            None,
+            GitAction::CommitPush {
+                request: CommitRequest {
+                    message: Some(message("Selected before push")),
+                    selection: paths(&["selected.txt"]),
+                    destination: CommitDestination::Current,
+                },
+            },
+            move |event| sink.lock().unwrap().push(event),
+        )
+        .await
+        .unwrap();
+    assert!(out.commit.is_some());
+    assert!(out.push.is_none());
+    assert_eq!(failure(&out), (push_phase(), "git"));
+    assert!(events.lock().unwrap().iter().any(
+        |e| matches!(e, GitProgress::HookFinished { name, code: Some(7) } if name == "pre-push")
+    ));
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn post_commit_hook_failure_does_not_hide_the_commit_git_landed() {
+    let f = Fixture::new();
+    std::fs::write(f.repository.join("selected.txt"), "content\n").unwrap();
+    f.hook(
+        &f.repository.join(".git"),
+        "post-commit",
+        "echo post-commit-failed >&2; exit 9",
+    );
+    let (app, workspace) = f.open().await;
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let out = app
+        .run_git_action(
+            workspace,
+            None,
+            selected_commit(&["selected.txt"]),
+            move |event| sink.lock().unwrap().push(event),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.failure, None);
+    assert_eq!(out.warnings, ["post-commit hook failed (exit 9)."]);
+    assert_eq!(
+        out.commit.unwrap().sha,
+        git_output(&f.repository, &["rev-parse", "HEAD"])
+    );
+    assert!(events.lock().unwrap().iter().any(
+        |e| matches!(e, GitProgress::HookFinished { name, code: Some(9) } if name == "post-commit")
+    ));
     app.shutdown().await.unwrap();
 }

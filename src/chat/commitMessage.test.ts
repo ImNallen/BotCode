@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import {
   initialCommitDraft,
+  selectedCommitFiles,
   startCommitPreview,
   updateCommitDraft,
 } from "./commitMessage.ts";
@@ -52,6 +53,7 @@ it("closing during registration cancels the acknowledged job without awaiting it
   let awaited = false;
   const cancel = startCommitPreview({
     threadId: "thread",
+    selection: { kind: "all" },
     api: {
       beginCommitMessage: () => begin.promise,
       awaitCommitMessage: async () => {
@@ -82,6 +84,7 @@ it("closing or submitting a running preview ignores late results and cancels the
   let delivered = false;
   const cancel = startCommitPreview({
     threadId: "thread",
+    selection: { kind: "all" },
     api: {
       beginCommitMessage: async () => "job",
       awaitCommitMessage: () => generated.promise,
@@ -108,6 +111,7 @@ it("an unsuccessful preview leaves the field editable and reports failure", asyn
   let draft = initialCommitDraft;
   const cancel = startCommitPreview({
     threadId: "thread",
+    selection: { kind: "all" },
     api: {
       beginCommitMessage: async () => "job",
       awaitCommitMessage: async () => {
@@ -130,4 +134,87 @@ it("an unsuccessful preview leaves the field editable and reports failure", asyn
     "Manual fallback",
   );
   cancel();
+});
+
+it("selection changes replace generated text while preserving user edits", () => {
+  const generated = updateCommitDraft(initialCommitDraft, {
+    kind: "generated",
+    message: "All files",
+  });
+  const changed = updateCommitDraft(generated, { kind: "selection_changed" });
+  assert.equal(changed.message, "");
+  assert.equal(changed.generation, "running");
+  assert.equal(
+    updateCommitDraft(changed, { kind: "generated", message: "Selected files" })
+      .message,
+    "Selected files",
+  );
+  for (const message of ["My words", ""]) {
+    const edited = updateCommitDraft(generated, { kind: "edit", message });
+    const changed = updateCommitDraft(edited, { kind: "selection_changed" });
+    assert.equal(
+      updateCommitDraft(changed, {
+        kind: "generated",
+        message: "Selected files",
+      }).message,
+      message,
+    );
+  }
+});
+
+it("selection changes cancel the old job and forward the exact new selection", async () => {
+  const old = deferred<string>();
+  const selections: unknown[] = [];
+  const cancelled: string[] = [];
+  const delivered: string[] = [];
+  const api = {
+    beginCommitMessage: async (_thread: string, selection: unknown) => {
+      selections.push(selection);
+      return selections.length === 1 ? "old" : "new";
+    },
+    awaitCommitMessage: async (job: string) =>
+      job === "old" ? old.promise : "Selected only",
+    cancelCommitMessage: async (job: string) => {
+      cancelled.push(job);
+    },
+  };
+  const callbacks = {
+    threadId: "thread",
+    api,
+    onGenerated: (message: string) => delivered.push(message),
+    onFailed: () => assert.fail("unexpected failure"),
+  };
+  const cancel = startCommitPreview({
+    ...callbacks,
+    selection: { kind: "all" },
+  });
+  await flush();
+  cancel();
+  startCommitPreview({
+    ...callbacks,
+    selection: { kind: "paths", paths: ["selected.txt"] },
+  });
+  old.resolve("Stale all files");
+  await flush();
+  assert.deepEqual(selections, [
+    { kind: "all" },
+    { kind: "paths", paths: ["selected.txt"] },
+  ]);
+  assert.deepEqual(cancelled, ["old"]);
+  assert.deepEqual(delivered, ["Selected only"]);
+});
+
+it("file selection defaults to all and refuses an empty subset", () => {
+  const files = ["a", "b"].map((path) => ({
+    path,
+    insertions: 1,
+    deletions: 0,
+  }));
+  assert.deepEqual(selectedCommitFiles(files, new Set()), { kind: "all" });
+  assert.deepEqual(selectedCommitFiles(files, new Set(["b"])), {
+    kind: "paths",
+    paths: ["a"],
+  });
+  assert.equal(selectedCommitFiles(files, new Set(["a", "b"])), null);
+  assert.equal(selectedCommitFiles([], new Set()), null);
 });

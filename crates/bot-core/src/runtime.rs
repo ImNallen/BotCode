@@ -190,7 +190,7 @@ fn not_repository() -> AppError {
 }
 enum Command {
     RetrySetup(ThreadId, Reply<ThreadSnapshot>),
-    BeginCommitPreview(ThreadId, Reply<String>),
+    BeginCommitPreview(ThreadId, CommitSelection, Reply<String>),
     AwaitCommitPreview(String, Reply<String>),
     CancelCommitPreview(String, Reply<()>),
     TurnDiff(ThreadId, TurnId, String, Reply<TurnDiffView>),
@@ -203,7 +203,7 @@ enum Command {
         WorkspaceId,
         Option<ThreadId>,
         GitAction,
-        Box<dyn Fn(GitPhase) + Send + Sync>,
+        Box<dyn Fn(GitProgress) + Send + Sync>,
         Reply<GitOutcome>,
     ),
     OpenWorkspace(PathBuf, Reply<Workspace>),
@@ -884,8 +884,12 @@ impl App {
         let root = self.checkout(workspace, thread).await?.1.repository()?;
         crate::composer_pull_requests::search(&self.gh, &root, &query, self.network_timeout).await
     }
-    pub async fn begin_commit_message(&self, thread: ThreadId) -> Result<String> {
-        self.call(|reply| Command::BeginCommitPreview(thread, reply))
+    pub async fn begin_commit_message(
+        &self,
+        thread: ThreadId,
+        selection: CommitSelection,
+    ) -> Result<String> {
+        self.call(|reply| Command::BeginCommitPreview(thread, selection, reply))
             .await
     }
     pub async fn await_commit_message(&self, job: String) -> Result<String> {
@@ -903,7 +907,7 @@ impl App {
         id: WorkspaceId,
         thread: Option<ThreadId>,
         action: GitAction,
-        progress: impl Fn(GitPhase) + Send + Sync + 'static,
+        progress: impl Fn(GitProgress) + Send + Sync + 'static,
     ) -> Result<GitOutcome> {
         self.call(|reply| Command::RunGit(id, thread, action, Box::new(progress), reply))
             .await
@@ -1660,6 +1664,27 @@ impl Owner {
                 });
             }
         }
+        if let Ok(outcome) = &mut result
+            && let Some(current) = &outcome.branch
+        {
+            let owners: Vec<_> = self.threads.values()
+                    .filter(|thread| matches!(&thread.checkout, Checkout::Worktree { path, .. } if *path == root))
+                    .map(|thread| thread.id.clone()).collect();
+            for id in owners {
+                if let Some(thread) = self.threads.get_mut(&id)
+                    && let Checkout::Worktree { branch, .. } = &mut thread.checkout
+                {
+                    *branch = current.clone();
+                }
+                if let Err(error) = self.commit(&id) {
+                    outcome.warnings.push(format!(
+                        "Branch created, but its saved metadata could not be updated: {}",
+                        error.message
+                    ));
+                    saved = Err(error);
+                }
+            }
+        }
         self.held.remove(&root);
         self.project_search.invalidate();
         if refresh && let Some((id, _)) = origin {
@@ -2044,8 +2069,8 @@ impl Owner {
     }
     async fn command(&mut self, command: Command) {
         match command {
-            Command::BeginCommitPreview(thread, reply) => {
-                let result = self.begin_commit_preview(thread);
+            Command::BeginCommitPreview(thread, selection, reply) => {
+                let result = self.begin_commit_preview(thread, selection);
                 let _ = reply.send(result);
             }
             Command::AwaitCommitPreview(job, reply) => self.await_commit_preview(job, reply),

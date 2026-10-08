@@ -1,6 +1,13 @@
 // Structure, labels and classes follow pingdotgg/t3code v0.0.45 components/GitActionsControl.tsx (MIT).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useReducer, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import {
   ChevronDownIcon,
   CloudDownloadIcon,
@@ -12,10 +19,12 @@ import {
   checkoutKey,
   ipc,
   type CheckoutRef,
+  type CommitRequest,
   type GitStatus,
   type ThreadSummary,
 } from "../ipc";
 import { Button } from "../ui/controls";
+import { Checkbox } from "../ui/checkbox";
 import {
   Dialog,
   DialogDescription,
@@ -46,6 +55,7 @@ import {
 } from "./gitActions";
 import {
   initialCommitDraft,
+  selectedCommitFiles,
   startCommitPreview,
   updateCommitDraft,
 } from "./commitMessage";
@@ -270,9 +280,7 @@ export function GitActionsControl({
           status={status.data}
           label={commitButtonLabel(pending.target)}
           onCancel={() => setPending(null)}
-          onSubmit={(message) =>
-            advance({ ...pending, message, composed: true })
-          }
+          onSubmit={(request) => advance({ ...pending, request })}
         />
       ) : null}
       {pending && dialog?.kind === "confirm" ? (
@@ -338,7 +346,18 @@ function RunToast({
       dismissAfterVisibleMs={
         toast.type === "success" || toast.type === "info" ? 10_000 : undefined
       }
-    />
+    >
+      {run.progress.lines.length ? (
+        <details className="mt-2 min-w-0 text-xs">
+          <summary className="cursor-pointer text-muted-foreground">
+            Git output
+          </summary>
+          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all select-text font-mono">
+            {run.progress.lines.join("\n")}
+          </pre>
+        </details>
+      ) : null}
+    </Toast>
   );
 }
 
@@ -353,26 +372,46 @@ function CommitDialog({
   status: GitStatus;
   label: string;
   onCancel: () => void;
-  onSubmit: (message: string) => void;
+  onSubmit: (request: CommitRequest) => void;
 }) {
   const [draft, dispatch] = useReducer(updateCommitDraft, initialCommitDraft);
+  const [excluded, setExcluded] = useState<ReadonlySet<string>>(new Set());
+  const [editingFiles, setEditingFiles] = useState(false);
+  const { branch, files } = status;
+  const selection = useMemo(
+    () => selectedCommitFiles(files, excluded),
+    [files, excluded],
+  );
+  const selectedFiles = files.filter((file) => !excluded.has(file.path));
+  const allSelected = selectedFiles.length === files.length;
+  const toggleFile = (path: string) =>
+    setExcluded((previous) => {
+      const next = new Set(previous);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
   const cancelPreview = useRef<(() => void) | undefined>(undefined);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    dispatch({ kind: "selection_changed" });
+    if (!selection) return;
     const cancel = startCommitPreview({
       threadId,
+      selection,
       api: ipc,
       onGenerated: (message) => dispatch({ kind: "generated", message }),
       onFailed: () => dispatch({ kind: "failed" }),
     });
     cancelPreview.current = cancel;
     return cancel;
-  }, [threadId]);
-  const { branch, files } = status;
-  const canCommit = files.length > 0;
-  const submit = () => {
-    if (!canCommit) return;
+  }, [threadId, selection]);
+  const canCommit = selection !== null;
+  const submit = (
+    destination: CommitRequest["destination"] = { kind: "current" },
+  ) => {
+    if (!selection) return;
     cancelPreview.current?.();
-    onSubmit(draft.message);
+    onSubmit({ message: draft.message.trim() || null, selection, destination });
   };
   const cancel = () => {
     cancelPreview.current?.();
@@ -402,7 +441,37 @@ function CommitDialog({
           </div>
           <div className="space-y-1">
             <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Files</span>
+              <div className="flex items-center gap-2">
+                {editingFiles && files.length > 0 ? (
+                  <Checkbox
+                    label="Select all files"
+                    checked={allSelected}
+                    indeterminate={!allSelected && selectedFiles.length > 0}
+                    onCheckedChange={() =>
+                      setExcluded(
+                        allSelected
+                          ? new Set(files.map((file) => file.path))
+                          : new Set(),
+                      )
+                    }
+                  />
+                ) : null}
+                <span className="text-muted-foreground">Files</span>
+                {!allSelected && !editingFiles ? (
+                  <span className="text-muted-foreground">
+                    ({selectedFiles.length} of {files.length})
+                  </span>
+                ) : null}
+              </div>
+              {files.length > 0 ? (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setEditingFiles((editing) => !editing)}
+                >
+                  {editingFiles ? "Done" : "Edit"}
+                </Button>
+              ) : null}
             </div>
             {files.length === 0 ? (
               <p className="font-medium">none</p>
@@ -415,21 +484,39 @@ function CommitDialog({
                         key={file.path}
                         className="flex w-full items-center gap-2 rounded-md px-2 py-1 font-mono hover:bg-accent/50"
                       >
+                        {editingFiles ? (
+                          <Checkbox
+                            label={`Include ${file.path}`}
+                            checked={!excluded.has(file.path)}
+                            onCheckedChange={() => toggleFile(file.path)}
+                          />
+                        ) : null}
                         <span className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left">
                           <span
-                            className="min-w-0 flex-1 truncate"
+                            className={`min-w-0 flex-1 truncate${excluded.has(file.path) ? " text-muted-foreground" : ""}`}
                             title={file.path}
                           >
                             {file.path}
                           </span>
                           <span className="shrink-0">
-                            <span className="text-diff-addition">
-                              +{file.insertions}
-                            </span>
-                            <span className="text-muted-foreground"> / </span>
-                            <span className="text-diff-deletion">
-                              -{file.deletions}
-                            </span>
+                            {excluded.has(file.path) ? (
+                              <span className="text-muted-foreground">
+                                Excluded
+                              </span>
+                            ) : (
+                              <>
+                                <span className="text-diff-addition">
+                                  +{file.insertions}
+                                </span>
+                                <span className="text-muted-foreground">
+                                  {" "}
+                                  /{" "}
+                                </span>
+                                <span className="text-diff-deletion">
+                                  -{file.deletions}
+                                </span>
+                              </>
+                            )}
                           </span>
                         </span>
                       </div>
@@ -438,11 +525,11 @@ function CommitDialog({
                 </div>
                 <div className="flex justify-end font-mono">
                   <span className="text-diff-addition">
-                    +{files.reduce((sum, f) => sum + f.insertions, 0)}
+                    +{selectedFiles.reduce((sum, f) => sum + f.insertions, 0)}
                   </span>
                   <span className="text-muted-foreground"> / </span>
                   <span className="text-diff-deletion">
-                    -{files.reduce((sum, f) => sum + f.deletions, 0)}
+                    -{selectedFiles.reduce((sum, f) => sum + f.deletions, 0)}
                   </span>
                 </div>
               </div>
@@ -472,15 +559,17 @@ function CommitDialog({
             size="sm"
           />
           <p className="text-xs text-muted-foreground" role="status">
-            {draft.generation === "running"
-              ? "Generating a commit message. You can edit or continue now."
-              : draft.generation === "failed"
-                ? "Could not generate a message. Enter one, or leave it empty to try again when committing."
-                : draft.edited
-                  ? draft.message.trim()
-                    ? "Your message will be used."
-                    : "A message will be generated when committing."
-                  : "Generated from the changes shown above. You can edit it."}
+            {!canCommit
+              ? "Select at least one file to commit."
+              : draft.generation === "running"
+                ? "Generating a commit message. You can edit or continue now."
+                : draft.generation === "failed"
+                  ? "Could not generate a message. Enter one, or leave it empty to try again when committing."
+                  : draft.edited
+                    ? draft.message.trim()
+                      ? "Your message will be used."
+                      : "A message will be generated when committing."
+                    : "Generated from the changes shown above. You can edit it."}
           </p>
         </div>
       </DialogPanel>
@@ -488,7 +577,15 @@ function CommitDialog({
         <Button variant="outline" size="sm" onClick={cancel}>
           Cancel
         </Button>
-        <Button size="sm" disabled={!canCommit} onClick={submit}>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!canCommit}
+          onClick={() => submit({ kind: "new_branch" })}
+        >
+          Commit on new branch
+        </Button>
+        <Button size="sm" disabled={!canCommit} onClick={() => submit()}>
           {label}
         </Button>
       </DialogFooter>

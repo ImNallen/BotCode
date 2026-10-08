@@ -1442,21 +1442,91 @@ pub enum GhProblem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GitAction {
-    Commit {
-        #[serde(default)]
-        message: Option<CommitMessage>,
-    },
-    CommitPush {
-        #[serde(default)]
-        message: Option<CommitMessage>,
-    },
-    CommitPushPr {
-        #[serde(default)]
-        message: Option<CommitMessage>,
-    },
+    Commit { request: CommitRequest },
+    CommitPush { request: CommitRequest },
+    CommitPushPr { request: CommitRequest },
     Push,
     CreatePr,
     Pull,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CommitRequest {
+    pub message: Option<CommitMessage>,
+    pub selection: CommitSelection,
+    pub destination: CommitDestination,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CommitSelection {
+    #[default]
+    All,
+    Paths {
+        paths: SelectedPaths,
+    },
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CommitDestination {
+    #[default]
+    Current,
+    NewBranch,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RepoPath(String);
+impl TryFrom<String> for RepoPath {
+    type Error = AppError;
+    fn try_from(value: String) -> Result<Self> {
+        if value.is_empty()
+            || value.contains('\0')
+            || value.starts_with('/')
+            || value.split('/').any(|part| {
+                part.is_empty() || part == "." || part == ".." || part.eq_ignore_ascii_case(".git")
+            })
+        {
+            return Err(AppError::new(
+                "invalid_commit_selection",
+                "Select repository-relative file paths.",
+            ));
+        }
+        Ok(Self(value))
+    }
+}
+impl From<RepoPath> for String {
+    fn from(value: RepoPath) -> Self {
+        value.0
+    }
+}
+impl RepoPath {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<RepoPath>", into = "Vec<RepoPath>")]
+pub struct SelectedPaths(Vec<RepoPath>);
+impl TryFrom<Vec<RepoPath>> for SelectedPaths {
+    type Error = AppError;
+    fn try_from(paths: Vec<RepoPath>) -> Result<Self> {
+        if paths.is_empty() {
+            return Err(AppError::new(
+                "invalid_commit_selection",
+                "Select at least one file to commit.",
+            ));
+        }
+        Ok(Self(paths))
+    }
+}
+impl From<SelectedPaths> for Vec<RepoPath> {
+    fn from(value: SelectedPaths) -> Self {
+        value.0
+    }
+}
+impl SelectedPaths {
+    pub fn iter(&self) -> impl Iterator<Item = &RepoPath> {
+        self.0.iter()
+    }
 }
 /// Trimmed, non-empty and at most 10,000 bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1497,10 +1567,35 @@ pub enum GitPhase {
     Pr,
     Pull,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GitProgress {
+    Phase {
+        phase: GitPhase,
+    },
+    HookStarted {
+        name: String,
+    },
+    HookFinished {
+        name: String,
+        code: Option<i32>,
+    },
+    Output {
+        stream: GitOutputStream,
+        line: String,
+    },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitOutputStream {
+    Stdout,
+    Stderr,
+}
 /// What a started Git action did. Steps before a failure stay reported.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitOutcome {
+    pub branch: Option<String>,
     pub commit: Option<Committed>,
     pub push: Option<Pushed>,
     pub pr: Option<PrOpened>,
