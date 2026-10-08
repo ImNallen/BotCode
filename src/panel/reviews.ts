@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PrReviewDetail } from "./prReview";
+import type { PrObservation, PrReviewDetail } from "./prReview";
 import { coveragePrompt, type PrSectionProblem } from "./prCoverage";
 
 const nodeId = z
@@ -70,6 +70,7 @@ type DraftDestination = {
   workspaceId: string;
   threadId: string;
   key: string;
+  target: PrObservation;
   problems: PrSectionProblem[];
 };
 export type ReviewDraftRequest = DraftDestination &
@@ -104,6 +105,7 @@ export function captureRepairDraft({
 > {
   return {
     ...destination,
+    target: { ...detail.observation },
     problems: detail.problems,
     observation: detail.observation,
     base: detail.snapshot.base,
@@ -195,7 +197,7 @@ export function findingPrompt(request: ReviewDraftRequest): string {
       `Canonical PR: ${request.key}; node ${request.observation.nodeId}`,
       `Captured head: ${request.head} at ${request.observation.headOid}`,
       `Base branch: ${request.base}; signed-in viewer ${request.observation.viewer}`,
-      "Inspect the current checkout before changing it. This draft does not switch or create a checkout. Keep the captured pull request identity and verify any changes before reporting success.",
+      "Inspect the prepared pull request checkout before changing it. Keep the captured pull request identity and verify any changes before reporting success.",
       ...coveragePrompt(request.problems),
       ...(limited
         ? coveragePrompt([
@@ -242,6 +244,8 @@ export function findingPrompt(request: ReviewDraftRequest): string {
         "Investigate and fix this pull request check in the current conversation.",
     }[request.intent],
     `Pull request: ${request.key}`,
+    `Canonical PR: ${request.target.key}; node ${request.target.nodeId}`,
+    `Captured head: ${request.target.headOid}; signed-in viewer ${request.target.viewer}`,
     `Observed PR head: ${finding.observation.headSha}`,
     `Feedback source: ${sourceLabel(finding.source)}`,
     ...(finding.source.kind === "thread"

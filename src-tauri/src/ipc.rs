@@ -614,3 +614,18 @@ pub async fn search_thread_messages(
 ) -> Result<ThreadMessageSearch> {
     app.search_thread_messages(query).await
 }
+
+#[tauri::command]
+pub async fn list_worktrees(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+) -> Result<Vec<RegisteredWorktree>> {
+    app.list_worktrees(workspace_id).await
+}
+#[tauri::command]
+pub async fn prepare_pull_request_thread(
+    app: State<'_, App>,
+    input: PreparePullRequestThread,
+) -> Result<ThreadSnapshot> {
+    app.prepare_pull_request_thread(input).await
+}

@@ -259,6 +259,9 @@ pub(super) fn setup_for(checkout: &Checkout, config: ProjectConfig) -> Option<Wo
         return None;
     }
     Some(WorktreeSetup {
+        head_oid: repo::git(path, &["rev-parse", "HEAD"])
+            .ok()
+            .map(|v| String::from_utf8_lossy(&v).trim().to_owned()),
         id: uuid::Uuid::new_v4().to_string(),
         script,
         cwd: path.to_string_lossy().into(),

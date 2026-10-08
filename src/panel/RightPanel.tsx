@@ -45,6 +45,7 @@ import { PullRequestsSurface } from "./PullRequestsSurface";
 import { pullRequestState } from "./pullRequestPresentation";
 import type { PullRequestKey, ThreadPrSummary } from "./pullRequests";
 import type { ReviewDraftRequest } from "./reviews";
+import type { PrObservation } from "./prReview";
 import {
   closeSurface,
   openFile,
@@ -145,6 +146,7 @@ export function RightPanel({
   pullRequests,
   canAskCodex,
   onAskCodex,
+  onCheckoutPullRequest,
   terminalAvailable,
   fileLinks,
   thread,
@@ -161,6 +163,7 @@ export function RightPanel({
   pullRequests: ThreadPrSummary["links"];
   canAskCodex: boolean;
   onAskCodex: (request: ReviewDraftRequest) => void;
+  onCheckoutPullRequest: (target: PrObservation) => void;
   terminalAvailable: boolean;
   fileLinks: FileLinks;
   thread: Thread | undefined;
@@ -448,6 +451,7 @@ export function RightPanel({
                   workspaceId={checkout.workspaceId}
                   canAskCodex={canAskCodex}
                   onAskCodex={onAskCodex}
+                  onCheckout={onCheckoutPullRequest}
                   onBack={() => open({ kind: "pull_requests" })}
                 />
               ) : active?.kind === "terminal" ? (

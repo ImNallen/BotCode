@@ -7,6 +7,7 @@ mod tests;
 
 type ReadWaiter = (WorkspaceId, Reply<PrReviewDetail>);
 pub(super) enum ReviewCompletion {
+    Checkout(Box<super::pr_checkout::Completion>),
     Lifecycle(
         PrReviewChange,
         Result<PrChangeResult>,
@@ -29,18 +30,20 @@ pub(super) enum ReviewCompletion {
     ),
 }
 pub(super) struct ReviewWork {
-    reads: BTreeMap<PullRequestKey, Vec<ReadWaiter>>,
+    pub(super) checkout_workspaces: HashMap<PathBuf, WorkspaceId>,
+    pub(super) reads: BTreeMap<PullRequestKey, Vec<ReadWaiter>>,
     observed: BTreeMap<PullRequestKey, Vec<ReviewObservation>>,
     pub(super) changing: HashSet<PullRequestKey>,
     pub(super) pending: BTreeMap<String, PrOperation>,
     holds: BTreeMap<PullRequestKey, Vec<PathBuf>>,
-    cancel: watch::Sender<bool>,
+    pub(super) cancel: watch::Sender<bool>,
     cleanup_failure: Option<AppError>,
     pub(super) active: JoinSet<ReviewCompletion>,
 }
 impl ReviewWork {
     pub(super) fn new() -> Self {
         Self {
+            checkout_workspaces: HashMap::new(),
             reads: BTreeMap::new(),
             observed: BTreeMap::new(),
             changing: HashSet::new(),
@@ -53,7 +56,11 @@ impl ReviewWork {
     }
 }
 impl Owner {
-    fn review_member(&self, thread: &ThreadId, key: &PullRequestKey) -> Result<WorkspaceId> {
+    pub(super) fn review_member(
+        &self,
+        thread: &ThreadId,
+        key: &PullRequestKey,
+    ) -> Result<WorkspaceId> {
         let workspace = self.thread(thread)?.workspace_id.clone();
         if !self
             .pr_summary(thread)
@@ -259,6 +266,7 @@ impl Owner {
         done: std::result::Result<ReviewCompletion, tokio::task::JoinError>,
     ) -> Result<()> {
         let worker_error = match &done {
+            Ok(ReviewCompletion::Checkout(done)) => done.result.as_ref().err(),
             Ok(ReviewCompletion::Read(_, result)) => result.as_ref().as_ref().err(),
             Ok(ReviewCompletion::Acknowledge { confirmation, .. }) => confirmation.as_ref().err(),
             Ok(ReviewCompletion::Change(_, result, _))
@@ -282,6 +290,7 @@ impl Owner {
                 "Pull request worker stopped. Pending operations require reconciliation.",
             )
         })? {
+            ReviewCompletion::Checkout(done) => self.finish_pr_checkout(*done),
             ReviewCompletion::Lifecycle(input, mut result, confirmation, reply) => {
                 let confirmation = confirmation.map(|observation| {
                     observation.and_then(|snapshot| {

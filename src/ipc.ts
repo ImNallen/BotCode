@@ -6,6 +6,7 @@ import {
   prChangeResult,
   prOperation,
   type PrReviewChange,
+  prObservation,
 } from "./panel/prReview";
 import { threadPrSummary, type PullRequestKey } from "./panel/pullRequests";
 import {
@@ -747,9 +748,28 @@ export type Arrange =
 export type Checkout = z.infer<typeof checkout>;
 export type NewCheckout =
   | { kind: "existing"; threadId: string }
+  | { kind: "registered"; path: string }
   | { kind: "local" }
   | { kind: "worktree"; base: string; fromOrigin: boolean }
   | { kind: "folder"; prompt: string };
+export const registeredWorktree = z.object({
+  path: z.string(),
+  branch: z.string().nullable(),
+  head: z.string(),
+  unavailable: z.string().nullable(),
+});
+export type RegisteredWorktree = z.infer<typeof registeredWorktree>;
+export const pullRequestDestination = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("dedicated") }),
+  z.object({ kind: z.literal("existing"), path: z.string() }),
+]);
+export type PullRequestDestination = z.infer<typeof pullRequestDestination>;
+export const preparePullRequestInput = z.object({
+  sourceThreadId: id,
+  target: prObservation,
+  destination: pullRequestDestination,
+});
+export type PreparePullRequestInput = z.infer<typeof preparePullRequestInput>;
 export type CheckoutRef = { workspaceId: string; threadId?: string };
 // The core resolves every target and validates its path.
 export type OpenTarget =
@@ -1094,6 +1114,10 @@ export const ipc = {
     call("reveal_in_finder", { target }, z.null()),
   create: (workspaceId: string, checkout: NewCheckout) =>
     call("create_thread", { workspaceId, checkout }, thread),
+  listWorktrees: (workspaceId: string) =>
+    call("list_worktrees", { workspaceId }, registeredWorktree.array()),
+  preparePullRequestThread: (input: PreparePullRequestInput) =>
+    call("prepare_pull_request_thread", { input }, thread),
   thread: (threadId: string) => call("thread_snapshot", { threadId }, thread),
   resume: (threadId: string) => call("open_thread", { threadId }, thread),
   models: () => call("list_models", {}, z.array(modelOption)),

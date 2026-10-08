@@ -123,6 +123,8 @@ fn main() {
                 ipc::read_turn_diff,
                 ipc::revert_thread,
                 ipc::list_branches,
+                ipc::list_worktrees,
+                ipc::prepare_pull_request_thread,
                 ipc::switch_branch,
                 ipc::git_status,
                 ipc::current_branch_pull_request,

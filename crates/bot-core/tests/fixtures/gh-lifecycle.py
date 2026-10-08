@@ -73,6 +73,10 @@ if mode == 'error':
 repo = state.get('repository', 'fixture/project')
 branch = state.get('branch', 'feature')
 sha = state.get('head', 'a' * 40)
+if 'BotReviewMeta' in query and state.get('metaHeads'):
+    meta_index = state.get('metaIndex', 0)
+    sha = state['metaHeads'][min(meta_index, len(state['metaHeads']) - 1)]
+    update_state(lambda current: current.update(metaIndex=current.get('metaIndex', 0) + 1))
 url = f'https://github.com/{repo}/pull/{number}'
 row = {'number': number, 'title': state.get('title', 'Durable fixture pull request'), 'url': url,
        'baseRefName': 'main', 'headRefName': branch, 'isCrossRepository': False}

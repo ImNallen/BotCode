@@ -6,7 +6,7 @@ import { sectionProblemText } from "./prCoverage";
 import { Button } from "../ui/controls";
 import { Textarea } from "../ui/textarea";
 import { ReviewDetails } from "./ReviewFinding";
-import type { PrReviewAction, PrReviewDetail } from "./prReview";
+import type { PrObservation, PrReviewAction, PrReviewDetail } from "./prReview";
 import type { ReviewDraftRequest } from "./reviews";
 
 export type ReviewHandoff = {
@@ -14,6 +14,7 @@ export type ReviewHandoff = {
   threadId: string;
   canAskCodex: boolean;
   onAskCodex: (request: ReviewDraftRequest) => void;
+  onCheckout?: (target: PrObservation) => void;
 };
 export function PullRequestTimeline({
   detail,
@@ -180,6 +181,7 @@ function Finding({
             workspaceId,
             threadId,
             key: detail.observation.key,
+            target: { ...detail.observation },
             intent: "ask",
             problems: detail.problems,
             finding,
@@ -190,6 +192,7 @@ function Finding({
             workspaceId,
             threadId,
             key: detail.observation.key,
+            target: { ...detail.observation },
             intent: "fix",
             problems: detail.problems,
             finding,

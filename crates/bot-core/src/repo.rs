@@ -1,8 +1,10 @@
+mod worktrees;
 use crate::{domain::*, vcs};
 use std::{
     path::{Component, Path, PathBuf},
     process::Command,
 };
+pub(crate) use worktrees::{registered_worktree, registered_worktrees};
 pub(crate) const TEXT_LIMIT: usize = 1_000_000;
 fn command(root: &Path) -> Command {
     let mut command = Command::new("git");

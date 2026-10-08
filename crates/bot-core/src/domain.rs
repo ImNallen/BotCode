@@ -864,6 +864,7 @@ pub enum NewCheckout {
     Worktree { base: String, from_origin: bool },
     Folder { prompt: String },
     Existing { thread_id: ThreadId },
+    Registered { path: PathBuf },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1759,4 +1760,26 @@ impl SetReviewDisposition {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredWorktree {
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub head: String,
+    pub unavailable: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PrCheckoutDestination {
+    Dedicated,
+    Existing { path: PathBuf },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparePullRequestThread {
+    pub source_thread_id: ThreadId,
+    pub target: crate::PrObservation,
+    pub destination: PrCheckoutDestination,
 }

@@ -27,6 +27,8 @@ pub struct ProjectConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeSetup {
+    #[serde(default)]
+    pub head_oid: Option<String>,
     pub id: String,
     pub script: Option<ProjectScript>,
     pub cwd: String,

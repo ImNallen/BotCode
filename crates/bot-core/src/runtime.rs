@@ -6,6 +6,7 @@ mod naming;
 mod restarts;
 mod thread_actions;
 use thread_actions::DeleteCompletion;
+mod pr_checkout;
 mod pr_review;
 mod pull_requests;
 mod tools;
@@ -233,6 +234,9 @@ enum Command {
         Reply<ThreadSnapshot>,
     ),
     CreateExisting(WorkspaceId, ThreadId, Reply<ThreadSnapshot>),
+    CreateRegistered(WorkspaceId, PathBuf, Reply<ThreadSnapshot>),
+    Worktrees(WorkspaceId, Reply<Vec<RegisteredWorktree>>),
+    PreparePr(PreparePullRequestThread, Reply<ThreadSnapshot>),
     Snapshot(ThreadId, bool, Reply<ThreadSnapshot>),
     Models(Reply<Vec<ModelOption>>),
     CollaborationModes(Reply<Vec<InteractionMode>>),
@@ -936,6 +940,9 @@ impl App {
         id: WorkspaceId,
         checkout: NewCheckout,
     ) -> Result<ThreadSnapshot> {
+        if let NewCheckout::Registered { path } = checkout {
+            return self.call(|r| Command::CreateRegistered(id, path, r)).await;
+        }
         if let NewCheckout::Existing { thread_id } = checkout {
             return self
                 .call(|r| Command::CreateExisting(id, thread_id, r))
@@ -961,7 +968,7 @@ impl App {
                     .await
                     .map_err(|e| AppError::new("repository", e))??
             }
-            (_, NewCheckout::Existing { .. }) => unreachable!(),
+            (_, NewCheckout::Existing { .. } | NewCheckout::Registered { .. }) => unreachable!(),
             (WorkspaceKind::Repository, NewCheckout::Folder { .. })
             | (WorkspaceKind::Scratch, NewCheckout::Local | NewCheckout::Worktree { .. }) => {
                 return Err(AppError::new(
@@ -1699,25 +1706,33 @@ impl Owner {
         thread: Option<ThreadId>,
         hold: Hold,
     ) -> Result<PathBuf> {
-        self.checkout(id, thread).and_then(|(_, location)| {
-            let root = location.repository()?;
-            if self.setup_busy(&root) {
-                return Err(AppError::new(
-                    "setup_busy",
-                    "Worktree setup is still running.",
-                ));
-            }
-            if let Some(held) = self.held.get(&root) {
-                return Err(held.refusal());
-            }
-            if self.leases.contains_key(&root) {
-                return Err(hold.lease_refusal());
-            }
-            self.cancel_commit_previews(Some(&root));
-            self.invalidate_names(&root);
-            self.held.insert(root.clone(), hold);
-            Ok(root)
-        })
+        let root = self.checkout(id, thread)?.1.repository()?;
+        self.claim_path(root, hold)
+    }
+    fn claim_path(&mut self, root: PathBuf, hold: Hold) -> Result<PathBuf> {
+        if self.setup_busy(&root) {
+            return Err(AppError::new(
+                "setup_busy",
+                "Worktree setup is still running.",
+            ));
+        }
+        if let Some(held) = self.held.get(&root) {
+            return Err(held.refusal());
+        }
+        if self.leases.contains_key(&root) {
+            return Err(hold.lease_refusal());
+        }
+        if self
+            .threads
+            .values()
+            .any(|t| t.root(&self.workspaces[&t.workspace_id]) == root && !self.idle(t, &root))
+        {
+            return Err(turn_running());
+        }
+        self.cancel_commit_previews(Some(&root));
+        self.invalidate_names(&root);
+        self.held.insert(root.clone(), hold);
+        Ok(root)
     }
     fn workspace(&self, id: &WorkspaceId) -> Result<&Workspace> {
         self.workspaces
@@ -1761,7 +1776,13 @@ impl Owner {
         }) || self.held.contains_key(&w.root)
             || self.leases.values().any(owns)
             || self.pending.iter().any(|job| owns(job.thread()));
-        if busy {
+        if busy
+            || self
+                .review_work
+                .checkout_workspaces
+                .values()
+                .any(|workspace| workspace == id)
+        {
             return Err(AppError::new(
                 "busy",
                 "Stop this project's running conversations before removing it.",
@@ -2245,6 +2266,50 @@ impl Owner {
                     .collect();
                 let _ = reply.send(Ok(rows));
             }
+            Command::Worktrees(id, reply) => {
+                let result = self
+                    .workspace(&id)
+                    .and_then(|w| repo::registered_worktrees(&w.root))
+                    .map(|mut rows| {
+                        for row in &mut rows {
+                            if row.unavailable.is_none()
+                                && (self.held.contains_key(&row.path)
+                                    || self.setup_busy(&row.path)
+                                    || self.leases.contains_key(&row.path)
+                                    || self.threads.values().any(|t| {
+                                        t.root(&self.workspaces[&t.workspace_id]) == row.path
+                                            && !self.idle(t, &row.path)
+                                    }))
+                            {
+                                row.unavailable = Some(
+                                    "This checkout is busy. Wait for its operations to finish."
+                                        .into(),
+                                );
+                            }
+                        }
+                        rows
+                    });
+                let _ = reply.send(result);
+            }
+            Command::CreateRegistered(id, path, reply) => {
+                let result = (|| {
+                    let row = repo::registered_worktree(&self.workspace(&id)?.root, &path)?;
+                    let root = self.claim_path(row.path.clone(), Hold::Git)?;
+                    let checkout = if row.path == self.workspace(&id)?.root {
+                        Checkout::Local
+                    } else {
+                        Checkout::Worktree {
+                            path: row.path,
+                            branch: row.branch.unwrap_or_else(|| "HEAD".into()),
+                        }
+                    };
+                    let result = self.new_thread(id, checkout, SessionSettings::default(), None);
+                    self.held.remove(&root);
+                    result
+                })();
+                let _ = reply.send(result);
+            }
+            Command::PreparePr(input, reply) => self.prepare_pr_checkout(input, reply),
             Command::CreateExisting(workspace_id, source_id, reply) => {
                 let result = (|| {
                     let source = self.thread(&source_id)?;
