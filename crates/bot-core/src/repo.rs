@@ -1,5 +1,5 @@
 mod worktrees;
-use crate::{domain::*, process, vcs};
+use crate::{domain::*, process, vcs, workspace_files};
 use std::{
     path::{Component, Path, PathBuf},
     process::Command,
@@ -311,18 +311,30 @@ fn text(bytes: Vec<u8>) -> Result<String> {
     String::from_utf8(bytes)
         .map_err(|_| AppError::new("file_unavailable", "This file is not UTF-8 text."))
 }
+fn read_text(file: &Path) -> Result<String> {
+    if std::fs::metadata(file)?.len() > TEXT_LIMIT as u64 {
+        return Err(AppError::new(
+            "file_unavailable",
+            "This file exceeds the 1 MB text limit.",
+        ));
+    }
+    text(std::fs::read(file)?)
+}
 pub fn read_file(root: &Path, path: &str) -> Result<FileView> {
     let name = path.to_owned();
-    let path = contained(root, path)?;
-    if std::fs::metadata(&path)?.len() > TEXT_LIMIT as u64 {
-        return Ok(FileView::Unavailable {
-            reason: "This file exceeds the 1 MB text limit.".into(),
+    let file = contained(root, path)?;
+    let meta = std::fs::metadata(&file)?;
+    if meta.is_file() && workspace_files::is_media(path) {
+        return Ok(FileView::Media {
+            name,
+            revision: workspace_files::revision(&meta),
         });
     }
-    Ok(match text(std::fs::read(&path)?) {
-        Ok(contents) => FileView::Text { name, contents },
-        Err(e) => FileView::Unavailable { reason: e.message },
-    })
+    match read_text(&file) {
+        Ok(contents) => Ok(FileView::Text { name, contents }),
+        Err(e) if e.code == "file_unavailable" => Ok(FileView::Unavailable { reason: e.message }),
+        Err(e) => Err(e),
+    }
 }
 fn writable(root: &Path, path: &str) -> Result<PathBuf> {
     let inside = || AppError::new("invalid_path", "Choose a file inside the repository.");
@@ -478,12 +490,7 @@ pub fn diff(root: &Path, path: &str, basis: DiffBasis) -> Result<DiffView> {
             DiffBasis::Unstaged => {
                 let old = version(root, &format!(":{path}"))?;
                 let new = if root.join(path).exists() {
-                    match read_file(root, path)? {
-                        FileView::Text { contents, .. } => contents,
-                        FileView::Unavailable { reason } => {
-                            return Ok(DiffView::Unavailable { reason });
-                        }
-                    }
+                    read_text(&contained(root, path)?)?
                 } else {
                     String::new()
                 };

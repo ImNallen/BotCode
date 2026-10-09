@@ -27,6 +27,7 @@ import { renderSkillInlineMarkdownChildren } from "./SkillInlineText";
 import type { ComposerContextRecord } from "./composerContext";
 import { ContextRecordChip } from "./ContextRecordChip";
 import { RenderErrorBoundary } from "../errors/RenderErrorBoundary";
+import { findTaskListMarkerOffset } from "./markdownTasks";
 
 export type FileLinks = {
   resolve: (target: string, source: "code" | "href") => ChatFileLink | null;
@@ -36,6 +37,19 @@ export type FileLinks = {
 };
 
 const FileLinkContext = createContext<FileLinks | null>(null);
+
+export type TaskListChange = {
+  readonly markerOffset: number;
+  readonly checked: boolean;
+};
+type FileMarkdownDocument = {
+  readonly text: string;
+  readonly onTaskListChange: ((change: TaskListChange) => void) | undefined;
+  readonly imageSrc: ((src: string) => string | undefined) | undefined;
+};
+const FileMarkdownDocumentContext = createContext<FileMarkdownDocument | null>(
+  null,
+);
 const ContextRecords = createContext<readonly ComposerContextRecord[]>([]);
 
 export function FileLinkProvider({
@@ -210,6 +224,54 @@ function CodeBlock({
 }
 
 const components: Components = {
+  li({ node, children, ...props }) {
+    const document = useContext(FileMarkdownDocumentContext);
+    const listItemStart = node?.position?.start.offset;
+    const markerOffset =
+      document?.onTaskListChange && typeof listItemStart === "number"
+        ? findTaskListMarkerOffset(document.text, listItemStart)
+        : null;
+    return (
+      <li {...props} data-task-marker-offset={markerOffset ?? undefined}>
+        {children}
+      </li>
+    );
+  },
+  input({ node: _node, ...props }) {
+    const onTaskListChange = useContext(
+      FileMarkdownDocumentContext,
+    )?.onTaskListChange;
+    if (props.type !== "checkbox" || !onTaskListChange)
+      return <input {...props} />;
+    const { disabled: _disabled, ...enabled } = props;
+    return (
+      <input
+        {...enabled}
+        name="markdown-task"
+        aria-label="Toggle task"
+        onChange={(event) => {
+          const markerOffset = Number(
+            event.currentTarget.closest("li")?.dataset.taskMarkerOffset,
+          );
+          if (!Number.isSafeInteger(markerOffset)) return;
+          onTaskListChange({
+            markerOffset,
+            checked: event.currentTarget.checked,
+          });
+        }}
+      />
+    );
+  },
+  img({ node: _node, ...props }) {
+    const imageSrc = useContext(FileMarkdownDocumentContext)?.imageSrc;
+    const { src } = props;
+    return (
+      <img
+        {...props}
+        src={typeof src === "string" ? (imageSrc?.(src) ?? src) : src}
+      />
+    );
+  },
   pre({ children, node }) {
     const code = node?.children[0];
     const className =
@@ -290,6 +352,8 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   streaming = false,
   skills,
   records = [],
+  onTaskListChange,
+  imageSrc,
 }: {
   text: string;
   className?: string;
@@ -297,6 +361,8 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   streaming?: boolean;
   skills?: readonly Skill[];
   records?: readonly ComposerContextRecord[];
+  onTaskListChange?: (change: TaskListChange) => void;
+  imageSrc?: (src: string) => string | undefined;
 }) {
   return (
     <div
@@ -311,31 +377,41 @@ export const ChatMarkdown = memo(function ChatMarkdown({
         fallback={<div className="whitespace-pre-wrap">{text}</div>}
       >
         <ContextRecords value={records}>
-          <ReactMarkdown
-            urlTransform={(url) =>
-              url.startsWith("t3-context://v1/") ? url : keepFileUrls(url)
-            }
-            remarkPlugins={lineBreaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
-            components={
-              skills
-                ? {
-                    ...components,
-                    p: ({ children }) => (
-                      <p>
-                        {renderSkillInlineMarkdownChildren(children, skills)}
-                      </p>
-                    ),
-                    li: ({ children }) => (
-                      <li>
-                        {renderSkillInlineMarkdownChildren(children, skills)}
-                      </li>
-                    ),
-                  }
-                : components
+          <FileMarkdownDocumentContext
+            value={
+              onTaskListChange || imageSrc
+                ? { text, onTaskListChange, imageSrc }
+                : null
             }
           >
-            {text}
-          </ReactMarkdown>
+            <ReactMarkdown
+              urlTransform={(url) =>
+                url.startsWith("t3-context://v1/") ? url : keepFileUrls(url)
+              }
+              remarkPlugins={
+                lineBreaks ? [remarkGfm, remarkBreaks] : [remarkGfm]
+              }
+              components={
+                skills
+                  ? {
+                      ...components,
+                      p: ({ children }) => (
+                        <p>
+                          {renderSkillInlineMarkdownChildren(children, skills)}
+                        </p>
+                      ),
+                      li: ({ node: _node, children, ...props }) => (
+                        <li {...props}>
+                          {renderSkillInlineMarkdownChildren(children, skills)}
+                        </li>
+                      ),
+                    }
+                  : components
+              }
+            >
+              {text}
+            </ReactMarkdown>
+          </FileMarkdownDocumentContext>
         </ContextRecords>
       </RenderErrorBoundary>
     </div>

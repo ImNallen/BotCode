@@ -30,21 +30,21 @@ export function centeredFileLineScrollTop({
     ),
   );
 }
-type PostRender = NonNullable<
-  FileOptions<undefined, undefined>["onPostRender"]
+type PostRender<LAnnotation> = NonNullable<
+  FileOptions<LAnnotation, undefined>["onPostRender"]
 >;
-export function useFileLineReveal(
+export function useFileLineReveal<LAnnotation = undefined>(
   path: string,
   line: number | null,
   sequence: number,
-): PostRender {
+): PostRender<LAnnotation> {
   const state = useRef<{
     frame: number | null;
     cancelGuard: (() => void) | null;
     request: number | null;
     handled: number | null;
   }>({ frame: null, cancelGuard: null, request: null, handled: null });
-  return useCallback<PostRender>(
+  return useCallback<PostRender<LAnnotation>>(
     (container, instance, phase) => {
       const reveal = state.current;
       const cancel = () => {

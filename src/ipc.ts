@@ -22,6 +22,7 @@ import {
 import { threadPrSummary, type PullRequestKey } from "./panel/pullRequests";
 import {
   Channel,
+  convertFileSrc,
   type InvokeArgs,
   type InvokeOptions,
   invoke,
@@ -588,8 +589,14 @@ const workspaceView = z.object({
 });
 const file = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), name: z.string(), contents: z.string() }),
+  z.object({
+    kind: z.literal("media"),
+    name: z.string(),
+    revision: z.string(),
+  }),
   z.object({ kind: z.literal("unavailable"), reason: z.string() }),
 ]);
+export type FileRead = z.infer<typeof file>;
 const diff = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("text"),
@@ -782,6 +789,30 @@ export const preparePullRequestInput = z.object({
 });
 export type PreparePullRequestInput = z.infer<typeof preparePullRequestInput>;
 export type CheckoutRef = { workspaceId: string; threadId?: string };
+
+export const WORKSPACE_FILE_SCHEME = "botcode-workspace";
+export function workspaceFileUrlFrom(
+  base: string,
+  { workspaceId, threadId }: CheckoutRef,
+  path: string,
+  revision?: string,
+): string {
+  const segments = [workspaceId, threadId ?? "-", ...path.split("/")];
+  const query =
+    revision === undefined ? "" : `?v=${encodeURIComponent(revision)}`;
+  return `${base.replace(/\/?$/, "/")}${segments.map(encodeURIComponent).join("/")}${query}`;
+}
+export const workspaceFileUrl = (
+  checkout: CheckoutRef,
+  path: string,
+  revision?: string,
+) =>
+  workspaceFileUrlFrom(
+    convertFileSrc("", WORKSPACE_FILE_SCHEME),
+    checkout,
+    path,
+    revision,
+  );
 // The core resolves every target and validates its path.
 export type OpenTarget =
   | {

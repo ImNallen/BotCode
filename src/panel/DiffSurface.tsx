@@ -259,7 +259,7 @@ export function DiffSurface({
   onSelectTurn: (turnId: string | null, filePath?: string) => void;
 }) {
   const theme = useResolvedTheme();
-  const addContext = useComposerContext();
+  const composer = useComposerContext();
   const [reviewDraft, setReviewDraft] = useState<ReviewDraft | null>(null);
   const reviewText = useRef("");
   const [selectedLines, setSelectedLines] = useState<{
@@ -597,11 +597,11 @@ export function DiffSurface({
                 options={{
                   ...diffViewOptions<ReviewDraft>({ split, wordWrap, theme }),
                   enableGutterUtility:
-                    addContext !== null && reviewDraft === null,
+                    composer !== null && reviewDraft === null,
                   enableLineSelection:
-                    addContext !== null && reviewDraft === null,
+                    composer !== null && reviewDraft === null,
                   onGutterUtilityClick: (range, { item }) => {
-                    if (!range || item.type !== "diff" || !addContext) return;
+                    if (!range || item.type !== "diff" || !composer) return;
                     const context = buildDiffReviewContext({
                       contextId: crypto.randomUUID(),
                       sectionId: selectedTurn
@@ -669,12 +669,12 @@ function DiffCommentComposer({
   textRef: { current: string };
   onCancel: () => void;
 }) {
-  const addContext = useComposerContext();
+  const composer = useComposerContext();
   const [reviewText, setReviewText] = useState(textRef.current);
   const submit = () => {
-    if (!reviewText.trim() || !addContext) return;
+    if (!reviewText.trim() || !composer) return;
     if (
-      addContext({
+      composer.add({
         ...context,
         text: truncateContextText(reviewText.trim(), 16_000),
       })
@@ -730,7 +730,7 @@ function DiffCommentComposer({
         </Button>
         <Button
           size="xs"
-          disabled={!reviewText.trim() || !addContext}
+          disabled={!reviewText.trim() || !composer}
           onClick={submit}
         >
           Add to chat

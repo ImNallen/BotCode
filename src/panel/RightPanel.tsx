@@ -490,6 +490,7 @@ export function RightPanel({
                     active.kind === "file" ? active.revealSequence : 0
                   }
                   onOpenFile={handleOpenFile}
+                  fileLinks={fileLinks}
                 />
               )}
             </RenderErrorBoundary>

@@ -349,3 +349,51 @@ export function buildDiffReviewContext(input: {
     fenceLanguage: "diff",
   };
 }
+
+export function inferReviewCommentFenceLanguage(filePath: string): string {
+  const normalizedPath = filePath.replaceAll("\\", "/");
+  const fileName = normalizedPath
+    .slice(normalizedPath.lastIndexOf("/") + 1)
+    .toLowerCase();
+  const extensionIndex = fileName.lastIndexOf(".");
+  if (extensionIndex > 0 && extensionIndex < fileName.length - 1) {
+    return fileName.slice(extensionIndex + 1);
+  }
+  if (fileName.startsWith(".") && fileName.length > 1) {
+    return fileName.slice(1);
+  }
+  return "text";
+}
+
+/** T3's buildFileReviewComment: the comment on one-based lines `startLine` to `endLine` of `contents`. */
+export function buildFileReviewContext(input: {
+  contextId: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  text: string;
+  contents: string;
+}): ComposerReviewContext {
+  const startLine = Math.max(1, Math.min(input.startLine, input.endLine));
+  const endLine = Math.max(startLine, Math.max(input.startLine, input.endLine));
+  const selectedLines = input.contents
+    .split("\n")
+    .slice(startLine - 1, endLine);
+  const rangeLabel =
+    startLine === endLine ? `L${startLine}` : `L${startLine} to L${endLine}`;
+  return {
+    version: 1,
+    contextId: input.contextId,
+    kind: "review-comment",
+    label: truncateContextText(`${input.filePath}:${rangeLabel}`, 200),
+    sectionId: `file:${input.filePath}`,
+    sectionTitle: "File comment",
+    filePath: input.filePath,
+    startIndex: startLine - 1,
+    endIndex: endLine - 1,
+    rangeLabel,
+    text: truncateContextText(input.text.trim(), 16_000),
+    diff: truncateContextText(selectedLines.join("\n"), 32_000),
+    fenceLanguage: inferReviewCommentFenceLanguage(input.filePath).slice(0, 64),
+  };
+}

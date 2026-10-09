@@ -1,7 +1,7 @@
 // Copied from pingdotgg/t3code v0.0.45 components/files/fileContentRevision.ts (MIT).
 import type { CheckoutRef } from "../ipc";
 
-function fileContentRevision(contents: string): string {
+export function fileContentRevision(contents: string): string {
   let hash = 2_166_136_261;
   for (let index = 0; index < contents.length; index += 1) {
     hash ^= contents.charCodeAt(index);

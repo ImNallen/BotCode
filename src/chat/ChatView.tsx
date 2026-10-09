@@ -157,11 +157,18 @@ import {
 } from "./composerDrafts";
 import {
   appendContext,
-  contextReferences,
   referencedContext,
+  referencedRecords,
+  removeContext,
+  replaceContext,
+  upsertContext,
+  type ComposerContent,
   type ComposerContextRecord,
 } from "./composerContext";
-import { ComposerContextProvider } from "./ComposerContextProvider";
+import {
+  ComposerContextProvider,
+  type ComposerContextChannel,
+} from "./ComposerContextProvider";
 import { PersistentThreadTerminalDrawer } from "../terminal/ThreadTerminalDrawer";
 import {
   terminalScopeKey,
@@ -828,6 +835,55 @@ export function ChatView({
       setError(undefined);
     },
   });
+  const contextBlocked =
+    reverting || send.isPending || prHandoff?.kind === "appending";
+  const contextRecords = useMemo(
+    () => referencedRecords({ text: composer.text, records: composer.records }),
+    [composer.text, composer.records],
+  );
+  const composerContext = useMemo<ComposerContextChannel | null>(() => {
+    if (contextBlocked) return null;
+    const edit = (
+      operation: (content: ComposerContent) => ComposerContent,
+    ): boolean => {
+      try {
+        updateComposer((current) => {
+          const next = operation(current);
+          return next === current
+            ? current
+            : {
+                ...current,
+                text: next.text,
+                records: next.records,
+                generation: current.generation + 1,
+              };
+        });
+        return true;
+      } catch (error) {
+        setError(
+          error instanceof Error ? error.message : "Unable to add context.",
+        );
+        return false;
+      }
+    };
+    return {
+      records: contextRecords,
+      add: (record) => {
+        if (!edit((content) => appendContext(content, record))) return false;
+        requestAnimationFrame(() =>
+          setComposerFocusRequest((current) => current + 1),
+        );
+        return true;
+      },
+      upsert: (record) => edit((content) => upsertContext(content, record)),
+      replace: (record) => {
+        edit((content) => replaceContext(content, record));
+      },
+      remove: (contextId) => {
+        edit((content) => removeContext(content, contextId));
+      },
+    };
+  }, [contextRecords, contextBlocked]);
   const workspace = view?.workspace;
   const checkoutWorkspace = checkout.workspaceId;
   const checkoutThread = checkout.threadId;
@@ -1516,26 +1572,6 @@ export function ChatView({
           />
         ),
       };
-  const addComposerContext = (record: ComposerContextRecord) => {
-    try {
-      const content = appendContext(composer, record);
-      const started = composer;
-      updateComposer((current) =>
-        acceptsCompletion(current, started, true)
-          ? { ...current, ...content, generation: current.generation + 1 }
-          : current,
-      );
-      requestAnimationFrame(() =>
-        setComposerFocusRequest((current) => current + 1),
-      );
-      return true;
-    } catch (error) {
-      setError(
-        error instanceof Error ? error.message : "Unable to add context.",
-      );
-      return false;
-    }
-  };
   const content = (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
       <div
@@ -1918,23 +1954,16 @@ export function ChatView({
                                       record.name === slot.attachment.name,
                                   )
                                 : [];
-                            let text = current.text;
-                            const ids = new Set(
-                              removed.map((record) => record.contextId),
-                            );
-                            for (const ref of contextReferences(
-                              text,
-                            ).toReversed())
-                              if (ids.has(ref.contextId))
-                                text =
-                                  text.slice(0, ref.start) +
-                                  text.slice(ref.end);
+                            const { text, records } =
+                              removed.reduce<ComposerContent>(
+                                (content, record) =>
+                                  removeContext(content, record.contextId),
+                                current,
+                              );
                             return {
                               ...current,
                               text,
-                              records: current.records.filter(
-                                (record) => !ids.has(record.contextId),
-                              ),
+                              records,
                               attachments: current.attachments.filter(
                                 (slot) => slot.key !== key,
                               ),
@@ -2220,13 +2249,7 @@ export function ChatView({
     </div>
   );
   return (
-    <ComposerContextProvider
-      value={
-        reverting || send.isPending || prHandoff?.kind === "appending"
-          ? null
-          : addComposerContext
-      }
-    >
+    <ComposerContextProvider value={composerContext}>
       {content}
       {prHandoff ? (
         <PullRequestCheckoutDialog

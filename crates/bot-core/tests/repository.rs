@@ -108,6 +108,41 @@ fn refuses_traversal_external_symlinks_binary_and_large_text() {
     ));
 }
 #[test]
+fn reads_media_by_revision_and_keeps_text_diffs_for_svg() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    let canonical = repo::open(root).unwrap();
+    std::fs::write(root.join("tone.WAV"), vec![0; 2_000_000]).unwrap();
+    std::fs::write(root.join("mark.svg"), "<svg/>").unwrap();
+    std::fs::create_dir(root.join("assets.png")).unwrap();
+    let FileView::Media { name, revision } = repo::read_file(&canonical, "tone.WAV").unwrap()
+    else {
+        panic!("audio over the text limit is media, not unavailable")
+    };
+    assert_eq!(name, "tone.WAV");
+    assert!(revision.starts_with("2000000-"), "{revision}");
+    let FileView::Media {
+        revision: before, ..
+    } = repo::read_file(&canonical, "mark.svg").unwrap()
+    else {
+        panic!("svg is an image")
+    };
+    std::fs::write(root.join("mark.svg"), "<svg></svg>").unwrap();
+    let FileView::Media {
+        revision: after, ..
+    } = repo::read_file(&canonical, "mark.svg").unwrap()
+    else {
+        panic!("svg is an image")
+    };
+    assert_ne!(before, after, "a rewrite changes the revision");
+    assert!(repo::read_file(&canonical, "assets.png").is_err());
+    assert!(matches!(
+        repo::diff(&canonical, "mark.svg", DiffBasis::Unstaged).unwrap(),
+        DiffView::Text { new_contents, .. } if new_contents == "<svg></svg>"
+    ));
+}
+#[test]
 fn reads_refuse_git_metadata_under_another_spelling() {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q"]);
