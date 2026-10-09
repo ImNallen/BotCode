@@ -1,12 +1,11 @@
-import { changeResultText } from "./prLifecycle";
-import { conversationDrafts, draftKey } from "./reviewDrafts";
-import { useState, useSyncExternalStore } from "react";
+import { usePullRequestConversation } from "./usePullRequestConversation";
+import { useState } from "react";
 import { ipc } from "../ipc";
 import { sectionProblemText } from "./prCoverage";
 import { Button } from "../ui/controls";
 import { Textarea } from "../ui/textarea";
 import { ReviewDetails } from "./ReviewFinding";
-import type { PrObservation, PrReviewAction, PrReviewDetail } from "./prReview";
+import type { PrObservation, PrReviewDetail } from "./prReview";
 import type { ReviewDraftRequest } from "./reviews";
 
 export type ReviewHandoff = {
@@ -115,35 +114,20 @@ function Finding({
 } & ReviewHandoff) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-  const key = `${draftKey(detail.observation)}:${entry.finding.observation.findingId}`;
-  const draft = useSyncExternalStore(
-    conversationDrafts.subscribe,
-    () => conversationDrafts.get(key),
-    () => conversationDrafts.get(key),
-  );
-  const reply = draft.body;
-  const uncertain = draft.operation?.result?.kind === "uncertain";
-  const pending = Boolean(draft.operation && !draft.operation.result);
-  const change = async (action: PrReviewAction) => {
-    if (pending || uncertain) return;
-    setError(undefined);
-    const input = {
-      requestId: crypto.randomUUID(),
-      target: detail.observation,
-      action,
-    };
-    const revision = conversationDrafts.start(key, input);
-    try {
-      const result = await ipc.changePullRequest(threadId, input);
-      conversationDrafts.finish(key, revision, result);
-      if (result.kind === "applied") refresh();
-    } catch (error) {
-      conversationDrafts.finish(key, revision, {
-        kind: "uncertain",
-        message: String(error),
-      });
-    }
-  };
+  const {
+    reply,
+    uncertain,
+    pending,
+    change,
+    error: changeError,
+    edit,
+    acknowledge,
+  } = usePullRequestConversation({
+    target: detail.observation,
+    findingId: entry.finding.observation.findingId,
+    threadId,
+    refresh,
+  });
   const finding = entry.finding;
   return (
     <article className="border-b border-border/60">
@@ -156,12 +140,7 @@ function Finding({
         finding={finding}
         saving={saving}
         disabled={disabled}
-        saveError={
-          error ??
-          (draft.operation?.result && draft.operation.result.kind !== "applied"
-            ? changeResultText(draft.operation.result)
-            : undefined)
-        }
+        saveError={error ?? changeError}
         onSave={(choice) => {
           setSaving(true);
           setError(undefined);
@@ -211,7 +190,7 @@ function Finding({
                 aria-label={`Reply to ${finding.observation.findingId}`}
                 placeholder="Reply to this conversation"
                 value={reply}
-                onChange={(e) => conversationDrafts.edit(key, e.target.value)}
+                onChange={(e) => edit(e.target.value)}
               />
               <Button
                 size="compact"
@@ -253,7 +232,7 @@ function Finding({
             <Button
               size="compact"
               variant="outline"
-              onClick={() => conversationDrafts.acknowledge(key)}
+              onClick={() => acknowledge()}
             >
               I checked GitHub. Allow a new action
             </Button>

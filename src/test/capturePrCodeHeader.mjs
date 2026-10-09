@@ -3,7 +3,15 @@ import { Children, isValidElement } from "react";
 
 let header;
 let collapsed;
-export function CodeView({ items, renderHeaderMetadata }) {
+let options;
+let item;
+export function CodeView({
+  items,
+  renderHeaderMetadata,
+  options: viewOptions,
+}) {
+  options = viewOptions;
+  item = items[0];
   header = renderHeaderMetadata(items[0]);
   collapsed = items[0].collapsed;
   return null;
@@ -51,4 +59,69 @@ export function clickCheckbox(button) {
     },
   });
   return prevented;
+}
+
+export async function completePrCodeGesture(kind, start, end) {
+  const managerUrl = new URL(
+    "managers/InteractionManager.js",
+    import.meta.resolve("@pierre/diffs"),
+  );
+  const { InteractionManager } = await import(managerUrl.href);
+  if (!options?.enableGutterUtility || !options.onGutterUtilityClick)
+    throw new Error("The comment gutter utility is disabled.");
+  const previousElement = globalThis.HTMLElement;
+  const previousDocument = globalThis.document;
+  const previousFrame = globalThis.requestAnimationFrame;
+  const previousCancel = globalThis.cancelAnimationFrame;
+  class Element {
+    hasAttribute(name) {
+      return kind === "gutter" && name === "data-utility-button";
+    }
+    getAttribute() {
+      return null;
+    }
+  }
+  globalThis.HTMLElement = Element;
+  globalThis.document = { addEventListener() {}, removeEventListener() {} };
+  globalThis.requestAnimationFrame = () => 1;
+  globalThis.cancelAnimationFrame = () => {};
+  const manager = new InteractionManager("diff", {
+    enableLineSelection: options.enableLineSelection,
+    enableGutterUtility: options.enableGutterUtility,
+    onGutterUtilityClick: (range) =>
+      options.onGutterUtilityClick(range, { item }),
+    onLineSelectionEnd: (range) => options.onLineSelectionEnd(range, { item }),
+  });
+  manager.pre = new Element();
+  manager.placeUtility = () => {};
+  manager.resolveSelectionPoint = (event) => ({
+    lineNumber: event.line,
+    side: "additions",
+  });
+  manager.resolveSelectionInfo = (event) => ({
+    lineNumber: event.line,
+    eventSide: "additions",
+    lineIndex: event.line,
+  });
+  const event = (line) => ({
+    line,
+    pointerId: 1,
+    pointerType: "mouse",
+    button: 0,
+    composedPath: () => [new Element()],
+    preventDefault() {},
+    stopPropagation() {},
+  });
+  try {
+    manager.handlePointerDown(event(start));
+    if (start !== end) manager.handleDocumentPointerMove(event(end));
+    manager.handleDocumentPointerUp(event(end));
+  } finally {
+    manager.pre = undefined;
+    manager.cleanUp();
+    globalThis.HTMLElement = previousElement;
+    globalThis.document = previousDocument;
+    globalThis.requestAnimationFrame = previousFrame;
+    globalThis.cancelAnimationFrame = previousCancel;
+  }
 }

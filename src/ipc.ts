@@ -13,6 +13,9 @@ import type { SearchInvalidation } from "./command/threadMessageSearch";
 import {
   acknowledgeUncertainUpdate,
   type AcknowledgeUncertainUpdate,
+  prFileContentsRequest,
+  prFileContents,
+  type PrFileContentsRequest,
   prReviewDetail,
   prCommitFiles,
   prFilesViewed,
@@ -1049,6 +1052,15 @@ export const ipc = {
       "set_pull_request_files_viewed",
       { threadId, input: prSetFilesViewed.parse(input) },
       z.null(),
+    ),
+  readPullRequestFileContents: (
+    threadId: string,
+    input: PrFileContentsRequest,
+  ) =>
+    call(
+      "read_pull_request_file_contents",
+      { threadId, input: prFileContentsRequest.parse(input) },
+      prFileContents,
     ),
   readPullRequestCommitFiles: (threadId: string, input: PrCommitFilesRequest) =>
     call(

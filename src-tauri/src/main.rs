@@ -147,6 +147,7 @@ fn main() {
                 ipc::unlink_pull_request,
                 ipc::read_pull_request,
                 ipc::read_pull_request_commit_files,
+                ipc::read_pull_request_file_contents,
                 ipc::read_pull_request_files_viewed,
                 ipc::set_pull_request_files_viewed,
                 ipc::change_pull_request,

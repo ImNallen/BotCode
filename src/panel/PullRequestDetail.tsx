@@ -1,6 +1,6 @@
 // Header, tabs and checks status follow pingdotgg/t3code 3e6b450 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx (MIT).
 // Title editing follows pingdotgg/t3code v0.0.45 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx (MIT).
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   currentPrScope,
   prScopeIdentity,
@@ -97,6 +97,18 @@ export function PullRequestDetail({
     refetchOnWindowFocus: false,
   });
   const detail = query.data;
+  const observation = detail?.observation;
+  const loadFileContents = useCallback(
+    (sourceId: string) => {
+      if (!observation)
+        return Promise.reject(new Error("Refresh this pull request first."));
+      return ipc.readPullRequestFileContents(handoff.threadId, {
+        target: observation,
+        sourceId,
+      });
+    },
+    [handoff.threadId, observation],
+  );
   const [selectedScope, setScope] = useState<PrDiffScope>({ kind: "all" });
   const scope = detail
     ? currentPrScope(selectedScope, detail.timeline)
@@ -682,6 +694,9 @@ export function PullRequestDetail({
             ) : null}
             {tab === "code" ? (
               <PullRequestCodeTab
+                threadId={handoff.threadId}
+                refresh={refresh}
+                loadFileContents={loadFileContents}
                 filesViewed={filesViewed}
                 key={prScopeIdentity(detail, scope)}
                 detail={detail}

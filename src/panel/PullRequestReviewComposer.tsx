@@ -1,3 +1,4 @@
+import { commentLineLabel } from "./pullRequestDiff";
 import { changeResultText } from "./prLifecycle";
 import { useState, useSyncExternalStore } from "react";
 import { ipc } from "../ipc";
@@ -70,7 +71,7 @@ export function PullRequestReviewComposer({
             <pre className="max-h-32 overflow-auto whitespace-pre-wrap">
               {oldDraft.summary.body}
               {oldDraft.comments
-                .map((c) => `\n${c.path}:${c.line}\n${c.body}`)
+                .map((c) => `\n${c.path}:${commentLineLabel(c)}\n${c.body}`)
                 .join("")}
             </pre>
             <Button
@@ -103,7 +104,7 @@ export function PullRequestReviewComposer({
             >
               <div className="flex items-center justify-between text-xs">
                 <span className="min-w-0 break-all">
-                  {c.path}:{c.line} ({c.side.toLowerCase()})
+                  {c.path}:{commentLineLabel(c)} ({c.side.toLowerCase()})
                 </span>
                 <Button
                   size="compact"
@@ -114,7 +115,7 @@ export function PullRequestReviewComposer({
                 </Button>
               </div>
               <Textarea
-                aria-label={`Line comment ${c.path}:${c.line}`}
+                aria-label={`Line comment ${c.path}:${commentLineLabel(c)}`}
                 rows={2}
                 value={c.body}
                 onChange={(e) => reviewDrafts.edit(key, c.id, e.target.value)}

@@ -126,6 +126,7 @@ fn submission(detail: &PrReviewDetail) -> PrReviewChange {
                 path: "calculate.ts".into(),
                 side: PrSide::Right,
                 line: 1,
+                start_line: None,
                 body: "Private line body".into(),
             }],
         },
@@ -1145,3 +1146,12 @@ mod commit_files;
 
 #[path = "reviews/viewed.rs"]
 mod viewed;
+
+#[path = "reviews/file_contents.rs"]
+mod file_contents;
+
+#[path = "reviews/threads.rs"]
+mod threads;
+
+#[path = "reviews/ranges.rs"]
+mod ranges;

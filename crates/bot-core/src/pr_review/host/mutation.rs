@@ -249,13 +249,7 @@ async fn prepare(
             if !comments.is_empty() {
                 let files = fetch.files(&input.target.key, &mut vec![]).await?;
                 for comment in comments {
-                    if !files.iter().any(|file| {
-                        file.path == comment.path
-                            && file
-                                .anchors
-                                .iter()
-                                .any(|line| line.line == comment.line && line.side == comment.side)
-                    }) {
+                    if !files.iter().any(|file| valid_comment_range(file, comment)) {
                         return Err(unavailable(
                             "A line comment does not belong to the viewed remote diff. Refresh or discard it.",
                         ));
@@ -266,7 +260,7 @@ async fn prepare(
                 "BotSubmitReview",
                 "addPullRequestReview",
                 "AddPullRequestReviewInput",
-                json!({"pullRequestId":input.target.node_id,"commitOID":input.target.head_oid,"event":match verdict {ReviewVerdict::Comment=>"COMMENT",ReviewVerdict::Approve=>"APPROVE",ReviewVerdict::RequestChanges=>"REQUEST_CHANGES"},"body":body,"threads":comments.iter().map(|c|json!({"path":c.path,"line":c.line,"side":c.side,"body":c.body})).collect::<Vec<_>>()}),
+                json!({"pullRequestId":input.target.node_id,"commitOID":input.target.head_oid,"event":match verdict {ReviewVerdict::Comment=>"COMMENT",ReviewVerdict::Approve=>"APPROVE",ReviewVerdict::RequestChanges=>"REQUEST_CHANGES"},"body":body,"threads":comments.iter().map(review_thread).collect::<Vec<_>>()}),
                 "pullRequestReview",
             )
         }
@@ -342,4 +336,71 @@ async fn prepare(
     Ok(
         json!({"query":format!("mutation {operation}($input:{typ}!){{{field}(input:$input){{{child}{{id}}}}}}"),"variables":{"input":body}}),
     )
+}
+
+fn review_thread(comment: &DraftReviewComment) -> Value {
+    let mut value =
+        json!({"path":comment.path,"line":comment.line,"side":comment.side,"body":comment.body});
+    if let Some(start) = comment.start_line {
+        value["startLine"] = json!(start);
+        value["startSide"] = json!(comment.side);
+    }
+    value
+}
+
+fn valid_comment_range(file: &PrFile, comment: &DraftReviewComment) -> bool {
+    if file.path != comment.path || comment.line == 0 {
+        return false;
+    }
+    let Some(start) = comment.start_line else {
+        return file
+            .anchors
+            .iter()
+            .any(|anchor| anchor.side == comment.side && anchor.line == comment.line);
+    };
+    if start == 0 || start >= comment.line {
+        return false;
+    }
+    let Some(length) = comment
+        .line
+        .checked_sub(start)
+        .and_then(|n| n.checked_add(1))
+    else {
+        return false;
+    };
+    if length > file.anchors.len() as u64 {
+        return false;
+    }
+    let Some(patch) = &file.patch else {
+        return false;
+    };
+    let admitted: std::collections::BTreeSet<u64> = file
+        .anchors
+        .iter()
+        .filter(|anchor| anchor.side == comment.side)
+        .map(|anchor| anchor.line)
+        .collect();
+    let mut hunks = Vec::new();
+    let mut current = String::new();
+    for line in patch.lines() {
+        if line.starts_with("@@ ") && !current.is_empty() {
+            hunks.push(std::mem::take(&mut current));
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    hunks.push(current);
+    hunks.iter().any(|hunk| {
+        let anchors = super::parse_patch(hunk);
+        let selected: Vec<_> = anchors
+            .iter()
+            .filter(|anchor| {
+                anchor.side == comment.side && anchor.line >= start && anchor.line <= comment.line
+            })
+            .collect();
+        selected.len() as u64 == length
+            && selected.iter().enumerate().all(|(index, anchor)| {
+                anchor.line == start + index as u64 && admitted.contains(&anchor.line)
+            })
+    })
 }

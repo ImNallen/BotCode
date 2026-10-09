@@ -6,8 +6,8 @@ use crate::{
 };
 pub(crate) use host::checkout_snapshot;
 pub(crate) use host::{
-    Confirmation, acknowledge_update, change, confirm, read, read_commit_files, read_files_viewed,
-    set_files_viewed,
+    Confirmation, acknowledge_update, change, confirm, read, read_commit_files, read_file_contents,
+    read_files_viewed, set_files_viewed,
 };
 pub use lifecycle::*;
 use serde::{Deserialize, Serialize};
@@ -209,7 +209,16 @@ pub enum PrTimelineEvent {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PrThreadLocation {
+    pub path: String,
+    pub side: PrSide,
+    pub line: Option<u64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PrFinding {
+    #[serde(default)]
+    pub thread_location: Option<PrThreadLocation>,
     pub finding: ReviewFinding,
     pub outcome: Option<String>,
     pub can_reply: bool,
@@ -225,7 +234,30 @@ pub struct PrCheck {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PrFileContentsSource {
+    pub id: String,
+    pub old_oid: Option<String>,
+    pub new_oid: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFileContentsRequest {
+    pub target: PrObservation,
+    pub source_id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFileContents {
+    pub old_contents: String,
+    pub new_contents: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PrFile {
+    #[serde(default)]
+    pub previous_path: Option<String>,
+    #[serde(default)]
+    pub contents_source: Option<PrFileContentsSource>,
     pub path: String,
     pub status: String,
     pub additions: u64,
@@ -255,6 +287,8 @@ pub struct DraftReviewComment {
     pub path: String,
     pub side: PrSide,
     pub line: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u64>,
     pub body: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

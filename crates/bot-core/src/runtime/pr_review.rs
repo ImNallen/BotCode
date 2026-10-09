@@ -38,6 +38,14 @@ pub(super) enum ReviewCompletion {
         result: Result<()>,
         reply: Reply<()>,
     },
+    FileContents {
+        thread: ThreadId,
+        generation: u64,
+        epoch: u64,
+        target: PrObservation,
+        result: Result<PrFileContents>,
+        reply: Reply<PrFileContents>,
+    },
     CommitFiles {
         thread: ThreadId,
         generation: u64,
@@ -55,6 +63,7 @@ pub(super) enum ReviewCompletion {
 pub(super) struct ReviewWork {
     pub(super) checkout_workspaces: HashMap<PathBuf, WorkspaceId>,
     pub(super) reads: BTreeMap<PullRequestKey, Vec<ReadWaiter>>,
+    contents_sources: std::collections::VecDeque<(PrObservation, PrFile)>,
     observed: BTreeMap<PullRequestKey, Vec<ReviewObservation>>,
     pub(super) changing: HashSet<PullRequestKey>,
     pub(super) pending: BTreeMap<String, PrOperation>,
@@ -69,6 +78,7 @@ impl ReviewWork {
         Self {
             checkout_workspaces: HashMap::new(),
             reads: BTreeMap::new(),
+            contents_sources: std::collections::VecDeque::new(),
             observed: BTreeMap::new(),
             changing: HashSet::new(),
             pending: BTreeMap::new(),
@@ -268,6 +278,57 @@ impl Owner {
             }
         });
     }
+    fn register_contents_sources(&mut self, target: &PrObservation, files: &[PrFile]) {
+        for file in files.iter().filter(|file| file.contents_source.is_some()) {
+            let mut captured = file.clone();
+            captured.patch = None;
+            captured.anchors.clear();
+            self.review_work
+                .contents_sources
+                .push_back((target.clone(), captured));
+        }
+        while self.review_work.contents_sources.len() > 3200 {
+            self.review_work.contents_sources.pop_front();
+        }
+    }
+    pub(super) fn read_file_contents(
+        &mut self,
+        thread: ThreadId,
+        input: PrFileContentsRequest,
+        reply: Reply<PrFileContents>,
+    ) {
+        let admission = (|| {
+            self.review_member(&thread, &input.target.key)?;
+            input.target.validate()?;
+            self.admit_viewed(&input.target.key)?;
+            self.review_work.contents_sources.iter().rev().find(|(target, file)| target == &input.target && file.contents_source.as_ref().is_some_and(|source| source.id == input.source_id)).map(|(_, file)| file.clone()).ok_or_else(|| AppError::new("pr_contents_missing", "Exact file revisions expired or were not loaded. Refresh this pull request."))
+        })();
+        let file = match admission {
+            Ok(file) => file,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        let generation = self.pr_generation(&thread);
+        let epoch = self.pr_read_epoch(&input.target.key);
+        let program = self.config.gh_binary.clone();
+        let timeout = self.config.network_timeout;
+        let mut cancel = self.review_work.cancel.subscribe();
+        self.review_work.active.spawn(async move {
+            let result =
+                host::read_file_contents(&program, &input.target, &file, timeout, &mut cancel)
+                    .await;
+            ReviewCompletion::FileContents {
+                thread,
+                generation,
+                epoch,
+                target: input.target,
+                result,
+                reply,
+            }
+        });
+    }
     pub(super) fn change_review(
         &mut self,
         thread: ThreadId,
@@ -412,6 +473,7 @@ impl Owner {
         let worker_error = match &done {
             Ok(ReviewCompletion::Checkout(done)) => done.result.as_ref().err(),
             Ok(ReviewCompletion::Read(_, result)) => result.as_ref().as_ref().err(),
+            Ok(ReviewCompletion::FileContents { result, .. }) => result.as_ref().err(),
             Ok(ReviewCompletion::CommitFiles { result, .. }) => result.as_ref().err(),
             Ok(ReviewCompletion::FilesViewed { result, .. }) => result.as_ref().err(),
             Ok(ReviewCompletion::SetFilesViewed { result, .. }) => result.as_ref().err(),
@@ -479,6 +541,28 @@ impl Owner {
                 });
                 let _ = reply.send(result);
             }
+            ReviewCompletion::FileContents {
+                thread,
+                generation,
+                epoch,
+                target,
+                result,
+                reply,
+            } => {
+                let result = result.and_then(|contents| {
+                    self.review_member(&thread, &target.key)?;
+                    if self.pr_generation(&thread) != generation
+                        || self.pr_read_epoch(&target.key) != epoch
+                    {
+                        return Err(AppError::new(
+                            "pr_review_stale",
+                            "The pull request association changed. Refresh before continuing.",
+                        ));
+                    }
+                    Ok(contents)
+                });
+                let _ = reply.send(result);
+            }
             ReviewCompletion::CommitFiles {
                 thread,
                 generation,
@@ -499,6 +583,9 @@ impl Owner {
                     }
                     Ok(files)
                 });
+                if let Ok(files) = &result {
+                    self.register_contents_sources(&files.target, &files.files);
+                }
                 let _ = reply.send(result);
             }
             ReviewCompletion::Lifecycle(input, mut result, confirmation, reply) => {
@@ -683,6 +770,7 @@ impl Owner {
                     .filter(|error| error.code == "process_cleanup")
                     .cloned();
                 if let Ok(detail) = result.as_ref() {
+                    self.register_contents_sources(&detail.observation, &detail.files);
                     self.review_work.observed.insert(
                         key.clone(),
                         detail

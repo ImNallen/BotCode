@@ -17,14 +17,21 @@ const prActor = z.object({
 export type PrActor = z.infer<typeof prActor>;
 export const reviewVerdict = z.enum(["comment", "approve", "request_changes"]);
 export const prSide = z.enum(["LEFT", "RIGHT"]);
-export const draftComment = z.object({
-  id: z.string(),
-  revision: z.number().int().nonnegative(),
-  path: z.string(),
-  side: prSide,
-  line: z.number().int().positive(),
-  body: z.string(),
-});
+export const draftComment = z
+  .object({
+    id: z.string(),
+    revision: z.number().int().nonnegative(),
+    path: z.string(),
+    side: prSide,
+    line: z.number().int().positive(),
+    startLine: z.number().int().positive().optional(),
+    body: z.string(),
+  })
+  .refine(
+    (comment) =>
+      comment.startLine === undefined || comment.startLine < comment.line,
+    { message: "A comment range must start before its final line." },
+  );
 export const lifecycleAction = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("merge"),
@@ -119,7 +126,26 @@ export const prOperation = z.object({
   result: prChangeResult,
 });
 export type PrOperation = z.infer<typeof prOperation>;
+export const prFileContentsRequest = z.object({
+  target: prObservation,
+  sourceId: z.uuid(),
+});
+export const prFileContents = z.object({
+  oldContents: z.string(),
+  newContents: z.string(),
+});
+export type PrFileContents = z.infer<typeof prFileContents>;
+export type PrFileContentsRequest = z.infer<typeof prFileContentsRequest>;
 const prFile = z.object({
+  previousPath: z.string().nullable().optional(),
+  contentsSource: z
+    .object({
+      id: z.uuid(),
+      oldOid: prObservation.shape.headOid.nullable(),
+      newOid: prObservation.shape.headOid,
+    })
+    .nullable()
+    .optional(),
   path: z.string(),
   status: z.string(),
   additions: z.number(),
@@ -173,6 +199,14 @@ export const prReviewDetail = z.object({
   findings: z.array(
     z.object({
       finding: reviewFinding,
+      threadLocation: z
+        .object({
+          path: z.string(),
+          side: z.enum(["LEFT", "RIGHT"]),
+          line: z.number().int().positive().nullable(),
+        })
+        .nullable()
+        .optional(),
       outcome: z.string().nullable(),
       canReply: z.boolean(),
       canResolve: z.boolean(),

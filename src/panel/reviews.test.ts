@@ -32,6 +32,7 @@ import {
   prReviewDetail,
   prObservation,
   type PrChangeResult,
+  type PrReviewDetail,
   type PrReviewChange,
 } from "./prReview.ts";
 import {
@@ -849,4 +850,169 @@ it("captures uncertain update continuation identities and explicit unknown-outco
     assert.isTrue(text.includes("Transport lost"));
     assert.isFalse(text.includes("Branch updated."));
   }
+});
+
+it("ports resolved conversation cards with permission-specific controls", async () => {
+  const { PullRequestReviewThreadCard } =
+    await import("./PullRequestReviewThreadCard.tsx");
+  const entry = {
+    outcome: null,
+    finding,
+    canReply: true,
+    canResolve: false,
+    canUnresolve: true,
+  };
+  const html = renderStatic(
+    createElement(PullRequestReviewThreadCard, {
+      entry,
+      detail,
+      disabled: false,
+      threadId: "t",
+    }),
+  );
+  assert.isTrue(html.includes('aria-expanded="false"'));
+  assert.isTrue(html.includes("Resolved"));
+  assert.isTrue(html.includes("Unresolve"));
+  assert.isFalse(html.includes("Check the boundary."));
+  const open = renderStatic(
+    createElement(PullRequestReviewThreadCard, {
+      entry: {
+        ...entry,
+        finding: {
+          ...finding,
+          source: { kind: "thread", resolved: false, outdated: true },
+        },
+        canResolve: false,
+      },
+      detail,
+      disabled: false,
+      threadId: "t",
+    }),
+  );
+  assert.isTrue(open.includes("Check the boundary."));
+  assert.isTrue(open.includes("review-bot"));
+  assert.isTrue(open.includes("outdated"));
+  assert.isTrue(open.includes("View on GitHub"));
+  assert.isTrue(open.includes(">Reply<"));
+  assert.isFalse(open.includes(">Resolve<"));
+});
+
+it("places current thread anchors without remapping left context or historical names", async () => {
+  const { pullRequestCodeFile, conversationAnnotations, isLineInFileDiff } =
+    await import("./pullRequestDiff.ts");
+  const parsed = pullRequestCodeFile({
+    path: "renamed.ts",
+    previousPath: "old.ts",
+    status: "renamed",
+    additions: 1,
+    deletions: 1,
+    patch: "@@ -10,3 +20,3 @@\n keep\n-old\n+new\n end",
+    anchors: [],
+    unavailable: null,
+  });
+  if (parsed.kind !== "diff") throw new Error(parsed.reason);
+  const base = {
+    outcome: null,
+    canReply: true,
+    canResolve: true,
+    canUnresolve: true,
+    finding,
+  };
+  const left = {
+    ...base,
+    threadLocation: { path: "renamed.ts", side: "LEFT", line: 10 },
+  } satisfies PrReviewDetail["findings"][number];
+  const right = {
+    ...base,
+    finding: {
+      ...finding,
+      observation: { ...finding.observation, findingId: "right" },
+    },
+    threadLocation: { path: "renamed.ts", side: "RIGHT", line: 20 },
+  } satisfies PrReviewDetail["findings"][number];
+  const draft = {
+    id: "draft",
+    revision: 0,
+    path: "renamed.ts",
+    side: "LEFT",
+    line: 10,
+    body: "pending",
+  } satisfies import("./prReview.ts").DraftComment;
+  const annotations = conversationAnnotations(
+    [draft],
+    [
+      left,
+      right,
+      { ...left, threadLocation: null },
+      { ...left, threadLocation: { ...left.threadLocation, line: 9 } },
+      { ...left, threadLocation: { ...left.threadLocation, path: "old.ts" } },
+    ],
+    parsed,
+  );
+  assert.equal(annotations.length, 2);
+  assert.equal(annotations[0]?.side, "deletions");
+  assert.equal(annotations[0]?.metadata.threads?.length, 1);
+  assert.equal(annotations[0]?.metadata.ids[0], "draft");
+  assert.equal(annotations[1]?.side, "additions");
+  assert.isFalse(isLineInFileDiff(parsed.fileDiff, "RIGHT", 23));
+  assert.isTrue(isLineInFileDiff(parsed.fileDiff, "LEFT", 12));
+  const changed = conversationAnnotations(
+    [],
+    [
+      {
+        ...left,
+        canReply: !left.canReply,
+        finding: {
+          ...finding,
+          comments: finding.comments.map((comment) => ({
+            ...comment,
+            body: "edited",
+          })),
+        },
+      },
+    ],
+    parsed,
+  );
+  assert.isFalse(
+    JSON.stringify(changed) ===
+      JSON.stringify(conversationAnnotations([], [left], parsed)),
+  );
+});
+
+it("keeps multiline coordinates through failed, uncertain and late-edited review submissions", () => {
+  const store = new ReviewDrafts();
+  const key = draftKey(detail.observation);
+  const id = store.add(key, {
+    path: "range.ts",
+    side: "LEFT",
+    startLine: 4,
+    line: 6,
+  });
+  store.edit(key, id, "First body");
+  const captured = store.start(key, input());
+  store.finish(key, captured, { kind: "refused", message: "Keep" });
+  assert.equal(store.get(key).comments[0]?.startLine, 4);
+  const uncertain = store.start(key, input());
+  store.finish(key, uncertain, { kind: "uncertain", message: "Inspect" });
+  assert.equal(store.get(key).comments[0]?.line, 6);
+  store.acknowledge(key);
+  const retry = store.start(key, input());
+  store.edit(key, id, "Late body");
+  store.finish(key, retry, { kind: "applied", hostId: "review" });
+  assert.deepEqual(
+    store
+      .get(key)
+      .comments.map(({ startLine, line, body }) => ({ startLine, line, body })),
+    [{ startLine: 4, line: 6, body: "Late body" }],
+  );
+  assert.equal(
+    store.get(draftKey({ ...detail.observation, headOid: "b".repeat(40) }))
+      .comments.length,
+    0,
+  );
+  assert.equal(
+    store.older({ ...detail.observation, headOid: "b".repeat(40) })[0]?.[1]
+      .comments[0]?.startLine,
+    4,
+  );
 });
