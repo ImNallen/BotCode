@@ -12,10 +12,12 @@ Bot Code brings your conversations, files, Git diffs, terminals, and browser pre
 
 - Work in a Git repository or a separate worktree, with a conversation for each task.
 - Start without a project when you need a scratch folder.
+- Search saved conversations by title or message text, including history from earlier app sessions.
 - Give Codex context through file mentions, skills, images, and other attachments.
 - Browse and edit files, inspect changes, and run commands in a terminal.
 - Preview a website or local dev server without leaving the conversation.
-- Commit changes, open GitHub pull requests, and work through review feedback.
+- Commit changes, open GitHub pull requests, submit reviews and comments, reply to review conversations, and resolve or reopen them when GitHub permits.
+- Inspect Codex subscription limits, token history, and API-equivalent cost estimates.
 
 Conversations survive restarting the app. You can choose the model, reasoning effort, and permissions for each conversation.
 
