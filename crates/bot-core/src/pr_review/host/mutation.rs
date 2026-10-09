@@ -260,7 +260,7 @@ async fn prepare(
                 "BotSubmitReview",
                 "addPullRequestReview",
                 "AddPullRequestReviewInput",
-                json!({"pullRequestId":input.target.node_id,"commitOID":input.target.head_oid,"event":match verdict {ReviewVerdict::Comment=>"COMMENT",ReviewVerdict::Approve=>"APPROVE",ReviewVerdict::RequestChanges=>"REQUEST_CHANGES"},"body":body,"threads":comments.iter().map(|c|review_thread(c)).collect::<Vec<_>>()}),
+                json!({"pullRequestId":input.target.node_id,"commitOID":input.target.head_oid,"event":match verdict {ReviewVerdict::Comment=>"COMMENT",ReviewVerdict::Approve=>"APPROVE",ReviewVerdict::RequestChanges=>"REQUEST_CHANGES"},"body":body,"threads":comments.iter().map(review_thread).collect::<Vec<_>>()}),
                 "pullRequestReview",
             )
         }
