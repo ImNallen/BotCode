@@ -1,8 +1,15 @@
+// Commit scope toolbar ported from pingdotgg/t3code v0.0.45 PullRequestCodeTab.tsx (MIT).
 // Code tab ported from pingdotgg/t3code 3e6b450 apps/web/src/components/pullRequest/PullRequestCodeTab.tsx
 // and PullRequestReviewAnnotation.tsx (MIT).
 import type { CodeViewItem, SelectedLineRange } from "@pierre/diffs";
 import { CodeView, type CodeViewHandle } from "@pierre/diffs/react";
-import { MessageSquareIcon, Trash2Icon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  MessageSquareOffIcon,
+  MessageSquareIcon,
+  Trash2Icon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -11,7 +18,12 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { Checkbox } from "../ui/checkbox";
+import type { PullRequestFilesViewedView } from "./usePullRequestFilesViewed";
 import { Button } from "../ui/controls";
+import { Menu, MenuItem, MenuRadioItem } from "../ui/menu";
+import { orderedPrCommits, type PrDiffScope } from "./pullRequestScope";
+import { sectionProblemText } from "./prCoverage";
 import { Textarea } from "../ui/textarea";
 import { DiffFileTree } from "./DiffFileTree";
 import {
@@ -29,7 +41,10 @@ import {
 import { hideWhitespaceChanges } from "./hideWhitespace";
 import { DIFF_VIEW_UNSAFE_CSS } from "./surfaceCss";
 import type { PrReviewDetail } from "./prReview";
-import { PullRequestDiffStat } from "./pullRequestPresentation";
+import {
+  PullRequestDiffStat,
+  PullRequestMetaLine,
+} from "./pullRequestPresentation";
 import {
   draftAnnotations,
   lineKey,
@@ -57,10 +72,26 @@ function useDrafts(key: string) {
 
 export function PullRequestCodeTab({
   detail,
+  filesViewed,
+  scope,
+  onScopeChange,
+  files,
+  problems,
+  loading,
+  error,
+  onRetry,
   disabled,
   onViewFiles,
 }: {
   detail: PrReviewDetail;
+  filesViewed: PullRequestFilesViewedView;
+  scope: PrDiffScope;
+  onScopeChange: (scope: PrDiffScope) => void;
+  files: PrReviewDetail["files"];
+  problems: PrReviewDetail["problems"];
+  loading: boolean;
+  error?: string;
+  onRetry: () => void;
   disabled: boolean;
   onViewFiles: () => void;
 }) {
@@ -82,12 +113,20 @@ export function PullRequestCodeTab({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [reveal, setReveal] = useState<{ path: string } | null>(null);
   const viewer = useRef<CodeViewHandle<DraftLine, undefined>>(null);
-  const canComment = !disabled && detail.verdicts.length > 0;
-
-  const codeFiles = useMemo(
-    () => detail.files.map(pullRequestCodeFile),
-    [detail.files],
+  const canComment =
+    scope.kind === "all" && !disabled && detail.verdicts.length > 0;
+  const orderedCommits = useMemo(
+    () => orderedPrCommits(detail.timeline),
+    [detail.timeline],
   );
+  const [visibleCommitCount, setVisibleCommitCount] = useState(25);
+  const selectedCommit =
+    scope.kind === "commit"
+      ? orderedCommits.find((entry) => entry.oid === scope.oid)
+      : undefined;
+  const scopeLabel = selectedCommit?.headline ?? "All commits";
+
+  const codeFiles = useMemo(() => files.map(pullRequestCodeFile), [files]);
   const unavailable = useMemo(
     () =>
       codeFiles.flatMap((entry) =>
@@ -115,7 +154,8 @@ export function PullRequestCodeTab({
     () =>
       diffs.map(({ file, fileDiff }) => {
         const collapsed = !expanded.has(file.path);
-        const annotations = draftAnnotations(comments, file.path);
+        const annotations =
+          scope.kind === "all" ? draftAnnotations(comments, file.path) : [];
         const drafted = annotations
           .map((a) => `${a.side}:${a.lineNumber}:${a.metadata.ids.join(",")}`)
           .join("|");
@@ -126,11 +166,19 @@ export function PullRequestCodeTab({
           annotations,
           collapsed,
           version: hash(
-            `${detail.observation.headOid}:${ignoreWhitespace}:${collapsed}:${drafted}`,
+            `${detail.observation.headOid}:${ignoreWhitespace}:${collapsed}:${filesViewed.isViewed(file.path)}:${filesViewed.isStale(file.path)}:${drafted}`,
           ),
         };
       }),
-    [diffs, expanded, comments, detail.observation.headOid, ignoreWhitespace],
+    [
+      diffs,
+      expanded,
+      comments,
+      detail.observation.headOid,
+      ignoreWhitespace,
+      scope.kind,
+      filesViewed,
+    ],
   );
   const allCollapsed = diffs.every(({ file }) => !expanded.has(file.path));
 
@@ -156,6 +204,7 @@ export function PullRequestCodeTab({
 
   const addComment = useCallback(
     (range: SelectedLineRange, { item }: { item: CodeViewItem<DraftLine> }) => {
+      if (!canComment) return;
       const side = range.endSide ?? range.side;
       const target = side
         ? diffs
@@ -166,18 +215,20 @@ export function PullRequestCodeTab({
       setFocusId(reviewDrafts.add(key, { path: item.id, ...target }));
       requestAnimationFrame(() => viewer.current?.clearSelectedLines());
     },
-    [diffs, key],
+    [diffs, key, canComment],
   );
   const options = useMemo(
     () => ({
       ...diffViewOptions<DraftLine>({ split, wordWrap, theme }),
       unsafeCSS: `${DIFF_VIEW_UNSAFE_CSS}${REPLACE_FILE_COUNTS_CSS}`,
       enableGutterUtility: canComment,
-      onGutterUtilityClick: addComment,
+      onGutterUtilityClick: canComment ? addComment : undefined,
     }),
     [split, wordWrap, theme, canComment, addComment],
   );
 
+  const filesViewedRef = useRef(filesViewed);
+  filesViewedRef.current = filesViewed;
   const unavailableFiles = useMemo(
     () =>
       unavailable.length > 0 ? (
@@ -196,6 +247,36 @@ export function PullRequestCodeTab({
                   deletions={file.deletions}
                   className="shrink-0 font-mono text-2xs"
                 />
+                {filesViewed.enabled ? (
+                  <label
+                    data-viewed-toggle=""
+                    className="flex cursor-pointer select-none items-center gap-1.5 text-2xs text-muted-foreground"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <Checkbox
+                      label={
+                        filesViewed.isStale(file.path) ? "Changed" : "Viewed"
+                      }
+                      checked={filesViewed.isViewed(file.path)}
+                      onCheckedChange={() =>
+                        filesViewedRef.current.setViewed(
+                          file.path,
+                          !filesViewedRef.current.isViewed(file.path),
+                        )
+                      }
+                    />
+                    {filesViewed.isStale(file.path) ? (
+                      <span
+                        className="text-warning-foreground"
+                        title="This file has been pushed to since you marked it viewed."
+                      >
+                        Changed
+                      </span>
+                    ) : (
+                      "Viewed"
+                    )}
+                  </label>
+                ) : null}
               </div>
               <p className="mt-1 text-muted-foreground">
                 {reason}{" "}
@@ -207,7 +288,7 @@ export function PullRequestCodeTab({
           ))}
         </div>
       ) : null,
-    [unavailable, onViewFiles],
+    [unavailable, onViewFiles, filesViewed],
   );
   const renderFooter = useCallback(() => unavailableFiles, [unavailableFiles]);
   // Pierre memoizes each visible file's header and annotation portals on these callbacks, so
@@ -224,6 +305,20 @@ export function PullRequestCodeTab({
       ) : null,
     [togglePath],
   );
+  const setFileViewed = useCallback(
+    (path: string, viewed: boolean) => {
+      filesViewed.setViewed(path, viewed);
+      setExpanded((current) => {
+        const next = new Set(current);
+        if (viewed) next.delete(path);
+        else next.add(path);
+        return next;
+      });
+    },
+    [filesViewed.setViewed],
+  );
+  const setFileViewedRef = useRef(setFileViewed);
+  setFileViewedRef.current = setFileViewed;
   const renderHeaderMetadata = useCallback((item: CodeViewItem<DraftLine>) => {
     if (item.type !== "diff") return null;
     let additions = 0;
@@ -232,12 +327,47 @@ export function PullRequestCodeTab({
       additions += hunk.additionLines;
       deletions += hunk.deletionLines;
     }
-    return (
+    const stat = (
       <PullRequestDiffStat
         additions={additions}
         deletions={deletions}
         className="font-mono text-2xs"
       />
+    );
+    const viewedFiles = filesViewedRef.current;
+    if (!viewedFiles.enabled) return stat;
+    const viewed = viewedFiles.isViewed(item.id);
+    const stale = viewedFiles.isStale(item.id);
+    return (
+      <span className="flex items-center gap-3">
+        {stat}
+        <label
+          data-viewed-toggle=""
+          className="flex cursor-pointer select-none items-center gap-1.5 text-2xs text-muted-foreground"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <Checkbox
+            label={stale ? "Changed" : "Viewed"}
+            checked={viewed}
+            onCheckedChange={() =>
+              setFileViewedRef.current(
+                item.id,
+                !filesViewedRef.current.isViewed(item.id),
+              )
+            }
+          />
+          {stale ? (
+            <span
+              className="text-warning-foreground"
+              title="This file has been pushed to since you marked it viewed."
+            >
+              Changed
+            </span>
+          ) : (
+            "Viewed"
+          )}
+        </label>
+      </span>
     );
   }, []);
   const renderAnnotation = useCallback(
@@ -260,9 +390,106 @@ export function PullRequestCodeTab({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-10 min-h-10 shrink-0 items-center justify-between gap-2 border-b border-border/60 bg-background px-4 text-xs text-muted-foreground">
-        <span className="shrink-0 tabular-nums">
-          {detail.files.length} {detail.files.length === 1 ? "file" : "files"}
-        </span>
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          {orderedCommits.length > 0 ? (
+            <Menu
+              trigger={(props) => (
+                <Button
+                  {...props}
+                  size="xs"
+                  variant="secondary"
+                  className="min-w-0 max-w-64"
+                  aria-label={`Diff scope: ${scopeLabel}`}
+                >
+                  <span className="truncate">{scopeLabel}</span>
+                  <ChevronDownIcon className="size-3.5 shrink-0 opacity-70" />
+                </Button>
+              )}
+            >
+              <MenuRadioItem
+                checked={scope.kind === "all"}
+                onClick={() => onScopeChange({ kind: "all" })}
+              >
+                <span>All commits</span>
+              </MenuRadioItem>
+              {orderedCommits.slice(0, visibleCommitCount).map((entry) => (
+                <MenuRadioItem
+                  key={entry.oid}
+                  checked={scope.kind === "commit" && scope.oid === entry.oid}
+                  onClick={() =>
+                    onScopeChange({ kind: "commit", oid: entry.oid })
+                  }
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="min-w-0 truncate" title={entry.headline}>
+                      {entry.headline}
+                    </span>
+                    <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
+                      {entry.oid.slice(0, 7)}
+                    </span>
+                  </span>
+                </MenuRadioItem>
+              ))}
+              {orderedCommits.length > visibleCommitCount ? (
+                <MenuItem
+                  data-keep-open
+                  onClick={() => setVisibleCommitCount((count) => count + 25)}
+                >
+                  <span className="text-muted-foreground">
+                    Show more ({orderedCommits.length - visibleCommitCount}{" "}
+                    left)
+                  </span>
+                </MenuItem>
+              ) : null}
+            </Menu>
+          ) : null}
+          <PullRequestMetaLine className="shrink-0">
+            <span className="shrink-0 tabular-nums">
+              {files.length} {files.length === 1 ? "file" : "files"}
+            </span>
+            {filesViewed.enabled && files.length > 0 ? (
+              <span className="flex min-w-0 items-center gap-1 tabular-nums">
+                <span className="shrink-0">
+                  {filesViewed.viewedCount} / {files.length}
+                </span>
+                <span className="truncate">viewed</span>
+                {filesViewed.error !== null ? (
+                  <span
+                    className="flex shrink-0 items-center"
+                    title={`The boxes below are whatever was last read, and empty if nothing has been read yet. ${filesViewed.error}`}
+                  >
+                    <TriangleAlertIcon
+                      aria-label="Your ticks could not be read"
+                      className="size-3.5 text-warning-foreground"
+                    />
+                  </span>
+                ) : null}
+                {filesViewed.truncated ? (
+                  <span
+                    className="flex shrink-0 items-center"
+                    title="This change has more files than the host will report ticks for in one read, so the count is short and some boxes below start empty."
+                  >
+                    <TriangleAlertIcon
+                      aria-label="This count covers only part of the change"
+                      className="size-3.5 text-warning-foreground"
+                    />
+                  </span>
+                ) : null}
+              </span>
+            ) : null}
+            {scope.kind === "commit" && detail.verdicts.length > 0 ? (
+              <span
+                className="flex shrink-0 items-center"
+                title="A comment is anchored to the whole change, so switch to All commits to write one."
+              >
+                <MessageSquareOffIcon
+                  aria-label="Line comments are written from the whole change"
+                  className="size-3.5"
+                />
+              </span>
+            ) : null}
+          </PullRequestMetaLine>
+        </div>
         <div className="flex shrink-0 items-center gap-1">
           <WhitespaceToggle
             ignoreWhitespace={ignoreWhitespace}
@@ -287,11 +514,35 @@ export function PullRequestCodeTab({
           ) : null}
         </div>
       </div>
-      {items.length === 0 ? (
+      {problems
+        .filter((problem) => problem.section === "files")
+        .map((problem) => (
+          <p
+            key={problem.section}
+            role="status"
+            className="px-4 py-2 text-xs text-muted-foreground"
+          >
+            {sectionProblemText(problem)}
+          </p>
+        ))}
+      {loading ? (
+        <p role="status" className="px-4 py-5 text-sm text-muted-foreground">
+          Loading file changes...
+        </p>
+      ) : error ? (
+        <div role="alert" className="px-4 py-5 text-sm text-muted-foreground">
+          {error}{" "}
+          <Button size="xs" variant="secondary" onClick={onRetry}>
+            Retry
+          </Button>
+        </div>
+      ) : items.length === 0 ? (
         <div className="min-h-0 flex-1 overflow-y-auto">
           {unavailableFiles ?? (
             <p className="px-4 py-5 text-sm text-muted-foreground">
-              This pull request has no file changes.
+              {scope.kind === "all"
+                ? "This pull request has no file changes."
+                : "This commit has no file changes."}
             </p>
           )}
         </div>
@@ -302,6 +553,7 @@ export function PullRequestCodeTab({
             onClickCapture={(event) => {
               for (const node of event.nativeEvent.composedPath()) {
                 if (!(node instanceof HTMLElement)) continue;
+                if (node.hasAttribute("data-viewed-toggle")) return;
                 if (node instanceof HTMLButtonElement) return;
                 if (node.hasAttribute("data-diffs-header")) {
                   const path = node.querySelector("[data-title]")?.textContent;

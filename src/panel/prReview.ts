@@ -119,6 +119,27 @@ export const prOperation = z.object({
   result: prChangeResult,
 });
 export type PrOperation = z.infer<typeof prOperation>;
+const prFile = z.object({
+  path: z.string(),
+  status: z.string(),
+  additions: z.number(),
+  deletions: z.number(),
+  patch: z.string().nullable(),
+  unavailable: z.string().nullable(),
+  anchors: z.array(
+    z.object({ side: prSide, line: z.number(), text: z.string() }),
+  ),
+});
+export const prCommitFilesRequest = z.object({
+  target: prObservation,
+  commitOid: prObservation.shape.headOid,
+});
+export const prCommitFiles = prCommitFilesRequest.extend({
+  files: z.array(prFile),
+  problems: z.array(prSectionProblem).max(6),
+});
+export type PrCommitFilesRequest = z.infer<typeof prCommitFilesRequest>;
+export type PrCommitFiles = z.infer<typeof prCommitFiles>;
 export const prReviewDetail = z.object({
   capabilities: z.object({
     primary: z.enum([
@@ -165,19 +186,7 @@ export const prReviewDetail = z.object({
       url: z.string().nullable(),
     }),
   ),
-  files: z.array(
-    z.object({
-      path: z.string(),
-      status: z.string(),
-      additions: z.number(),
-      deletions: z.number(),
-      patch: z.string().nullable(),
-      unavailable: z.string().nullable(),
-      anchors: z.array(
-        z.object({ side: prSide, line: z.number(), text: z.string() }),
-      ),
-    }),
-  ),
+  files: z.array(prFile),
   problems: z.array(prSectionProblem).max(6),
   timeline: z.array(
     z.object({
@@ -209,3 +218,20 @@ export type PrReviewChange = {
   target: PrObservation;
   action: PrReviewAction;
 };
+
+// Viewed contracts ported from pingdotgg/t3code v0.0.45 (MIT).
+export const prFileViewedState = z.enum(["viewed", "unviewed", "dismissed"]);
+export type PrFileViewedState = z.infer<typeof prFileViewedState>;
+export const prFilesViewed = z.object({
+  target: prObservation,
+  files: z.array(z.object({ path: z.string(), state: prFileViewedState })),
+  truncated: z.boolean(),
+});
+export type PrFilesViewed = z.infer<typeof prFilesViewed>;
+export const prSetFilesViewed = z.object({
+  target: prObservation,
+  files: z
+    .array(z.object({ path: z.string().min(1).max(4096), viewed: z.boolean() }))
+    .max(100),
+});
+export type PrSetFilesViewed = z.infer<typeof prSetFilesViewed>;

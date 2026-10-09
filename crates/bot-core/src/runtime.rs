@@ -212,6 +212,9 @@ enum Command {
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
     PrRead(ThreadId, PullRequestKey, Reply<PrReviewDetail>),
+    PrCommitFiles(ThreadId, PrCommitFilesRequest, Reply<PrCommitFiles>),
+    PrFilesViewed(ThreadId, PrObservation, Reply<PrFilesViewed>),
+    PrSetFilesViewed(ThreadId, PrSetFilesViewed, Reply<()>),
     PrChange(ThreadId, PrReviewChange, Reply<PrChangeResult>),
     PrReconcile(ThreadId, PullRequestKey, String, Reply<PrChangeResult>),
     PrAcknowledgeUpdate(ThreadId, AcknowledgeUncertainUpdate, Reply<PrChangeResult>),
@@ -853,6 +856,30 @@ impl App {
         key: PullRequestKey,
     ) -> Result<PrReviewDetail> {
         self.call(|reply| Command::PrRead(thread, key, reply)).await
+    }
+    pub async fn read_pull_request_files_viewed(
+        &self,
+        thread: ThreadId,
+        target: PrObservation,
+    ) -> Result<PrFilesViewed> {
+        self.call(|reply| Command::PrFilesViewed(thread, target, reply))
+            .await
+    }
+    pub async fn set_pull_request_files_viewed(
+        &self,
+        thread: ThreadId,
+        input: PrSetFilesViewed,
+    ) -> Result<()> {
+        self.call(|reply| Command::PrSetFilesViewed(thread, input, reply))
+            .await
+    }
+    pub async fn read_pull_request_commit_files(
+        &self,
+        thread: ThreadId,
+        input: PrCommitFilesRequest,
+    ) -> Result<PrCommitFiles> {
+        self.call(|reply| Command::PrCommitFiles(thread, input, reply))
+            .await
     }
     pub async fn change_pull_request(
         &self,
@@ -2262,6 +2289,15 @@ impl Owner {
                 let _ = reply.send(self.checkout(&id, thread));
             }
             Command::PrRead(thread, key, reply) => self.read_review(thread, key, reply),
+            Command::PrFilesViewed(thread, target, reply) => {
+                self.read_files_viewed(thread, target, reply)
+            }
+            Command::PrSetFilesViewed(thread, input, reply) => {
+                self.set_files_viewed(thread, input, reply)
+            }
+            Command::PrCommitFiles(thread, input, reply) => {
+                self.read_commit_files(thread, input, reply)
+            }
             Command::PrOperations(thread, key, reply) => {
                 let result = self.pending_pr_operations(&thread, &key);
                 let _ = reply.send(result);

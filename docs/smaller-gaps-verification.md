@@ -50,3 +50,44 @@ Current checks also pass:
 The Usage baseline now describes token and estimated-cost history, and Usage history is checked off in `smaller-gaps.md`. The remaining five features are outside this verification pass.
 
 Sequence Verifiable Units kept each native check ahead of the next fixture change. Prove It Works required direct observations in the isolated Tauri app before closing the checklist.
+
+## PR commit selection verified
+
+Commit selection passed on October 9, 2026 before Viewed implementation began. The source was confirmed missing in current Bot Code and ported from T3 v0.0.45 at `6c8fed35dded9ff71c5b46807125457acbb76be6`.
+
+`scripts/smaller-gaps-fixture.py prepare-pr-code <directory>` extends the existing disposable GitHub fixture with two commits and distinct whole-PR and commit patches. The native run used `/tmp/bot-pr-code-native-20261009`, its isolated data directory, and a fresh Tauri debug bundle with identifier `dev.bot.code.prcodeverify`. The GitHub peer log records full-SHA commit REST requests. No real GitHub repository or account was used.
+
+Behavioral checks passed. All 544 UI tests and the full core suite pass, including six new commit-read tests. The tests cover exact commit changes, membership pagination, malformed and foreign SHAs, captured identity, account and head races, unlinking during a read, empty commits, unavailable patches, and partial file pages. Static rendering checks keep the picker and comment explanation above loading, failure, and empty states. Logs are `/tmp/bot-commit-ui-tests.log`, `/tmp/bot-commit-core-tests.log`, and `/tmp/bot-commit-build.log`. The native build log is `/tmp/bot-pr-commit-native-build.log`. Independent correctness review found no actionable defect.
+
+Direct native observations passed:
+
+- All commits shows both added files. Each commit shows only its own file. The earlier commit shows the removed calculation line as well as its replacement, proving the diff is the commit's own change.
+- The menu orders headlines newest first and shows seven-character SHAs. A 26-commit roster shows 25 entries and **Show more (1 left)**. That button reveals the last commit without changing scope or closing the menu.
+- Summary and Code navigation retains the selected commit. Commit scope shows the disabled-comment explanation, and clicking its gutter creates no draft.
+- A failed first file read shows an error and **Retry** while the picker remains usable. Returning to All commits restores both files. An omitted files field shows **0 files** and **This commit has no file changes.**
+- Refreshing an empty commit roster returns an obsolete selection to the whole PR and hides the picker. A four-second earlier-commit response does not replace a newer selection.
+- The normal 1100×780 window retains the sidebar, chat, bottom composer, compact header, and readable Code toolbar.
+
+The native observation record is `/tmp/bot-pr-code-native-20261009/evidence/01-commit-picker.txt`. Screenshots were captured through native computer use in the conversation. The baseline now describes the picker and removes it from the matching omission sentence.
+
+
+## PR Viewed markers verified
+
+Viewed markers passed on October 9, 2026 after the commit picker passed its separate gate. The initial source audit confirmed the missing host read, mutation, and Code controls. The port uses T3 v0.0.45's labels, class strings, overlay behavior, and GitHub mark/unmark mutations. `prepare-pr-code` now seeds both fixture files as UNVIEWED.
+
+All 554 UI tests, 477 core tests, build/typecheck, formatting, and Clippy pass. The core suite includes six Viewed tests for literal path variables, mark and unmark batches, paging bounds, unknown states, head/account/identity guards, linked membership, serial writes, read concurrency, and failures. Real React hook tests exercise reopening during an initial in-flight read and failed-write rollback. A retained diff-header handler test checks mark/unmark/mark, and the actual checkbox event test checks cancellation of native label reactivation. Removing each ownership, current-state, or event-boundary fix in memory makes its regression fail. Logs are `/tmp/bot-viewed-final-ui-tests.log`, `/tmp/viewed-core-tests.log`, `/tmp/viewed-clippy.log`, `/tmp/viewed-hook-regression-fault.log`, `/tmp/viewed-toggle-regression-fault.log`, and `/tmp/viewed-checkbox-regression-fault.log`. The final native build log is `/tmp/bot-pr-viewed-final-native-build.log`.
+
+The same disposable repository and isolated `BOT_CODE_DATA_DIR` at `/tmp/bot-pr-code-native-20261009` passed direct Tauri checks:
+
+- Whole-PR progress starts at **0 / 2 viewed**. Marking the expanded calculation file stores VIEWED in the GitHub peer, shows **1 / 2 viewed**, and collapses it. Unmarking stores UNVIEWED, returns to zero, and expands it. Both box and label-text clicks work.
+- The calculation commit counts **1 / 1**, the documentation commit **0 / 1**, and All commits **1 / 2** for the same GitHub state. Commit comments remain disabled. Summary and Code navigation preserve marks.
+- A read failure keeps a previously loaded tick and shows **Your ticks could not be read**. After an app restart, an initial read failure starts with empty boxes. Restoring the read and Refresh reloads the existing GitHub tick, proving host persistence.
+- A refused mutation rolls back its optimistic tick and shows **Could not update viewed files**. A later press can succeed.
+- DISMISSED resets the count and renders an unchecked **Changed** box. Marking it again clears Changed and restores Viewed. A six-page fixture stops after five pages and shows **This count covers only part of the change**.
+- A two-second write followed by an opposite press leaves GitHub and the UI at the latest value. A gated old read held over closing and reopening the PR cannot erase an acknowledged tick when released.
+- An unavailable patch retains its working Viewed checkbox. Mark and unmark update the overall progress. Restoring the patch returns the normal diff.
+- The normal 1100×780 window keeps the neutral shell, left conversation sidebar, centered chat, bottom composer, compact header, and readable right-panel toolbar.
+
+Native verification caught direct checkbox clicks reactivating through their enclosing label in the diff's shadow DOM. The checkbox now cancels that native default before invoking its custom callback. The header also reads current state when clicked, so a retained handler cannot send its earlier value. Both fixes passed behavioral regressions, independent review, a fresh native build, and the box/label recheck. Independent correctness review found no remaining issue. The comment pass removed one test-helper narration line and found no unresolved flags.
+
+The observation record is `/tmp/bot-pr-code-native-20261009/evidence/02-viewed.txt`; the GitHub peer log records the aliased mutations. Native screenshots are in the conversation. The baseline now describes Viewed and removes it from the matching omission sentence.

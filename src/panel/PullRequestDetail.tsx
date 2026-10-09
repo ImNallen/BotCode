@@ -1,6 +1,11 @@
 // Header, tabs and checks status follow pingdotgg/t3code 3e6b450 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx (MIT).
 // Title editing follows pingdotgg/t3code v0.0.45 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx (MIT).
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  currentPrScope,
+  prScopeIdentity,
+  type PrDiffScope,
+} from "./pullRequestScope";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeftIcon,
@@ -49,6 +54,7 @@ import {
 import { PullRequestChecksPopover } from "./PullRequestChecksPopover";
 import { PullRequestCopyableCode } from "./PullRequestCopyableCode";
 import { PullRequestSummary } from "./PullRequestSummary";
+import { usePullRequestFilesViewed } from "./usePullRequestFilesViewed";
 import { PullRequestCodeTab } from "./PullRequestCodeTab";
 import { PullRequestEditButton } from "./PullRequestEditButton";
 
@@ -91,8 +97,45 @@ export function PullRequestDetail({
     refetchOnWindowFocus: false,
   });
   const detail = query.data;
+  const [selectedScope, setScope] = useState<PrDiffScope>({ kind: "all" });
+  const scope = detail
+    ? currentPrScope(selectedScope, detail.timeline)
+    : selectedScope;
+  useEffect(() => {
+    if (scope !== selectedScope) setScope(scope);
+  }, [scope, selectedScope]);
+  const commitQuery = useQuery({
+    queryKey: [
+      "pr-commit-files",
+      handoff.threadId,
+      detail?.observation,
+      scope.kind === "commit" ? scope.oid : "all",
+    ],
+    queryFn: () => {
+      if (!detail || scope.kind !== "commit")
+        throw new Error("Select a current commit first.");
+      return ipc.readPullRequestCommitFiles(handoff.threadId, {
+        target: detail.observation,
+        commitOid: scope.oid,
+      });
+    },
+    enabled: !!detail && scope.kind === "commit" && tab === "code",
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const displayedFiles =
+    scope.kind === "all"
+      ? (detail?.files ?? [])
+      : (commitQuery.data?.files ?? []);
+  const filesViewed = usePullRequestFilesViewed({
+    threadId: handoff.threadId,
+    target: detail?.observation,
+    paths: displayedFiles.map((file) => file.path),
+  });
   const refresh = () => {
     void query.refetch();
+    filesViewed.refresh();
+    if (scope.kind === "commit") void commitQuery.refetch();
   };
   const disabled = query.isFetching || query.isError;
   const lifecycle = usePullRequestLifecycle({
@@ -570,6 +613,11 @@ export function PullRequestDetail({
         detail={detail}
         disabled={disabled}
       />
+      {filesViewed.mutationError ? (
+        <p role="alert" className="p-2 text-xs text-destructive">
+          {filesViewed.mutationError}
+        </p>
+      ) : null}
       {error || query.error ? (
         <p role="alert" className="p-2 text-xs text-destructive">
           {error ?? query.error?.message}{" "}
@@ -634,9 +682,34 @@ export function PullRequestDetail({
             ) : null}
             {tab === "code" ? (
               <PullRequestCodeTab
+                filesViewed={filesViewed}
+                key={prScopeIdentity(detail, scope)}
                 detail={detail}
+                scope={scope}
+                onScopeChange={setScope}
+                files={
+                  scope.kind === "all"
+                    ? detail.files
+                    : (commitQuery.data?.files ?? [])
+                }
+                problems={
+                  scope.kind === "all" ? [] : (commitQuery.data?.problems ?? [])
+                }
+                loading={scope.kind === "commit" && commitQuery.isFetching}
+                error={
+                  scope.kind === "commit" && commitQuery.isError
+                    ? String(commitQuery.error)
+                    : undefined
+                }
+                onRetry={() => void commitQuery.refetch()}
                 disabled={disabled}
-                onViewFiles={() => openSource(`${prUrl(prKey)}/files`)}
+                onViewFiles={() =>
+                  openSource(
+                    scope.kind === "all"
+                      ? `${prUrl(prKey)}/files`
+                      : `${prUrl(prKey)}/commits/${scope.oid}`,
+                  )
+                }
               />
             ) : null}
           </div>

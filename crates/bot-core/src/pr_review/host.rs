@@ -275,16 +275,54 @@ impl Fetch<'_> {
         problems: &mut Vec<PrSectionProblem>,
     ) -> Result<Vec<PrFile>> {
         let (owner, name) = key.repository();
+        self.file_pages(
+            &format!("repos/{owner}/{name}/pulls/{}/files", key.number()),
+            false,
+            problems,
+        )
+        .await
+    }
+    async fn file_pages(
+        &mut self,
+        path: &str,
+        commit: bool,
+        problems: &mut Vec<PrSectionProblem>,
+    ) -> Result<Vec<PrFile>> {
         let mut files = vec![];
         for page in 1..=MAX_PAGES {
-            let endpoint = format!(
-                "repos/{owner}/{name}/pulls/{}/files?per_page=100&page={page}",
-                key.number()
-            );
-            let rows: Vec<FileRow> = serde_json::from_value(
-                self.call(&["api", &endpoint, "--hostname", "github.com"])
-                    .await?,
-            )?;
+            let endpoint = format!("{path}?per_page=100&page={page}");
+            let value = match self
+                .call(&["api", &endpoint, "--hostname", "github.com"])
+                .await
+            {
+                Ok(value) => value,
+                Err(error)
+                    if commit
+                        && page > 1
+                        && error.code != "process_cleanup"
+                        && error.code != "cancelled" =>
+                {
+                    record_problem(
+                        problems,
+                        PrSectionProblem::Failed {
+                            section: PrSection::Files,
+                            message: error.message,
+                        },
+                    );
+                    return Ok(files);
+                }
+                Err(error) => return Err(error),
+            };
+            let rows: Vec<FileRow> = if commit {
+                #[derive(Deserialize)]
+                struct CommitFilesResponse {
+                    #[serde(default)]
+                    files: Vec<FileRow>,
+                }
+                serde_json::from_value::<CommitFilesResponse>(value)?.files
+            } else {
+                serde_json::from_value(value)?
+            };
             let count = rows.len();
             for row in rows {
                 let patch = row.patch.filter(|s| s.len() <= 256 * 1024);
@@ -711,6 +749,205 @@ fn timeline_entry(at: Option<&str>, event: PrTimelineEvent) -> PrTimelineEntry {
         event,
     }
 }
+// GraphQL paging and aliased mutations ported from pingdotgg/t3code v0.0.45 (MIT).
+pub(crate) async fn read_files_viewed(
+    program: &Path,
+    target: &PrObservation,
+    timeout: Duration,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<PrFilesViewed> {
+    target.validate()?;
+    let mut fetch = Fetch {
+        program,
+        deadline: Instant::now() + timeout.min(Duration::from_secs(90)),
+        bytes: 0,
+        calls: 0,
+        section_deadline: None,
+        cancel,
+    };
+    if fetch.meta(&target.key).await?.observation != *target {
+        return Err(viewed_identity_error());
+    }
+    let mut files = vec![];
+    let mut cursor = None;
+    let mut truncated = false;
+    for page in 0..5 {
+        let value = fetch.pr(&target.key, "BotFilesViewed", "id headRefOid files(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{path viewerViewedState}}", cursor.as_deref()).await?;
+        ensure_target(&value, target)?;
+        let connection = &value["files"];
+        if let Some(nodes) = connection["nodes"].as_array() {
+            for node in nodes {
+                if node.is_null() {
+                    continue;
+                }
+                let path = node["path"]
+                    .as_str()
+                    .ok_or_else(|| unavailable("Invalid viewed file path."))?;
+                if path.is_empty() {
+                    continue;
+                }
+                let state = match node["viewerViewedState"]
+                    .as_str()
+                    .ok_or_else(|| unavailable("Missing viewed file state."))?
+                    .trim()
+                    .to_uppercase()
+                    .as_str()
+                {
+                    "VIEWED" => PrFileViewedState::Viewed,
+                    "DISMISSED" => PrFileViewedState::Dismissed,
+                    _ => PrFileViewedState::Unviewed,
+                };
+                files.push(PrFileViewed {
+                    path: path.into(),
+                    state,
+                });
+            }
+        } else if !connection["nodes"].is_null() {
+            return Err(unavailable("Invalid viewed file list."));
+        }
+        let more = connection["pageInfo"]["hasNextPage"]
+            .as_bool()
+            .ok_or_else(|| unavailable("Missing viewed file paging information."))?;
+        if !more {
+            break;
+        }
+        let next = connection["pageInfo"]["endCursor"]
+            .as_str()
+            .filter(|next| !next.is_empty());
+        if page == 4 || next.is_none() || next == cursor.as_deref() {
+            truncated = true;
+            break;
+        }
+        cursor = next.map(str::to_owned);
+    }
+    if fetch.meta(&target.key).await?.observation != *target {
+        return Err(viewed_identity_error());
+    }
+    Ok(PrFilesViewed {
+        target: target.clone(),
+        files,
+        truncated,
+    })
+}
+fn viewed_identity_error() -> AppError {
+    AppError::new(
+        "pr_review_identity",
+        "The PR head or signed-in account changed. Refresh before updating viewed files.",
+    )
+}
+pub(crate) async fn set_files_viewed(
+    program: &Path,
+    input: &PrSetFilesViewed,
+    timeout: Duration,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    input.validate()?;
+    let mut fetch = Fetch {
+        program,
+        deadline: Instant::now() + timeout.min(Duration::from_secs(90)),
+        bytes: 0,
+        calls: 0,
+        section_deadline: None,
+        cancel,
+    };
+    if fetch.meta(&input.target.key).await?.observation != input.target {
+        return Err(viewed_identity_error());
+    }
+    if input.files.is_empty() {
+        return Ok(());
+    }
+    let parameters = (0..input.files.len())
+        .map(|index| format!("$path{index}:String!"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let fields = input.files.iter().enumerate().map(|(index, file)| format!("f{index}:{}(input:{{pullRequestId:$pullRequestId,path:$path{index}}}){{clientMutationId}}", if file.viewed { "markFileAsViewed" } else { "unmarkFileAsViewed" })).collect::<Vec<_>>().join(" ");
+    let query = format!("mutation BotSetFilesViewed($pullRequestId:ID!,{parameters}){{{fields}}}");
+    let mut args = vec![
+        "api".into(),
+        "graphql".into(),
+        "--hostname".into(),
+        "github.com".into(),
+        "-f".into(),
+        format!("query={query}"),
+        "-f".into(),
+        format!("pullRequestId={}", input.target.node_id),
+    ];
+    for (index, file) in input.files.iter().enumerate() {
+        args.extend(["-f".into(), format!("path{index}={}", file.path)]);
+    }
+    let value = fetch
+        .call(&args.iter().map(String::as_str).collect::<Vec<_>>())
+        .await
+        .map_err(|error| {
+            AppError::new(
+                &error.code,
+                format!("Could not update viewed files. {}", error.message),
+            )
+        })?;
+    if (0..input.files.len()).any(|index| !value["data"][format!("f{index}")].is_object()) {
+        return Err(unavailable(
+            "Could not update viewed files. GitHub did not acknowledge the update.",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn read_commit_files(
+    program: &Path,
+    input: &PrCommitFilesRequest,
+    timeout: Duration,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<PrCommitFiles> {
+    input.validate()?;
+    let timeout = timeout.min(Duration::from_secs(90));
+    let deadline = Instant::now() + timeout;
+    let mut fetch = Fetch {
+        program,
+        deadline,
+        bytes: 0,
+        calls: 0,
+        section_deadline: None,
+        cancel,
+    };
+    let initial = fetch.meta(&input.target.key).await?;
+    let identity_error = || {
+        AppError::new(
+            "pr_review_identity",
+            "The PR head or signed-in account changed. Refresh before reviewing.",
+        )
+    };
+    if initial.observation != input.target {
+        return Err(identity_error());
+    }
+    fetch.section_deadline = Some(deadline - (timeout / 4).min(Duration::from_secs(15)));
+    let mut membership_problems = vec![];
+    let commits = fetch
+        .commits(&input.target, &mut membership_problems)
+        .await?;
+    if !commits.iter().any(|entry| matches!(&entry.event, PrTimelineEvent::Commit { oid, .. } if oid.eq_ignore_ascii_case(&input.commit_oid))) {
+        return Err(AppError::new("pr_commit_missing", "This commit could not be established as part of the current pull request. Refresh and select a current commit."));
+    }
+    let (owner, name) = input.target.key.repository();
+    let mut problems = vec![];
+    let files = fetch
+        .file_pages(
+            &format!("repos/{owner}/{name}/commits/{}", input.commit_oid),
+            true,
+            &mut problems,
+        )
+        .await?;
+    fetch.section_deadline = None;
+    if fetch.meta(&input.target.key).await?.observation != input.target {
+        return Err(identity_error());
+    }
+    Ok(PrCommitFiles {
+        target: input.target.clone(),
+        commit_oid: input.commit_oid.clone(),
+        files,
+        problems,
+    })
+}
+
 pub(crate) async fn read(
     program: &Path,
     key: &PullRequestKey,
