@@ -350,20 +350,19 @@ async fn enrich_stack_memberships(
             else {
                 continue;
             };
-            if let (Some(stack), Some(entry)) = (&pr.stack, &pr.stack_entry) {
-                if stack.number > 0
-                    && stack.size > 0
-                    && entry.position > 0
-                    && entry.position <= stack.size
-                    && !stack.base_ref_name.trim().is_empty()
-                {
-                    row.stack = Some(crate::PrStackMembership {
-                        number: stack.number,
-                        size: stack.size,
-                        base: stack.base_ref_name.clone(),
-                        position: entry.position,
-                    });
-                }
+            if let (Some(stack), Some(entry)) = (&pr.stack, &pr.stack_entry)
+                && stack.number > 0
+                && stack.size > 0
+                && entry.position > 0
+                && entry.position <= stack.size
+                && !stack.base_ref_name.trim().is_empty()
+            {
+                row.stack = Some(crate::PrStackMembership {
+                    number: stack.number,
+                    size: stack.size,
+                    base: stack.base_ref_name.clone(),
+                    position: entry.position,
+                });
             }
         }
     }

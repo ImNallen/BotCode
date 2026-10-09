@@ -308,7 +308,7 @@ impl Owner {
             let forward = tokio::spawn(async move {
                 while let Some((operation, reply)) = receiver.recv().await {
                     let progress = super::Completion::StackProgress {
-                        access: access.clone(), generation, operation, reply,
+                        access: access.clone(), generation, operation: Box::new(operation), reply,
                     };
                     if done.send(progress).await.is_err() {
                         break;
@@ -399,7 +399,7 @@ impl Owner {
                 .stack_pending
                 .insert(operation.input.request_id.clone(), operation.clone());
         }
-        let _ = done.reply.send(saved.and_then(|_| match done.error {
+        let _ = done.reply.send(saved.and(match done.error {
             Some(error) => Err(error),
             None => Ok(operation),
         }));

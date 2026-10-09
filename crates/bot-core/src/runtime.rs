@@ -1755,7 +1755,7 @@ enum Completion {
     StackProgress {
         access: PrAccess,
         generation: u64,
-        operation: crate::PrStackOperation,
+        operation: Box<crate::PrStackOperation>,
         reply: Reply<()>,
     },
     Models {

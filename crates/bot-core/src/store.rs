@@ -85,13 +85,13 @@ impl Store {
         Ok(pending)
     }
     pub(crate) fn save_stack_operation(&self, operation: &crate::PrStackOperation) -> Result<()> {
-        if let Some(previous) = self.stack_operation(&operation.input.request_id)? {
-            if previous.input != operation.input {
-                return Err(AppError::new(
-                    "pr_request_conflict",
-                    "This request ID was used for a different stack command.",
-                ));
-            }
+        if let Some(previous) = self.stack_operation(&operation.input.request_id)?
+            && previous.input != operation.input
+        {
+            return Err(AppError::new(
+                "pr_request_conflict",
+                "This request ID was used for a different stack command.",
+            ));
         }
         self.db.execute("INSERT INTO pull_request_stack_operations(request_id,data) VALUES(?1,?2) ON CONFLICT(request_id) DO UPDATE SET data=excluded.data",params![operation.input.request_id,serde_json::to_string(operation)?])?;
         Ok(())
