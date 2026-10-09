@@ -160,6 +160,40 @@ pub async fn read_pull_request(
     app.read_pull_request(thread_id, key).await
 }
 #[tauri::command]
+pub async fn change_pull_request_stack(
+    app: State<'_, App>,
+    thread_id: PrAccess,
+    input: PrStackChange,
+) -> Result<PrStackOperation> {
+    app.change_pull_request_stack(thread_id, input).await
+}
+#[tauri::command]
+pub async fn pull_request_stack_operations(
+    app: State<'_, App>,
+    thread_id: PrAccess,
+    key: PullRequestKey,
+) -> Result<Vec<PrStackOperation>> {
+    app.pull_request_stack_operations(thread_id, key).await
+}
+#[tauri::command]
+pub async fn reconcile_pull_request_stack(
+    app: State<'_, App>,
+    thread_id: PrAccess,
+    key: PullRequestKey,
+    request_id: String,
+) -> Result<PrStackOperation> {
+    app.reconcile_pull_request_stack(thread_id, key, request_id)
+        .await
+}
+#[tauri::command]
+pub async fn read_pull_request_stack(
+    app: State<'_, App>,
+    thread_id: PrAccess,
+    key: PullRequestKey,
+) -> Result<Option<PrStack>> {
+    app.read_pull_request_stack(thread_id, key).await
+}
+#[tauri::command]
 pub async fn read_pull_request_candidates(
     app: State<'_, App>,
     thread_id: PrAccess,

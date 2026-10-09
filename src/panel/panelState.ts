@@ -123,7 +123,15 @@ export function eligibleSurfaces(
       case "pull_requests":
         return links !== undefined;
       case "pull_request":
-        return links?.some((link) => link.pr.key === surface.key) ?? false;
+        return (
+          links?.some(
+            (link) =>
+              link.pr.key
+                .slice(0, link.pr.key.lastIndexOf("/"))
+                .toLowerCase() ===
+              surface.key.slice(0, surface.key.lastIndexOf("/")).toLowerCase(),
+          ) ?? false
+        );
       case "terminal":
       case "preview":
         return true;

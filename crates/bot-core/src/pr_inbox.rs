@@ -2,7 +2,10 @@
 use crate::{PullRequestKey, domain::*, pull_requests::repository, vcs::Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +66,8 @@ pub struct PrInboxEntry {
     pub review_decision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checks_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<crate::PrStackMembership>,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -180,6 +185,7 @@ pub(crate) async fn list(
     if let Some(cursor) = &cursor_arg {
         args.extend(["-f", cursor]);
     }
+    let deadline = Instant::now() + timeout;
     let value = call(program, &args, timeout).await?;
     if value.get("errors").is_some() {
         return Err(AppError::new(
@@ -256,5 +262,109 @@ pub(crate) async fn list(
         }
         entries.push(serde_json::from_value(entry)?);
     }
+    if let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        enrich_stack_memberships(program, repository, &mut entries, remaining).await;
+    }
     Ok((entries, next))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawStackMembership {
+    number: u64,
+    size: usize,
+    base_ref_name: String,
+}
+#[derive(Deserialize)]
+struct RawStackEntry {
+    position: usize,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMembershipPullRequest {
+    stack: Option<RawStackMembership>,
+    stack_entry: Option<RawStackEntry>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMembershipRepository {
+    pull_request: Option<RawMembershipPullRequest>,
+}
+
+async fn enrich_stack_memberships(
+    program: &Path,
+    repository: &str,
+    entries: &mut [PrInboxEntry],
+    timeout: Duration,
+) {
+    let Some((owner, name)) = repository.split_once('/') else {
+        return;
+    };
+    if [owner, name].iter().any(|part| {
+        part.is_empty()
+            || !part
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+    }) {
+        return;
+    }
+    let deadline = Instant::now() + timeout;
+    for chunk in entries.chunks_mut(25) {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        let selections = chunk.iter().enumerate().map(|(index, row)| format!(
+            "  s{index}: repository(owner: \"{owner}\", name: \"{name}\") {{ pullRequest(number: {}) {{ stack {{ number size baseRefName }} stackEntry {{ position }} }} }}", row.number
+        )).collect::<Vec<_>>().join("\n");
+        let query = format!("query PullRequestStackMemberships {{\n{selections}\n}}");
+        let argument = format!("query={query}");
+        let Ok(value) = call(
+            program,
+            &[
+                "api",
+                "graphql",
+                "--hostname",
+                "github.com",
+                "-f",
+                &argument,
+            ],
+            remaining,
+        )
+        .await
+        else {
+            continue;
+        };
+        if value.get("errors").is_some() {
+            continue;
+        }
+        let Ok(data) = serde_json::from_value::<
+            std::collections::BTreeMap<String, Option<RawMembershipRepository>>,
+        >(value["data"].clone()) else {
+            continue;
+        };
+        for (index, row) in chunk.iter_mut().enumerate() {
+            let Some(pr) = data
+                .get(&format!("s{index}"))
+                .and_then(Option::as_ref)
+                .and_then(|repo| repo.pull_request.as_ref())
+            else {
+                continue;
+            };
+            if let (Some(stack), Some(entry)) = (&pr.stack, &pr.stack_entry) {
+                if stack.number > 0
+                    && stack.size > 0
+                    && entry.position > 0
+                    && entry.position <= stack.size
+                    && !stack.base_ref_name.trim().is_empty()
+                {
+                    row.stack = Some(crate::PrStackMembership {
+                        number: stack.number,
+                        size: stack.size,
+                        base: stack.base_ref_name.clone(),
+                        position: entry.position,
+                    });
+                }
+            }
+        }
+    }
 }

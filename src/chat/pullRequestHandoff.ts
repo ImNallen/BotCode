@@ -3,6 +3,7 @@ import type {
   PreparePullRequestInput,
   Thread,
 } from "../ipc";
+import type { PrAccess } from "../panel/prInbox";
 import type { PrObservation } from "../panel/prReview";
 import { findingPrompt, type ReviewDraftRequest } from "../panel/reviews";
 import {
@@ -32,15 +33,18 @@ export class PullRequestPreparation {
   readonly target: PrObservation;
   readonly request: ReviewDraftRequest | null;
   readonly source: ComposerInput;
+  private readonly access: PrAccess | undefined;
 
   constructor(
     target: PrObservation,
     request: ReviewDraftRequest | null,
     source: ComposerInput,
+    access?: PrAccess,
   ) {
     this.target = { ...target };
     this.request = request ? structuredClone(request) : null;
     this.source = source;
+    this.access = typeof access === "object" ? { ...access } : access;
   }
 
   get thread() {
@@ -80,7 +84,7 @@ export class PullRequestPreparation {
           "The conversation changed. Choose the pull request action again.",
         );
       const thread = await prepare({
-        sourceThreadId,
+        sourceThreadId: this.access ?? sourceThreadId,
         target: this.target,
         destination,
       });

@@ -206,8 +206,9 @@ describe("linked review draft handoff", () => {
   });
   it("renders remote summary and checks through the real query cache without checkout context", () => {
     const client = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     });
+    client.setQueryData(["pr-stack", "thread", detail.observation.key], null);
     client.setQueryData(
       ["pr-detail", "thread", detail.observation.key],
       detail,
@@ -1017,4 +1018,99 @@ it("keeps multiline coordinates through failed, uncertain and late-edited review
       .comments[0]?.startLine,
     4,
   );
+});
+it("renders native stack position for workspace sibling access and hides individual merge controls", () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  });
+  const access = { workspaceId: "workspace" };
+  client.setQueryData(["pr-detail", access, detail.observation.key], detail);
+  client.setQueryData(["pr-stack", access, detail.observation.key], {
+    id: "50",
+    number: 50,
+    url: "https://github.com/test/repo/stacks/50",
+    base: "main",
+    capabilities: { mergeMethods: [], canRebase: false },
+    layers: [
+      { number: 6, headBranch: "bottom", state: "open" },
+      { number: 7, headBranch: "feature", state: "open" },
+      { number: 8, headBranch: "top", state: "open" },
+    ],
+  });
+  const html = renderToStaticMarkup(
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(PullRequestDetail, {
+        prKey: detail.observation.key,
+        threadId: "source-thread",
+        access,
+        workspaceId: "workspace",
+        onBack() {},
+        onAskCodex() {},
+        canAskCodex: true,
+        onSelectPullRequest() {},
+      }),
+    ),
+  );
+  assert.isTrue(html.includes('aria-label="Stack 50, layer 2 of 3"'));
+  assert.isTrue(html.includes("Calculation update"));
+  assert.isFalse(html.includes("Squash and merge"));
+  assert.isFalse(html.includes("Auto-merge (squash and merge)"));
+  client.clear();
+});
+it("keeps checkout disabled while a stack receipt is unresolved after fresh stack absence", () => {
+  for (const pending of [true, false]) {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    const access = { workspaceId: "workspace" };
+    client.setQueryData(["pr-detail", access, detail.observation.key], detail);
+    client.setQueryData(["pr-stack", access, detail.observation.key], null);
+    client.setQueryData(
+      ["pr-stack-operations", access, detail.observation.key],
+      pending
+        ? [
+            {
+              input: {
+                requestId: "queued-stack",
+                target: detail.observation,
+                stackNumber: 50,
+                expectedStackHeads: [
+                  { number: 7, headSha: detail.observation.headOid },
+                ],
+                action: { kind: "merge", method: "squash" },
+              },
+              affectedKeys: [detail.observation.key],
+              progress: [],
+              dispatchedLayer: 7,
+              mergeUuid: null,
+              result: { kind: "accepted", outcome: "enqueued" },
+            },
+          ]
+        : [],
+    );
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(PullRequestDetail, {
+          prKey: detail.observation.key,
+          threadId: access,
+          workspaceId: "workspace",
+          onBack() {},
+          onAskCodex() {},
+          onCheckout() {},
+          canAskCodex: false,
+        }),
+      ),
+    );
+    const checkout = html.match(
+      /<button[^>]*aria-label="Check out"[^>]*>/,
+    )?.[0];
+    assert.isTrue(typeof checkout === "string");
+    assert.equal(checkout?.includes("disabled="), pending);
+    assert.equal(html.includes("Check stack operation"), pending);
+    client.clear();
+  }
 });

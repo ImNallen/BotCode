@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { ipc, type Thread } from "../ipc";
+import { stackLayerAccess } from "../panel/pullRequestStack";
+import { pullRequestKey } from "../panel/pullRequests";
 import { prObservation } from "../panel/prReview";
 import { findingPrompt, type ReviewDraftRequest } from "../panel/reviews";
 import { activateComposer, type ComposerInput } from "./composerAttachments";
@@ -131,6 +133,7 @@ it("preserves source before preparing, captures exact identity, and retains one 
     ) => {
       assert.equal(saves, 1);
       assert.deepEqual(input.target, target);
+      assert.equal(input.sourceThreadId, sourceId);
       creations++;
       dispatched.resolve();
       return completion.promise;
@@ -355,6 +358,84 @@ it("passes registered paths and captured PR observations through native IPC", as
         destination: { kind: "existing", path: "/registered/detached" },
       },
     });
+  } finally {
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+it("prepares sibling checkout and repair with captured workspace access while saving the original conversation draft", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { crypto: globalThis.crypto },
+  });
+  const preserved = structuredClone(source);
+  const calls: { command: string; args: unknown }[] = [];
+  mockIPC((command, args) => {
+    calls.push({ command, args });
+    return destination;
+  });
+  try {
+    for (const repair of [null, request]) {
+      const access = stackLayerAccess({
+        key: target.key,
+        linkedKeys: [pullRequestKey.parse("github.com/test/repo/6")],
+        threadId: sourceId,
+        workspaceId,
+      });
+      const preparation = new PullRequestPreparation(
+        target,
+        repair,
+        source,
+        access,
+      );
+      if (typeof access === "object")
+        access.workspaceId = "later-unrelated-project";
+      let persisted: ComposerInput | undefined;
+      assert.deepEqual(
+        await preparation.prepare({
+          destination: { kind: "dedicated" },
+          current: () => source,
+          persist: async (input) => {
+            persisted = input;
+          },
+          prepare: ipc.preparePullRequestThread,
+        }),
+        destination,
+      );
+      assert.deepEqual(persisted, preserved);
+      assert.equal(persisted?.threadId, sourceId);
+      assert.equal(
+        persisted?.scopeKey,
+        composerDraftKey(workspaceId, sourceId),
+      );
+      assert.equal(preparation.source.threadId, sourceId);
+      assert.equal(preparation.request?.threadId, repair?.threadId);
+    }
+    assert.deepEqual(
+      calls,
+      [null, request].map(() => ({
+        command: "prepare_pull_request_thread",
+        args: {
+          input: {
+            sourceThreadId: { workspaceId },
+            target,
+            destination: { kind: "dedicated" },
+          },
+        },
+      })),
+    );
+    assert.deepEqual(source, preserved);
+    const linked = stackLayerAccess({
+      key: target.key,
+      linkedKeys: [target.key],
+      threadId: sourceId,
+      workspaceId,
+    });
+    assert.equal(linked, sourceId);
   } finally {
     clearMocks();
     if (previousWindow)

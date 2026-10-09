@@ -13,6 +13,7 @@ import type { ReviewDraftRequest } from "./reviews";
 export type ReviewHandoff = {
   workspaceId: string;
   threadId: PrAccess;
+  access?: PrAccess;
   canAskCodex: boolean;
   onAskCodex: (request: ReviewDraftRequest) => void;
   onCheckout?: (target: PrObservation) => void;
@@ -106,6 +107,7 @@ function Finding({
   refresh,
   workspaceId,
   threadId,
+  access = threadId,
   canAskCodex,
   onAskCodex,
 }: {
@@ -127,7 +129,7 @@ function Finding({
   } = usePullRequestConversation({
     target: detail.observation,
     findingId: entry.finding.observation.findingId,
-    threadId,
+    threadId: access,
     refresh,
   });
   const finding = entry.finding;
@@ -147,7 +149,7 @@ function Finding({
           setSaving(true);
           setError(undefined);
           void ipc
-            .setReviewDisposition(threadId, detail.observation.key, {
+            .setReviewDisposition(access, detail.observation.key, {
               observation: finding.observation,
               expected: finding.saved,
               choice,
@@ -190,7 +192,7 @@ function Finding({
             }
             canReact={detail.capabilities.react && !disabled}
             subjectId={subjectId}
-            access={threadId}
+            access={access}
             target={detail.observation}
             onRefresh={refresh}
           />

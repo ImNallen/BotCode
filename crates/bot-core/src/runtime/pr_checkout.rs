@@ -30,6 +30,12 @@ impl Owner {
     ) {
         let admitted = (|| {
             let workspace = self.review_member(&input.source_thread_id, &input.target.key)?;
+            if self.stack_pending_key(&input.target.key) {
+                return Err(AppError::new(
+                    "pr_pending",
+                    "Reconcile the pending stack operation before starting another.",
+                ));
+            }
             if self.review_work.changing.contains(&input.target.key)
                 || self.review_work.reads.contains_key(&input.target.key)
                 || self.review_work.active.len() >= 4

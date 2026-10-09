@@ -49,10 +49,11 @@ it("opens one tab per pull request and reuses an open one", () => {
   assert.deepEqual(openSurface(both, first), { ...both, active: 0 });
 });
 
-it("hides pull request tabs the conversation does not link", () => {
+it("keeps opened repository PR tabs until the conversation loses its last repository link", () => {
   const state = openSurface(emptyPanel, pullRequestSurface(links(24)));
   assert.deepEqual(eligibleSurfaces(state, true, links(24, 25)), state);
-  assert.deepEqual(eligibleSurfaces(state, true, links(25)), emptyPanel);
+  assert.deepEqual(eligibleSurfaces(state, true, links(25)), state);
+  assert.deepEqual(eligibleSurfaces(state, true, links()), emptyPanel);
   assert.deepEqual(eligibleSurfaces(state, true, undefined), emptyPanel);
 });
 

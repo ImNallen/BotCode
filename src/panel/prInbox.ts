@@ -1,6 +1,7 @@
 // List contracts adapted from T3 Code v0.0.45 packages/contracts/src/pullRequest.ts (MIT).
 import { z } from "zod";
 import { pullRequestKey } from "./pullRequests";
+import { pullRequestStackMembership } from "./pullRequestStack";
 export type PrAccess = string | { workspaceId: string };
 export const pullRequestListEntry = z.object({
   key: pullRequestKey,
@@ -30,6 +31,7 @@ export const pullRequestListEntry = z.object({
     .enum(["approved", "changes-requested", "review-required"])
     .optional(),
   checksState: z.enum(["passing", "failing", "pending"]).optional(),
+  stack: pullRequestStackMembership.optional(),
 });
 export type PullRequestListEntry = z.infer<typeof pullRequestListEntry>;
 export type PullRequestActor = NonNullable<PullRequestListEntry["author"]>;

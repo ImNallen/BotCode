@@ -26,6 +26,9 @@ export function Menu({
   contentClassName,
   popupKind = { kind: "menu" },
   onKeyDownCapture,
+  onKeyDown,
+  onClick,
+  initialFocus = "first",
   open: controlledOpen,
   onOpenChange,
   anchor: positionAnchor,
@@ -47,6 +50,9 @@ export function Menu({
   contentClassName?: string;
   popupKind?: { kind: "menu" } | { kind: "dialog"; label: string };
   onKeyDownCapture?: (event: KeyboardEvent<HTMLDivElement>) => void;
+  onKeyDown?: ComponentProps<"div">["onKeyDown"];
+  onClick?: ComponentProps<"div">["onClick"];
+  initialFocus?: "first" | "last";
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   anchor?: RefObject<HTMLElement | null>;
@@ -143,13 +149,26 @@ export function Menu({
   }, [open, side, align, sideOffset, positionAnchor, point]);
   useEffect(() => {
     if (!open) return;
-    const first = popup.current?.querySelector<HTMLElement>(
-      popupKind.kind === "dialog"
-        ? '[role="combobox"]:not([disabled])'
-        : '[role="menuitem"]:not([disabled]),[role="menuitemradio"]:not([disabled])',
-    );
-    (first ?? popup.current)?.focus();
-  }, [open, popupKind.kind]);
+    const focusInitialItem = () => {
+      const items = popup.current?.querySelectorAll<HTMLElement>(
+        popupKind.kind === "dialog"
+          ? '[role="combobox"]:not([disabled])'
+          : '[role="menuitem"]:not([disabled]),[role="menuitemradio"]:not([disabled])',
+      );
+      const item =
+        initialFocus === "last"
+          ? items?.item(items.length - 1)
+          : items?.item(0);
+      (item ?? popup.current)?.focus();
+    };
+    focusInitialItem();
+    if (popupKind.kind !== "menu" || !popup.current) return;
+    const observer = new MutationObserver(() => {
+      if (document.activeElement === popup.current) focusInitialItem();
+    });
+    observer.observe(popup.current, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [open, popupKind.kind, initialFocus]);
   const focusReturn = useRef<"open" | "pending" | "idle">(
     open ? "open" : "idle",
   );
@@ -245,7 +264,10 @@ export function Menu({
                     next = (index + 1) % items.length;
                     break;
                   case "ArrowUp":
-                    next = (index - 1 + items.length) % items.length;
+                    next =
+                      index < 0
+                        ? items.length - 1
+                        : (index - 1 + items.length) % items.length;
                     break;
                   case "Home":
                     next = 0;
@@ -259,7 +281,9 @@ export function Menu({
                 event.preventDefault();
                 items[next]?.focus();
               }}
+              onKeyDown={onKeyDown}
               onClick={(event) => {
+                onClick?.(event);
                 if (!(event.target instanceof Element)) return;
                 const item = event.target.closest(
                   "[role=menuitem],[role=menuitemradio]",
@@ -313,6 +337,19 @@ export function MenuItem({
   );
 }
 
+// Group label classes copied from pingdotgg/t3code v0.0.45 components/ui/menu.tsx (MIT).
+export function MenuGroupLabel({ className, ...props }: ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="menu-label"
+      className={cn(
+        "px-2 py-1.5 font-medium text-muted-foreground text-xs data-inset:ps-9 sm:data-inset:ps-8",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
 export function MenuSeparator() {
   return <div role="separator" className="mx-2 my-1 h-px bg-border" />;
 }

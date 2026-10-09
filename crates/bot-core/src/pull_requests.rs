@@ -127,6 +127,8 @@ pub struct CachedPr {
     pub snapshot: Option<PrSnapshot>,
     pub revision: u64,
     pub freshness: PrFreshness,
+    #[serde(default)]
+    pub stack: Option<crate::SavedPrStack>,
 }
 impl CachedPr {
     pub fn unknown(key: PullRequestKey) -> Self {
@@ -135,6 +137,7 @@ impl CachedPr {
             snapshot: None,
             revision: 0,
             freshness: PrFreshness::NeverLoaded,
+            stack: None,
         }
     }
 }

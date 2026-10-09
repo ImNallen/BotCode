@@ -72,6 +72,7 @@ import {
   pullRequestSurface,
   reconcileTerminalSurfaces,
 } from "../panel/panelState";
+import { stackLayerAccess } from "../panel/pullRequestStack";
 import type { ThreadPrSummary } from "../panel/pullRequests";
 import type { PrObservation } from "../panel/prReview";
 import { PullRequestCheckoutDialog } from "./PullRequestCheckoutDialog";
@@ -1100,6 +1101,12 @@ export function ChatView({
         { ...target },
         request,
         composerRef.current,
+        stackLayerAccess({
+          key: target.key,
+          linkedKeys: pullRequests.map((link) => link.pr.key),
+          threadId,
+          workspaceId,
+        }),
       ),
     });
     void worktrees.refetch();

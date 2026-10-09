@@ -41,6 +41,8 @@ import {
   PullRequestSortMenu,
 } from "./PullRequestInboxFilters";
 import { PullRequestDetail } from "./PullRequestDetail";
+import { PullRequestStackPopover } from "./PullRequestStackPopover";
+import type { PullRequestStackReference } from "./pullRequestStack";
 import {
   PullRequestActorLabel,
   PullRequestDiffStat,
@@ -80,11 +82,13 @@ export function InboxRow({
   selected,
   search,
   onSelect,
+  onSelectLayer,
 }: {
   entry: PullRequestListEntry;
   selected: boolean;
   search: string;
   onSelect: () => void;
+  onSelectLayer?: (target: PullRequestStackReference) => void;
 }) {
   const checks = entry.checksState
     ? pullRequestChecksStatePresentation(entry.checksState)
@@ -137,6 +141,15 @@ export function InboxRow({
             />
           </span>
           <span className="ml-auto flex shrink-0 items-center gap-1.5 text-2xs">
+            {entry.stack && onSelectLayer ? (
+              <PullRequestStackPopover
+                workspaceId={entry.projectId}
+                access={{ workspaceId: entry.projectId }}
+                reference={{ key: entry.key, number: entry.number }}
+                membership={entry.stack}
+                onSelect={onSelectLayer}
+              />
+            ) : null}
             <PullRequestDiffStat
               additions={entry.additions}
               deletions={entry.deletions}
@@ -421,6 +434,13 @@ export function PullRequestInboxPage() {
                   selected={selected?.key === entry.key}
                   search={typedParsed.text}
                   onSelect={() => setSelected(entry)}
+                  onSelectLayer={(target) =>
+                    setSelected({
+                      projectId: entry.projectId,
+                      repository: entry.repository,
+                      number: target.number,
+                    })
+                  }
                 />
               ))}
             </div>
@@ -621,6 +641,13 @@ export function PullRequestInboxPage() {
           <PullRequestDetail
             key={selected.key}
             prKey={selected.key}
+            onSelectPullRequest={(key) =>
+              setSelected({
+                projectId: selected.projectId,
+                repository: key.split("/").slice(1, 3).join("/"),
+                number: Number(key.split("/").at(-1)),
+              })
+            }
             workspaceId={selected.projectId}
             threadId={access}
             canAskCodex={false}

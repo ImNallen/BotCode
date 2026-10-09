@@ -125,6 +125,31 @@ impl PrWork {
     }
 }
 impl Owner {
+    pub(super) fn save_pr_stack(
+        &mut self,
+        key: &PullRequestKey,
+        stack: Option<&crate::PrStack>,
+    ) -> Result<()> {
+        let mut record = self
+            .prs
+            .records
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| CachedPr::unknown(key.clone()));
+        let saved = stack.map(|stack| stack.saved(now_ms()));
+        if record.stack != saved {
+            record.stack = saved;
+            record.revision += 1;
+            self.store.save_pull_request(&record, None)?;
+            self.prs.records.insert(key.clone(), record);
+            if let Some(threads) = self.prs.threads_by_pr.get(key) {
+                for id in threads {
+                    self.pr_hint(id);
+                }
+            }
+        }
+        Ok(())
+    }
     pub(super) fn pr_read_epoch(&self, key: &PullRequestKey) -> u64 {
         self.prs.read_epochs.get(key).copied().unwrap_or(0)
     }

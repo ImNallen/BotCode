@@ -1,5 +1,15 @@
 // Header, tabs and checks status follow pingdotgg/t3code 3e6b450 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx (MIT).
 // Title editing follows pingdotgg/t3code v0.0.45 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx (MIT).
+import { PullRequestStackRecovery } from "./PullRequestStackRecovery";
+import { PullRequestStackMenu } from "./PullRequestStackMenu";
+import { usePullRequestStack } from "./usePullRequestStack";
+import { PullRequestMergeMethods } from "./PullRequestMergeMethods";
+import {
+  readPullRequestMergeMethod,
+  savePullRequestMergeMethod,
+  resolvePullRequestMergeMethod,
+  showsPullRequestMergeMethods,
+} from "./pullRequestMergeMethod";
 import { useCallback, useEffect, useState } from "react";
 import {
   currentPrScope,
@@ -42,7 +52,7 @@ import {
   primaryControl,
   type HeaderControls,
 } from "./prLifecycle";
-import type { LifecycleAction, PrReviewAction } from "./prReview";
+import type { LifecycleAction, MergeMethod, PrReviewAction } from "./prReview";
 import { checksRollup, prChecks, summarizeChecks } from "./prChecks";
 import {
   PullRequestActorLabel,
@@ -87,17 +97,38 @@ export function PullRequestDetail({
   prKey,
   onBack,
   onActed,
+  onSelectPullRequest,
   ...handoff
 }: {
   prKey: PullRequestKey;
   onBack: () => void;
   onActed?: () => void;
+  onSelectPullRequest?: (key: PullRequestKey) => void;
 } & ReviewHandoff) {
+  const access = handoff.access ?? handoff.threadId;
+  const stackQuery = usePullRequestStack({
+    workspaceId: handoff.workspaceId,
+    access,
+    reference: { key: prKey, number: Number(prKey.split("/").at(-1)) },
+  });
+  const stackOperations = useQuery({
+    queryKey: ["pr-stack-operations", access, prKey],
+    queryFn: () => ipc.pullRequestStackOperations(access, prKey),
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
   const [tab, setTab] = useState<(typeof TABS)[number]["value"]>("summary");
   const [error, setError] = useState<string>();
+  const [lastSelectedMergeMethod, setLastSelectedMergeMethod] = useState(
+    readPullRequestMergeMethod,
+  );
+  const [mergeMethodSelection, setMergeMethodSelection] = useState<{
+    pullRequestKey: PullRequestKey;
+    method: MergeMethod;
+  } | null>(null);
   const query = useQuery({
-    queryKey: ["pr-detail", handoff.threadId, prKey],
-    queryFn: () => ipc.readPullRequest(handoff.threadId, prKey),
+    queryKey: ["pr-detail", access, prKey],
+    queryFn: () => ipc.readPullRequest(access, prKey),
     retry: false,
     refetchOnWindowFocus: false,
   });
@@ -107,12 +138,12 @@ export function PullRequestDetail({
     (sourceId: string) => {
       if (!observation)
         return Promise.reject(new Error("Refresh this pull request first."));
-      return ipc.readPullRequestFileContents(handoff.threadId, {
+      return ipc.readPullRequestFileContents(access, {
         target: observation,
         sourceId,
       });
     },
-    [handoff.threadId, observation],
+    [access, observation],
   );
   const [selectedScope, setScope] = useState<PrDiffScope>({ kind: "all" });
   const scope = detail
@@ -124,14 +155,14 @@ export function PullRequestDetail({
   const commitQuery = useQuery({
     queryKey: [
       "pr-commit-files",
-      handoff.threadId,
+      access,
       detail?.observation,
       scope.kind === "commit" ? scope.oid : "all",
     ],
     queryFn: () => {
       if (!detail || scope.kind !== "commit")
         throw new Error("Select a current commit first.");
-      return ipc.readPullRequestCommitFiles(handoff.threadId, {
+      return ipc.readPullRequestCommitFiles(access, {
         target: detail.observation,
         commitOid: scope.oid,
       });
@@ -145,19 +176,22 @@ export function PullRequestDetail({
       ? (detail?.files ?? [])
       : (commitQuery.data?.files ?? []);
   const filesViewed = usePullRequestFilesViewed({
-    threadId: handoff.threadId,
+    threadId: access,
     target: detail?.observation,
     paths: displayedFiles.map((file) => file.path),
   });
   const refresh = () => {
     void query.refetch();
+    void stackQuery.refetch();
+    void stackOperations.refetch();
     onActed?.();
     filesViewed.refresh();
     if (scope.kind === "commit") void commitQuery.refetch();
   };
-  const disabled = query.isFetching || query.isError;
+  const disabled =
+    query.isFetching || query.isError || !!stackOperations.data?.length;
   const lifecycle = usePullRequestLifecycle({
-    threadId: handoff.threadId,
+    threadId: access,
     prKey,
     detail,
     disabled,
@@ -173,7 +207,7 @@ export function PullRequestDetail({
   ): Promise<string | undefined> => {
     if (!detail) return "The pull request is not loaded.";
     try {
-      const result = await ipc.changePullRequest(handoff.threadId, {
+      const result = await ipc.changePullRequest(access, {
         requestId: crypto.randomUUID(),
         target: detail.observation,
         action,
@@ -260,10 +294,48 @@ export function PullRequestDetail({
   const statePresentation = detail
     ? pullRequestState(detail.snapshot.lifecycle)
     : null;
-  const { primary, armedBadge }: HeaderControls = detail
-    ? primaryControl(detail)
+  const stackBlocksMerge = !stackQuery.isFresh || !!stackQuery.data;
+  const allowedMergeMethods = stackQuery.data?.capabilities.mergeMethods ?? [];
+  const selectedMergeMethod = resolvePullRequestMergeMethod(
+    allowedMergeMethods,
+    mergeMethodSelection?.pullRequestKey === prKey
+      ? mergeMethodSelection.method
+      : null,
+    lastSelectedMergeMethod,
+  );
+  const showsMergeMethods = showsPullRequestMergeMethods(
+    detail,
+    allowedMergeMethods,
+  );
+  const selectMergeMethod = (method: MergeMethod) => {
+    setMergeMethodSelection({ pullRequestKey: prKey, method });
+    setLastSelectedMergeMethod(method);
+    savePullRequestMergeMethod(method);
+  };
+  const stackDetail =
+    detail && stackBlocksMerge
+      ? {
+          ...detail,
+          capabilities: {
+            ...detail.capabilities,
+            primary:
+              detail.capabilities.primary === "merge" ||
+              detail.capabilities.primary === "enable_auto_merge"
+                ? ("unavailable" as const)
+                : detail.capabilities.primary,
+            actions: detail.capabilities.actions.filter(
+              (action) =>
+                action.kind !== "merge" &&
+                action.kind !== "enable_auto_merge" &&
+                action.kind !== "enqueue",
+            ),
+          },
+        }
+      : detail;
+  const { primary, armedBadge }: HeaderControls = stackDetail
+    ? primaryControl(stackDetail)
     : { primary: { kind: "none" }, armedBadge: null };
-  const menu = menuActions(detail?.capabilities.actions ?? [], primary);
+  const menu = menuActions(stackDetail?.capabilities.actions ?? [], primary);
   const checks = detail ? prChecks(detail.checks) : [];
   const checksIncomplete =
     detail?.problems.some((problem) => problem.section === "checks") ?? false;
@@ -324,6 +396,62 @@ export function PullRequestDetail({
           </div>
         </div>
         <div className="mr-4 flex h-7 shrink-0 items-center justify-end gap-1">
+          <PullRequestStackRecovery
+            access={access}
+            prKey={prKey}
+            operations={stackOperations.data ?? []}
+            onActed={refresh}
+          />
+          {stackQuery.data ? (
+            <PullRequestStackMenu
+              stack={stackQuery.data}
+              reference={{ key: prKey, number: Number(number) }}
+              access={access}
+              operations={stackOperations.data ?? []}
+              operationsReady={
+                stackOperations.isSuccess && !stackOperations.isFetching
+              }
+              observation={observation}
+              fresh={stackQuery.isFresh && query.isSuccess && !query.isFetching}
+              canMerge={
+                !!stackQuery.data.capabilities.mergeMethods.length &&
+                stackQuery.isFresh &&
+                query.isSuccess &&
+                !query.isFetching
+              }
+              canRebase={
+                stackQuery.data.capabilities.canRebase &&
+                stackQuery.isFresh &&
+                query.isSuccess &&
+                !query.isFetching
+              }
+              mergeMethod={selectedMergeMethod}
+              onActed={refresh}
+              onSelect={
+                onSelectPullRequest
+                  ? (target) => onSelectPullRequest(target.key)
+                  : undefined
+              }
+              notice={stackQuery.notice ?? undefined}
+              onRetry={
+                stackQuery.isError
+                  ? () => {
+                      void stackQuery.refetch();
+                    }
+                  : undefined
+              }
+            />
+          ) : stackQuery.isError ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => {
+                void stackQuery.refetch();
+              }}
+            >
+              Retry stack lookup
+            </Button>
+          ) : null}
           {handoff.onCheckout ? (
             <Button
               size="xs"
@@ -453,6 +581,19 @@ export function PullRequestDetail({
                 {lifecycleLabel(action)}
               </MenuItem>
             ))}
+            {showsMergeMethods ? (
+              <>
+                <MenuSeparator />
+                <PullRequestMergeMethods
+                  allowed={allowedMergeMethods}
+                  selected={selectedMergeMethod}
+                  pending={
+                    disabled || lifecycle.pending || stackQuery.isFetching
+                  }
+                  onSelect={selectMergeMethod}
+                />
+              </>
+            ) : null}
             {menu.closing.length ? <MenuSeparator /> : null}
             {menu.closing.map((action) => (
               <MenuItem
@@ -676,7 +817,7 @@ export function PullRequestDetail({
             {tab === "summary" ? (
               <PullRequestSummary
                 detail={detail}
-                access={handoff.threadId}
+                access={access}
                 refresh={refresh}
                 checks={checks}
                 checksIncomplete={checksIncomplete}
@@ -703,7 +844,7 @@ export function PullRequestDetail({
             ) : null}
             {tab === "code" ? (
               <PullRequestCodeTab
-                threadId={handoff.threadId}
+                threadId={access}
                 refresh={refresh}
                 loadFileContents={loadFileContents}
                 filesViewed={filesViewed}
@@ -738,7 +879,7 @@ export function PullRequestDetail({
             ) : null}
           </div>
           <PullRequestComposer
-            access={handoff.threadId}
+            access={access}
             detail={detail}
             disabled={disabled || lifecycle.pending}
             onSubmitted={refresh}
