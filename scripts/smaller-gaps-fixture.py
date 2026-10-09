@@ -119,6 +119,7 @@ def prepare(directory, pr_code=False):
         state = json.loads(state_path.read_text())
         state.update({
             "head": latest, "files": files, "additions": 2, "deletions": 0, "changedFiles": 2,
+            "viewedStates": {file["filename"]: "UNVIEWED" for file in files},
             "commits": [
                 {"oid": oid, "messageHeadline": headline, "committedDate": at,
                  "author": {"name": "Contributor", "user": {"login": "contributor"}}}

@@ -218,3 +218,20 @@ export type PrReviewChange = {
   target: PrObservation;
   action: PrReviewAction;
 };
+
+// Viewed contracts ported from pingdotgg/t3code v0.0.45 (MIT).
+export const prFileViewedState = z.enum(["viewed", "unviewed", "dismissed"]);
+export type PrFileViewedState = z.infer<typeof prFileViewedState>;
+export const prFilesViewed = z.object({
+  target: prObservation,
+  files: z.array(z.object({ path: z.string(), state: prFileViewedState })),
+  truncated: z.boolean(),
+});
+export type PrFilesViewed = z.infer<typeof prFilesViewed>;
+export const prSetFilesViewed = z.object({
+  target: prObservation,
+  files: z
+    .array(z.object({ path: z.string().min(1).max(4096), viewed: z.boolean() }))
+    .max(100),
+});
+export type PrSetFilesViewed = z.infer<typeof prSetFilesViewed>;

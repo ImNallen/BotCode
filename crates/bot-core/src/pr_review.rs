@@ -5,7 +5,10 @@ use crate::{
     pull_requests::{PrSnapshot, PullRequestKey},
 };
 pub(crate) use host::checkout_snapshot;
-pub(crate) use host::{Confirmation, acknowledge_update, change, confirm, read, read_commit_files};
+pub(crate) use host::{
+    Confirmation, acknowledge_update, change, confirm, read, read_commit_files, read_files_viewed,
+    set_files_viewed,
+};
 pub use lifecycle::*;
 use serde::{Deserialize, Serialize};
 
@@ -25,14 +28,8 @@ pub struct PrCommitFilesRequest {
 }
 impl PrCommitFilesRequest {
     pub(crate) fn validate(&self) -> Result<()> {
-        if [&self.commit_oid, &self.target.head_oid]
-            .iter()
-            .any(|oid| oid.len() != 40 || !oid.bytes().all(|c| c.is_ascii_hexdigit()))
-            || self.target.node_id.is_empty()
-            || self.target.node_id.len() > 256
-            || self.target.viewer.is_empty()
-            || self.target.viewer.len() > 256
-        {
+        self.target.validate()?;
+        if self.commit_oid.len() != 40 || !self.commit_oid.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Err(AppError::new(
                 "invalid_review",
                 "Invalid commit or review identity.",
@@ -48,6 +45,72 @@ pub struct PrCommitFiles {
     pub commit_oid: String,
     pub files: Vec<PrFile>,
     pub problems: Vec<PrSectionProblem>,
+}
+// Viewed state follows pingdotgg/t3code v0.0.45 GitHubPullRequestCli.ts (MIT).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrFileViewedState {
+    Viewed,
+    Unviewed,
+    Dismissed,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFileViewed {
+    pub path: String,
+    pub state: PrFileViewedState,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFilesViewed {
+    pub target: PrObservation,
+    pub files: Vec<PrFileViewed>,
+    pub truncated: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrFileViewedUpdate {
+    pub path: String,
+    pub viewed: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrSetFilesViewed {
+    pub target: PrObservation,
+    pub files: Vec<PrFileViewedUpdate>,
+}
+impl PrObservation {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.head_oid.len() != 40
+            || !self.head_oid.bytes().all(|c| c.is_ascii_hexdigit())
+            || self.node_id.is_empty()
+            || self.node_id.len() > 256
+            || self.viewer.is_empty()
+            || self.viewer.len() > 256
+        {
+            return Err(AppError::new(
+                "invalid_review",
+                "Invalid commit or review identity.",
+            ));
+        }
+        Ok(())
+    }
+}
+impl PrSetFilesViewed {
+    pub(crate) fn validate(&self) -> Result<()> {
+        self.target.validate()?;
+        if self.files.len() > 100
+            || self.files.iter().any(|file| {
+                file.path.is_empty() || file.path.len() > 4096 || file.path.contains('\0')
+            })
+        {
+            return Err(AppError::new(
+                "invalid_review",
+                "Viewed updates require at most 100 nonempty file paths.",
+            ));
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

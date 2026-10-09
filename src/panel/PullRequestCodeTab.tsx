@@ -8,6 +8,7 @@ import {
   MessageSquareOffIcon,
   MessageSquareIcon,
   Trash2Icon,
+  TriangleAlertIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -17,6 +18,8 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { Checkbox } from "../ui/checkbox";
+import type { PullRequestFilesViewedView } from "./usePullRequestFilesViewed";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem, MenuRadioItem } from "../ui/menu";
 import { orderedPrCommits, type PrDiffScope } from "./pullRequestScope";
@@ -38,7 +41,10 @@ import {
 import { hideWhitespaceChanges } from "./hideWhitespace";
 import { DIFF_VIEW_UNSAFE_CSS } from "./surfaceCss";
 import type { PrReviewDetail } from "./prReview";
-import { PullRequestDiffStat } from "./pullRequestPresentation";
+import {
+  PullRequestDiffStat,
+  PullRequestMetaLine,
+} from "./pullRequestPresentation";
 import {
   draftAnnotations,
   lineKey,
@@ -66,6 +72,7 @@ function useDrafts(key: string) {
 
 export function PullRequestCodeTab({
   detail,
+  filesViewed,
   scope,
   onScopeChange,
   files,
@@ -77,6 +84,7 @@ export function PullRequestCodeTab({
   onViewFiles,
 }: {
   detail: PrReviewDetail;
+  filesViewed: PullRequestFilesViewedView;
   scope: PrDiffScope;
   onScopeChange: (scope: PrDiffScope) => void;
   files: PrReviewDetail["files"];
@@ -158,7 +166,7 @@ export function PullRequestCodeTab({
           annotations,
           collapsed,
           version: hash(
-            `${detail.observation.headOid}:${ignoreWhitespace}:${collapsed}:${drafted}`,
+            `${detail.observation.headOid}:${ignoreWhitespace}:${collapsed}:${filesViewed.isViewed(file.path)}:${filesViewed.isStale(file.path)}:${drafted}`,
           ),
         };
       }),
@@ -169,6 +177,7 @@ export function PullRequestCodeTab({
       detail.observation.headOid,
       ignoreWhitespace,
       scope.kind,
+      filesViewed,
     ],
   );
   const allCollapsed = diffs.every(({ file }) => !expanded.has(file.path));
@@ -218,6 +227,8 @@ export function PullRequestCodeTab({
     [split, wordWrap, theme, canComment, addComment],
   );
 
+  const filesViewedRef = useRef(filesViewed);
+  filesViewedRef.current = filesViewed;
   const unavailableFiles = useMemo(
     () =>
       unavailable.length > 0 ? (
@@ -236,6 +247,36 @@ export function PullRequestCodeTab({
                   deletions={file.deletions}
                   className="shrink-0 font-mono text-2xs"
                 />
+                {filesViewed.enabled ? (
+                  <label
+                    data-viewed-toggle=""
+                    className="flex cursor-pointer select-none items-center gap-1.5 text-2xs text-muted-foreground"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <Checkbox
+                      label={
+                        filesViewed.isStale(file.path) ? "Changed" : "Viewed"
+                      }
+                      checked={filesViewed.isViewed(file.path)}
+                      onCheckedChange={() =>
+                        filesViewedRef.current.setViewed(
+                          file.path,
+                          !filesViewedRef.current.isViewed(file.path),
+                        )
+                      }
+                    />
+                    {filesViewed.isStale(file.path) ? (
+                      <span
+                        className="text-warning-foreground"
+                        title="This file has been pushed to since you marked it viewed."
+                      >
+                        Changed
+                      </span>
+                    ) : (
+                      "Viewed"
+                    )}
+                  </label>
+                ) : null}
               </div>
               <p className="mt-1 text-muted-foreground">
                 {reason}{" "}
@@ -247,7 +288,7 @@ export function PullRequestCodeTab({
           ))}
         </div>
       ) : null,
-    [unavailable, onViewFiles],
+    [unavailable, onViewFiles, filesViewed],
   );
   const renderFooter = useCallback(() => unavailableFiles, [unavailableFiles]);
   // Pierre memoizes each visible file's header and annotation portals on these callbacks, so
@@ -264,6 +305,20 @@ export function PullRequestCodeTab({
       ) : null,
     [togglePath],
   );
+  const setFileViewed = useCallback(
+    (path: string, viewed: boolean) => {
+      filesViewed.setViewed(path, viewed);
+      setExpanded((current) => {
+        const next = new Set(current);
+        if (viewed) next.delete(path);
+        else next.add(path);
+        return next;
+      });
+    },
+    [filesViewed.setViewed],
+  );
+  const setFileViewedRef = useRef(setFileViewed);
+  setFileViewedRef.current = setFileViewed;
   const renderHeaderMetadata = useCallback((item: CodeViewItem<DraftLine>) => {
     if (item.type !== "diff") return null;
     let additions = 0;
@@ -272,12 +327,47 @@ export function PullRequestCodeTab({
       additions += hunk.additionLines;
       deletions += hunk.deletionLines;
     }
-    return (
+    const stat = (
       <PullRequestDiffStat
         additions={additions}
         deletions={deletions}
         className="font-mono text-2xs"
       />
+    );
+    const viewedFiles = filesViewedRef.current;
+    if (!viewedFiles.enabled) return stat;
+    const viewed = viewedFiles.isViewed(item.id);
+    const stale = viewedFiles.isStale(item.id);
+    return (
+      <span className="flex items-center gap-3">
+        {stat}
+        <label
+          data-viewed-toggle=""
+          className="flex cursor-pointer select-none items-center gap-1.5 text-2xs text-muted-foreground"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <Checkbox
+            label={stale ? "Changed" : "Viewed"}
+            checked={viewed}
+            onCheckedChange={() =>
+              setFileViewedRef.current(
+                item.id,
+                !filesViewedRef.current.isViewed(item.id),
+              )
+            }
+          />
+          {stale ? (
+            <span
+              className="text-warning-foreground"
+              title="This file has been pushed to since you marked it viewed."
+            >
+              Changed
+            </span>
+          ) : (
+            "Viewed"
+          )}
+        </label>
+      </span>
     );
   }, []);
   const renderAnnotation = useCallback(
@@ -353,20 +443,52 @@ export function PullRequestCodeTab({
               ) : null}
             </Menu>
           ) : null}
-          <span className="shrink-0 tabular-nums">
-            {files.length} {files.length === 1 ? "file" : "files"}
-          </span>
-          {scope.kind === "commit" && detail.verdicts.length > 0 ? (
-            <span
-              className="flex shrink-0 items-center"
-              title="A comment is anchored to the whole change, so switch to All commits to write one."
-            >
-              <MessageSquareOffIcon
-                aria-label="Line comments are written from the whole change"
-                className="size-3.5"
-              />
+          <PullRequestMetaLine className="shrink-0">
+            <span className="shrink-0 tabular-nums">
+              {files.length} {files.length === 1 ? "file" : "files"}
             </span>
-          ) : null}
+            {filesViewed.enabled && files.length > 0 ? (
+              <span className="flex min-w-0 items-center gap-1 tabular-nums">
+                <span className="shrink-0">
+                  {filesViewed.viewedCount} / {files.length}
+                </span>
+                <span className="truncate">viewed</span>
+                {filesViewed.error !== null ? (
+                  <span
+                    className="flex shrink-0 items-center"
+                    title={`The boxes below are whatever was last read, and empty if nothing has been read yet. ${filesViewed.error}`}
+                  >
+                    <TriangleAlertIcon
+                      aria-label="Your ticks could not be read"
+                      className="size-3.5 text-warning-foreground"
+                    />
+                  </span>
+                ) : null}
+                {filesViewed.truncated ? (
+                  <span
+                    className="flex shrink-0 items-center"
+                    title="This change has more files than the host will report ticks for in one read, so the count is short and some boxes below start empty."
+                  >
+                    <TriangleAlertIcon
+                      aria-label="This count covers only part of the change"
+                      className="size-3.5 text-warning-foreground"
+                    />
+                  </span>
+                ) : null}
+              </span>
+            ) : null}
+            {scope.kind === "commit" && detail.verdicts.length > 0 ? (
+              <span
+                className="flex shrink-0 items-center"
+                title="A comment is anchored to the whole change, so switch to All commits to write one."
+              >
+                <MessageSquareOffIcon
+                  aria-label="Line comments are written from the whole change"
+                  className="size-3.5"
+                />
+              </span>
+            ) : null}
+          </PullRequestMetaLine>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <WhitespaceToggle
@@ -431,6 +553,7 @@ export function PullRequestCodeTab({
             onClickCapture={(event) => {
               for (const node of event.nativeEvent.composedPath()) {
                 if (!(node instanceof HTMLElement)) continue;
+                if (node.hasAttribute("data-viewed-toggle")) return;
                 if (node instanceof HTMLButtonElement) return;
                 if (node.hasAttribute("data-diffs-header")) {
                   const path = node.querySelector("[data-title]")?.textContent;

@@ -82,6 +82,17 @@ function render(
         router,
         children: createElement(PullRequestCodeTab, {
           detail,
+          filesViewed: {
+            enabled: false,
+            isViewed: () => false,
+            isStale: () => false,
+            setViewed: () => {},
+            viewedCount: 0,
+            truncated: false,
+            error: null,
+            mutationError: null,
+            refresh: () => {},
+          },
           scope,
           onScopeChange: () => {},
           files: [],

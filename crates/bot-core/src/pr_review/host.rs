@@ -749,6 +749,149 @@ fn timeline_entry(at: Option<&str>, event: PrTimelineEvent) -> PrTimelineEntry {
         event,
     }
 }
+// GraphQL paging and aliased mutations ported from pingdotgg/t3code v0.0.45 (MIT).
+pub(crate) async fn read_files_viewed(
+    program: &Path,
+    target: &PrObservation,
+    timeout: Duration,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<PrFilesViewed> {
+    target.validate()?;
+    let mut fetch = Fetch {
+        program,
+        deadline: Instant::now() + timeout.min(Duration::from_secs(90)),
+        bytes: 0,
+        calls: 0,
+        section_deadline: None,
+        cancel,
+    };
+    if fetch.meta(&target.key).await?.observation != *target {
+        return Err(viewed_identity_error());
+    }
+    let mut files = vec![];
+    let mut cursor = None;
+    let mut truncated = false;
+    for page in 0..5 {
+        let value = fetch.pr(&target.key, "BotFilesViewed", "id headRefOid files(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{path viewerViewedState}}", cursor.as_deref()).await?;
+        ensure_target(&value, target)?;
+        let connection = &value["files"];
+        if let Some(nodes) = connection["nodes"].as_array() {
+            for node in nodes {
+                if node.is_null() {
+                    continue;
+                }
+                let path = node["path"]
+                    .as_str()
+                    .ok_or_else(|| unavailable("Invalid viewed file path."))?;
+                if path.is_empty() {
+                    continue;
+                }
+                let state = match node["viewerViewedState"]
+                    .as_str()
+                    .ok_or_else(|| unavailable("Missing viewed file state."))?
+                    .trim()
+                    .to_uppercase()
+                    .as_str()
+                {
+                    "VIEWED" => PrFileViewedState::Viewed,
+                    "DISMISSED" => PrFileViewedState::Dismissed,
+                    _ => PrFileViewedState::Unviewed,
+                };
+                files.push(PrFileViewed {
+                    path: path.into(),
+                    state,
+                });
+            }
+        } else if !connection["nodes"].is_null() {
+            return Err(unavailable("Invalid viewed file list."));
+        }
+        let more = connection["pageInfo"]["hasNextPage"]
+            .as_bool()
+            .ok_or_else(|| unavailable("Missing viewed file paging information."))?;
+        if !more {
+            break;
+        }
+        let next = connection["pageInfo"]["endCursor"]
+            .as_str()
+            .filter(|next| !next.is_empty());
+        if page == 4 || next.is_none() || next == cursor.as_deref() {
+            truncated = true;
+            break;
+        }
+        cursor = next.map(str::to_owned);
+    }
+    if fetch.meta(&target.key).await?.observation != *target {
+        return Err(viewed_identity_error());
+    }
+    Ok(PrFilesViewed {
+        target: target.clone(),
+        files,
+        truncated,
+    })
+}
+fn viewed_identity_error() -> AppError {
+    AppError::new(
+        "pr_review_identity",
+        "The PR head or signed-in account changed. Refresh before updating viewed files.",
+    )
+}
+pub(crate) async fn set_files_viewed(
+    program: &Path,
+    input: &PrSetFilesViewed,
+    timeout: Duration,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    input.validate()?;
+    let mut fetch = Fetch {
+        program,
+        deadline: Instant::now() + timeout.min(Duration::from_secs(90)),
+        bytes: 0,
+        calls: 0,
+        section_deadline: None,
+        cancel,
+    };
+    if fetch.meta(&input.target.key).await?.observation != input.target {
+        return Err(viewed_identity_error());
+    }
+    if input.files.is_empty() {
+        return Ok(());
+    }
+    let parameters = (0..input.files.len())
+        .map(|index| format!("$path{index}:String!"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let fields = input.files.iter().enumerate().map(|(index, file)| format!("f{index}:{}(input:{{pullRequestId:$pullRequestId,path:$path{index}}}){{clientMutationId}}", if file.viewed { "markFileAsViewed" } else { "unmarkFileAsViewed" })).collect::<Vec<_>>().join(" ");
+    let query = format!("mutation BotSetFilesViewed($pullRequestId:ID!,{parameters}){{{fields}}}");
+    let mut args = vec![
+        "api".into(),
+        "graphql".into(),
+        "--hostname".into(),
+        "github.com".into(),
+        "-f".into(),
+        format!("query={query}"),
+        "-f".into(),
+        format!("pullRequestId={}", input.target.node_id),
+    ];
+    for (index, file) in input.files.iter().enumerate() {
+        args.extend(["-f".into(), format!("path{index}={}", file.path)]);
+    }
+    let value = fetch
+        .call(&args.iter().map(String::as_str).collect::<Vec<_>>())
+        .await
+        .map_err(|error| {
+            AppError::new(
+                &error.code,
+                format!("Could not update viewed files. {}", error.message),
+            )
+        })?;
+    if (0..input.files.len()).any(|index| !value["data"][format!("f{index}")].is_object()) {
+        return Err(unavailable(
+            "Could not update viewed files. GitHub did not acknowledge the update.",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn read_commit_files(
     program: &Path,
     input: &PrCommitFilesRequest,

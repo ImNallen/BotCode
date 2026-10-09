@@ -69,3 +69,25 @@ Direct native observations passed:
 - The normal 1100×780 window retains the sidebar, chat, bottom composer, compact header, and readable Code toolbar.
 
 The native observation record is `/tmp/bot-pr-code-native-20261009/evidence/01-commit-picker.txt`. Screenshots were captured through native computer use in the conversation. The baseline now describes the picker and removes it from the matching omission sentence.
+
+
+## PR Viewed markers verified
+
+Viewed markers passed on October 9, 2026 after the commit picker passed its separate gate. The initial source audit confirmed the missing host read, mutation, and Code controls. The port uses T3 v0.0.45's labels, class strings, overlay behavior, and GitHub mark/unmark mutations. `prepare-pr-code` now seeds both fixture files as UNVIEWED.
+
+All 554 UI tests, 477 core tests, build/typecheck, formatting, and Clippy pass. The core suite includes six Viewed tests for literal path variables, mark and unmark batches, paging bounds, unknown states, head/account/identity guards, linked membership, serial writes, read concurrency, and failures. Real React hook tests exercise reopening during an initial in-flight read and failed-write rollback. A retained diff-header handler test checks mark/unmark/mark, and the actual checkbox event test checks cancellation of native label reactivation. Removing each ownership, current-state, or event-boundary fix in memory makes its regression fail. Logs are `/tmp/bot-viewed-final-ui-tests.log`, `/tmp/viewed-core-tests.log`, `/tmp/viewed-clippy.log`, `/tmp/viewed-hook-regression-fault.log`, `/tmp/viewed-toggle-regression-fault.log`, and `/tmp/viewed-checkbox-regression-fault.log`. The final native build log is `/tmp/bot-pr-viewed-final-native-build.log`.
+
+The same disposable repository and isolated `BOT_CODE_DATA_DIR` at `/tmp/bot-pr-code-native-20261009` passed direct Tauri checks:
+
+- Whole-PR progress starts at **0 / 2 viewed**. Marking the expanded calculation file stores VIEWED in the GitHub peer, shows **1 / 2 viewed**, and collapses it. Unmarking stores UNVIEWED, returns to zero, and expands it. Both box and label-text clicks work.
+- The calculation commit counts **1 / 1**, the documentation commit **0 / 1**, and All commits **1 / 2** for the same GitHub state. Commit comments remain disabled. Summary and Code navigation preserve marks.
+- A read failure keeps a previously loaded tick and shows **Your ticks could not be read**. After an app restart, an initial read failure starts with empty boxes. Restoring the read and Refresh reloads the existing GitHub tick, proving host persistence.
+- A refused mutation rolls back its optimistic tick and shows **Could not update viewed files**. A later press can succeed.
+- DISMISSED resets the count and renders an unchecked **Changed** box. Marking it again clears Changed and restores Viewed. A six-page fixture stops after five pages and shows **This count covers only part of the change**.
+- A two-second write followed by an opposite press leaves GitHub and the UI at the latest value. A gated old read held over closing and reopening the PR cannot erase an acknowledged tick when released.
+- An unavailable patch retains its working Viewed checkbox. Mark and unmark update the overall progress. Restoring the patch returns the normal diff.
+- The normal 1100×780 window keeps the neutral shell, left conversation sidebar, centered chat, bottom composer, compact header, and readable right-panel toolbar.
+
+Native verification caught direct checkbox clicks reactivating through their enclosing label in the diff's shadow DOM. The checkbox now cancels that native default before invoking its custom callback. The header also reads current state when clicked, so a retained handler cannot send its earlier value. Both fixes passed behavioral regressions, independent review, a fresh native build, and the box/label recheck. Independent correctness review found no remaining issue. The comment pass removed one test-helper narration line and found no unresolved flags.
+
+The observation record is `/tmp/bot-pr-code-native-20261009/evidence/02-viewed.txt`; the GitHub peer log records the aliased mutations. Native screenshots are in the conversation. The baseline now describes Viewed and removes it from the matching omission sentence.

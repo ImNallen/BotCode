@@ -1142,3 +1142,6 @@ mod checkout;
 
 #[path = "reviews/commit_files.rs"]
 mod commit_files;
+
+#[path = "reviews/viewed.rs"]
+mod viewed;

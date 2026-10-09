@@ -2,6 +2,7 @@
 import json
 import fcntl
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -17,7 +18,7 @@ if '--input' in args:
     payload = json.loads(input_path.read_text())
 query = payload['query'] if payload else ' '.join(args)
 variables = payload.get('variables', {}) if payload else dict(arg.split('=', 1) for arg in args if '=' in arg)
-node = variables.get('input', {}).get('pullRequestId', '')
+node = variables.get('input', {}).get('pullRequestId', variables.get('pullRequestId', ''))
 node_number = int(node.removeprefix('PR_fixture_')) if node.startswith('PR_fixture_') else state.get('number', 41)
 number = int(variables.get('number', node_number)) if state.get('matchNumber') else state.get('number', 41)
 scoped = str(number) in state.get('perNumber', {})
@@ -114,7 +115,29 @@ elif args[:2] == ['api', 'graphql']:
         return {'nodes': nodes, 'pageInfo': {'hasNextPage': page + 1 < pages, 'endCursor': str(page + 1)}}
     comment = {'id': 'COMMENT_' + str(page), 'body': 'Validate negative inputs.', 'url': url + '#discussion_r1', 'author': {'login': 'reviewer'}, 'createdAt': state.get('threadAt', '2026-10-05T12:00:00Z'), 'updatedAt': '2026-10-05T12:00:00Z', 'originalCommit': {'oid': 'b' * 40}, 'diffHunk': '@@ -1 +1 @@\n-old\n+new', 'path': 'calculate.ts', 'originalLine': 1}
     thread = {'id': 'THREAD_' + str(page), 'isResolved': state.get('resolved', False), 'isOutdated': state.get('outdated', True), 'viewerCanReply': state.get('canReply', True), 'viewerCanResolve': state.get('canResolve', True), 'viewerCanUnresolve': state.get('canUnresolve', True), 'comments': {'nodes': [comment], 'pageInfo': {'hasNextPage': state.get('replyPages', False), 'endCursor': '1'}}}
-    if 'mutation Bot' in query:
+    if 'BotSetFilesViewed' in query:
+        time.sleep(state.get('viewedMutationDelay', 0))
+        if state.get('viewedMutationFailure'):
+            print(json.dumps({'errors': [{'message': 'Fixture refused viewed update'}]}))
+            sys.exit(0)
+        fields = re.findall(r'f(\d+):(markFileAsViewed|unmarkFileAsViewed)\(', query)
+        def save_viewed(current):
+            marks = current.setdefault('viewedStates', {})
+            current.setdefault('viewedMutations', []).append(variables)
+            for index, action in fields:
+                marks[variables['path' + index]] = 'VIEWED' if action == 'markFileAsViewed' else 'UNVIEWED'
+        state = update_state(save_viewed)
+        print(json.dumps({'data': {'f' + index: {'clientMutationId': None} for index, _ in fields}}))
+    elif 'BotFilesViewed' in query:
+        time.sleep(state.get('viewedReadDelay', 0))
+        if page in state.get('viewedFailPages', []):
+            print(json.dumps({'errors': [{'message': 'Fixture viewed read unavailable'}]}))
+            sys.exit(0)
+        nodes = state.get('viewedPages', {}).get(str(page), state.get('viewedNodes', [{'path': path, 'viewerViewedState': value} for path, value in state.get('viewedStates', {}).items()]))
+        pages = state.get('viewedPageCount', 1)
+        pr['files'] = {'nodes': nodes, 'pageInfo': {'hasNextPage': page + 1 < pages, 'endCursor': str(page + 1)}}
+        print(json.dumps({'data': {'repository': {'pullRequest': pr}}}))
+    elif 'mutation Bot' in query:
         time.sleep(state.get('mutationDelay', 0))
         if state.get('mutation') == 'refuse':
             print(json.dumps({'errors': [{'message': 'Fixture refused mutation'}]}))
