@@ -176,6 +176,14 @@ pub async fn set_pull_request_files_viewed(
     app.set_pull_request_files_viewed(thread_id, input).await
 }
 #[tauri::command]
+pub async fn read_pull_request_file_contents(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    input: PrFileContentsRequest,
+) -> Result<PrFileContents> {
+    app.read_pull_request_file_contents(thread_id, input).await
+}
+#[tauri::command]
 pub async fn read_pull_request_commit_files(
     app: State<'_, App>,
     thread_id: ThreadId,

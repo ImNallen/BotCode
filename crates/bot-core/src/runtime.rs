@@ -212,6 +212,7 @@ enum Command {
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
     PrRead(ThreadId, PullRequestKey, Reply<PrReviewDetail>),
+    PrFileContents(ThreadId, PrFileContentsRequest, Reply<PrFileContents>),
     PrCommitFiles(ThreadId, PrCommitFilesRequest, Reply<PrCommitFiles>),
     PrFilesViewed(ThreadId, PrObservation, Reply<PrFilesViewed>),
     PrSetFilesViewed(ThreadId, PrSetFilesViewed, Reply<()>),
@@ -871,6 +872,14 @@ impl App {
         input: PrSetFilesViewed,
     ) -> Result<()> {
         self.call(|reply| Command::PrSetFilesViewed(thread, input, reply))
+            .await
+    }
+    pub async fn read_pull_request_file_contents(
+        &self,
+        thread: ThreadId,
+        input: PrFileContentsRequest,
+    ) -> Result<PrFileContents> {
+        self.call(|reply| Command::PrFileContents(thread, input, reply))
             .await
     }
     pub async fn read_pull_request_commit_files(
@@ -2294,6 +2303,9 @@ impl Owner {
             }
             Command::PrSetFilesViewed(thread, input, reply) => {
                 self.set_files_viewed(thread, input, reply)
+            }
+            Command::PrFileContents(thread, input, reply) => {
+                self.read_file_contents(thread, input, reply);
             }
             Command::PrCommitFiles(thread, input, reply) => {
                 self.read_commit_files(thread, input, reply)

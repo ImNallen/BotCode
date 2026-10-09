@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
+import { hideWhitespaceChanges } from "./hideWhitespace.ts";
+import { draftComment } from "./prReview.ts";
 import type { DraftComment, PrReviewDetail } from "./prReview.ts";
-import { draftAnnotations, pullRequestCodeFile } from "./pullRequestDiff.ts";
+import {
+  draftAnnotations,
+  pullRequestCodeFile,
+  resolveCommentSelection,
+} from "./pullRequestDiff.ts";
 
 type PrFile = PrReviewDetail["files"][number];
 
@@ -168,4 +174,114 @@ it("groups drafted comments under their line on the viewer's side", () => {
       { side: "deletions", lineNumber: 2, metadata: { ids: ["c"] } },
     ],
   );
+});
+
+it("preserves forward and backward new-side ranges and original anchors under whitespace filtering", () => {
+  const original = diff(file());
+  const entry = {
+    ...original,
+    fileDiff: hideWhitespaceChanges(original.fileDiff),
+  };
+  assert.deepEqual(
+    resolveCommentSelection(entry, { start: 1, end: 3, side: "additions" }),
+    { side: "RIGHT", startLine: 1, line: 3 },
+  );
+  assert.deepEqual(
+    resolveCommentSelection(entry, { start: 3, end: 1, side: "additions" }),
+    { side: "RIGHT", startLine: 1, line: 3 },
+  );
+  assert.deepEqual(
+    resolveCommentSelection(entry, { start: 2, end: 2, side: "deletions" }),
+    { side: "LEFT", line: 2 },
+  );
+});
+it("maps old context ranges to consecutive new-side anchors", () => {
+  const entry = diff(
+    file({
+      patch: "@@ -3,3 +5,3 @@\n a\n b\n c",
+      anchors: [5, 6, 7].map((line) => ({
+        side: "RIGHT",
+        line,
+        text: " context",
+      })),
+    }),
+  );
+  assert.deepEqual(
+    resolveCommentSelection(entry, { start: 5, end: 3, side: "deletions" }),
+    { side: "RIGHT", startLine: 5, line: 7 },
+  );
+});
+it("preserves deletion-only ranges", () => {
+  const entry = diff(
+    file({
+      patch: "@@ -3,3 +3,0 @@\n-a\n-b\n-c",
+      anchors: [3, 4, 5].map((line) => ({
+        side: "LEFT",
+        line,
+        text: "-deleted",
+      })),
+    }),
+  );
+  assert.deepEqual(
+    resolveCommentSelection(entry, { start: 3, end: 5, side: "deletions" }),
+    { side: "LEFT", startLine: 3, line: 5 },
+  );
+});
+it("refuses mixed old context and deletion, cross-side, cross-hunk, missing and expanded-only anchors", () => {
+  const entry = diff(file());
+  for (const range of [
+    { start: 1, end: 3, side: "deletions" as const },
+    {
+      start: 1,
+      end: 3,
+      side: "additions" as const,
+      endSide: "deletions" as const,
+    },
+    { start: 3, end: 10, side: "additions" as const },
+    { start: 4, end: 6, side: "additions" as const },
+    { start: 1, end: Number.MAX_SAFE_INTEGER, side: "additions" as const },
+  ])
+    assert.equal(resolveCommentSelection(entry, range), null);
+  assert.equal(
+    resolveCommentSelection(
+      diff(file({ anchors: ANCHORS.filter((a) => a.line !== 2) })),
+      { start: 1, end: 3, side: "additions" },
+    ),
+    null,
+  );
+  const gap = diff(
+    file({
+      patch: "@@ -1,2 +1,3 @@\n before\n+inserted\n after",
+      anchors: [1, 2, 3].map((line) => ({
+        side: "RIGHT",
+        line,
+        text: " context",
+      })),
+    }),
+  );
+  assert.equal(
+    resolveCommentSelection(gap, { start: 1, end: 2, side: "deletions" }),
+    null,
+  );
+});
+
+it("validates range drafts and keeps their annotation at the final line", () => {
+  const single = {
+    id: "a",
+    revision: 0,
+    path: "src/app.ts",
+    side: "RIGHT",
+    line: 3,
+    body: "Review",
+  };
+  assert.deepEqual(draftComment.parse(single), single);
+  const range = draftComment.parse({ ...single, startLine: 1 });
+  assert.deepEqual(draftAnnotations([range], "src/app.ts"), [
+    { side: "additions", lineNumber: 3, metadata: { ids: ["a"] } },
+  ]);
+  for (const startLine of [0, 3, 4])
+    assert.equal(
+      draftComment.safeParse({ ...single, startLine }).success,
+      false,
+    );
 });

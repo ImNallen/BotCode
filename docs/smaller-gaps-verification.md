@@ -91,3 +91,48 @@ The same disposable repository and isolated `BOT_CODE_DATA_DIR` at `/tmp/bot-pr-
 Native verification caught direct checkbox clicks reactivating through their enclosing label in the diff's shadow DOM. The checkbox now cancels that native default before invoking its custom callback. The header also reads current state when clicked, so a retained handler cannot send its earlier value. Both fixes passed behavioral regressions, independent review, a fresh native build, and the box/label recheck. Independent correctness review found no remaining issue. The comment pass removed one test-helper narration line and found no unresolved flags.
 
 The observation record is `/tmp/bot-pr-code-native-20261009/evidence/02-viewed.txt`; the GitHub peer log records the aliased mutations. Native screenshots are in the conversation. The baseline now describes Viewed and removes it from the matching omission sentence.
+
+## PR unchanged-context expansion
+
+Item 1 passed on October 9, 2026. All 564 UI tests and 482 core tests pass. Targeted tests cover immutable merge-base contents after the base moves, literal renamed paths, commit first-parent and root scopes, additions and deletions, binary and invalid UTF-8 data, the 1 MiB limit, unknown and foreign sources, changed identity, and unlink during a gated contents read. Pierre hydration tests preserve original comment anchors and distinguish whitespace, patch, revision, and theme cache identities. Hook tests cover failure, successful retry, and late failure from an older source.
+
+The native fixture is `/tmp/bot-pr-parity-native-20261009`, with its disposable repository and isolated `BOT_CODE_DATA_DIR`. Its freshly built Tauri bundle uses identifier `dev.bot.code.prcodeverify`. The fixture contains a 50-line renamed file with changes in two separate commits. Its local old file contains a sentinel that must never appear in remote context.
+
+Direct Tauri checks passed:
+
+- Whole-PR expansion exposes leading and between-hunk context in stacked and split views. The rename header shows both paths, and the old and new values remain correct.
+- The latest commit expands context from its first parent. The earlier commit's value `context10 = 100` is unchanged, rather than a diff from the original base value. Commit commenting remains disabled.
+- A refused contents read leaves the patch visible and shows **Could not expand unchanged context** with its reason and separator retry guidance. Restoring the contents and pressing the separator clears the warning and expands the context.
+- Changing whitespace mode after hydration and expanding again keeps the correct old and new contents.
+- The normal native window preserves the neutral shell, left sidebar, centered conversation and composer, and optional right panel.
+
+`/tmp/bot-pr-parity-native-20261009/evidence/01-context-requests.json` records the literal encoded paths and exact SHA pairs. Native screenshots and accessibility observations are in the conversation. Logs are `/tmp/bot-pr-parity-context-final-ui-tests.log`, `/tmp/bot-pr-parity-context-core-tests.log`, and `/tmp/bot-pr-parity-context-final-native-build.log`.
+
+Independent review reproduced a hydrated whitespace cache collision and a Git-escaped rename path failure. Both fixes passed regressions and a second review. Native verification found Pierre's silent contents-read failure, which now has a visible warning and retry guidance. The final independent review found no actionable issue or comment cleanup. The baseline now describes expansion and removes it from the omission sentence.
+
+## PR inline conversations
+
+Item 2 passed on October 9, 2026. All 567 UI tests and 485 core tests pass. Behavioral checks cover current versus historical locations, literal renamed paths, both sides, hunk limits, drafts sharing an annotation, refreshed comment and resolution versions, and off-diff visibility during loading, failure, empty and commit scopes. Production and native builds pass. Independent correctness review and the comment pass found no actionable issue.
+
+The same isolated Tauri fixture has six conversations whose historical positions deliberately differ from current positions. Direct checks show LEFT and RIGHT cards under their current line 10 in the renamed file, an initially collapsed resolved card, and three unplaced conversations grouped by path. A refused inline reply retains its text; retrying submits that exact body and refreshes the card to two comments. Resolve and Unresolve refresh successfully. Single-commit scope lists all six conversations off the diff, including the outdated conversation and its label. The normal window retains the baseline shell. Native screenshots and accessibility observations are in the conversation; `/tmp/bot-pr-parity-native-20261009/evidence/02-thread-actions.json` records the exact reply and resolution payloads. Logs are `/tmp/bot-pr-threads-ui.log`, `/tmp/bot-pr-threads-core.log` and `/tmp/bot-pr-threads-native-build.log`.
+
+The baseline now describes inline conversations and removes them from the omission sentence.
+
+## PR multiline ranges
+
+Item 3 passed on October 9, 2026. All 574 UI tests and 490 core tests pass. Behavioral checks cover forward and reverse selection, LEFT deletions, offset context remapping, mixed interiors, cross-side and cross-hunk ranges, missing and expanded-only anchors, whitespace views, schema validation, original single-line compatibility, exact GraphQL range fields, native forged-range bounds, stale heads, and retained draft revisions after uncertain results or edits during submission. Production and final Tauri builds, formatting and whitespace checks pass.
+
+The isolated native fixture adds `range review.ts` with three consecutive deleted and added lines in real Git commits. Direct Tauri checks passed:
+
+- Reverse RIGHT dragging creates one draft for lines 4-6. LEFT dragging creates one deletion range. An old-column context range for lines 2-3 maps to RIGHT. Cards and the review composer show both endpoints and sides. Split and stacked layouts retain their bodies.
+- A gutter **+** click adds exactly one single-line draft. A range editor can share an ending line with an existing conversation in the renamed file. Discard removes only that editor.
+- Refused submission retains all range bodies and coordinates. An uncertain result disables submission until acknowledgment. After the local fixture confirmed no acceptance, acknowledgment and retry submit all three true ranges and clear the captured drafts.
+- The submitted request contains RIGHT 4-6, LEFT 4-6 and mapped RIGHT 2-3, with matching start and end sides and the captured head. `/tmp/bot-pr-parity-native-20261009/evidence/03-range-review.json` records the exact payload.
+- An old-context selection spanning deleted rows refuses visibly. Expanding context and selecting lines outside the original patch cannot create a draft. A single-commit scope has no range or gutter commenting; dragging its line numbers creates no draft.
+- Restoring the normal panel size retains the neutral shell, sidebar, centered conversation and bottom composer.
+
+Independent review found Pierre 1.5.1 fires both gutter and selection-end callbacks for a gutter gesture. The first integration appended a draft in both callbacks. The native app reproduced this as one **+** click adding two drafts. The fix routes creation through selection end and keeps the required gutter callback active. A regression using the installed interaction manager and captured Code tab options first failed with two drafts, then passed for gutter click, gutter drag and number drag. A fresh native build passed the **+** and range recheck. Final independent correctness and comment review found no flags. The retained dependency comment documents Pierre's external callback requirement.
+
+Logs are `/tmp/bot-pr-ranges-final-ui.log`, `/tmp/bot-pr-ranges-final-core.log` and `/tmp/bot-pr-ranges-final-native-build.log`. Native screenshots and accessibility observations are in the conversation. The baseline removes the multiline omission and describes true GitHub multiline submission as an addition beyond T3 v0.0.45.
+
+The GitHub posting path was exercised against the isolated local peer. The exact payload matches GitHub's documented multiline schema. No live GitHub review was posted, so acceptance by github.com was not tested.

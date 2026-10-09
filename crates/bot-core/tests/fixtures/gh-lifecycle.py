@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import json
+import base64
+from urllib.parse import unquote
 import fcntl
 import os
 import re
@@ -82,7 +84,7 @@ url = f'https://github.com/{repo}/pull/{number}'
 row = {'number': number, 'title': state.get('title', 'Durable fixture pull request'), 'url': url,
        'baseRefName': 'main', 'headRefName': branch, 'isCrossRepository': False}
 pr = {'id': state.get('nodeId', f'PR_fixture_{number}'), **row, 'state': state.get('lifecycle', 'OPEN'),
-      'isDraft': state.get('draft', False), 'headRefOid': sha,
+      'isDraft': state.get('draft', False), 'headRefOid': sha, 'baseRefOid': state.get('baseRefOid', 'e' * 40),
       'mergeable': state.get('mergeable', 'MERGEABLE'), 'mergeStateStatus': state.get('mergeStateStatus', 'CLEAN'),
       'isMergeQueueEnabled': state.get('queueRequired', False), 'mergeQueueEntry': {'id':'QUEUE_saved'} if state.get('queued') else None,
       'autoMergeRequest': {'mergeMethod': state.get('autoMethod','SQUASH')} if state.get('autoMerge') else None,
@@ -114,7 +116,8 @@ elif args[:2] == ['api', 'graphql']:
         pages = state.get('pages', 1)
         return {'nodes': nodes, 'pageInfo': {'hasNextPage': page + 1 < pages, 'endCursor': str(page + 1)}}
     comment = {'id': 'COMMENT_' + str(page), 'body': 'Validate negative inputs.', 'url': url + '#discussion_r1', 'author': {'login': 'reviewer'}, 'createdAt': state.get('threadAt', '2026-10-05T12:00:00Z'), 'updatedAt': '2026-10-05T12:00:00Z', 'originalCommit': {'oid': 'b' * 40}, 'diffHunk': '@@ -1 +1 @@\n-old\n+new', 'path': 'calculate.ts', 'originalLine': 1}
-    thread = {'id': 'THREAD_' + str(page), 'isResolved': state.get('resolved', False), 'isOutdated': state.get('outdated', True), 'viewerCanReply': state.get('canReply', True), 'viewerCanResolve': state.get('canResolve', True), 'viewerCanUnresolve': state.get('canUnresolve', True), 'comments': {'nodes': [comment], 'pageInfo': {'hasNextPage': state.get('replyPages', False), 'endCursor': '1'}}}
+    thread = {'path': state.get('threadPath', 'calculate.ts'), 'line': state.get('threadLine', 2), 'diffSide': state.get('threadSide', 'RIGHT'), 'id': 'THREAD_' + str(page), 'isResolved': state.get('resolved', False), 'isOutdated': state.get('outdated', True), 'viewerCanReply': state.get('canReply', True), 'viewerCanResolve': state.get('canResolve', True), 'viewerCanUnresolve': state.get('canUnresolve', True), 'comments': {'nodes': [comment], 'pageInfo': {'hasNextPage': state.get('replyPages', False), 'endCursor': '1'}}}
+    thread['comments']['nodes'].extend(state.get('postedReplies', []))
     if 'BotSetFilesViewed' in query:
         time.sleep(state.get('viewedMutationDelay', 0))
         if state.get('viewedMutationFailure'):
@@ -153,6 +156,15 @@ elif args[:2] == ['api', 'graphql']:
             current['submitted'] = current.get('submitted', []) + [payload]
             if field in ['resolveReviewThread', 'unresolveReviewThread']:
                 current['resolved'] = field == 'resolveReviewThread'
+                for row in current.get('threads', []):
+                    if row['id'] == variables['input']['threadId']: row['isResolved'] = current['resolved']
+            if field == 'addPullRequestReviewThreadReply':
+                reply = {**comment, 'id': 'COMMENT_saved_' + str(len(current['submitted'])), 'body': variables['input']['body']}
+                if 'threads' in current:
+                    for row in current['threads']:
+                        if row['id'] == variables['input']['pullRequestReviewThreadId']: row['comments']['nodes'].append(reply)
+                else:
+                    current.setdefault('postedReplies', []).append(reply)
             if field == 'mergePullRequest':
                 current.update(lifecycle='MERGED', mergedAt=current.get('terminalAt','2099-10-05T13:00:00Z'))
             elif field == 'enqueuePullRequest': current['queued'] = True
@@ -180,7 +192,7 @@ elif args[:2] == ['api', 'graphql']:
             pr.update(state.get('finalMeta', {}))
         print(json.dumps({'data': {'viewer': {'login': state.get('finalViewer', state.get('viewer', 'fixture-viewer')) if state['metaCalls'] > 1 else state.get('viewer', 'fixture-viewer')}, 'repository': {**{key: state.get(key, True) for key in ['mergeCommitAllowed','squashMergeAllowed','rebaseMergeAllowed','autoMergeAllowed']}, 'viewerPermission': state.get('viewerPermission','WRITE'), 'pullRequest': {**pr, 'body': state.get('body', 'Review the calculation update.'), 'reviewDecision': 'CHANGES_REQUESTED', 'locked': pr.get('locked', state.get('locked', False)), 'viewerDidAuthor': pr.get('viewerDidAuthor', state.get('didAuthor', False))}}}}))
     elif 'BotReviewThreads' in query:
-        print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, 'reviewThreads': connection([thread])}}}}))
+        print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, 'reviewThreads': connection(state.get('threads', [thread]))}}}}))
     elif 'BotReviewReplies' in query:
         print(json.dumps({'data': {'node': {'id': variables['id'], 'pullRequest': {'id': 'PR_other' if state.get('crossPrReply') else pr['id']}, 'comments': {'nodes': [{**comment, 'id': 'REPLY_' + str(page)}], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}}))
     elif 'BotReviewConversation' in query or 'BotReviewSummaries' in query:
@@ -192,7 +204,7 @@ elif args[:2] == ['api', 'graphql']:
     elif 'BotReviewChecks' in query:
         print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, 'statusCheckRollup': {'contexts': connection([{'__typename': 'CheckRun', 'name': 'unit tests', 'status': 'COMPLETED', 'conclusion': state.get('checkConclusion', 'FAILURE'), 'detailsUrl': url + '/checks'}])}}}}}))
     elif 'BotReviewThread' in query:
-        print(json.dumps({'data': {'node': {**thread, 'id': variables['id'], 'pullRequest': {'id': 'PR_other' if state.get('crossPrThread') else pr['id']}}}}))
+        print(json.dumps({'data': {'node': {**next((row for row in state.get('threads', []) if row['id'] == variables['id']), thread), 'id': variables['id'], 'pullRequest': {'id': 'PR_other' if state.get('crossPrThread') else pr['id']}}}}))
     elif 'BotDiscover' in query:
         found = [pr] if state.get('exists', True) else []
         if mode == 'ambiguous':
@@ -205,7 +217,7 @@ elif args[:2] == ['api', 'graphql']:
         sys.exit(2)
 elif args[:1] == ['api'] and '/commits/' in args[1]:
     oid = args[1].split('/commits/')[1].split('?')[0]
-    page = int(args[1].split('page=')[-1])
+    page = int(args[1].split('page=')[-1]) if '?per_page=' in args[1] else 1
     commit_mode = state.get('commitModes', {}).get(oid, 'ok')
     time.sleep(state.get('commitDelays', {}).get(oid, 0))
     if commit_mode == 'error' or page in state.get('failCommitPages', []):
@@ -215,7 +227,23 @@ elif args[:1] == ['api'] and '/commits/' in args[1]:
         print(json.dumps({'sha': oid}))
     else:
         files = state.get('commitFilePages', {}).get(oid, {}).get(str(page), state.get('commitFiles', {}).get(oid, []))
-        print(json.dumps({'sha': oid, 'files': files}))
+        print(json.dumps({'sha': oid, 'parents': [{'sha': parent} for parent in state.get('commitParents', {}).get(oid, ['b' * 40])], 'files': files}))
+elif args[:1] == ['api'] and '/compare/' in args[1]:
+    if state.get('failCompare'):
+        print('Fixture comparison unavailable', file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({'merge_base_commit': {'sha': state.get('compareMergeBase', 'b' * 40)}}))
+elif args[:1] == ['api'] and '/contents/' in args[1]:
+    path, _, ref = args[1].split('/contents/')[1].partition('?ref=')
+    key = ref + ':' + unquote(path)
+    value = state.get('fileContents', {}).get(key)
+    if value is None:
+        print('Fixture file contents unavailable', file=sys.stderr)
+        sys.exit(1)
+    if isinstance(value, str):
+        content = value.encode('utf-8')
+        value = {'type': 'file', 'encoding': 'base64', 'size': len(content), 'content': base64.b64encode(content).decode('ascii')}
+    print(json.dumps(value))
 elif args[:1] == ['api'] and '/files?' in args[1]:
     if 'files' in state.get('failSections', []):
         print('Fixture files unavailable', file=sys.stderr)

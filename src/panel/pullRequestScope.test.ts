@@ -215,3 +215,51 @@ describe("pull request commit scope", () => {
     );
   });
 });
+
+it("keeps unplaced conversations closed and counted during empty, loading, error and commit scopes", () => {
+  const withThread = prReviewDetail.parse({
+    ...detail,
+    findings: [
+      {
+        finding: {
+          observation: {
+            prId: "PR_fixture",
+            findingId: "THREAD_fixture",
+            headSha: "a".repeat(40),
+            contentDigest: "b".repeat(64),
+          },
+          source: { kind: "thread", resolved: false, outdated: false },
+          comments: [
+            {
+              id: "COMMENT_fixture",
+              body: "Preserve this conversation",
+              url: "https://github.com/test/repo/pull/7#discussion_r1",
+              author: "reviewer",
+              createdAt: "2026-10-05T12:00:00Z",
+              updatedAt: "2026-10-05T12:00:00Z",
+              context: null,
+            },
+          ],
+          saved: null,
+        },
+        outcome: null,
+        canReply: true,
+        canResolve: true,
+        canUnresolve: true,
+        threadLocation: { path: "missing.ts", side: "RIGHT", line: null },
+      },
+    ],
+  });
+  for (const state of [
+    { scope: { kind: "all" } },
+    { scope },
+    { loading: true },
+    { error: "Read unavailable" },
+  ] satisfies Partial<Parameters<typeof PullRequestCodeTab>[0]>[]) {
+    const html = render({ detail: withThread, ...state });
+    assert.ok(html.includes("Conversations not on the current diff"));
+    assert.ok(html.includes("1 conversation"));
+    assert.ok(html.includes('aria-expanded="false"'));
+    assert.ok(!html.includes("Preserve this conversation"));
+  }
+});

@@ -5,6 +5,7 @@ use crate::{
     pull_requests::{FIELDS, Row},
     vcs::Tool,
 };
+use base64::Engine;
 pub(crate) use lifecycle::{Confirmation, acknowledge_update, confirm};
 pub(crate) use mutation::change;
 use serde::Deserialize;
@@ -134,7 +135,7 @@ impl Fetch<'_> {
     async fn meta(&mut self, key: &PullRequestKey) -> Result<Meta> {
         let (owner, name) = key.repository();
         let query = format!(
-            "query BotReviewMeta($owner:String!,$name:String!,$number:Int!){{viewer{{login}} repository(owner:$owner,name:$name){{mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed viewerPermission pullRequest(number:$number){{{FIELDS} mergeable mergeStateStatus isMergeQueueEnabled mergeQueueEntry {{ id }} autoMergeRequest {{ mergeMethod }} viewerCanClose viewerCanReopen viewerCanUpdate viewerCanUpdateBranch viewerCanEnableAutoMerge viewerCanDisableAutoMerge body reviewDecision locked viewerDidAuthor createdAt additions deletions changedFiles author {{ login avatarUrl }} labels(first:100) {{ nodes {{ name color }} }} reviewRequests(first:100) {{ nodes {{ requestedReviewer {{ __typename ... on Actor {{ login avatarUrl }} ... on Team {{ combinedSlug avatarUrl }} }} }} }} latestReviews(first:100) {{ nodes {{ state author {{ login avatarUrl }} }} }}}}}}}}"
+            "query BotReviewMeta($owner:String!,$name:String!,$number:Int!){{viewer{{login}} repository(owner:$owner,name:$name){{mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed viewerPermission pullRequest(number:$number){{{FIELDS} baseRefOid mergeable mergeStateStatus isMergeQueueEnabled mergeQueueEntry {{ id }} autoMergeRequest {{ mergeMethod }} viewerCanClose viewerCanReopen viewerCanUpdate viewerCanUpdateBranch viewerCanEnableAutoMerge viewerCanDisableAutoMerge body reviewDecision locked viewerDidAuthor createdAt additions deletions changedFiles author {{ login avatarUrl }} labels(first:100) {{ nodes {{ name color }} }} reviewRequests(first:100) {{ nodes {{ requestedReviewer {{ __typename ... on Actor {{ login avatarUrl }} ... on Team {{ combinedSlug avatarUrl }} }} }} }} latestReviews(first:100) {{ nodes {{ state author {{ login avatarUrl }} }} }}}}}}}}"
         );
         let value = self
             .query(
@@ -167,6 +168,7 @@ impl Fetch<'_> {
             ]
         };
         Ok(Meta {
+            base_oid: revision_oid(pr, "baseRefOid")?,
             observation: PrObservation {
                 key: key.clone(),
                 node_id: snapshot.node_id.clone(),
@@ -325,7 +327,15 @@ impl Fetch<'_> {
             };
             let count = rows.len();
             for row in rows {
-                let patch = row.patch.filter(|s| s.len() <= 256 * 1024);
+                let patch = if row.status == "renamed"
+                    && row.additions == 0
+                    && row.deletions == 0
+                    && row.previous_filename.is_some()
+                {
+                    Some(String::new())
+                } else {
+                    row.patch.filter(|s| s.len() <= 256 * 1024)
+                };
                 let mut anchors = patch.as_deref().map(parse_patch).unwrap_or_default();
                 let unavailable = if patch.is_none() {
                     Some("Patch unavailable, binary or oversized.".into())
@@ -346,6 +356,8 @@ impl Fetch<'_> {
                     anchors.clear();
                 }
                 files.push(PrFile {
+                    previous_path: row.previous_filename,
+                    contents_source: None,
                     path: row.filename,
                     status: row.status,
                     additions: row.additions,
@@ -370,6 +382,7 @@ impl Fetch<'_> {
     }
 }
 struct Meta {
+    base_oid: String,
     capabilities: PrCapabilities,
     queued: bool,
     auto_merge: Option<String>,
@@ -402,6 +415,8 @@ struct Connection {
 }
 #[derive(Deserialize)]
 struct FileRow {
+    #[serde(default)]
+    previous_filename: Option<String>,
     filename: String,
     status: String,
     additions: u64,
@@ -410,6 +425,13 @@ struct FileRow {
 }
 fn unavailable(message: impl ToString) -> AppError {
     AppError::new("pr_review_unavailable", message)
+}
+fn revision_oid(value: &Value, key: &str) -> Result<String> {
+    let oid = required(value, key)?;
+    if oid.len() != 40 || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(unavailable("GitHub returned an invalid revision."));
+    }
+    Ok(oid)
 }
 fn required(value: &Value, key: &str) -> Result<String> {
     value[key]
@@ -529,7 +551,7 @@ impl Fetch<'_> {
     ) -> Result<Vec<PrFinding>> {
         let mut findings = vec![];
         let fields = format!(
-            "id isResolved isOutdated viewerCanReply viewerCanResolve viewerCanUnresolve comments(first:100){{nodes{{{COMMENT} {INLINE}}} {PAGE_INFO}}}"
+            "id path line diffSide isResolved isOutdated viewerCanReply viewerCanResolve viewerCanUnresolve comments(first:100){{nodes{{{COMMENT} {INLINE}}} {PAGE_INFO}}}"
         );
         for row in self
             .connection(
@@ -592,6 +614,7 @@ impl Fetch<'_> {
                 return Err(unavailable("Review thread has no comments."));
             }
             findings.push(PrFinding {
+                thread_location: thread_location(&row),
                 finding: finding(
                     target,
                     id,
@@ -644,6 +667,7 @@ impl Fetch<'_> {
             let id = required(&row, "id")?;
             let outcome = row["state"].as_str().map(str::to_owned);
             Ok(PrFinding {
+                thread_location: None,
                 finding: finding(target, id, source.clone(), vec![comment(row)?])?,
                 outcome,
                 can_reply: false,
@@ -929,13 +953,36 @@ pub(crate) async fn read_commit_files(
     }
     let (owner, name) = input.target.key.repository();
     let mut problems = vec![];
-    let files = fetch
+    let mut files = fetch
         .file_pages(
             &format!("repos/{owner}/{name}/commits/{}", input.commit_oid),
             true,
             &mut problems,
         )
         .await?;
+    let comparison = async {
+        let revision = fetch
+            .call(&[
+                "api",
+                &format!("repos/{owner}/{name}/commits/{}", input.commit_oid),
+                "--hostname",
+                "github.com",
+            ])
+            .await?;
+        if revision["sha"].as_str() != Some(&input.commit_oid) {
+            return Err(unavailable("GitHub returned a different commit."));
+        }
+        let parents = revision["parents"]
+            .as_array()
+            .ok_or_else(|| unavailable("GitHub omitted commit parents."))?;
+        let old_oid = parents
+            .first()
+            .map(|parent| required(parent, "sha"))
+            .transpose()?;
+        capture_sources(&mut files, old_oid, &input.commit_oid)
+    }
+    .await;
+    section_data::<()>(comparison, PrSection::Files, &mut problems)?;
     fetch.section_deadline = None;
     if fetch.meta(&input.target.key).await?.observation != input.target {
         return Err(identity_error());
@@ -977,12 +1024,33 @@ pub(crate) async fn read(
     let result = fetch.checks(target, &mut problems).await;
     let checks = section_data(result, PrSection::Checks, &mut problems)?;
     let result = fetch.files(key, &mut problems).await;
-    let files = section_data(result, PrSection::Files, &mut problems)?;
+    let mut files = section_data(result, PrSection::Files, &mut problems)?;
+    let (owner, name) = key.repository();
+    let comparison = fetch
+        .call(&[
+            "api",
+            &format!(
+                "repos/{owner}/{name}/compare/{}...{}",
+                meta.base_oid, target.head_oid
+            ),
+            "--hostname",
+            "github.com",
+        ])
+        .await;
+    match comparison
+        .and_then(|value| required(&value["merge_base_commit"], "sha"))
+        .and_then(|old_oid| capture_sources(&mut files, Some(old_oid), &target.head_oid))
+    {
+        Ok(()) => {}
+        Err(error) => {
+            section_data::<()>(Err(error), PrSection::Files, &mut problems)?;
+        }
+    }
     let result = fetch.commits(target, &mut problems).await;
     let mut timeline = section_data(result, PrSection::Commits, &mut problems)?;
     fetch.section_deadline = None;
     let final_meta = fetch.meta(key).await?;
-    if final_meta.observation != meta.observation {
+    if final_meta.observation != meta.observation || final_meta.base_oid != meta.base_oid {
         return Err(AppError::new(
             "pr_review_identity",
             "The PR head or signed-in account changed. Refresh before reviewing.",
@@ -1147,4 +1215,162 @@ pub(crate) async fn checkout_snapshot(
         ));
     }
     Ok(meta.snapshot)
+}
+
+fn capture_sources(files: &mut [PrFile], old_oid: Option<String>, new_oid: &str) -> Result<()> {
+    let valid = |oid: &str| oid.len() == 40 && oid.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !valid(new_oid) || old_oid.as_deref().is_some_and(|oid| !valid(oid)) {
+        return Err(unavailable("GitHub returned invalid comparison revisions."));
+    }
+    for file in files {
+        if old_oid.is_none() && file.status != "added" {
+            continue;
+        }
+        file.contents_source = Some(PrFileContentsSource {
+            id: uuid::Uuid::new_v4().to_string(),
+            old_oid: old_oid.clone(),
+            new_oid: new_oid.into(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) async fn read_file_contents(
+    program: &Path,
+    target: &PrObservation,
+    file: &PrFile,
+    timeout: Duration,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<PrFileContents> {
+    let mut fetch = Fetch {
+        program,
+        deadline: Instant::now() + timeout.min(Duration::from_secs(60)),
+        bytes: 0,
+        calls: 0,
+        section_deadline: None,
+        cancel,
+    };
+    let identity_error = || {
+        AppError::new(
+            "pr_review_identity",
+            "The PR head or signed-in account changed. Refresh before reviewing.",
+        )
+    };
+    if fetch.meta(&target.key).await?.observation != *target {
+        return Err(identity_error());
+    }
+    let source = file.contents_source.as_ref().ok_or_else(|| {
+        unavailable("Exact file revisions are unavailable. Refresh this pull request.")
+    })?;
+    let old_contents = if file.status == "added" {
+        String::new()
+    } else {
+        let oid = source
+            .old_oid
+            .as_deref()
+            .ok_or_else(|| unavailable("The old file revision is unavailable."))?;
+        fetch
+            .file_contents(
+                &target.key,
+                oid,
+                file.previous_path.as_deref().unwrap_or(&file.path),
+            )
+            .await?
+    };
+    let new_contents = if file.status == "removed" {
+        String::new()
+    } else {
+        fetch
+            .file_contents(&target.key, &source.new_oid, &file.path)
+            .await?
+    };
+    if fetch.meta(&target.key).await?.observation != *target {
+        return Err(identity_error());
+    }
+    Ok(PrFileContents {
+        old_contents,
+        new_contents,
+    })
+}
+impl Fetch<'_> {
+    async fn file_contents(
+        &mut self,
+        key: &PullRequestKey,
+        oid: &str,
+        path: &str,
+    ) -> Result<String> {
+        let (owner, name) = key.repository();
+        let path = path
+            .split('/')
+            .map(|segment| {
+                percent_encoding::utf8_percent_encode(segment, percent_encoding::NON_ALPHANUMERIC)
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        let endpoint = format!("repos/{owner}/{name}/contents/{path}?ref={oid}");
+        let value = self
+            .call(&["api", &endpoint, "--hostname", "github.com"])
+            .await?;
+        if value["type"] != "file"
+            || value["encoding"] != "base64"
+            || total(&value, "size")? > 1024 * 1024
+        {
+            return Err(unavailable(
+                "File contents are unavailable, binary or larger than 1 MiB.",
+            ));
+        }
+        let content = required(&value, "content")?.replace(['\n', '\r'], "");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(content)
+            .map_err(|_| unavailable("GitHub returned invalid file contents."))?;
+        if bytes.len() > 1024 * 1024
+            || bytes.contains(&0)
+            || bytes.len() as u64 != total(&value, "size")?
+        {
+            return Err(unavailable(
+                "File contents are unavailable, binary or larger than 1 MiB.",
+            ));
+        }
+        String::from_utf8(bytes).map_err(|_| unavailable("File contents are not valid UTF-8."))
+    }
+}
+
+fn thread_location(row: &serde_json::Value) -> Option<PrThreadLocation> {
+    let path = row["path"].as_str()?.to_owned();
+    if path.is_empty() {
+        return None;
+    }
+    let side = match row["diffSide"].as_str()? {
+        "LEFT" => PrSide::Left,
+        "RIGHT" => PrSide::Right,
+        _ => return None,
+    };
+    let line = row["line"].as_u64().filter(|line| *line > 0);
+    Some(PrThreadLocation { path, side, line })
+}
+
+#[cfg(test)]
+mod thread_location_tests {
+    use super::*;
+    #[test]
+    fn current_anchor_is_independent_of_original_comment_context() {
+        let row = serde_json::json!({"path":"renamed.ts", "line":12, "diffSide":"LEFT", "comments":{"nodes":[{"path":"original.ts", "originalLine":3}]}});
+        let anchor = thread_location(&row).unwrap();
+        assert_eq!(anchor.path, "renamed.ts");
+        assert_eq!(anchor.line, Some(12));
+        assert_eq!(anchor.side, PrSide::Left);
+        let null = thread_location(
+            &serde_json::json!({"path":"renamed.ts", "line":null, "diffSide":"RIGHT"}),
+        )
+        .unwrap();
+        assert_eq!(null.line, None);
+        for row in [
+            serde_json::json!({"path":"x", "line":3}),
+            serde_json::json!({"path":"x", "line":3, "diffSide":"UNKNOWN"}),
+            serde_json::json!({"line":3, "diffSide":"LEFT"}),
+        ] {
+            assert!(thread_location(&row).is_none());
+        }
+    }
 }

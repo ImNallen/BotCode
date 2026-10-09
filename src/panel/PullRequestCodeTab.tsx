@@ -1,3 +1,4 @@
+// Range selection ported from pingdotgg/t3code v0.0.45 PullRequestCodeTab.tsx (MIT).
 // Commit scope toolbar ported from pingdotgg/t3code v0.0.45 PullRequestCodeTab.tsx (MIT).
 // Code tab ported from pingdotgg/t3code 3e6b450 apps/web/src/components/pullRequest/PullRequestCodeTab.tsx
 // and PullRequestReviewAnnotation.tsx (MIT).
@@ -5,6 +6,7 @@ import type { CodeViewItem, SelectedLineRange } from "@pierre/diffs";
 import { CodeView, type CodeViewHandle } from "@pierre/diffs/react";
 import {
   ChevronDownIcon,
+  ChevronRightIcon,
   MessageSquareOffIcon,
   MessageSquareIcon,
   Trash2Icon,
@@ -40,18 +42,21 @@ import {
 } from "./diffView";
 import { hideWhitespaceChanges } from "./hideWhitespace";
 import { DIFF_VIEW_UNSAFE_CSS } from "./surfaceCss";
-import type { PrReviewDetail } from "./prReview";
+import { usePullRequestDiffFileContents } from "./usePullRequestDiffFileContents";
+import type { PrFileContents, PrReviewDetail } from "./prReview";
 import {
   PullRequestDiffStat,
   PullRequestMetaLine,
 } from "./pullRequestPresentation";
 import {
-  draftAnnotations,
-  lineKey,
+  conversationAnnotations,
+  commentLineLabel,
+  resolveCommentSelection,
   pullRequestCodeFile,
   type DraftLine,
 } from "./pullRequestDiff";
 import { draftKey, reviewDrafts } from "./reviewDrafts";
+import { PullRequestReviewThreadCard } from "./PullRequestReviewThreadCard";
 import { useResolvedTheme } from "./useResolvedTheme";
 
 // The header's own counts are hidden so the row reads "+a −d" like T3's pull request files.
@@ -72,6 +77,9 @@ function useDrafts(key: string) {
 
 export function PullRequestCodeTab({
   detail,
+  threadId,
+  refresh,
+  loadFileContents,
   filesViewed,
   scope,
   onScopeChange,
@@ -84,6 +92,9 @@ export function PullRequestCodeTab({
   onViewFiles,
 }: {
   detail: PrReviewDetail;
+  threadId?: string;
+  refresh?: () => void;
+  loadFileContents?: (sourceId: string) => Promise<PrFileContents>;
   filesViewed: PullRequestFilesViewedView;
   scope: PrDiffScope;
   onScopeChange: (scope: PrDiffScope) => void;
@@ -96,6 +107,7 @@ export function PullRequestCodeTab({
   onViewFiles: () => void;
 }) {
   const theme = useResolvedTheme();
+  const [orphansOpen, setOrphansOpen] = useState(false);
   const {
     split,
     setSplit,
@@ -126,7 +138,10 @@ export function PullRequestCodeTab({
       : undefined;
   const scopeLabel = selectedCommit?.headline ?? "All commits";
 
-  const codeFiles = useMemo(() => files.map(pullRequestCodeFile), [files]);
+  const codeFiles = useMemo(
+    () => files.map((file) => pullRequestCodeFile(file, `pr-code:${theme}`)),
+    [files, theme],
+  );
   const unavailable = useMemo(
     () =>
       codeFiles.flatMap((entry) =>
@@ -155,10 +170,15 @@ export function PullRequestCodeTab({
       diffs.map(({ file, fileDiff }) => {
         const collapsed = !expanded.has(file.path);
         const annotations =
-          scope.kind === "all" ? draftAnnotations(comments, file.path) : [];
-        const drafted = annotations
-          .map((a) => `${a.side}:${a.lineNumber}:${a.metadata.ids.join(",")}`)
-          .join("|");
+          scope.kind === "all" && !loading && !error
+            ? conversationAnnotations(comments, detail.findings, {
+                kind: "diff",
+                file,
+                fileDiff,
+                targets: new Map(),
+              })
+            : [];
+        const drafted = annotations.map((a) => JSON.stringify(a)).join("|");
         return {
           id: file.path,
           type: "diff",
@@ -174,11 +194,45 @@ export function PullRequestCodeTab({
       diffs,
       expanded,
       comments,
+      detail.findings,
+      loading,
+      error,
       detail.observation.headOid,
       ignoreWhitespace,
       scope.kind,
       filesViewed,
     ],
+  );
+  const placedIds = new Set(
+    items.flatMap((item) =>
+      item.type === "diff"
+        ? (item.annotations ?? []).flatMap((annotation) =>
+            (annotation.metadata.threads ?? []).map(
+              (entry) => entry.finding.observation.findingId,
+            ),
+          )
+        : [],
+    ),
+  );
+  const orphanThreads = detail.findings.filter(
+    (entry) =>
+      entry.finding.source.kind === "thread" &&
+      !placedIds.has(entry.finding.observation.findingId),
+  );
+  const orphanFiles = new Map<string, typeof orphanThreads>();
+  for (const entry of orphanThreads) {
+    const path = entry.threadLocation?.path ?? "Location unavailable";
+    orphanFiles.set(path, [...(orphanFiles.get(path) ?? []), entry]);
+  }
+  const renderThread = (entry: PrReviewDetail["findings"][number]) => (
+    <PullRequestReviewThreadCard
+      key={entry.finding.observation.findingId}
+      entry={entry}
+      detail={detail}
+      threadId={threadId}
+      refresh={refresh}
+      disabled={disabled}
+    />
   );
   const allCollapsed = diffs.every(({ file }) => !expanded.has(file.path));
 
@@ -202,29 +256,45 @@ export function PullRequestCodeTab({
     viewer.current.scrollTo({ type: "item", id: reveal.path, align: "start" });
   }, [reveal, items]);
 
+  const [selectionError, setSelectionError] = useState<string | null>(null);
   const addComment = useCallback(
-    (range: SelectedLineRange, { item }: { item: CodeViewItem<DraftLine> }) => {
-      if (!canComment) return;
-      const side = range.endSide ?? range.side;
-      const target = side
-        ? diffs
-            .find(({ file }) => file.path === item.id)
-            ?.targets.get(lineKey(side, range.end))
-        : undefined;
-      if (!target) return;
+    (
+      range: SelectedLineRange | null,
+      { item }: { item: CodeViewItem<DraftLine> },
+    ) => {
+      if (!range || !canComment) return;
+      const file = diffs.find(({ file }) => file.path === item.id);
+      const target = file ? resolveCommentSelection(file, range) : null;
+      if (!target) {
+        setSelectionError(
+          "This selection cannot be commented on. Select consecutive lines on one side within the original diff hunk.",
+        );
+        return;
+      }
+      setSelectionError(null);
       setFocusId(reviewDrafts.add(key, { path: item.id, ...target }));
       requestAnimationFrame(() => viewer.current?.clearSelectedLines());
     },
     [diffs, key, canComment],
   );
+  const { loadDiffFiles, errors: contextErrors } =
+    usePullRequestDiffFileContents(
+      loadFileContents,
+      files,
+      `${key}:${scope.kind === "all" ? "all" : scope.oid}`,
+    );
   const options = useMemo(
     () => ({
       ...diffViewOptions<DraftLine>({ split, wordWrap, theme }),
+      loadDiffFiles,
       unsafeCSS: `${DIFF_VIEW_UNSAFE_CSS}${REPLACE_FILE_COUNTS_CSS}`,
+      enableLineSelection: canComment,
+      onLineSelectionEnd: canComment ? addComment : undefined,
       enableGutterUtility: canComment,
-      onGutterUtilityClick: canComment ? addComment : undefined,
+      // Pierre requires a gutter callback to enable +; selection end creates the draft.
+      onGutterUtilityClick: canComment ? () => {} : undefined,
     }),
-    [split, wordWrap, theme, canComment, addComment],
+    [split, wordWrap, theme, canComment, addComment, loadDiffFiles],
   );
 
   const filesViewedRef = useRef(filesViewed);
@@ -373,6 +443,16 @@ export function PullRequestCodeTab({
   const renderAnnotation = useCallback(
     (annotation: { metadata: DraftLine }) => (
       <div className="py-1 font-sans text-foreground">
+        {(annotation.metadata.threads ?? []).map((entry) => (
+          <PullRequestReviewThreadCard
+            key={entry.finding.observation.findingId}
+            entry={entry}
+            detail={detail}
+            threadId={threadId}
+            refresh={refresh}
+            disabled={disabled}
+          />
+        ))}
         {annotation.metadata.ids.map((id) => (
           <DraftLineComment
             key={id}
@@ -384,7 +464,7 @@ export function PullRequestCodeTab({
         ))}
       </div>
     ),
-    [key, focusId],
+    [key, focusId, detail, threadId, refresh, disabled],
   );
 
   return (
@@ -514,6 +594,68 @@ export function PullRequestCodeTab({
           ) : null}
         </div>
       </div>
+      {orphanThreads.length > 0 ? (
+        <div className="shrink-0 border-b border-border/60">
+          <h2>
+            <button
+              type="button"
+              aria-expanded={orphansOpen}
+              className="flex w-full items-center gap-1.5 px-4 py-2 text-left text-xs text-muted-foreground"
+              onClick={() => setOrphansOpen((open) => !open)}
+            >
+              <span>Conversations not on the current diff</span>
+              <ChevronRightIcon
+                aria-hidden
+                className={`size-3.5 transition-transform${orphansOpen ? " rotate-90" : ""}`}
+              />
+              <span aria-hidden className="tabular-nums">
+                {orphanThreads.length}
+              </span>
+              <span className="sr-only">
+                {orphanThreads.length}{" "}
+                {orphanThreads.length === 1 ? "conversation" : "conversations"}
+              </span>
+            </button>
+          </h2>
+          {orphansOpen ? (
+            <div className="max-h-64 space-y-3 overflow-auto px-4 pb-3">
+              {[...orphanFiles].map(([path, entries]) => (
+                <div key={path}>
+                  <p
+                    title={path}
+                    className="truncate px-3 text-xs text-muted-foreground"
+                  >
+                    {path}
+                  </p>
+                  <div className="mt-1 space-y-2">
+                    {entries.map((entry) => (
+                      <div key={entry.finding.observation.findingId}>
+                        {entry.threadLocation?.line ? (
+                          <p className="px-3 text-xs text-muted-foreground">
+                            Line {entry.threadLocation.line}
+                          </p>
+                        ) : null}
+                        {renderThread(entry)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {detail.problems
+        .filter((problem) => problem.section === "threads")
+        .map((problem) => (
+          <p
+            key={problem.section}
+            role="status"
+            className="px-4 py-2 text-xs text-muted-foreground"
+          >
+            {sectionProblemText(problem)}
+          </p>
+        ))}
       {problems
         .filter((problem) => problem.section === "files")
         .map((problem) => (
@@ -525,6 +667,23 @@ export function PullRequestCodeTab({
             {sectionProblemText(problem)}
           </p>
         ))}
+      {selectionError ? (
+        <div role="alert" className="px-4 py-2 text-xs text-muted-foreground">
+          {selectionError}
+        </div>
+      ) : null}
+      {Array.from(contextErrors, ([path, message]) => (
+        <p
+          key={path}
+          role="alert"
+          className="px-4 py-2 text-xs text-muted-foreground"
+        >
+          <span className="text-warning-foreground">
+            Could not expand unchanged context for {path}.
+          </span>{" "}
+          {message} Click the unchanged-lines separator again to retry.
+        </p>
+      ))}
       {loading ? (
         <p role="status" className="px-4 py-5 text-sm text-muted-foreground">
           Loading file changes...
@@ -615,7 +774,12 @@ function DraftLineComment({
     >
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <MessageSquareIcon className="size-3.5" />
-        <span>Pending. Sent when you submit the review.</span>
+        <span>
+          Pending — sent when you submit the review
+          {comment.startLine === undefined
+            ? ""
+            : ` Lines ${commentLineLabel(comment)} (${comment.side.toLowerCase()}).`}
+        </span>
         <Button
           size="icon-xs"
           variant="ghost"
@@ -632,7 +796,7 @@ function DraftLineComment({
         className="mt-2"
         rows={2}
         placeholder="Leave a comment"
-        aria-label={`Comment on ${comment.path} line ${comment.line}`}
+        aria-label={`Comment on ${comment.path} ${comment.startLine === undefined ? "line" : "lines"} ${commentLineLabel(comment)} (${comment.side.toLowerCase()})`}
         value={comment.body}
         autoFocus={autoFocus}
         onFocus={onFocused}
