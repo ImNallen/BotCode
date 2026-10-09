@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import { Button } from "../ui/controls";
 import { Textarea } from "../ui/textarea";
@@ -21,6 +21,7 @@ export function ReviewDetails({
   onAskCodex,
   onFixCodex,
   openUrl,
+  commentFooter,
 }: {
   finding: ReviewFinding;
   saving: boolean;
@@ -31,6 +32,7 @@ export function ReviewDetails({
   onAskCodex: () => void;
   onFixCodex: () => void;
   openUrl: (url: string) => void;
+  commentFooter?: (id: string) => ReactNode;
 }) {
   const reasonId = useId();
   const helpId = useId();
@@ -224,6 +226,7 @@ export function ReviewDetails({
               {comment.createdAt}
             </p>
             <ChatMarkdown text={comment.body || "Empty comment"} />
+            {commentFooter?.(comment.id)}
             <div className="space-y-1 text-xs text-muted-foreground">
               <p className="break-all">
                 Original reviewed commit{" "}

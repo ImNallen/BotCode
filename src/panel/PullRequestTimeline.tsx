@@ -1,3 +1,5 @@
+import { PullRequestReactionBar } from "./PullRequestReactions";
+import type { PrAccess } from "./prInbox";
 import { usePullRequestConversation } from "./usePullRequestConversation";
 import { useState } from "react";
 import { ipc } from "../ipc";
@@ -10,7 +12,7 @@ import type { ReviewDraftRequest } from "./reviews";
 
 export type ReviewHandoff = {
   workspaceId: string;
-  threadId: string;
+  threadId: PrAccess;
   canAskCodex: boolean;
   onAskCodex: (request: ReviewDraftRequest) => void;
   onCheckout?: (target: PrObservation) => void;
@@ -156,6 +158,7 @@ function Finding({
         }}
         canAskCodex={canAskCodex && !disabled && !saving}
         onAskCodex={() =>
+          typeof threadId === "string" &&
           onAskCodex({
             workspaceId,
             threadId,
@@ -167,6 +170,7 @@ function Finding({
           })
         }
         onFixCodex={() =>
+          typeof threadId === "string" &&
           onAskCodex({
             workspaceId,
             threadId,
@@ -177,6 +181,20 @@ function Finding({
             finding,
           })
         }
+        commentFooter={(subjectId) => (
+          <PullRequestReactionBar
+            reactions={
+              entry.reactionSubjects.find(
+                (subject) => subject.subjectId === subjectId,
+              )?.reactions ?? []
+            }
+            canReact={detail.capabilities.react && !disabled}
+            subjectId={subjectId}
+            access={threadId}
+            target={detail.observation}
+            onRefresh={refresh}
+          />
+        )}
         openUrl={(url) =>
           void ipc.openUrl(url).catch((error) => setError(String(error)))
         }

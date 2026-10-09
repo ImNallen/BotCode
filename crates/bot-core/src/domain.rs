@@ -1789,7 +1789,7 @@ pub enum PrCheckoutDestination {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparePullRequestThread {
-    pub source_thread_id: ThreadId,
+    pub source_thread_id: crate::PrAccess,
     pub target: crate::PrObservation,
     pub destination: PrCheckoutDestination,
 }

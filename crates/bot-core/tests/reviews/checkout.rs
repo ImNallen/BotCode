@@ -50,7 +50,7 @@ fn request(
     destination: PrCheckoutDestination,
 ) -> PreparePullRequestThread {
     PreparePullRequestThread {
-        source_thread_id: source,
+        source_thread_id: source.into(),
         target: PrObservation {
             key: PullRequestKey::new("fixture", "project", 41).unwrap(),
             node_id: "PR_fixture_41".into(),

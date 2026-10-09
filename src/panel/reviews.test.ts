@@ -856,6 +856,7 @@ it("ports resolved conversation cards with permission-specific controls", async 
   const { PullRequestReviewThreadCard } =
     await import("./PullRequestReviewThreadCard.tsx");
   const entry = {
+    reactionSubjects: [],
     outcome: null,
     finding,
     canReply: true,
@@ -912,6 +913,7 @@ it("places current thread anchors without remapping left context or historical n
   });
   if (parsed.kind !== "diff") throw new Error(parsed.reason);
   const base = {
+    reactionSubjects: [],
     outcome: null,
     canReply: true,
     canResolve: true,

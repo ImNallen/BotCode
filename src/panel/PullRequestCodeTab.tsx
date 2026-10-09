@@ -1,3 +1,4 @@
+import type { PrAccess } from "./prInbox";
 // Range selection ported from pingdotgg/t3code v0.0.45 PullRequestCodeTab.tsx (MIT).
 // Commit scope toolbar ported from pingdotgg/t3code v0.0.45 PullRequestCodeTab.tsx (MIT).
 // Code tab ported from pingdotgg/t3code 3e6b450 apps/web/src/components/pullRequest/PullRequestCodeTab.tsx
@@ -92,7 +93,7 @@ export function PullRequestCodeTab({
   onViewFiles,
 }: {
   detail: PrReviewDetail;
-  threadId?: string;
+  threadId?: PrAccess;
   refresh?: () => void;
   loadFileContents?: (sourceId: string) => Promise<PrFileContents>;
   filesViewed: PullRequestFilesViewedView;

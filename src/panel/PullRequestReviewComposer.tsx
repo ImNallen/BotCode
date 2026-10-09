@@ -1,22 +1,27 @@
+import type { PrAccess } from "./prInbox";
 import { commentLineLabel } from "./pullRequestDiff";
 import { changeResultText } from "./prLifecycle";
-import { useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore, type RefObject } from "react";
 import { ipc } from "../ipc";
 import { Button } from "../ui/controls";
 import { Textarea } from "../ui/textarea";
 import { draftKey, reviewDrafts } from "./reviewDrafts";
-import type { PrReviewDetail, ReviewVerdict } from "./prReview";
+import type { PrReviewDetail } from "./prReview";
 
 export function PullRequestReviewComposer({
   threadId,
   detail,
   disabled,
   onSubmitted,
+  embedded = false,
+  textareaRef,
 }: {
-  threadId: string;
+  threadId: PrAccess;
   detail: PrReviewDetail;
   disabled: boolean;
   onSubmitted: () => void;
+  embedded?: boolean;
+  textareaRef?: RefObject<HTMLTextAreaElement | null>;
 }) {
   const key = draftKey(detail.observation);
   useSyncExternalStore(
@@ -26,7 +31,7 @@ export function PullRequestReviewComposer({
   );
   const draft = reviewDrafts.get(key);
   const [open, setOpen] = useState(false);
-  const [verdict, setVerdict] = useState<ReviewVerdict>("comment");
+  const verdict = draft.verdict ?? "comment";
   const offered =
     detail.verdicts.find((v) => v === verdict) ?? detail.verdicts[0];
   const pending = Boolean(draft.operation && !draft.operation.result);
@@ -57,7 +62,13 @@ export function PullRequestReviewComposer({
     }
   };
   return (
-    <div className="shrink-0 border-t border-border bg-background p-2">
+    <div
+      className={
+        embedded
+          ? "space-y-2"
+          : "shrink-0 border-t border-border bg-background p-2"
+      }
+    >
       {older.map(([oldKey, oldDraft]) => (
         <div
           key={oldKey}
@@ -84,13 +95,16 @@ export function PullRequestReviewComposer({
           </details>
         </div>
       ))}
-      <Button size="sm" variant="outline" onClick={() => setOpen(!open)}>
-        {open ? "Hide review" : "Review"}
-        {draft.comments.length ? ` (${draft.comments.length})` : ""}
-      </Button>
-      {open ? (
+      {!embedded ? (
+        <Button size="sm" variant="outline" onClick={() => setOpen(!open)}>
+          {open ? "Hide review" : "Review"}
+          {draft.comments.length ? ` (${draft.comments.length})` : ""}
+        </Button>
+      ) : null}
+      {open || embedded ? (
         <div className="mt-2 max-h-80 space-y-2 overflow-y-auto">
           <Textarea
+            ref={textareaRef}
             aria-label="Review summary"
             rows={3}
             placeholder="Summarize your review"
@@ -128,7 +142,7 @@ export function PullRequestReviewComposer({
               value={offered ?? "comment"}
               onChange={(e) => {
                 const value = detail.verdicts.find((v) => v === e.target.value);
-                if (value) setVerdict(value);
+                if (value) reviewDrafts.verdict(key, value);
               }}
               disabled={pending || !offered}
               className="rounded border border-border bg-background px-2 py-1 text-xs"

@@ -3,6 +3,7 @@ import {
   ArrowLeftIcon,
   ChartNoAxesColumnIcon,
   SettingsIcon,
+  GitPullRequestArrowIcon,
 } from "lucide-react";
 import type { ComponentProps } from "react";
 import { cn } from "./lib/cn";
@@ -36,11 +37,13 @@ export function SidebarFooter({
   pageOpen,
   onOpenSettings,
   onOpenUsage,
+  onOpenPullRequests,
   onBack,
 }: {
   pageOpen: boolean;
   onOpenSettings: () => void;
   onOpenUsage: () => void;
+  onOpenPullRequests: () => void;
   onBack: () => void;
 }) {
   return (
@@ -75,6 +78,16 @@ export function SidebarFooter({
                 onClick={onOpenSettings}
               >
                 <SettingsIcon />
+              </SidebarMenuButton>
+            </li>
+            <li className="group/menu-item relative shrink-0">
+              <SidebarMenuButton
+                icon
+                aria-label="Pull Requests"
+                title="Pull Requests"
+                onClick={onOpenPullRequests}
+              >
+                <GitPullRequestArrowIcon />
               </SidebarMenuButton>
             </li>
             <li className="group/menu-item relative shrink-0">

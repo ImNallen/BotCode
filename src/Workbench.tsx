@@ -1,3 +1,4 @@
+import { readPrInboxPreferences } from "./panel/prInboxSearch";
 // Shell geometry follows pingdotgg/t3code v0.0.45 components/AppSidebarLayout.tsx and components/ui/sidebar.tsx, and components/NoProjectsHero.tsx at 6b286ae8a (MIT).
 import { usePreviewApplicationShortcuts } from "./preview/applicationShortcuts";
 import { useKeybindings } from "./keybindings/store";
@@ -88,12 +89,14 @@ export function Workbench() {
   const selection = useSearch({ from: "__root__" });
   const navigate = useNavigate();
   const page = useLocation({
-    select: (location): "settings" | "usage" | null =>
+    select: (location): "settings" | "usage" | "pull-requests" | null =>
       location.pathname.startsWith("/settings")
         ? "settings"
         : location.pathname === "/usage"
           ? "usage"
-          : null,
+          : location.pathname === "/pull-requests"
+            ? "pull-requests"
+            : null,
   });
   const pageOpen = page !== null;
   const settingsOpen = page === "settings";
@@ -679,6 +682,16 @@ export function Workbench() {
                 pageOpen={pageOpen}
                 onOpenSettings={openSettings}
                 onOpenUsage={openUsage}
+                onOpenPullRequests={() =>
+                  void navigate({
+                    to: "/pull-requests",
+                    search: {
+                      ...selection,
+                      ...readPrInboxPreferences(),
+                      project: undefined,
+                    },
+                  })
+                }
                 onBack={closePage}
               />
             </div>

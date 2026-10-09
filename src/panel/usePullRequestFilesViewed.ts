@@ -1,3 +1,4 @@
+import type { PrAccess } from "./prInbox";
 // Queue, overlay and request ownership ported from pingdotgg/t3code v0.0.45 usePullRequestFilesViewed.ts (MIT).
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -33,7 +34,7 @@ export function usePullRequestFilesViewed({
   target,
   paths,
 }: {
-  threadId: string;
+  threadId: PrAccess;
   target: PrObservation | undefined;
   paths: readonly string[];
 }): PullRequestFilesViewedView {
@@ -81,7 +82,7 @@ export function usePullRequestFilesViewed({
   const [mutationError, setMutationError] = useState<string | null>(null);
   const queued = useRef(new Map<string, boolean>());
   const queueTarget = useRef<{
-    threadId: string;
+    threadId: PrAccess;
     target: PrObservation;
     scope: string;
   } | null>(null);

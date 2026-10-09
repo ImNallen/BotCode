@@ -1,3 +1,4 @@
+import type { PrAccess } from "./prInbox";
 // Confirmation follows pingdotgg/t3code v0.0.45 PullRequestDetailPanel.tsx (MIT).
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -33,7 +34,7 @@ export function usePullRequestLifecycle({
   disabled,
   refresh,
 }: {
-  threadId: string;
+  threadId: PrAccess;
   prKey: PullRequestKey;
   detail: PrReviewDetail | undefined;
   disabled: boolean;
@@ -73,10 +74,11 @@ export function usePullRequestLifecycle({
       refresh();
     }
   };
-  const choose = (action: LifecycleAction) => {
-    if (!detail || disabled || running.current) return;
+  const choose = (action: LifecycleAction, observed?: PrReviewDetail) => {
+    const source = observed ?? detail;
+    if (!source || (!observed && disabled) || running.current) return;
     setConfirmation(
-      captureLifecycle(detail.observation, action, crypto.randomUUID()),
+      captureLifecycle(source.observation, action, crypto.randomUUID()),
     );
   };
   const reconcile = async (requestId: string) => {

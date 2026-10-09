@@ -64,7 +64,7 @@ impl Owner {
             .checkout_workspaces
             .insert(path.clone(), workspace.clone());
         self.review_work.changing.insert(input.target.key.clone());
-        let generation = self.pr_generation(&input.source_thread_id);
+        let generation = self.review_generation(&input.source_thread_id);
         let program = self.config.gh_binary.clone();
         let timeout = self.config.network_timeout;
         let mut cancel = self.review_work.cancel.subscribe();
@@ -115,7 +115,7 @@ impl Owner {
             .and_then(|moved| {
                 saved?;
                 self.review_member(&input.source_thread_id, &input.target.key)?;
-                if self.pr_generation(&input.source_thread_id) != generation {
+                if self.review_generation(&input.source_thread_id) != generation {
                     return Err(AppError::new(
                         "pr_review_stale",
                         "The source conversation PR association changed.",

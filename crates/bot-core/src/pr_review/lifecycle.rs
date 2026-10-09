@@ -65,6 +65,10 @@ pub struct PrCapabilities {
     pub actions: Vec<PrReviewAction>,
     pub explanation: Option<String>,
     pub edit: bool,
+    pub labels: bool,
+    pub request_reviewers: bool,
+    pub comment: bool,
+    pub react: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrOperation {
@@ -80,7 +84,17 @@ impl PrReviewAction {
                 | Self::SetResolved { .. }
                 | Self::EditTitle { .. }
                 | Self::EditBody { .. }
+                | Self::AddComment { .. }
+                | Self::SetReaction { .. }
+                | Self::SetLabel { .. }
+                | Self::RequestReviewer { .. }
         )
+    }
+    pub(crate) fn is_content_change(&self) -> bool {
+        matches!(self, Self::AddComment { .. } | Self::SetReaction { .. })
+    }
+    pub(crate) fn is_picker(&self) -> bool {
+        matches!(self, Self::SetLabel { .. } | Self::RequestReviewer { .. })
     }
     pub(crate) fn is_edit(&self) -> bool {
         matches!(self, Self::EditTitle { .. } | Self::EditBody { .. })

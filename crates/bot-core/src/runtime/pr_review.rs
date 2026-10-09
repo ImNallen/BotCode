@@ -5,7 +5,7 @@ use tokio::{sync::watch, task::JoinSet};
 #[cfg(test)]
 mod tests;
 
-type ReadWaiter = (WorkspaceId, Reply<PrReviewDetail>);
+type ReadWaiter = (PrAccess, WorkspaceId, u64, Reply<PrReviewDetail>);
 pub(super) enum ReviewCompletion {
     Checkout(Box<super::pr_checkout::Completion>),
     Lifecycle(
@@ -15,7 +15,7 @@ pub(super) enum ReviewCompletion {
         Reply<PrChangeResult>,
     ),
     Acknowledge {
-        thread: ThreadId,
+        thread: PrAccess,
         generation: u64,
         epoch: u64,
         input: PrReviewChange,
@@ -23,8 +23,16 @@ pub(super) enum ReviewCompletion {
         reply: Reply<PrChangeResult>,
     },
     Read(PullRequestKey, Box<Result<PrReviewDetail>>),
+    Candidates {
+        access: PrAccess,
+        generation: u64,
+        epoch: u64,
+        target: PrObservation,
+        result: Result<PrCandidates>,
+        reply: Reply<PrCandidates>,
+    },
     FilesViewed {
-        thread: ThreadId,
+        thread: PrAccess,
         generation: u64,
         epoch: u64,
         target: PrObservation,
@@ -32,14 +40,14 @@ pub(super) enum ReviewCompletion {
         reply: Reply<PrFilesViewed>,
     },
     SetFilesViewed {
-        thread: ThreadId,
+        thread: PrAccess,
         generation: u64,
         target: PrObservation,
         result: Result<()>,
         reply: Reply<()>,
     },
     FileContents {
-        thread: ThreadId,
+        thread: PrAccess,
         generation: u64,
         epoch: u64,
         target: PrObservation,
@@ -47,7 +55,7 @@ pub(super) enum ReviewCompletion {
         reply: Reply<PrFileContents>,
     },
     CommitFiles {
-        thread: ThreadId,
+        thread: PrAccess,
         generation: u64,
         epoch: u64,
         input: PrCommitFilesRequest,
@@ -93,26 +101,59 @@ impl ReviewWork {
 impl Owner {
     pub(super) fn review_member(
         &self,
-        thread: &ThreadId,
+        thread: &PrAccess,
         key: &PullRequestKey,
     ) -> Result<WorkspaceId> {
-        let workspace = self.thread(thread)?.workspace_id.clone();
-        if !self
-            .pr_summary(thread)
-            .links
-            .iter()
-            .any(|link| &link.pr.key == key)
-        {
-            return Err(AppError::new(
-                "pr_not_linked",
-                "Link this pull request to the conversation first.",
-            ));
-        }
+        let workspace = match thread {
+            PrAccess::Thread(id) => {
+                let workspace = self.thread(id)?.workspace_id.clone();
+                if !self
+                    .pr_summary(id)
+                    .links
+                    .iter()
+                    .any(|link| &link.pr.key == key)
+                {
+                    return Err(AppError::new(
+                        "pr_not_linked",
+                        "Link this pull request to the conversation first.",
+                    ));
+                }
+                workspace
+            }
+            PrAccess::Workspace { workspace_id } => {
+                let workspace = self.workspace(workspace_id)?;
+                let remote =
+                    crate::repo::git(&workspace.root, &["config", "--get", "remote.upstream.url"])
+                        .or_else(|_| {
+                            crate::repo::git(
+                                &workspace.root,
+                                &["config", "--get", "remote.origin.url"],
+                            )
+                        })?;
+                let (current_owner, current_name) =
+                    crate::pull_requests::repository(String::from_utf8_lossy(&remote).trim())?;
+                let (owner, name) = key.repository();
+                let repository = format!("{owner}/{name}");
+                if format!("{current_owner}/{current_name}").to_ascii_lowercase() != repository {
+                    return Err(AppError::new(
+                        "pr_repository",
+                        "This pull request does not belong to the selected project repository.",
+                    ));
+                }
+                workspace_id.clone()
+            }
+        };
         Ok(workspace)
+    }
+    pub(super) fn review_generation(&self, access: &PrAccess) -> u64 {
+        match access {
+            PrAccess::Thread(id) => self.pr_generation(id),
+            PrAccess::Workspace { .. } => 0,
+        }
     }
     pub(super) fn read_review(
         &mut self,
-        thread: ThreadId,
+        thread: PrAccess,
         key: PullRequestKey,
         reply: Reply<PrReviewDetail>,
     ) {
@@ -130,9 +171,10 @@ impl Owner {
             )));
             return;
         }
+        let generation = self.review_generation(&thread);
         if let Some(waiters) = self.review_work.reads.get_mut(&key) {
             if waiters.len() < 64 {
-                waiters.push((workspace, reply));
+                waiters.push((thread.clone(), workspace, generation, reply));
             } else {
                 let _ = reply.send(Err(AppError::new(
                     "pr_busy",
@@ -150,7 +192,7 @@ impl Owner {
         }
         self.review_work
             .reads
-            .insert(key.clone(), vec![(workspace, reply)]);
+            .insert(key.clone(), vec![(thread, workspace, generation, reply)]);
         let program = self.config.gh_binary.clone();
         let timeout = self.config.network_timeout;
         let mut cancel = self.review_work.cancel.subscribe();
@@ -161,7 +203,7 @@ impl Owner {
     }
     pub(super) fn read_files_viewed(
         &mut self,
-        thread: ThreadId,
+        thread: PrAccess,
         target: PrObservation,
         reply: Reply<PrFilesViewed>,
     ) {
@@ -173,7 +215,7 @@ impl Owner {
             let _ = reply.send(Err(error));
             return;
         }
-        let generation = self.pr_generation(&thread);
+        let generation = self.review_generation(&thread);
         let epoch = self.pr_read_epoch(&target.key);
         let program = self.config.gh_binary.clone();
         let timeout = self.config.network_timeout;
@@ -182,6 +224,38 @@ impl Owner {
             let result = host::read_files_viewed(&program, &target, timeout, &mut cancel).await;
             ReviewCompletion::FilesViewed {
                 thread,
+                generation,
+                epoch,
+                target,
+                result,
+                reply,
+            }
+        });
+    }
+    pub(super) fn read_candidates(
+        &mut self,
+        access: PrAccess,
+        target: PrObservation,
+        kind: PrCandidateKind,
+        reply: Reply<PrCandidates>,
+    ) {
+        let admission = self
+            .review_member(&access, &target.key)
+            .and_then(|_| target.validate())
+            .and_then(|_| self.admit_viewed(&target.key));
+        if let Err(error) = admission {
+            let _ = reply.send(Err(error));
+            return;
+        }
+        let generation = self.review_generation(&access);
+        let epoch = self.pr_read_epoch(&target.key);
+        let program = self.config.gh_binary.clone();
+        let timeout = self.config.network_timeout;
+        let mut cancel = self.review_work.cancel.subscribe();
+        self.review_work.active.spawn(async move {
+            let result = host::read_candidates(&program, &target, kind, timeout, &mut cancel).await;
+            ReviewCompletion::Candidates {
+                access,
                 generation,
                 epoch,
                 target,
@@ -201,7 +275,7 @@ impl Owner {
     }
     pub(super) fn set_files_viewed(
         &mut self,
-        thread: ThreadId,
+        thread: PrAccess,
         input: PrSetFilesViewed,
         reply: Reply<()>,
     ) {
@@ -213,7 +287,7 @@ impl Owner {
             let _ = reply.send(Err(error));
             return;
         }
-        let generation = self.pr_generation(&thread);
+        let generation = self.review_generation(&thread);
         self.review_work
             .viewed_writers
             .retain(|_, lock| std::sync::Arc::strong_count(lock) > 1);
@@ -240,7 +314,7 @@ impl Owner {
     }
     pub(super) fn read_commit_files(
         &mut self,
-        thread: ThreadId,
+        thread: PrAccess,
         input: PrCommitFilesRequest,
         reply: Reply<PrCommitFiles>,
     ) {
@@ -261,7 +335,7 @@ impl Owner {
             let _ = reply.send(Err(error));
             return;
         }
-        let generation = self.pr_generation(&thread);
+        let generation = self.review_generation(&thread);
         let epoch = self.pr_read_epoch(&input.target.key);
         let program = self.config.gh_binary.clone();
         let timeout = self.config.network_timeout;
@@ -293,7 +367,7 @@ impl Owner {
     }
     pub(super) fn read_file_contents(
         &mut self,
-        thread: ThreadId,
+        thread: PrAccess,
         input: PrFileContentsRequest,
         reply: Reply<PrFileContents>,
     ) {
@@ -310,7 +384,7 @@ impl Owner {
                 return;
             }
         };
-        let generation = self.pr_generation(&thread);
+        let generation = self.review_generation(&thread);
         let epoch = self.pr_read_epoch(&input.target.key);
         let program = self.config.gh_binary.clone();
         let timeout = self.config.network_timeout;
@@ -331,7 +405,7 @@ impl Owner {
     }
     pub(super) fn change_review(
         &mut self,
-        thread: ThreadId,
+        thread: PrAccess,
         input: PrReviewChange,
         reply: Reply<PrChangeResult>,
     ) {
@@ -476,6 +550,7 @@ impl Owner {
             Ok(ReviewCompletion::FileContents { result, .. }) => result.as_ref().err(),
             Ok(ReviewCompletion::CommitFiles { result, .. }) => result.as_ref().err(),
             Ok(ReviewCompletion::FilesViewed { result, .. }) => result.as_ref().err(),
+            Ok(ReviewCompletion::Candidates { result, .. }) => result.as_ref().err(),
             Ok(ReviewCompletion::SetFilesViewed { result, .. }) => result.as_ref().err(),
             Ok(ReviewCompletion::Acknowledge { confirmation, .. }) => confirmation.as_ref().err(),
             Ok(ReviewCompletion::Change(_, result, _))
@@ -500,6 +575,28 @@ impl Owner {
             )
         })? {
             ReviewCompletion::Checkout(done) => self.finish_pr_checkout(*done),
+            ReviewCompletion::Candidates {
+                access,
+                generation,
+                epoch,
+                target,
+                result,
+                reply,
+            } => {
+                let result = result.and_then(|candidates| {
+                    self.review_member(&access, &target.key)?;
+                    if self.review_generation(&access) != generation
+                        || self.pr_read_epoch(&target.key) != epoch
+                    {
+                        return Err(AppError::new(
+                            "pr_review_stale",
+                            "The pull request association changed. Refresh before continuing.",
+                        ));
+                    }
+                    Ok(candidates)
+                });
+                let _ = reply.send(result);
+            }
             ReviewCompletion::FilesViewed {
                 thread,
                 generation,
@@ -510,7 +607,7 @@ impl Owner {
             } => {
                 let result = result.and_then(|files| {
                     self.review_member(&thread, &target.key)?;
-                    if self.pr_generation(&thread) != generation
+                    if self.review_generation(&thread) != generation
                         || self.pr_read_epoch(&target.key) != epoch
                     {
                         return Err(AppError::new(
@@ -531,7 +628,7 @@ impl Owner {
             } => {
                 let result = result.and_then(|()| {
                     self.review_member(&thread, &target.key)?;
-                    if self.pr_generation(&thread) != generation {
+                    if self.review_generation(&thread) != generation {
                         return Err(AppError::new(
                             "pr_review_stale",
                             "The pull request association changed. Refresh before continuing.",
@@ -551,7 +648,7 @@ impl Owner {
             } => {
                 let result = result.and_then(|contents| {
                     self.review_member(&thread, &target.key)?;
-                    if self.pr_generation(&thread) != generation
+                    if self.review_generation(&thread) != generation
                         || self.pr_read_epoch(&target.key) != epoch
                     {
                         return Err(AppError::new(
@@ -573,7 +670,7 @@ impl Owner {
             } => {
                 let result = result.and_then(|files| {
                     self.review_member(&thread, &input.target.key)?;
-                    if self.pr_generation(&thread) != generation
+                    if self.review_generation(&thread) != generation
                         || self.pr_read_epoch(&input.target.key) != epoch
                     {
                         return Err(AppError::new(
@@ -722,7 +819,7 @@ impl Owner {
                 self.review_work.changing.remove(&input.target.key);
                 let response = confirmation.and_then(|confirmed| {
                     self.review_member(&thread, &input.target.key)?;
-                    if self.pr_generation(&thread) != generation
+                    if self.review_generation(&thread) != generation
                         || self.pr_read_epoch(&input.target.key) != epoch
                     {
                         return Err(AppError::new(
@@ -780,8 +877,17 @@ impl Owner {
                             .collect(),
                     );
                 }
-                for (workspace, reply) in self.review_work.reads.remove(&key).unwrap_or_default() {
+                for (access, workspace, generation, reply) in
+                    self.review_work.reads.remove(&key).unwrap_or_default()
+                {
                     let hydrated = result.as_ref().clone().and_then(|mut detail| {
+                        self.review_member(&access, &key)?;
+                        if self.review_generation(&access) != generation {
+                            return Err(AppError::new(
+                                "pr_review_stale",
+                                "The pull request association changed. Refresh before continuing.",
+                            ));
+                        }
                         detail.operations = self
                             .review_work
                             .pending
@@ -834,7 +940,7 @@ impl Owner {
     }
     pub(super) fn pending_pr_operations(
         &self,
-        thread: &ThreadId,
+        thread: &PrAccess,
         key: &PullRequestKey,
     ) -> Result<Vec<PrOperation>> {
         self.review_member(thread, key)?;
@@ -883,7 +989,7 @@ impl Owner {
     }
     pub(super) fn reconcile_pr(
         &mut self,
-        thread: ThreadId,
+        thread: PrAccess,
         key: PullRequestKey,
         request_id: String,
         reply: Reply<PrChangeResult>,
@@ -949,7 +1055,7 @@ impl Owner {
     }
     pub(super) fn acknowledge_update(
         &mut self,
-        thread: ThreadId,
+        thread: PrAccess,
         acknowledgment: AcknowledgeUncertainUpdate,
         reply: Reply<PrChangeResult>,
     ) {
@@ -999,7 +1105,7 @@ impl Owner {
         self.review_work.changing.insert(key.clone());
         self.invalidate_pr_reads(&key);
         let epoch = self.pr_read_epoch(&key);
-        let generation = self.pr_generation(&thread);
+        let generation = self.review_generation(&thread);
         let program = self.config.gh_binary.clone();
         let timeout = self.config.network_timeout;
         let mut cancel = self.review_work.cancel.subscribe();
@@ -1024,7 +1130,7 @@ impl Owner {
     }
     pub(super) fn review_disposition(
         &mut self,
-        thread: &ThreadId,
+        thread: &PrAccess,
         key: &PullRequestKey,
         input: &SetReviewDisposition,
     ) -> Result<Option<SavedDisposition>> {
