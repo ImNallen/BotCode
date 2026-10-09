@@ -19,7 +19,7 @@ PR evidence is `apps/web/src/components/pullRequest/PullRequestCodeTab.tsx`, `us
 
 - [x] Confirm all requested gaps against current source and exact upstream source.
 - [x] Launch the pre-change Tauri bundle with a disposable repository and isolated `BOT_CODE_DATA_DIR`. Its Usage page shows only subscription limits.
-- [ ] Usage history. Behavioral checks, native checks, then update the baseline.
+- [x] Usage history. Behavioral checks, native checks, then update the baseline.
 - [ ] Richer file rendering. Behavioral checks, native checks, then update the baseline.
 - [ ] PR commit selection. Behavioral checks, native checks, then update the baseline.
 - [ ] Viewed markers. Behavioral checks, native checks, then update the baseline.
@@ -30,4 +30,4 @@ The native fixture starts at `/tmp/bot-smaller-gaps-native`, with disposable Git
 
 ## Current status
 
-Usage history is implemented on this branch. It reads Codex transcripts, retains a bounded scan cache in the isolated data directory, and adds token and estimated-cost views with model and time breakdowns. Behavioral checks and an independent review pass. Native verification is pending because computer use returns `Sky Computer Use native pipe startup failed`, including for app inventory after session resets and a helper restart. The remaining five features have not entered implementation. [Verification notes](smaller-gaps-verification.md) record the evidence and the next native checks. The baseline remains unchanged until those checks pass.
+Usage history shipped in #76 and passed native verification on October 9, 2026. The isolated Tauri app matched the fixture totals in Tokens and Cost across all four periods. Model and time breakdowns, keyboard chart values, refresh after appended usage, restart preferences, scan-cache reuse, and retained partial coverage passed. The Usage baseline now describes the implemented history views. The remaining five features have not entered implementation. [Verification notes](smaller-gaps-verification.md) record the checks and evidence.

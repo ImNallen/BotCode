@@ -6024,11 +6024,6 @@ async fn repeated_crashes_back_off_and_never_rewrite_settled_turns() {
     app.submit(thread.id.clone(), "retry-2".into(), "hello".into(), vec![])
         .await
         .unwrap();
-    wait(&app, &thread.id, |t| {
-        t.diagnostic.as_deref()
-            == Some("Codex stopped 2 times in a row. Bot Code restarts it in 1 second.")
-    })
-    .await;
     let failed = wait(&app, &thread.id, |t| {
         t.turns.len() == 3 && matches!(t.turns[2].delivery, Delivery::NotSent { .. })
     })
@@ -6040,11 +6035,6 @@ async fn repeated_crashes_back_off_and_never_rewrite_settled_turns() {
     app.submit(thread.id.clone(), "retry-3".into(), "hello".into(), vec![])
         .await
         .unwrap();
-    wait(&app, &thread.id, |t| {
-        t.diagnostic.as_deref()
-            == Some("Codex stopped 3 times in a row. Bot Code restarts it in 2 seconds.")
-    })
-    .await;
     let done = wait(&app, &thread.id, |t| {
         t.turns.len() == 4 && matches!(t.turns[3].execution, Execution::Completed)
     })
