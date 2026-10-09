@@ -146,6 +146,7 @@ fn main() {
                 ipc::link_pull_request,
                 ipc::unlink_pull_request,
                 ipc::read_pull_request,
+                ipc::read_pull_request_commit_files,
                 ipc::change_pull_request,
                 ipc::reconcile_pull_request,
                 ipc::acknowledge_uncertain_update,

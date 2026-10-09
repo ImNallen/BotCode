@@ -14,6 +14,9 @@ import {
   acknowledgeUncertainUpdate,
   type AcknowledgeUncertainUpdate,
   prReviewDetail,
+  prCommitFiles,
+  prCommitFilesRequest,
+  type PrCommitFilesRequest,
   prChangeResult,
   prOperation,
   type PrReviewChange,
@@ -1031,6 +1034,12 @@ export const ipc = {
     call("git_status", { workspaceId, threadId: threadId ?? null }, gitStatus),
   readPullRequest: (threadId: string, key: PullRequestKey) =>
     call("read_pull_request", { threadId, key }, prReviewDetail),
+  readPullRequestCommitFiles: (threadId: string, input: PrCommitFilesRequest) =>
+    call(
+      "read_pull_request_commit_files",
+      { threadId, input: prCommitFilesRequest.parse(input) },
+      prCommitFiles,
+    ),
   pullRequestOperations: (threadId: string, key: PullRequestKey) =>
     call("pull_request_operations", { threadId, key }, z.array(prOperation)),
   reconcilePullRequest: (

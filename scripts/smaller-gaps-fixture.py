@@ -34,7 +34,7 @@ def context(model):
     return {"type": "turn_context", "payload": {"model": model}}
 
 
-def prepare(directory):
+def prepare(directory, pr_code=False):
     source = Path(__file__).resolve().parents[1]
     subprocess.run(
         ["python3", str(source / "scripts/pr-handoff-fixture.py"), str(directory)],
@@ -90,6 +90,52 @@ def prepare(directory):
             "past24hTokens": 2860,
         },
     })
+    if pr_code:
+        repo = directory / "repo"
+
+        def git(*arguments):
+            return subprocess.check_output(["git", "-C", str(repo), *arguments]).decode().strip()
+
+        git("checkout", "feature")
+        (repo / "calculate.ts").write_text("export const value = 2;\n")
+        git("add", "calculate.ts")
+        git("commit", "-qm", "Update calculation")
+        first = git("rev-parse", "HEAD")
+        (repo / "note.md").write_text("This change is in the latest commit only.\n")
+        git("add", "note.md")
+        git("commit", "-qm", "Document calculation")
+        latest = git("rev-parse", "HEAD")
+        git("checkout", "main")
+        remote = directory / "remote.git"
+        subprocess.run(["git", "--git-dir", str(remote), "fetch", str(repo), "feature:feature"], check=True)
+        subprocess.run(["git", "--git-dir", str(remote), "update-ref", "refs/pull/41/head", latest], check=True)
+        files = [
+            {"filename": "calculate.ts", "status": "added", "additions": 1, "deletions": 0,
+             "patch": "@@ -0,0 +1 @@\n+export const value = 2;"},
+            {"filename": "note.md", "status": "added", "additions": 1, "deletions": 0,
+             "patch": "@@ -0,0 +1 @@\n+This change is in the latest commit only."},
+        ]
+        state_path = directory / "gh.json"
+        state = json.loads(state_path.read_text())
+        state.update({
+            "head": latest, "files": files, "additions": 2, "deletions": 0, "changedFiles": 2,
+            "commits": [
+                {"oid": oid, "messageHeadline": headline, "committedDate": at,
+                 "author": {"name": "Contributor", "user": {"login": "contributor"}}}
+                for oid, headline, at in [
+                    (first, "Update calculation", "2026-10-08T12:00:00Z"),
+                    (latest, "Document calculation", "2026-10-09T12:00:00Z"),
+                ]
+            ],
+            "commitFiles": {
+                first: [{"filename": "calculate.ts", "status": "modified", "additions": 1, "deletions": 1,
+                         "patch": "@@ -1 +1 @@\n-export const calculate = (n: number) => n + 1;\n+export const value = 2;"}],
+                latest: [files[1]],
+            },
+        })
+        state_path.write_text(json.dumps(state, indent=2))
+        (directory / "baseline-gh.json").write_text(json.dumps(state, indent=2))
+        manifest.update({"head": latest, "commitA": first, "commitB": latest})
     (directory / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(json.dumps(manifest, indent=2))
 
@@ -105,10 +151,10 @@ def append(directory):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare disposable native feature-gap fixtures.")
-    parser.add_argument("action", choices=("prepare", "append-usage"))
+    parser.add_argument("action", choices=("prepare", "prepare-pr-code", "append-usage"))
     parser.add_argument("directory", type=Path)
     arguments = parser.parse_args()
-    if arguments.action == "prepare":
-        prepare(arguments.directory.resolve())
+    if arguments.action in ("prepare", "prepare-pr-code"):
+        prepare(arguments.directory.resolve(), pr_code=arguments.action == "prepare-pr-code")
     else:
         append(arguments.directory.resolve())

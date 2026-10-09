@@ -275,16 +275,54 @@ impl Fetch<'_> {
         problems: &mut Vec<PrSectionProblem>,
     ) -> Result<Vec<PrFile>> {
         let (owner, name) = key.repository();
+        self.file_pages(
+            &format!("repos/{owner}/{name}/pulls/{}/files", key.number()),
+            false,
+            problems,
+        )
+        .await
+    }
+    async fn file_pages(
+        &mut self,
+        path: &str,
+        commit: bool,
+        problems: &mut Vec<PrSectionProblem>,
+    ) -> Result<Vec<PrFile>> {
         let mut files = vec![];
         for page in 1..=MAX_PAGES {
-            let endpoint = format!(
-                "repos/{owner}/{name}/pulls/{}/files?per_page=100&page={page}",
-                key.number()
-            );
-            let rows: Vec<FileRow> = serde_json::from_value(
-                self.call(&["api", &endpoint, "--hostname", "github.com"])
-                    .await?,
-            )?;
+            let endpoint = format!("{path}?per_page=100&page={page}");
+            let value = match self
+                .call(&["api", &endpoint, "--hostname", "github.com"])
+                .await
+            {
+                Ok(value) => value,
+                Err(error)
+                    if commit
+                        && page > 1
+                        && error.code != "process_cleanup"
+                        && error.code != "cancelled" =>
+                {
+                    record_problem(
+                        problems,
+                        PrSectionProblem::Failed {
+                            section: PrSection::Files,
+                            message: error.message,
+                        },
+                    );
+                    return Ok(files);
+                }
+                Err(error) => return Err(error),
+            };
+            let rows: Vec<FileRow> = if commit {
+                #[derive(Deserialize)]
+                struct CommitFilesResponse {
+                    #[serde(default)]
+                    files: Vec<FileRow>,
+                }
+                serde_json::from_value::<CommitFilesResponse>(value)?.files
+            } else {
+                serde_json::from_value(value)?
+            };
             let count = rows.len();
             for row in rows {
                 let patch = row.patch.filter(|s| s.len() <= 256 * 1024);
@@ -711,6 +749,62 @@ fn timeline_entry(at: Option<&str>, event: PrTimelineEvent) -> PrTimelineEntry {
         event,
     }
 }
+pub(crate) async fn read_commit_files(
+    program: &Path,
+    input: &PrCommitFilesRequest,
+    timeout: Duration,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<PrCommitFiles> {
+    input.validate()?;
+    let timeout = timeout.min(Duration::from_secs(90));
+    let deadline = Instant::now() + timeout;
+    let mut fetch = Fetch {
+        program,
+        deadline,
+        bytes: 0,
+        calls: 0,
+        section_deadline: None,
+        cancel,
+    };
+    let initial = fetch.meta(&input.target.key).await?;
+    let identity_error = || {
+        AppError::new(
+            "pr_review_identity",
+            "The PR head or signed-in account changed. Refresh before reviewing.",
+        )
+    };
+    if initial.observation != input.target {
+        return Err(identity_error());
+    }
+    fetch.section_deadline = Some(deadline - (timeout / 4).min(Duration::from_secs(15)));
+    let mut membership_problems = vec![];
+    let commits = fetch
+        .commits(&input.target, &mut membership_problems)
+        .await?;
+    if !commits.iter().any(|entry| matches!(&entry.event, PrTimelineEvent::Commit { oid, .. } if oid.eq_ignore_ascii_case(&input.commit_oid))) {
+        return Err(AppError::new("pr_commit_missing", "This commit could not be established as part of the current pull request. Refresh and select a current commit."));
+    }
+    let (owner, name) = input.target.key.repository();
+    let mut problems = vec![];
+    let files = fetch
+        .file_pages(
+            &format!("repos/{owner}/{name}/commits/{}", input.commit_oid),
+            true,
+            &mut problems,
+        )
+        .await?;
+    fetch.section_deadline = None;
+    if fetch.meta(&input.target.key).await?.observation != input.target {
+        return Err(identity_error());
+    }
+    Ok(PrCommitFiles {
+        target: input.target.clone(),
+        commit_oid: input.commit_oid.clone(),
+        files,
+        problems,
+    })
+}
+
 pub(crate) async fn read(
     program: &Path,
     key: &PullRequestKey,

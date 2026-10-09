@@ -164,7 +164,7 @@ elif args[:2] == ['api', 'graphql']:
         field = 'reviews' if 'BotReviewSummaries' in query else 'comments'
         print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, field: connection([{**comment, 'id': field.upper() + '_' + str(page), 'state': 'CHANGES_REQUESTED', 'createdAt': state.get('reviewAt' if field == 'reviews' else 'commentAt', comment['createdAt'])}])}}}}))
     elif 'BotReviewCommits' in query:
-        commits = state.get('commits', [{'oid': 'c' * 40, 'messageHeadline': 'Validate input', 'committedDate': '2026-10-03T12:00:00Z', 'author': {'name': 'Contributor', 'user': {'login': 'contributor'}}}])
+        commits = state.get('commitPages', {}).get(str(page), state.get('commits', [{'oid': 'c' * 40, 'messageHeadline': 'Validate input', 'committedDate': '2026-10-03T12:00:00Z', 'author': {'name': 'Contributor', 'user': {'login': 'contributor'}}}]))
         print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, 'commits': connection([{'commit': commit} for commit in commits])}}}}))
     elif 'BotReviewChecks' in query:
         print(json.dumps({'data': {'repository': {'pullRequest': {'id': pr['id'], 'headRefOid': sha, 'statusCheckRollup': {'contexts': connection([{'__typename': 'CheckRun', 'name': 'unit tests', 'status': 'COMPLETED', 'conclusion': state.get('checkConclusion', 'FAILURE'), 'detailsUrl': url + '/checks'}])}}}}}))
@@ -180,6 +180,19 @@ elif args[:2] == ['api', 'graphql']:
     else:
         print('Unsupported fixture GraphQL operation', file=sys.stderr)
         sys.exit(2)
+elif args[:1] == ['api'] and '/commits/' in args[1]:
+    oid = args[1].split('/commits/')[1].split('?')[0]
+    page = int(args[1].split('page=')[-1])
+    commit_mode = state.get('commitModes', {}).get(oid, 'ok')
+    time.sleep(state.get('commitDelays', {}).get(oid, 0))
+    if commit_mode == 'error' or page in state.get('failCommitPages', []):
+        print('Fixture commit unavailable', file=sys.stderr)
+        sys.exit(1)
+    if commit_mode == 'omitted':
+        print(json.dumps({'sha': oid}))
+    else:
+        files = state.get('commitFilePages', {}).get(oid, {}).get(str(page), state.get('commitFiles', {}).get(oid, []))
+        print(json.dumps({'sha': oid, 'files': files}))
 elif args[:1] == ['api'] and '/files?' in args[1]:
     if 'files' in state.get('failSections', []):
         print('Fixture files unavailable', file=sys.stderr)

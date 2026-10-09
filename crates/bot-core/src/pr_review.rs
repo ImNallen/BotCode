@@ -5,7 +5,7 @@ use crate::{
     pull_requests::{PrSnapshot, PullRequestKey},
 };
 pub(crate) use host::checkout_snapshot;
-pub(crate) use host::{Confirmation, acknowledge_update, change, confirm, read};
+pub(crate) use host::{Confirmation, acknowledge_update, change, confirm, read, read_commit_files};
 pub use lifecycle::*;
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +16,38 @@ pub struct PrObservation {
     pub node_id: String,
     pub head_oid: String,
     pub viewer: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrCommitFilesRequest {
+    pub target: PrObservation,
+    pub commit_oid: String,
+}
+impl PrCommitFilesRequest {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if [&self.commit_oid, &self.target.head_oid]
+            .iter()
+            .any(|oid| oid.len() != 40 || !oid.bytes().all(|c| c.is_ascii_hexdigit()))
+            || self.target.node_id.is_empty()
+            || self.target.node_id.len() > 256
+            || self.target.viewer.is_empty()
+            || self.target.viewer.len() > 256
+        {
+            return Err(AppError::new(
+                "invalid_review",
+                "Invalid commit or review identity.",
+            ));
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrCommitFiles {
+    pub target: PrObservation,
+    pub commit_oid: String,
+    pub files: Vec<PrFile>,
+    pub problems: Vec<PrSectionProblem>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

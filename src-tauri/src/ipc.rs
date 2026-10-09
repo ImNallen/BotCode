@@ -160,6 +160,14 @@ pub async fn read_pull_request(
     app.read_pull_request(thread_id, key).await
 }
 #[tauri::command]
+pub async fn read_pull_request_commit_files(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    input: PrCommitFilesRequest,
+) -> Result<PrCommitFiles> {
+    app.read_pull_request_commit_files(thread_id, input).await
+}
+#[tauri::command]
 pub async fn change_pull_request(
     app: State<'_, App>,
     thread_id: ThreadId,

@@ -23,6 +23,14 @@ pub(super) enum ReviewCompletion {
         reply: Reply<PrChangeResult>,
     },
     Read(PullRequestKey, Box<Result<PrReviewDetail>>),
+    CommitFiles {
+        thread: ThreadId,
+        generation: u64,
+        epoch: u64,
+        input: PrCommitFilesRequest,
+        result: Result<PrCommitFiles>,
+        reply: Reply<PrCommitFiles>,
+    },
     Change(
         PrReviewChange,
         Result<PrChangeResult>,
@@ -122,6 +130,46 @@ impl Owner {
         self.review_work.active.spawn(async move {
             let result = host::read(&program, &key, timeout, &mut cancel).await;
             ReviewCompletion::Read(key, Box::new(result))
+        });
+    }
+    pub(super) fn read_commit_files(
+        &mut self,
+        thread: ThreadId,
+        input: PrCommitFilesRequest,
+        reply: Reply<PrCommitFiles>,
+    ) {
+        let admission = (|| {
+            self.review_member(&thread, &input.target.key)?;
+            input.validate()?;
+            if self.review_work.active.len() >= 4
+                || self.review_work.changing.contains(&input.target.key)
+            {
+                return Err(AppError::new(
+                    "pr_busy",
+                    "Pull request operations are busy. Try again shortly.",
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = admission {
+            let _ = reply.send(Err(error));
+            return;
+        }
+        let generation = self.pr_generation(&thread);
+        let epoch = self.pr_read_epoch(&input.target.key);
+        let program = self.config.gh_binary.clone();
+        let timeout = self.config.network_timeout;
+        let mut cancel = self.review_work.cancel.subscribe();
+        self.review_work.active.spawn(async move {
+            let result = host::read_commit_files(&program, &input, timeout, &mut cancel).await;
+            ReviewCompletion::CommitFiles {
+                thread,
+                generation,
+                epoch,
+                input,
+                result,
+                reply,
+            }
         });
     }
     pub(super) fn change_review(
@@ -268,6 +316,7 @@ impl Owner {
         let worker_error = match &done {
             Ok(ReviewCompletion::Checkout(done)) => done.result.as_ref().err(),
             Ok(ReviewCompletion::Read(_, result)) => result.as_ref().as_ref().err(),
+            Ok(ReviewCompletion::CommitFiles { result, .. }) => result.as_ref().err(),
             Ok(ReviewCompletion::Acknowledge { confirmation, .. }) => confirmation.as_ref().err(),
             Ok(ReviewCompletion::Change(_, result, _))
             | Ok(ReviewCompletion::Lifecycle(_, result, _, _)) => result.as_ref().err(),
@@ -291,6 +340,28 @@ impl Owner {
             )
         })? {
             ReviewCompletion::Checkout(done) => self.finish_pr_checkout(*done),
+            ReviewCompletion::CommitFiles {
+                thread,
+                generation,
+                epoch,
+                input,
+                result,
+                reply,
+            } => {
+                let result = result.and_then(|files| {
+                    self.review_member(&thread, &input.target.key)?;
+                    if self.pr_generation(&thread) != generation
+                        || self.pr_read_epoch(&input.target.key) != epoch
+                    {
+                        return Err(AppError::new(
+                            "pr_review_stale",
+                            "The pull request association changed. Refresh before continuing.",
+                        ));
+                    }
+                    Ok(files)
+                });
+                let _ = reply.send(result);
+            }
             ReviewCompletion::Lifecycle(input, mut result, confirmation, reply) => {
                 let confirmation = confirmation.map(|observation| {
                     observation.and_then(|snapshot| {
