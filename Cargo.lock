@@ -368,6 +368,7 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "libc",
+ "percent-encoding",
  "portable-pty",
  "reqwest",
  "rusqlite",

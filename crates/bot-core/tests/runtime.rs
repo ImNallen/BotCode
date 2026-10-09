@@ -1453,6 +1453,27 @@ async fn saved_files_and_ignore_edits_refresh_project_search() {
     app.shutdown().await.unwrap();
 }
 #[tokio::test]
+async fn serves_checkout_files_to_the_workspace_scheme() {
+    let f = Fixture::new();
+    f.commit();
+    std::fs::write(f.repository.join("logo.png"), b"png").unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let served = app
+        .serve_workspace_file(&format!("/{}/-/logo.png", workspace.id), None, false)
+        .await;
+    assert_eq!((served.status, served.body.as_slice()), (200, &b"png"[..]));
+    let unknown = app
+        .serve_workspace_file(
+            &format!("/{}/-/logo.png", WorkspaceId::default()),
+            None,
+            false,
+        )
+        .await;
+    assert_eq!((unknown.status, unknown.body.len()), (404, 0));
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
 async fn worktree_views_inspect_the_thread_checkout() {
     let f = Fixture::new();
     f.commit();

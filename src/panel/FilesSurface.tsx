@@ -5,12 +5,20 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeftIcon,
   ChevronRightIcon,
+  Code2Icon,
+  EyeIcon,
   FolderTreeIcon,
-  LoaderCircleIcon,
+  Table2Icon,
   WrapTextIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { workspaceTarget, type CheckoutRef, type WorkspaceView } from "../ipc";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  workspaceFileUrl,
+  workspaceTarget,
+  type CheckoutRef,
+  type WorkspaceView,
+} from "../ipc";
+import type { FileLinks } from "../chat/ChatMarkdown";
 import { OpenInPicker } from "../chat/OpenInPicker";
 import { cn } from "../lib/cn";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
@@ -22,22 +30,70 @@ import {
   useStoredState,
 } from "./chrome";
 import {
+  fileContentRevision,
   fileEditorCacheKey,
   type EditorFileIdentity,
 } from "./fileContentRevision";
 import { fileQuery, setFileDraft, useFileDraft } from "./fileDrafts";
 import { FileEntryIcon } from "./FileEntryIcon";
+import {
+  fileContent,
+  fileKind,
+  fileSurfaceView,
+  isRevealPending,
+  RENDER_PREFERENCES,
+  renderedMode,
+  type FileBody as FileBodyKind,
+  type HandledReveal,
+  type RenderToggle,
+} from "./filePreview";
+import {
+  BrowserDocumentFrame,
+  DelimitedTable,
+  FileSurfaceFailure,
+  FileSurfaceLoading,
+  RenderedMarkdown,
+  WorkspaceAudio,
+  WorkspaceImage,
+} from "./FileRenderedViews";
 import { clampFileLine, useFileLineReveal } from "./fileLineReveal";
 import { FileExplorer } from "./FileExplorer";
 import { pathBasename } from "../chat/composer-logic";
 import { FILE_VIEW_UNSAFE_CSS } from "./surfaceCss";
+import {
+  claimFileEditState,
+  fileEditStateKey,
+  isFileEditor,
+} from "./retainedEditState";
 import { useFileSaveCoordinator } from "./useFileSaveCoordinator";
+import type { SelectedLineRange } from "@pierre/diffs";
+import { useComposerContext } from "../chat/ComposerContextProvider";
+import { buildFileReviewContext } from "./composerReviewContext";
+import { DiffCommentAnnotation } from "./DiffCommentAnnotation";
+import {
+  applyMovedAnnotations,
+  fileCommentAnnotations,
+  formatFileCommentRange,
+  movedFileCommentDraft,
+  nextFileCommentId,
+  normalizeFileCommentRange,
+  savedFileComments,
+  type FileCommentAnnotationGroup,
+  type FileCommentDraftAnchor,
+} from "./fileComments";
+import { installFileEditorDismissal } from "./fileEditorDismissal";
 import { useResolvedTheme, type ResolvedTheme } from "./useResolvedTheme";
 
 const FILE_SURFACE_SUBHEADER_CLASS =
   "flex h-10 min-h-10 shrink-0 items-center gap-2 border-b border-border/60 bg-background px-3 in-data-[preview-panel-mode=inline]:mb-3 in-data-[preview-panel-mode=inline]:h-7 in-data-[preview-panel-mode=inline]:min-h-7 in-data-[preview-panel-mode=inline]:border-b-transparent";
 
 export const WORD_WRAP_KEY = "z1.wordWrap";
+
+const TOGGLE_ICONS: Record<RenderToggle["icon"], React.ReactNode> = {
+  code: <Code2Icon className="size-3.5" />,
+  table: <Table2Icon className="size-3.5" />,
+  eye: <EyeIcon className="size-3.5" />,
+};
 
 export function FilesSurface({
   checkout,
@@ -46,6 +102,7 @@ export function FilesSurface({
   line,
   revealSequence,
   onOpenFile,
+  fileLinks,
 }: {
   checkout: CheckoutRef;
   view: WorkspaceView | undefined;
@@ -53,6 +110,7 @@ export function FilesSurface({
   line: number | null;
   revealSequence: number;
   onOpenFile: (path: string) => void;
+  fileLinks: FileLinks;
 }) {
   const [explorerOpen, setExplorerOpen] = useStoredState(
     "z1.fileExplorerOpen",
@@ -62,6 +120,41 @@ export function FilesSurface({
     WORD_WRAP_KEY,
     storedFlag(true),
   );
+  const preferences = {
+    markdown: useStoredState(
+      RENDER_PREFERENCES.markdown.key,
+      storedFlag(RENDER_PREFERENCES.markdown.fallback),
+    ),
+    table: useStoredState(
+      RENDER_PREFERENCES.table.key,
+      storedFlag(RENDER_PREFERENCES.table.fallback),
+    ),
+    html: useStoredState(
+      RENDER_PREFERENCES.html.key,
+      storedFlag(RENDER_PREFERENCES.html.fallback),
+    ),
+  };
+  const [handledReveal, setHandledReveal] = useState<HandledReveal | null>(
+    null,
+  );
+  const draft = useFileDraft(checkout, path ?? "");
+  const read = useCachedFileRead(checkout, path ?? "");
+  const kind = path === null ? null : fileKind(path);
+  const mode = kind && renderedMode(kind);
+  const surface =
+    path === null || kind === null
+      ? null
+      : fileSurfaceView(kind, {
+          preferred: mode ? preferences[mode][0] : false,
+          revealPending: isRevealPending(
+            line,
+            handledReveal,
+            path,
+            revealSequence,
+          ),
+          textShown: fileContent(draft, read).kind === "text",
+        });
+  const toggle = surface?.toggle;
   const files = view?.files ?? [];
   const projectName = view?.workspace.label ?? "";
   const showExplorer = explorerOpen || path === null;
@@ -88,13 +181,30 @@ export function FilesSurface({
             </div>
           </ScrollRow>
           <OpenInPicker target={workspaceTarget(checkout, path)} compact />
-          <SurfaceAction
-            label={wordWrap ? "Disable word wrap" : "Enable word wrap"}
-            pressed={wordWrap}
-            onPress={() => setWordWrap(!wordWrap)}
-          >
-            <WrapTextIcon className="size-3.5" />
-          </SurfaceAction>
+          {toggle ? (
+            <SurfaceAction
+              label={toggle.label}
+              pressed={toggle.rendered}
+              onPress={() => {
+                const pressed = !toggle.rendered;
+                preferences[toggle.mode][1](pressed);
+                setHandledReveal(
+                  pressed ? { path, sequence: revealSequence } : null,
+                );
+              }}
+            >
+              {TOGGLE_ICONS[toggle.icon]}
+            </SurfaceAction>
+          ) : null}
+          {surface?.wordWrap ? (
+            <SurfaceAction
+              label={wordWrap ? "Disable word wrap" : "Enable word wrap"}
+              pressed={wordWrap}
+              onPress={() => setWordWrap(!wordWrap)}
+            >
+              <WrapTextIcon className="size-3.5" />
+            </SurfaceAction>
+          ) : null}
           <SurfaceAction
             label={explorerOpen ? "Hide file explorer" : "Show file explorer"}
             pressed={explorerOpen}
@@ -111,14 +221,16 @@ export function FilesSurface({
             path ? "flex" : "hidden",
           )}
         >
-          {path ? (
-            <SourceView
+          {path && surface ? (
+            <FileBody
               key={`${checkout.workspaceId}:${checkout.threadId}:${path}`}
               checkout={checkout}
               path={path}
+              body={surface.body}
               line={line}
               revealSequence={revealSequence}
               wordWrap={wordWrap}
+              fileLinks={fileLinks}
             />
           ) : null}
         </div>
@@ -145,19 +257,34 @@ export function FilesSurface({
   );
 }
 
-function SourceView({
+function useCachedFileRead(checkout: CheckoutRef, path: string) {
+  return useQuery({ ...fileQuery(checkout, path), enabled: false });
+}
+
+function useStableByContent<T>(value: T): T {
+  const key = JSON.stringify(value);
+  const stable = useRef({ key, value });
+  if (stable.current.key !== key) stable.current = { key, value };
+  return stable.current.value;
+}
+
+function FileBody({
   checkout,
   path,
+  body,
   line,
   revealSequence,
   wordWrap,
+  fileLinks,
 }: {
   checkout: CheckoutRef;
   path: string;
+  body: FileBodyKind;
   line: number | null;
   revealSequence: number;
   wordWrap: boolean;
-}) {
+  fileLinks: FileLinks;
+}): React.ReactElement {
   const theme = useResolvedTheme();
   const draft = useFileDraft(checkout, path);
   const file = useQuery({
@@ -175,52 +302,69 @@ function SourceView({
       active = false;
     };
   }, [revealSequence]);
-  const contents =
-    draft?.contents ??
-    (!file.error && file.data?.kind === "text" ? file.data.contents : null);
-  if (contents !== null)
-    return (
-      <EditableSource
-        key={`${path}:${theme}`}
-        checkout={checkout}
-        path={path}
-        contents={contents}
-        line={file.isFetching || readSequence !== revealSequence ? null : line}
-        revealSequence={revealSequence}
-        theme={theme}
-        wordWrap={wordWrap}
+  const content = fileContent(draft, file);
+  const retry = () => void file.refetch();
+  if (body.kind === "frame")
+    return content.kind === "pending" ? (
+      <FileSurfaceLoading />
+    ) : (
+      <BrowserDocumentFrame
+        src={workspaceFileUrl(
+          checkout,
+          path,
+          content.kind === "text" && content.confirmedDisk !== null
+            ? fileContentRevision(content.confirmedDisk)
+            : undefined,
+        )}
+        title={path}
       />
     );
-  if (file.isPending)
-    return (
-      <div
-        role="status"
-        aria-label="Loading file"
-        className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground"
-      >
-        <LoaderCircleIcon className="size-5 motion-safe:animate-spin" />
-      </div>
-    );
-  const failure = file.error
-    ? file.error.message
-    : file.data.kind === "unavailable"
-      ? file.data.reason
-      : null;
-  return (
-    <div
-      role="alert"
-      className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-xs leading-relaxed"
-    >
-      <p className="text-destructive">{failure}</p>
-      <button
-        type="button"
-        onClick={() => void file.refetch()}
-        className="rounded-md border border-input px-2.5 py-1 text-xs text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        Try again
-      </button>
-    </div>
-  );
+  switch (content.kind) {
+    case "pending":
+      return <FileSurfaceLoading />;
+    case "failure":
+      return <FileSurfaceFailure message={content.reason} onRetry={retry} />;
+    case "media": {
+      const src = workspaceFileUrl(checkout, path, content.revision);
+      return body.kind === "audio" ? (
+        <WorkspaceAudio src={src} name={path} onRetry={retry} />
+      ) : (
+        <WorkspaceImage src={src} alt={path} />
+      );
+    }
+    case "text":
+      if (body.kind === "markdown")
+        return (
+          <RenderedMarkdown
+            checkout={checkout}
+            path={path}
+            contents={content.contents}
+            fileLinks={fileLinks}
+          />
+        );
+      if (body.kind === "table")
+        return (
+          <DelimitedTable
+            name={path}
+            text={content.contents}
+            delimiter={body.delimiter}
+          />
+        );
+      return (
+        <EditableSource
+          key={`${path}:${theme}`}
+          checkout={checkout}
+          path={path}
+          contents={content.contents}
+          line={
+            file.isFetching || readSequence !== revealSequence ? null : line
+          }
+          revealSequence={revealSequence}
+          theme={theme}
+          wordWrap={wordWrap}
+        />
+      );
+  }
 }
 
 function EditableSource({
@@ -241,6 +385,7 @@ function EditableSource({
   wordWrap: boolean;
 }) {
   const saveCoordinator = useFileSaveCoordinator(checkout, path);
+  const composer = useComposerContext();
   // Written during render because the editor adopts a changed file, and
   // reports that adoption as an edit, in File's layout effect, which runs
   // before this component's effects.
@@ -256,42 +401,180 @@ function EditableSource({
     () => ({ name: path, contents, cacheKey }),
     [path, contents, cacheKey],
   );
-  const onPostRender = useFileLineReveal(path, line, revealSequence);
+  const onPostRender = useFileLineReveal<FileCommentAnnotationGroup>(
+    path,
+    line,
+    revealSequence,
+  );
+  const editorRef =
+    useRef<Pick<Editor<"file">, "setSelections" | "blur">>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const [selection, setSelection] = useState<{
+    revealSequence: number;
+    range: SelectedLineRange | null;
+  } | null>(null);
+  const setSelectedRange = useCallback(
+    (range: SelectedLineRange | null) =>
+      setSelection({ revealSequence, range }),
+    [revealSequence],
+  );
+  const [draft, setDraft] = useState<FileCommentDraftAnchor | null>(null);
+  const [draftText, setDraftText] = useState("");
+  const saved = useStableByContent(
+    savedFileComments(composer?.records ?? [], path),
+  );
+  const lineAnnotations = useMemo(
+    () => fileCommentAnnotations(saved, draft),
+    [saved, draft],
+  );
+  const commenting = draft === null && composer !== null;
+  const beginComment = useCallback((range: SelectedLineRange) => {
+    editorRef.current?.setSelections([]);
+    editorRef.current?.blur();
+    setDraft({ id: nextFileCommentId(), ...normalizeFileCommentRange(range) });
+    setDraftText("");
+  }, []);
+  const onLineSelectionEnd = useCallback(
+    (range: SelectedLineRange | null) => {
+      setSelectedRange(range);
+      if (range) beginComment(range);
+    },
+    [beginComment, setSelectedRange],
+  );
+  const drafting = draft !== null;
+  useEffect(() => {
+    const root = surfaceRef.current;
+    if (!root) return;
+    return installFileEditorDismissal({
+      root,
+      editor: {
+        setSelections: (selections) =>
+          editorRef.current?.setSelections(selections),
+      },
+      isBlocked: () => drafting,
+      onDismiss: () => setSelectedRange(null),
+    });
+  }, [drafting, setSelectedRange]);
   return (
-    <EditProvider createEditor={(type, options) => new Editor(type, options)}>
-      <Virtualizer
-        className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"
-        config={{ overscrollSize: 600, intersectionObserverMargin: 1200 }}
-      >
-        <File
-          file={sourceFile}
-          selectedLines={
-            line === null
-              ? null
-              : {
-                  start: clampFileLine(contents, line),
-                  end: clampFileLine(contents, line),
-                }
-          }
-          edit
-          onEditChange={({ file }) => {
-            const current = editorFile.current;
-            if (!current || file.contents === current.contents) return;
-            editorFile.current = { ...current, contents: file.contents };
-            setFileDraft(checkout, path, file.contents);
-            saveCoordinator.change(file.contents);
-          }}
-          options={{
-            disableFileHeader: true,
-            onPostRender,
-            overflow: wordWrap ? "wrap" : "scroll",
-            theme: theme === "dark" ? "pierre-dark" : "pierre-light",
-            themeType: theme,
-            unsafeCSS: FILE_VIEW_UNSAFE_CSS,
-          }}
-          className="min-h-full"
-        />
-      </Virtualizer>
+    <EditProvider<FileCommentAnnotationGroup>
+      createEditor={(type, options, key) => {
+        let editor = new Editor(type, options, key);
+        if (key !== undefined && isFileEditor(editor)) {
+          const claim = claimFileEditState(
+            editor,
+            key,
+            editorFile.current?.contents ?? contents,
+          );
+          if (claim === "busy" || claim === "failed")
+            editor = new Editor(type, options);
+        }
+        editorRef.current = editor;
+        return editor;
+      }}
+    >
+      <div ref={surfaceRef} className="flex min-h-0 flex-1">
+        <Virtualizer
+          className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"
+          config={{ overscrollSize: 600, intersectionObserverMargin: 1200 }}
+        >
+          <File<FileCommentAnnotationGroup>
+            file={sourceFile}
+            editStateKey={fileEditStateKey(checkout, path)}
+            selectedLines={
+              selection?.revealSequence === revealSequence
+                ? selection.range
+                : line === null
+                  ? null
+                  : {
+                      start: clampFileLine(contents, line),
+                      end: clampFileLine(contents, line),
+                    }
+            }
+            edit
+            onEditChange={({ file, lineAnnotations: moved }) => {
+              if (moved) {
+                for (const record of applyMovedAnnotations(
+                  saved,
+                  moved,
+                  file.contents,
+                ))
+                  composer?.replace(record);
+                setDraft((current) => movedFileCommentDraft(current, moved));
+              }
+              const current = editorFile.current;
+              if (!current || file.contents === current.contents) return;
+              editorFile.current = { ...current, contents: file.contents };
+              setFileDraft(checkout, path, file.contents);
+              saveCoordinator.change(file.contents);
+            }}
+            options={{
+              disableFileHeader: true,
+              enableGutterUtility: commenting,
+              enableLineSelection: commenting,
+              onGutterUtilityClick: setSelectedRange,
+              onLineSelectionChange: setSelectedRange,
+              onLineSelectionEnd,
+              onPostRender,
+              overflow: wordWrap ? "wrap" : "scroll",
+              theme: theme === "dark" ? "pierre-dark" : "pierre-light",
+              themeType: theme,
+              unsafeCSS: FILE_VIEW_UNSAFE_CSS,
+            }}
+            lineAnnotations={lineAnnotations}
+            renderAnnotation={(annotation) => (
+              <div className="py-1">
+                {annotation.metadata.entries.map((entry) =>
+                  entry.kind === "draft" ? (
+                    <DiffCommentAnnotation
+                      key={entry.id}
+                      kind="draft"
+                      rangeLabel={formatFileCommentRange(
+                        entry.startLine,
+                        entry.endLine,
+                      )}
+                      text={draftText}
+                      onTextChange={setDraftText}
+                      pending={composer === null}
+                      onCancel={() => {
+                        setSelectedRange(null);
+                        setDraft(null);
+                      }}
+                      onComment={(text) => {
+                        setSelectedRange(null);
+                        if (
+                          composer?.upsert(
+                            buildFileReviewContext({
+                              contextId: entry.id,
+                              filePath: path,
+                              startLine: entry.startLine,
+                              endLine: entry.endLine,
+                              text,
+                              contents:
+                                editorFile.current?.contents ?? contents,
+                            }),
+                          )
+                        )
+                          setDraft(null);
+                      }}
+                    />
+                  ) : (
+                    <DiffCommentAnnotation
+                      key={entry.id}
+                      kind="comment"
+                      text={entry.text}
+                      onDelete={() => {
+                        setSelectedRange(null);
+                        composer?.remove(entry.id);
+                      }}
+                    />
+                  ),
+                )}
+              </div>
+            )}
+            className="min-h-full"
+          />
+        </Virtualizer>
+      </div>
     </EditProvider>
   );
 }

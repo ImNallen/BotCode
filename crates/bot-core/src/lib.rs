@@ -54,6 +54,7 @@ mod usage;
 pub use usage::{ContextUsage, LimitWindow, Slot, UsageLimits, WindowKind};
 mod text_generation;
 mod vcs;
+pub mod workspace_files;
 pub use domain::*;
 pub use runtime::{App, RuntimeConfig};
 

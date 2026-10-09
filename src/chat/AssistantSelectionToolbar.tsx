@@ -29,8 +29,8 @@ export function AssistantSelectionToolbar({
   environmentId: string;
   threadId: string;
 }) {
-  const addContext = useComposerContext();
-  const enabled = addContext !== null;
+  const composer = useComposerContext();
+  const enabled = composer !== null;
   const [selection, setSelection] = useState<{
     citation: Citation;
     position: SelectionActionPoint;
@@ -129,7 +129,7 @@ export function AssistantSelectionToolbar({
     };
   }, [enabled, environmentId, threadId, viewportRef]);
 
-  if (!selection || !addContext) return null;
+  if (!selection || !composer) return null;
   const tooLong = selection.citation.text.length > 8000;
   const dismiss = () => {
     actionsRef.current?.cancel();
@@ -150,7 +150,7 @@ export function AssistantSelectionToolbar({
       style={{ left: selection.position.x, top: selection.position.y }}
       onPointerDown={(event) => event.preventDefault()}
       onClick={() => {
-        if (tooLong || !addContext(selection.citation)) return;
+        if (tooLong || !composer.add(selection.citation)) return;
         window.getSelection()?.removeAllRanges();
         dismiss();
       }}

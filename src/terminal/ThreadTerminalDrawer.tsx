@@ -293,7 +293,7 @@ function TerminalViewport({
   resizeEpoch,
   drawerHeight,
 }: TerminalViewportProps) {
-  const addContext = useComposerContext();
+  const composer = useComposerContext();
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<GhosttyTerminalSurface | null>(null);
   const visibleRef = useRef(visible);
@@ -684,11 +684,11 @@ function TerminalViewport({
           }}
           trigger={() => null}
         >
-          {addContext ? (
+          {composer ? (
             <MenuItem
               disabled={menu.context === null}
               onClick={() => {
-                if (!menu.context || !addContext(menu.context)) return;
+                if (!menu.context || !composer.add(menu.context)) return;
                 terminalRef.current?.clearSelection();
               }}
             >

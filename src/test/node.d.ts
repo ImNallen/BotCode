@@ -19,6 +19,9 @@ declare module "node:assert/strict" {
   const assert: {
     deepEqual(actual: unknown, expected: unknown, message?: string): void;
     equal(actual: unknown, expected: unknown, message?: string): void;
+    notEqual(actual: unknown, expected: unknown, message?: string): void;
+    match(value: string, pattern: RegExp, message?: string): void;
+    throws(fn: () => unknown, error: RegExp): void;
     rejects(
       promise: Promise<unknown> | (() => Promise<unknown>),
       error: RegExp,
@@ -27,4 +30,8 @@ declare module "node:assert/strict" {
     ok(value: unknown, message?: string): asserts value;
   };
   export default assert;
+}
+
+declare module "node:fs" {
+  export function readFileSync(path: string | URL, encoding: "utf8"): string;
 }

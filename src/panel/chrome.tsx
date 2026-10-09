@@ -61,8 +61,12 @@ export function ScrollRow({
   className,
   children,
   viewportRef,
+  hideScrollbars = true,
   ...props
-}: ComponentProps<"div"> & { viewportRef?: React.Ref<HTMLDivElement> }) {
+}: ComponentProps<"div"> & {
+  viewportRef?: React.Ref<HTMLDivElement>;
+  hideScrollbars?: boolean;
+}) {
   return (
     <div
       data-slot="scroll-area"
@@ -75,7 +79,11 @@ export function ScrollRow({
       <div
         ref={viewportRef}
         data-slot="scroll-area-viewport"
-        className="h-full max-h-[inherit] overflow-auto overscroll-contain rounded-[inherit] outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className={cn(
+          "h-full max-h-[inherit] overflow-auto overscroll-contain rounded-[inherit] outline-none",
+          hideScrollbars &&
+            "[-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+        )}
       >
         {children}
       </div>

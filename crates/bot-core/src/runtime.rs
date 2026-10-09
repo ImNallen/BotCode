@@ -30,7 +30,7 @@ use crate::{
         MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey, TerminalSize, Terminals,
     },
     usage::{self, ContextUsage, UsageLimits},
-    vcs,
+    vcs, workspace_files,
 };
 use pr_review::ReviewWork;
 use pull_requests::PrWork;
@@ -690,6 +690,28 @@ impl App {
         tokio::task::spawn_blocking(move || repo::read_file(&root, &path))
             .await
             .map_err(|e| AppError::new("repository", e))?
+    }
+    /// Answers a `botcode-workspace` request. Unknown ids, a checkout without files and every policy
+    /// refusal become the same bodiless 404.
+    pub async fn serve_workspace_file(
+        &self,
+        uri_path: &str,
+        range: Option<&str>,
+        if_range: bool,
+    ) -> workspace_files::FileResponse {
+        let Some(request) = workspace_files::parse(uri_path) else {
+            return workspace_files::FileResponse::not_found();
+        };
+        let root = match self.checkout(request.workspace, request.thread).await {
+            Ok((_, Location::Repository(root) | Location::Folder(root))) => root,
+            _ => return workspace_files::FileResponse::not_found(),
+        };
+        let range = range.map(str::to_owned);
+        tokio::task::spawn_blocking(move || {
+            workspace_files::respond(&root, &request.path, range.as_deref(), if_range)
+        })
+        .await
+        .unwrap_or_else(|_| workspace_files::FileResponse::not_found())
     }
     pub async fn write_file(
         &self,

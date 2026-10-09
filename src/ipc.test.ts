@@ -709,3 +709,41 @@ it("Git progress IPC accepts tagged hook and output events and rejects malformed
     else Reflect.deleteProperty(globalThis, "window");
   }
 });
+
+it("builds path-form workspace file URLs that keep sibling paths relative", async () => {
+  const { workspaceFileUrlFrom } = await import("./ipc.ts");
+  const checkout = { workspaceId: "ws", threadId: "th" };
+  assert.equal(
+    workspaceFileUrlFrom(
+      "botcode-workspace://localhost/",
+      checkout,
+      "docs/my pic#1?.png",
+      "12:ab",
+    ),
+    "botcode-workspace://localhost/ws/th/docs/my%20pic%231%3F.png?v=12%3Aab",
+  );
+  assert.equal(
+    workspaceFileUrlFrom(
+      "http://botcode-workspace.localhost",
+      { workspaceId: "ws" },
+      "site/index.html",
+    ),
+    "http://botcode-workspace.localhost/ws/-/site/index.html",
+  );
+  assert.equal(
+    new URL(
+      "style.css",
+      workspaceFileUrlFrom(
+        "http://botcode-workspace.localhost/",
+        checkout,
+        "site/index.html",
+      ),
+    ).pathname,
+    "/ws/th/site/style.css",
+    "a page's relative URL resolves to its sibling",
+  );
+  assert.equal(
+    workspaceFileUrlFrom("x://localhost/", checkout, "100%.png"),
+    "x://localhost/ws/th/100%25.png",
+  );
+});

@@ -1360,8 +1360,18 @@ pub enum DiffBasis {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FileView {
-    Text { name: String, contents: String },
-    Unavailable { reason: String },
+    Text {
+        name: String,
+        contents: String,
+    },
+    /// An image or audio file the webview loads by URL. Its bytes never cross IPC.
+    Media {
+        name: String,
+        revision: String,
+    },
+    Unavailable {
+        reason: String,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#[cfg(target_os = "macos")]
+mod edit_history;
 mod filesystem;
 mod ipc;
 mod notifications;
 mod preview;
+mod workspace_files;
 use bot_core::{AgentTools, App, Registration, RuntimeConfig};
 use tauri::{Emitter, EventTarget, Manager};
 fn main() {
@@ -13,7 +16,12 @@ fn main() {
         }
         return;
     }
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(edit_history::menu)
+        .on_menu_event(edit_history::on_menu_event);
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(notifications::NotificationActions::default())
@@ -44,6 +52,10 @@ fn main() {
                     responder.respond(response.expect("static response parts are valid"));
                 });
             },
+        )
+        .register_asynchronous_uri_scheme_protocol(
+            bot_core::workspace_files::SCHEME,
+            workspace_files::handle,
         )
         .setup(|app| {
             notifications::install(app.handle());

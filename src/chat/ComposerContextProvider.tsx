@@ -2,7 +2,19 @@
 import { createContext, useContext } from "react";
 import type { ComposerContextRecord } from "./composerContext";
 
-export const ComposerContextProvider = createContext<
-  ((record: ComposerContextRecord) => boolean) | null
->(null);
+export type ComposerContextChannel = {
+  /** Records the composer text still references. */
+  readonly records: readonly ComposerContextRecord[];
+  /** Appends a chip and focuses the composer. */
+  readonly add: (record: ComposerContextRecord) => boolean;
+  /** Inserts when new, replaces otherwise. Never moves focus. */
+  readonly upsert: (record: ComposerContextRecord) => boolean;
+  /** Replaces a record the composer holds. Never inserts or moves focus. */
+  readonly replace: (record: ComposerContextRecord) => void;
+  readonly remove: (contextId: string) => void;
+};
+
+/** Null while the composer cannot accept context: reverting, sending, or appending a pull request handoff. */
+export const ComposerContextProvider =
+  createContext<ComposerContextChannel | null>(null);
 export const useComposerContext = () => useContext(ComposerContextProvider);
