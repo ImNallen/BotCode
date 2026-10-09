@@ -27,7 +27,7 @@ import { Input } from "../ui/input";
 import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
 import { RefreshIcon, SegmentedGroup } from "./chrome";
 import { prUrl, type PullRequestKey } from "./pullRequests";
-import { PullRequestReviewComposer } from "./PullRequestReviewComposer";
+import { PullRequestComposer } from "./PullRequestComposer";
 import { PullRequestTimeline, type ReviewHandoff } from "./PullRequestTimeline";
 import { sectionProblemText } from "./prCoverage";
 import { captureRepairDraft, type ReviewFinding } from "./reviews";
@@ -86,8 +86,13 @@ function ActionIcon({ action }: { action: LifecycleAction }) {
 export function PullRequestDetail({
   prKey,
   onBack,
+  onActed,
   ...handoff
-}: { prKey: PullRequestKey; onBack: () => void } & ReviewHandoff) {
+}: {
+  prKey: PullRequestKey;
+  onBack: () => void;
+  onActed?: () => void;
+} & ReviewHandoff) {
   const [tab, setTab] = useState<(typeof TABS)[number]["value"]>("summary");
   const [error, setError] = useState<string>();
   const query = useQuery({
@@ -146,6 +151,7 @@ export function PullRequestDetail({
   });
   const refresh = () => {
     void query.refetch();
+    onActed?.();
     filesViewed.refresh();
     if (scope.kind === "commit") void commitQuery.refetch();
   };
@@ -174,6 +180,7 @@ export function PullRequestDetail({
       });
       if (result.kind !== "applied") return changeResultText(result);
       await query.refetch();
+      onActed?.();
       return undefined;
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
@@ -204,7 +211,7 @@ export function PullRequestDetail({
     body: string,
     url: string,
   ) => {
-    if (!detail) return;
+    if (!detail || typeof handoff.threadId !== "string") return;
     const finding: ReviewFinding = {
       observation: {
         prId: detail.observation.nodeId,
@@ -237,7 +244,7 @@ export function PullRequestDetail({
     });
   };
   const repair = (intent: "resolve_conflicts" | "fix_findings") => {
-    if (!detail) return;
+    if (!detail || typeof handoff.threadId !== "string") return;
     handoff.onAskCodex(
       captureRepairDraft({
         workspaceId: handoff.workspaceId,
@@ -282,7 +289,7 @@ export function PullRequestDetail({
   );
   return (
     <section
-      className="flex min-h-0 flex-1 flex-col text-sm"
+      className="relative flex min-h-0 flex-1 flex-col text-sm"
       aria-label="Pull request detail"
     >
       <div
@@ -669,6 +676,8 @@ export function PullRequestDetail({
             {tab === "summary" ? (
               <PullRequestSummary
                 detail={detail}
+                access={handoff.threadId}
+                refresh={refresh}
                 checks={checks}
                 checksIncomplete={checksIncomplete}
                 canFix={canAsk}
@@ -728,11 +737,35 @@ export function PullRequestDetail({
               />
             ) : null}
           </div>
-          <PullRequestReviewComposer
-            threadId={handoff.threadId}
+          <PullRequestComposer
+            access={handoff.threadId}
             detail={detail}
-            disabled={disabled}
+            disabled={disabled || lifecycle.pending}
             onSubmitted={refresh}
+            onFollowUp={async (action) => {
+              try {
+                const result = await query.refetch({ throwOnError: true });
+                const stateChange = {
+                  kind: "set_closed",
+                  closed: action === "close",
+                } as const;
+                if (
+                  !result.data?.capabilities.actions.some(
+                    (entry) =>
+                      entry.kind === "set_closed" &&
+                      entry.closed === stateChange.closed,
+                  )
+                ) {
+                  setError(
+                    `The comment was posted, but GitHub no longer permits ${action === "close" ? "closing" : "reopening"} this pull request.`,
+                  );
+                  return;
+                }
+                lifecycle.choose(stateChange, result.data);
+              } catch (error) {
+                setError(`The comment was posted. ${String(error)}`);
+              }
+            }}
           />
         </>
       ) : null}

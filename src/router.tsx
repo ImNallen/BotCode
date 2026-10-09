@@ -9,6 +9,8 @@ import { z } from "zod";
 import { Workbench } from "./Workbench";
 import { SettingsPage } from "./settings/SettingsPage";
 import { settingsSection } from "./settings/settingsCatalog";
+import { validatePrInboxSearch } from "./panel/prInboxSearch";
+import { PullRequestInboxPage } from "./panel/PullRequestInboxPage";
 import { UsagePage } from "./usage/UsagePage";
 import { RootRouteErrorView } from "./errors/RootRouteErrorView";
 const search = z.object({
@@ -59,8 +61,14 @@ const usage = createRoute({
   path: "/usage",
   component: UsagePage,
 });
+const pullRequests = createRoute({
+  getParentRoute: () => route,
+  path: "/pull-requests",
+  validateSearch: validatePrInboxSearch,
+  component: PullRequestInboxPage,
+});
 export const router = createRouter({
-  routeTree: route.addChildren([index, settings, section, usage]),
+  routeTree: route.addChildren([index, settings, section, usage, pullRequests]),
 });
 declare module "@tanstack/react-router" {
   interface Register {

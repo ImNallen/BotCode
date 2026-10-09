@@ -1,3 +1,17 @@
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum PrAccess {
+    Thread(crate::ThreadId),
+    Workspace {
+        #[serde(rename = "workspaceId")]
+        workspace_id: crate::WorkspaceId,
+    },
+}
+impl From<crate::ThreadId> for PrAccess {
+    fn from(id: crate::ThreadId) -> Self {
+        Self::Thread(id)
+    }
+}
 mod host;
 mod lifecycle;
 use crate::{
@@ -6,8 +20,8 @@ use crate::{
 };
 pub(crate) use host::checkout_snapshot;
 pub(crate) use host::{
-    Confirmation, acknowledge_update, change, confirm, read, read_commit_files, read_file_contents,
-    read_files_viewed, set_files_viewed,
+    Confirmation, acknowledge_update, change, confirm, read, read_candidates, read_commit_files,
+    read_file_contents, read_files_viewed, set_files_viewed,
 };
 pub use lifecycle::*;
 use serde::{Deserialize, Serialize};
@@ -125,6 +139,7 @@ pub struct PrReviewDetail {
     pub observation: PrObservation,
     pub snapshot: PrSnapshot,
     pub body: String,
+    pub reactions: Vec<PrReaction>,
     pub author: Option<PrActor>,
     pub labels: Vec<PrLabel>,
     pub reviewers: Vec<PrReviewer>,
@@ -219,6 +234,7 @@ pub struct PrThreadLocation {
 pub struct PrFinding {
     #[serde(default)]
     pub thread_location: Option<PrThreadLocation>,
+    pub reaction_subjects: Vec<PrReactionSubject>,
     pub finding: ReviewFinding,
     pub outcome: Option<String>,
     pub can_reply: bool,
@@ -334,6 +350,23 @@ pub enum PrReviewAction {
     EditBody {
         body: String,
     },
+    AddComment {
+        body: String,
+    },
+    SetReaction {
+        subject_id: Option<String>,
+        content: PrReactionContent,
+        reacted: bool,
+    },
+    SetLabel {
+        name: String,
+        applied: bool,
+    },
+    RequestReviewer {
+        id: String,
+        reviewer_kind: PrReviewerKind,
+        requested: bool,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,6 +450,27 @@ impl PrReviewChange {
                 !title.trim().is_empty() && title.chars().count() <= 256
             }
             PrReviewAction::EditBody { body: text } => body(text),
+            PrReviewAction::AddComment { body: text } => body(text) && !text.trim().is_empty(),
+            PrReviewAction::SetReaction { subject_id, .. } => {
+                subject_id.as_ref().is_none_or(|id| valid_id(id))
+            }
+            PrReviewAction::SetLabel { name, .. } => {
+                !name.trim().is_empty() && name.len() <= 256 && !name.contains('\0')
+            }
+            PrReviewAction::RequestReviewer {
+                id, reviewer_kind, ..
+            } => {
+                let login = if *reviewer_kind == PrReviewerKind::User {
+                    id.strip_suffix("[bot]").unwrap_or(id)
+                } else {
+                    id
+                };
+                !login.is_empty()
+                    && id.len() <= 256
+                    && login
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+            }
             PrReviewAction::Merge { .. }
             | PrReviewAction::Enqueue
             | PrReviewAction::EnableAutoMerge { .. }
@@ -433,4 +487,97 @@ impl PrReviewChange {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrCandidateKind {
+    Labels,
+    Reviewers,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrReviewerKind {
+    User,
+    Team,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrLabelCandidate {
+    pub name: String,
+    pub color: Option<String>,
+    pub description: Option<String>,
+    pub is_applied: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrReviewerCandidate {
+    pub id: String,
+    pub kind: PrReviewerKind,
+    pub login: String,
+    pub name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub is_requested: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrCandidates {
+    pub labels: Vec<PrLabelCandidate>,
+    pub reviewers: Vec<PrReviewerCandidate>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PrReactionContent {
+    ThumbsUp,
+    ThumbsDown,
+    Laugh,
+    Hooray,
+    Confused,
+    Heart,
+    Rocket,
+    Eyes,
+}
+impl PrReactionContent {
+    pub(crate) fn wire(self) -> &'static str {
+        match self {
+            Self::ThumbsUp => "THUMBS_UP",
+            Self::ThumbsDown => "THUMBS_DOWN",
+            Self::Laugh => "LAUGH",
+            Self::Hooray => "HOORAY",
+            Self::Confused => "CONFUSED",
+            Self::Heart => "HEART",
+            Self::Rocket => "ROCKET",
+            Self::Eyes => "EYES",
+        }
+    }
+    pub(crate) fn from_wire(wire: &str) -> Option<Self> {
+        [
+            Self::ThumbsUp,
+            Self::ThumbsDown,
+            Self::Laugh,
+            Self::Hooray,
+            Self::Confused,
+            Self::Heart,
+            Self::Rocket,
+            Self::Eyes,
+        ]
+        .into_iter()
+        .find(|content| content.wire() == wire)
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrReaction {
+    pub content: PrReactionContent,
+    pub count: u64,
+    pub actors: Vec<String>,
+    pub viewer_has_reacted: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrReactionSubject {
+    pub subject_id: String,
+    pub reactions: Vec<PrReaction>,
 }

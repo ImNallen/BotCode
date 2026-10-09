@@ -1,3 +1,4 @@
+mod candidates;
 mod lifecycle;
 mod mutation;
 use super::*;
@@ -6,6 +7,7 @@ use crate::{
     vcs::Tool,
 };
 use base64::Engine;
+pub(crate) use candidates::read_candidates;
 pub(crate) use lifecycle::{Confirmation, acknowledge_update, confirm};
 pub(crate) use mutation::change;
 use serde::Deserialize;
@@ -19,7 +21,8 @@ use std::{
 use tokio::sync::watch;
 
 const PAGE_INFO: &str = "pageInfo { hasNextPage endCursor }";
-const COMMENT: &str = "id body url author { login } createdAt updatedAt";
+const REACTION_GROUPS: &str = "reactionGroups { content viewerHasReacted reactors(first:10) { totalCount nodes { ... on User {login} ... on Bot {login} ... on Organization {login} ... on Mannequin {login} } } }";
+const COMMENT: &str = "id body url author { login } createdAt updatedAt reactionGroups { content viewerHasReacted reactors(first:10) { totalCount nodes { ... on User {login} ... on Bot {login} ... on Organization {login} ... on Mannequin {login} } } }";
 const INLINE: &str = "originalCommit { oid } diffHunk path originalLine";
 const MAX_PAGES: usize = 4;
 struct Fetch<'a> {
@@ -135,7 +138,7 @@ impl Fetch<'_> {
     async fn meta(&mut self, key: &PullRequestKey) -> Result<Meta> {
         let (owner, name) = key.repository();
         let query = format!(
-            "query BotReviewMeta($owner:String!,$name:String!,$number:Int!){{viewer{{login}} repository(owner:$owner,name:$name){{mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed viewerPermission pullRequest(number:$number){{{FIELDS} baseRefOid mergeable mergeStateStatus isMergeQueueEnabled mergeQueueEntry {{ id }} autoMergeRequest {{ mergeMethod }} viewerCanClose viewerCanReopen viewerCanUpdate viewerCanUpdateBranch viewerCanEnableAutoMerge viewerCanDisableAutoMerge body reviewDecision locked viewerDidAuthor createdAt additions deletions changedFiles author {{ login avatarUrl }} labels(first:100) {{ nodes {{ name color }} }} reviewRequests(first:100) {{ nodes {{ requestedReviewer {{ __typename ... on Actor {{ login avatarUrl }} ... on Team {{ combinedSlug avatarUrl }} }} }} }} latestReviews(first:100) {{ nodes {{ state author {{ login avatarUrl }} }} }}}}}}}}"
+            "query BotReviewMeta($owner:String!,$name:String!,$number:Int!){{viewer{{login}} repository(owner:$owner,name:$name){{mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed viewerPermission pullRequest(number:$number){{{FIELDS} baseRefOid mergeable mergeStateStatus isMergeQueueEnabled mergeQueueEntry {{ id }} autoMergeRequest {{ mergeMethod }} viewerCanClose viewerCanReopen viewerCanUpdate viewerCanUpdateBranch viewerCanEnableAutoMerge viewerCanDisableAutoMerge body {REACTION_GROUPS} reviewDecision locked viewerDidAuthor createdAt additions deletions changedFiles author {{ login avatarUrl }} labels(first:100) {{ nodes {{ name color }} }} reviewRequests(first:100) {{ nodes {{ requestedReviewer {{ __typename ... on Actor {{ login avatarUrl }} ... on Team {{ combinedSlug avatarUrl }} }} }} }} latestReviews(first:100) {{ nodes {{ state author {{ login avatarUrl }} }} }}}}}}}}"
         );
         let value = self
             .query(
@@ -173,7 +176,7 @@ impl Fetch<'_> {
                 key: key.clone(),
                 node_id: snapshot.node_id.clone(),
                 head_oid: snapshot.head_oid.clone(),
-                viewer,
+                viewer: viewer.clone(),
             },
             capabilities: lifecycle::capabilities(&value["data"]["repository"], pr, &snapshot),
             queued: pr["mergeQueueEntry"]["id"].as_str().is_some(),
@@ -181,6 +184,7 @@ impl Fetch<'_> {
                 .as_str()
                 .map(str::to_owned),
             snapshot,
+            reactions: reactions(pr, &viewer)?,
             body: required(pr, "body")?,
             review_decision: pr["reviewDecision"].as_str().map(str::to_owned),
             verdicts,
@@ -389,6 +393,7 @@ struct Meta {
     observation: PrObservation,
     snapshot: PrSnapshot,
     body: String,
+    reactions: Vec<PrReaction>,
     review_decision: Option<String>,
     verdicts: Vec<ReviewVerdict>,
     merged_at: Option<String>,
@@ -503,6 +508,42 @@ fn ensure_target(value: &Value, target: &PrObservation) -> Result<()> {
     }
     Ok(())
 }
+fn reactions(value: &Value, viewer: &str) -> Result<Vec<PrReaction>> {
+    let mut result = vec![];
+    for group in value["reactionGroups"].as_array().into_iter().flatten() {
+        let Some(content) = group["content"]
+            .as_str()
+            .and_then(PrReactionContent::from_wire)
+        else {
+            continue;
+        };
+        let count = group["reactors"]["totalCount"]
+            .as_u64()
+            .ok_or_else(|| unavailable("Invalid reaction count."))?;
+        if count == 0 {
+            continue;
+        }
+        let viewer_has_reacted = group["viewerHasReacted"]
+            .as_bool()
+            .ok_or_else(|| unavailable("Invalid reaction permissions."))?;
+        let actors = group["reactors"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|actor| actor["login"].as_str())
+            .filter(|login| !viewer_has_reacted || !login.eq_ignore_ascii_case(viewer))
+            .take(10)
+            .map(str::to_owned)
+            .collect();
+        result.push(PrReaction {
+            content,
+            count,
+            actors,
+            viewer_has_reacted,
+        });
+    }
+    Ok(result)
+}
 fn comment(value: Value) -> Result<ReviewComment> {
     Ok(ReviewComment {
         id: required(&value, "id")?,
@@ -567,9 +608,14 @@ impl Fetch<'_> {
             let id = required(&row, "id")?;
             let mut connection: Connection = serde_json::from_value(row["comments"].clone())?;
             let mut comments = vec![];
+            let mut reaction_subjects = vec![];
             let mut seen = HashSet::new();
             for page in 0..MAX_PAGES {
                 for value in connection.nodes {
+                    reaction_subjects.push(PrReactionSubject {
+                        subject_id: required(&value, "id")?,
+                        reactions: reactions(&value, &target.viewer)?,
+                    });
                     comments.push(comment(value)?);
                 }
                 if !connection.page_info.has_next_page {
@@ -615,6 +661,7 @@ impl Fetch<'_> {
             }
             findings.push(PrFinding {
                 thread_location: thread_location(&row),
+                reaction_subjects,
                 finding: finding(
                     target,
                     id,
@@ -668,6 +715,10 @@ impl Fetch<'_> {
             let outcome = row["state"].as_str().map(str::to_owned);
             Ok(PrFinding {
                 thread_location: None,
+                reaction_subjects: vec![PrReactionSubject {
+                    subject_id: id.clone(),
+                    reactions: reactions(&row, &target.viewer)?,
+                }],
                 finding: finding(target, id, source.clone(), vec![comment(row)?])?,
                 outcome,
                 can_reply: false,
@@ -1113,6 +1164,7 @@ pub(crate) async fn read(
         observation: final_meta.observation,
         snapshot: final_meta.snapshot,
         body: final_meta.body,
+        reactions: final_meta.reactions,
         author: final_meta.author,
         labels: final_meta.labels,
         reviewers: final_meta.reviewers,

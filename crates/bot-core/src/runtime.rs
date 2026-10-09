@@ -211,17 +211,23 @@ enum Command {
     RenameWorkspace(WorkspaceId, String, Reply<Workspace>),
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
-    PrRead(ThreadId, PullRequestKey, Reply<PrReviewDetail>),
-    PrFileContents(ThreadId, PrFileContentsRequest, Reply<PrFileContents>),
-    PrCommitFiles(ThreadId, PrCommitFilesRequest, Reply<PrCommitFiles>),
-    PrFilesViewed(ThreadId, PrObservation, Reply<PrFilesViewed>),
-    PrSetFilesViewed(ThreadId, PrSetFilesViewed, Reply<()>),
-    PrChange(ThreadId, PrReviewChange, Reply<PrChangeResult>),
-    PrReconcile(ThreadId, PullRequestKey, String, Reply<PrChangeResult>),
-    PrAcknowledgeUpdate(ThreadId, AcknowledgeUncertainUpdate, Reply<PrChangeResult>),
-    PrOperations(ThreadId, PullRequestKey, Reply<Vec<PrOperation>>),
+    PrRead(PrAccess, PullRequestKey, Reply<PrReviewDetail>),
+    PrCandidates(
+        PrAccess,
+        PrObservation,
+        PrCandidateKind,
+        Reply<PrCandidates>,
+    ),
+    PrFileContents(PrAccess, PrFileContentsRequest, Reply<PrFileContents>),
+    PrCommitFiles(PrAccess, PrCommitFilesRequest, Reply<PrCommitFiles>),
+    PrFilesViewed(PrAccess, PrObservation, Reply<PrFilesViewed>),
+    PrSetFilesViewed(PrAccess, PrSetFilesViewed, Reply<()>),
+    PrChange(PrAccess, PrReviewChange, Reply<PrChangeResult>),
+    PrReconcile(PrAccess, PullRequestKey, String, Reply<PrChangeResult>),
+    PrAcknowledgeUpdate(PrAccess, AcknowledgeUncertainUpdate, Reply<PrChangeResult>),
+    PrOperations(PrAccess, PullRequestKey, Reply<Vec<PrOperation>>),
     SetReviewDisposition(
-        ThreadId,
+        PrAccess,
         PullRequestKey,
         SetReviewDisposition,
         Reply<Option<SavedDisposition>>,
@@ -851,85 +857,220 @@ impl App {
         let root = self.checkout(id, thread).await?.1.repository()?;
         vcs::status(&root).await
     }
+    pub async fn list_pull_requests(
+        &self,
+        input: crate::PrInboxInput,
+    ) -> Result<crate::PrInboxResult> {
+        if input.limit == 0
+            || input.limit > 100
+            || input.query.len() > 2000
+            || input.query.contains(['\0', '\r', '\n'])
+            || input.cursors.len() > 300
+            || input
+                .cursors
+                .values()
+                .any(|cursor| cursor.is_empty() || cursor.len() > 1000)
+        {
+            return Err(AppError::new("pr_inbox", "Invalid pull request filters."));
+        }
+        let workspaces = self.list_workspaces().await?;
+        if input.workspace_id.as_ref().is_some_and(|id| {
+            !workspaces
+                .iter()
+                .any(|workspace| &workspace.id == id && workspace.kind == WorkspaceKind::Repository)
+        }) {
+            return Err(AppError::new(
+                "workspace_missing",
+                "The selected project is unavailable.",
+            ));
+        }
+        let viewer = crate::pr_inbox::viewer(&self.gh, self.network_timeout).await?;
+        let mut result = crate::PrInboxResult {
+            entries: vec![],
+            viewer: viewer.clone(),
+            errors: vec![],
+            limited: false,
+            cursors: BTreeMap::new(),
+        };
+        let mut seen = HashSet::new();
+        for workspace in workspaces.into_iter().filter(|w| {
+            w.kind == WorkspaceKind::Repository
+                && input.workspace_id.as_ref().is_none_or(|id| id == &w.id)
+        }) {
+            let admitted: Result<String> = async {
+                let repository = crate::pr_inbox::repository_identity(&workspace.root).await?;
+                Ok(repository)
+            }
+            .await;
+            let repository = match admitted {
+                Ok(repository) => repository,
+                Err(error) => {
+                    result.errors.push(crate::pr_inbox::PrInboxError {
+                        project_id: workspace.id,
+                        project_title: workspace.label,
+                        message: error.message,
+                    });
+                    continue;
+                }
+            };
+            if !seen.insert(repository.clone()) {
+                continue;
+            }
+            let mut keys = HashSet::new();
+            for (partition, priority) in [
+                ("authored", format!("author:{viewer}")),
+                ("reviewing", format!("review-requested:{viewer}")),
+                ("all", String::new()),
+            ] {
+                let cursor_key = format!("{repository}:{partition}");
+                let cursor = input.cursors.get(&cursor_key);
+                if input.continuation && cursor.is_none() {
+                    continue;
+                }
+                let mut request = input.clone();
+                let query = input
+                    .query
+                    .split_whitespace()
+                    .map(|token| {
+                        if token == "author:@me" || token == "author:me" {
+                            format!("author:{viewer}")
+                        } else {
+                            token.to_owned()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                request.query = format!("{} {}", query, priority).trim().to_owned();
+                match crate::pr_inbox::list(
+                    &self.gh,
+                    &workspace,
+                    &repository,
+                    &viewer,
+                    &request,
+                    cursor.map(String::as_str),
+                    self.network_timeout,
+                )
+                .await
+                {
+                    Ok((rows, next)) => {
+                        if let Some(next) = next {
+                            result.cursors.insert(cursor_key, next);
+                        }
+                        for mut row in rows {
+                            if partition == "reviewing" {
+                                row.viewer_review_requested = true;
+                            }
+                            if keys.insert(row.key.clone()) {
+                                result.entries.push(row);
+                            }
+                        }
+                    }
+                    Err(error) => result.errors.push(crate::pr_inbox::PrInboxError {
+                        project_id: workspace.id.clone(),
+                        project_title: workspace.label.clone(),
+                        message: error.message,
+                    }),
+                }
+            }
+        }
+        result
+            .entries
+            .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        result.errors.dedup_by(|left, right| {
+            left.project_id == right.project_id && left.message == right.message
+        });
+        result.limited = !result.cursors.is_empty();
+        Ok(result)
+    }
     pub async fn read_pull_request(
         &self,
-        thread: ThreadId,
+        thread: impl Into<PrAccess>,
         key: PullRequestKey,
     ) -> Result<PrReviewDetail> {
-        self.call(|reply| Command::PrRead(thread, key, reply)).await
+        self.call(|reply| Command::PrRead(thread.into(), key, reply))
+            .await
+    }
+    pub async fn read_pull_request_candidates(
+        &self,
+        access: impl Into<PrAccess>,
+        target: PrObservation,
+        kind: PrCandidateKind,
+    ) -> Result<PrCandidates> {
+        self.call(|reply| Command::PrCandidates(access.into(), target, kind, reply))
+            .await
     }
     pub async fn read_pull_request_files_viewed(
         &self,
-        thread: ThreadId,
+        thread: impl Into<PrAccess>,
         target: PrObservation,
     ) -> Result<PrFilesViewed> {
-        self.call(|reply| Command::PrFilesViewed(thread, target, reply))
+        self.call(|reply| Command::PrFilesViewed(thread.into(), target, reply))
             .await
     }
     pub async fn set_pull_request_files_viewed(
         &self,
-        thread: ThreadId,
+        thread: impl Into<PrAccess>,
         input: PrSetFilesViewed,
     ) -> Result<()> {
-        self.call(|reply| Command::PrSetFilesViewed(thread, input, reply))
+        self.call(|reply| Command::PrSetFilesViewed(thread.into(), input, reply))
             .await
     }
     pub async fn read_pull_request_file_contents(
         &self,
-        thread: ThreadId,
+        thread: impl Into<PrAccess>,
         input: PrFileContentsRequest,
     ) -> Result<PrFileContents> {
-        self.call(|reply| Command::PrFileContents(thread, input, reply))
+        self.call(|reply| Command::PrFileContents(thread.into(), input, reply))
             .await
     }
     pub async fn read_pull_request_commit_files(
         &self,
-        thread: ThreadId,
+        thread: impl Into<PrAccess>,
         input: PrCommitFilesRequest,
     ) -> Result<PrCommitFiles> {
-        self.call(|reply| Command::PrCommitFiles(thread, input, reply))
+        self.call(|reply| Command::PrCommitFiles(thread.into(), input, reply))
             .await
     }
     pub async fn change_pull_request(
         &self,
-        thread: ThreadId,
+        thread: impl Into<PrAccess>,
         input: PrReviewChange,
     ) -> Result<PrChangeResult> {
-        self.call(|reply| Command::PrChange(thread, input, reply))
+        self.call(|reply| Command::PrChange(thread.into(), input, reply))
             .await
     }
     pub async fn pull_request_operations(
         &self,
-        thread: ThreadId,
+        thread: impl Into<PrAccess>,
         key: PullRequestKey,
     ) -> Result<Vec<PrOperation>> {
-        self.call(|reply| Command::PrOperations(thread, key, reply))
+        self.call(|reply| Command::PrOperations(thread.into(), key, reply))
             .await
     }
     pub async fn acknowledge_uncertain_update(
         &self,
-        thread: ThreadId,
+        thread: impl Into<PrAccess>,
         input: AcknowledgeUncertainUpdate,
     ) -> Result<PrChangeResult> {
-        self.call(|reply| Command::PrAcknowledgeUpdate(thread, input, reply))
+        self.call(|reply| Command::PrAcknowledgeUpdate(thread.into(), input, reply))
             .await
     }
     pub async fn reconcile_pull_request(
         &self,
-        thread: ThreadId,
+        thread: impl Into<PrAccess>,
         key: PullRequestKey,
         request_id: String,
     ) -> Result<PrChangeResult> {
-        self.call(|reply| Command::PrReconcile(thread, key, request_id, reply))
+        self.call(|reply| Command::PrReconcile(thread.into(), key, request_id, reply))
             .await
     }
     pub async fn set_review_disposition(
         &self,
-        thread: ThreadId,
+        thread: impl Into<PrAccess>,
         key: PullRequestKey,
         input: SetReviewDisposition,
     ) -> Result<Option<SavedDisposition>> {
-        self.call(|reply| Command::SetReviewDisposition(thread, key, input, reply))
+        self.call(|reply| Command::SetReviewDisposition(thread.into(), key, input, reply))
             .await
     }
     /// The open pull request for `branch`. gh problems come back as `PrLookup::Unavailable`.
@@ -2298,6 +2439,9 @@ impl Owner {
                 let _ = reply.send(self.checkout(&id, thread));
             }
             Command::PrRead(thread, key, reply) => self.read_review(thread, key, reply),
+            Command::PrCandidates(access, target, kind, reply) => {
+                self.read_candidates(access, target, kind, reply)
+            }
             Command::PrFilesViewed(thread, target, reply) => {
                 self.read_files_viewed(thread, target, reply)
             }

@@ -154,15 +154,25 @@ pub async fn current_branch_pull_request(
 #[tauri::command]
 pub async fn read_pull_request(
     app: State<'_, App>,
-    thread_id: ThreadId,
+    thread_id: PrAccess,
     key: PullRequestKey,
 ) -> Result<PrReviewDetail> {
     app.read_pull_request(thread_id, key).await
 }
 #[tauri::command]
+pub async fn read_pull_request_candidates(
+    app: State<'_, App>,
+    thread_id: PrAccess,
+    target: PrObservation,
+    kind: PrCandidateKind,
+) -> Result<PrCandidates> {
+    app.read_pull_request_candidates(thread_id, target, kind)
+        .await
+}
+#[tauri::command]
 pub async fn read_pull_request_files_viewed(
     app: State<'_, App>,
-    thread_id: ThreadId,
+    thread_id: PrAccess,
     target: PrObservation,
 ) -> Result<PrFilesViewed> {
     app.read_pull_request_files_viewed(thread_id, target).await
@@ -170,7 +180,7 @@ pub async fn read_pull_request_files_viewed(
 #[tauri::command]
 pub async fn set_pull_request_files_viewed(
     app: State<'_, App>,
-    thread_id: ThreadId,
+    thread_id: PrAccess,
     input: PrSetFilesViewed,
 ) -> Result<()> {
     app.set_pull_request_files_viewed(thread_id, input).await
@@ -178,7 +188,7 @@ pub async fn set_pull_request_files_viewed(
 #[tauri::command]
 pub async fn read_pull_request_file_contents(
     app: State<'_, App>,
-    thread_id: ThreadId,
+    thread_id: PrAccess,
     input: PrFileContentsRequest,
 ) -> Result<PrFileContents> {
     app.read_pull_request_file_contents(thread_id, input).await
@@ -186,7 +196,7 @@ pub async fn read_pull_request_file_contents(
 #[tauri::command]
 pub async fn read_pull_request_commit_files(
     app: State<'_, App>,
-    thread_id: ThreadId,
+    thread_id: PrAccess,
     input: PrCommitFilesRequest,
 ) -> Result<PrCommitFiles> {
     app.read_pull_request_commit_files(thread_id, input).await
@@ -194,7 +204,7 @@ pub async fn read_pull_request_commit_files(
 #[tauri::command]
 pub async fn change_pull_request(
     app: State<'_, App>,
-    thread_id: ThreadId,
+    thread_id: PrAccess,
     input: PrReviewChange,
 ) -> Result<PrChangeResult> {
     app.change_pull_request(thread_id, input).await
@@ -202,7 +212,7 @@ pub async fn change_pull_request(
 #[tauri::command]
 pub async fn pull_request_operations(
     app: State<'_, App>,
-    thread_id: ThreadId,
+    thread_id: PrAccess,
     key: PullRequestKey,
 ) -> Result<Vec<PrOperation>> {
     app.pull_request_operations(thread_id, key).await
@@ -210,7 +220,7 @@ pub async fn pull_request_operations(
 #[tauri::command]
 pub async fn reconcile_pull_request(
     app: State<'_, App>,
-    thread_id: ThreadId,
+    thread_id: PrAccess,
     key: PullRequestKey,
     request_id: String,
 ) -> Result<PrChangeResult> {
@@ -219,7 +229,7 @@ pub async fn reconcile_pull_request(
 #[tauri::command]
 pub async fn set_review_disposition(
     app: State<'_, App>,
-    thread_id: ThreadId,
+    thread_id: PrAccess,
     key: PullRequestKey,
     input: SetReviewDisposition,
 ) -> Result<Option<SavedDisposition>> {
@@ -524,7 +534,7 @@ pub async fn unlink_pull_request(
 #[tauri::command]
 pub async fn acknowledge_uncertain_update(
     app: State<'_, App>,
-    thread_id: ThreadId,
+    thread_id: PrAccess,
     input: AcknowledgeUncertainUpdate,
 ) -> Result<PrChangeResult> {
     app.acknowledge_uncertain_update(thread_id, input).await
@@ -671,4 +681,9 @@ pub async fn prepare_pull_request_thread(
     input: PreparePullRequestThread,
 ) -> Result<ThreadSnapshot> {
     app.prepare_pull_request_thread(input).await
+}
+
+#[tauri::command]
+pub async fn list_pull_requests(app: State<'_, App>, input: PrInboxInput) -> Result<PrInboxResult> {
+    app.list_pull_requests(input).await
 }

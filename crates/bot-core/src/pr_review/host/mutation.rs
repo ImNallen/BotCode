@@ -2,13 +2,13 @@ use super::*;
 use serde_json::json;
 use std::{io::Write, path::PathBuf};
 
-struct PrivateInput(PathBuf);
+pub(super) struct PrivateInput(pub(super) PathBuf);
 impl Drop for PrivateInput {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
 }
-fn input_file(value: &Value) -> Result<PrivateInput> {
+pub(super) fn input_file(value: &Value) -> Result<PrivateInput> {
     let path = std::env::temp_dir().join(format!("bot-code-pr-{}.json", uuid::Uuid::new_v4()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -25,6 +25,9 @@ pub(crate) async fn change(
     timeout: Duration,
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<PrChangeResult> {
+    if input.action.is_picker() {
+        return super::candidates::change_picker(program, input, timeout, cancel).await;
+    }
     Ok(match prepare(program, input, timeout, cancel).await {
         Ok(payload) => {
             let file = match input_file(&payload) {
@@ -62,6 +65,13 @@ pub(crate) async fn change(
                 && let Ok(value) = serde_json::from_str::<Value>(&out.stdout)
             {
                 let (field, child) = match input.action {
+                    PrReviewAction::AddComment { .. } => ("addComment", "commentEdge"),
+                    PrReviewAction::SetReaction { reacted: true, .. } => {
+                        ("addReaction", "reaction")
+                    }
+                    PrReviewAction::SetReaction { reacted: false, .. } => {
+                        ("removeReaction", "reaction")
+                    }
                     PrReviewAction::Merge { .. } => ("mergePullRequest", "pullRequest"),
                     PrReviewAction::Enqueue => ("enqueuePullRequest", "mergeQueueEntry"),
                     PrReviewAction::EnableAutoMerge { .. } => {
@@ -95,14 +105,19 @@ pub(crate) async fn change(
                     PrReviewAction::SetResolved {
                         resolved: false, ..
                     } => ("unresolveReviewThread", "thread"),
+                    PrReviewAction::SetLabel { .. } | PrReviewAction::RequestReviewer { .. } => {
+                        unreachable!()
+                    }
                     PrReviewAction::EditTitle { .. } | PrReviewAction::EditBody { .. } => {
                         ("updatePullRequest", "pullRequest")
                     }
                 };
-                if let Some(id) = value["data"][field][child]["id"]
-                    .as_str()
-                    .filter(|id| !id.is_empty())
-                {
+                let node = if matches!(input.action, PrReviewAction::AddComment { .. }) {
+                    &value["data"][field][child]["node"]
+                } else {
+                    &value["data"][field][child]
+                };
+                if let Some(id) = node["id"].as_str().filter(|id| !id.is_empty()) {
                     return Ok(PrChangeResult::Applied { host_id: id.into() });
                 }
                 if value.get("errors").is_some() {
@@ -120,7 +135,7 @@ pub(crate) async fn change(
 /// Edits do not depend on the head commit, and the agent pushes commits
 /// constantly, so only the pull request and the account must still match.
 fn still_target(action: &PrReviewAction, observed: &PrObservation, target: &PrObservation) -> bool {
-    if action.is_edit() {
+    if action.is_edit() || action.is_content_change() {
         observed.key == target.key
             && observed.node_id == target.node_id
             && observed.viewer == target.viewer
@@ -158,7 +173,62 @@ async fn prepare(
             "GitHub does not permit editing this pull request.",
         ));
     }
+    if matches!(input.action, PrReviewAction::AddComment { .. }) && !meta.capabilities.comment
+        || matches!(input.action, PrReviewAction::SetReaction { .. }) && !meta.capabilities.react
+    {
+        return Err(unavailable(
+            "GitHub does not permit commenting or reacting here.",
+        ));
+    }
     let (operation, field, typ, body, child) = match &input.action {
+        PrReviewAction::AddComment { body } => (
+            "BotAddComment",
+            "addComment",
+            "AddCommentInput",
+            json!({"subjectId":input.target.node_id,"body":body}),
+            "commentEdge",
+        ),
+        PrReviewAction::SetReaction {
+            subject_id,
+            content,
+            reacted,
+        } => {
+            let subject_id = subject_id.as_deref().unwrap_or(&input.target.node_id);
+            let query = "query BotReactionScope($id:ID!){node(id:$id){id __typename ... on IssueComment{pullRequest{id}} ... on PullRequestReviewComment{pullRequest{id}} ... on PullRequestReview{pullRequest{id}}}}";
+            let value = fetch.query(query, &[("id", subject_id.into())]).await?;
+            let node = &value["data"]["node"];
+            let belongs = node["id"].as_str() == Some(subject_id)
+                && (subject_id == input.target.node_id && node["__typename"] == "PullRequest"
+                    || matches!(
+                        node["__typename"].as_str(),
+                        Some("IssueComment" | "PullRequestReviewComment" | "PullRequestReview")
+                    ) && node["pullRequest"]["id"].as_str() == Some(&input.target.node_id));
+            if !belongs {
+                return Err(unavailable(
+                    "The reaction subject does not belong to this pull request. Refresh.",
+                ));
+            }
+            if *reacted {
+                (
+                    "BotAddReaction",
+                    "addReaction",
+                    "AddReactionInput",
+                    json!({"subjectId":subject_id,"content":content.wire()}),
+                    "reaction",
+                )
+            } else {
+                (
+                    "BotRemoveReaction",
+                    "removeReaction",
+                    "RemoveReactionInput",
+                    json!({"subjectId":subject_id,"content":content.wire()}),
+                    "reaction",
+                )
+            }
+        }
+        PrReviewAction::SetLabel { .. } | PrReviewAction::RequestReviewer { .. } => {
+            return Err(unavailable("Invalid mutation route."));
+        }
         PrReviewAction::Merge { method } => (
             "BotMerge",
             "mergePullRequest",
@@ -326,6 +396,14 @@ async fn prepare(
             "Edit permissions changed during validation. Refresh.",
         ));
     }
+    if matches!(input.action, PrReviewAction::AddComment { .. }) && !final_meta.capabilities.comment
+        || matches!(input.action, PrReviewAction::SetReaction { .. })
+            && !final_meta.capabilities.react
+    {
+        return Err(unavailable(
+            "Comment or reaction permissions changed during validation. Refresh.",
+        ));
+    }
     if let PrReviewAction::SubmitReview { verdict, .. } = &input.action
         && !final_meta.verdicts.contains(verdict)
     {
@@ -333,8 +411,13 @@ async fn prepare(
             "Review permissions changed during validation. Refresh before submitting.",
         ));
     }
+    let selection = if matches!(input.action, PrReviewAction::AddComment { .. }) {
+        "commentEdge{node{id}}".to_owned()
+    } else {
+        format!("{child}{{id}}")
+    };
     Ok(
-        json!({"query":format!("mutation {operation}($input:{typ}!){{{field}(input:$input){{{child}{{id}}}}}}"),"variables":{"input":body}}),
+        json!({"query":format!("mutation {operation}($input:{typ}!){{{field}(input:$input){{{selection}}}}}"),"variables":{"input":body}}),
     )
 }
 

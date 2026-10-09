@@ -6,6 +6,9 @@ import { cn } from "../lib/cn";
 import { Button } from "../ui/controls";
 import { isFailingCheck, type PrCheck } from "./prChecks";
 import type { PrReviewDetail } from "./prReview";
+import type { PrAccess } from "./prInbox";
+import { PullRequestReactionBar } from "./PullRequestReactions";
+import { PullRequestMetadataPicker } from "./PullRequestMetadataPickers";
 import { PullRequestEditButton } from "./PullRequestEditButton";
 import { PullRequestMarkdownEditor } from "./PullRequestMarkdownEditor";
 import {
@@ -80,8 +83,12 @@ export function PullRequestSummary({
   openSource,
   fixCheck,
   saveBody,
+  access,
+  refresh,
 }: {
   detail: PrReviewDetail;
+  access: PrAccess;
+  refresh: () => void;
   checks: ReadonlyArray<PrCheck>;
   checksIncomplete: boolean;
   canFix: boolean;
@@ -143,6 +150,14 @@ export function PullRequestSummary({
               <PullRequestReviewDecisionGlyph
                 decision={detail.reviewDecision}
               />
+              <PullRequestMetadataPicker
+                access={access}
+                target={detail.observation}
+                kind="reviewers"
+                allowed={detail.capabilities.requestReviewers}
+                disabled={disabled}
+                refresh={refresh}
+              />
             </span>
           </MetaRow>
           <MetaRow icon={<TagIcon className="size-3.5" />} label="Labels">
@@ -158,6 +173,14 @@ export function PullRequestSummary({
                   />
                 ))
               )}
+              <PullRequestMetadataPicker
+                access={access}
+                target={detail.observation}
+                kind="labels"
+                allowed={detail.capabilities.labels}
+                disabled={disabled}
+                refresh={refresh}
+              />
             </span>
           </MetaRow>
         </div>
@@ -206,6 +229,15 @@ export function PullRequestSummary({
           )}
         </div>
       </Section>
+      <div className="px-4 pb-4">
+        <PullRequestReactionBar
+          reactions={detail.reactions}
+          canReact={detail.capabilities.react && !disabled}
+          access={access}
+          target={detail.observation}
+          onRefresh={refresh}
+        />
+      </div>
       <Section title="Checks" defaultOpen={false}>
         {checks.length === 0 ? (
           <p className="text-xs text-muted-foreground">

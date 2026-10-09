@@ -384,7 +384,13 @@ impl Owner {
         key: &PullRequestKey,
         snapshot: &PrSnapshot,
     ) -> Result<()> {
-        if let Some(mut record) = self.prs.records.get(key).cloned() {
+        {
+            let mut record = self
+                .prs
+                .records
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| CachedPr::unknown(key.clone()));
             self.validate_pr_snapshot(key, snapshot)?;
             self.confirm_terminal_operations(key, snapshot)?;
             if record.snapshot.as_ref() != Some(snapshot) {

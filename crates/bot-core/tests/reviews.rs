@@ -189,7 +189,8 @@ async fn remote_detail_pages_original_context_and_saved_triage_survive_checkout_
 }
 #[tokio::test]
 async fn explicit_limits_and_missing_or_truncated_patches_have_no_anchors() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.config.network_timeout = Duration::from_secs(30);
     f.state(json!({"pages":5,"filePages":true}));
     let (app, t) = f.open().await;
     let detail = app.read_pull_request(t.clone(), f.key()).await.unwrap();
@@ -1155,3 +1156,12 @@ mod threads;
 
 #[path = "reviews/ranges.rs"]
 mod ranges;
+
+#[path = "reviews/inbox.rs"]
+mod inbox;
+
+#[path = "reviews/pickers.rs"]
+mod pickers;
+
+#[path = "reviews/comments_reactions.rs"]
+mod comments_reactions;

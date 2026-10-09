@@ -1,3 +1,5 @@
+import { PullRequestReactionBar } from "./PullRequestReactions";
+import type { PrAccess } from "./prInbox";
 // Ported from pingdotgg/t3code v0.0.45 PullRequestReviewAnnotation.tsx (MIT).
 import { CheckCircle2Icon, CircleIcon } from "lucide-react";
 import { useState } from "react";
@@ -19,7 +21,7 @@ export function PullRequestReviewThreadCard({
 }: {
   entry: PrReviewDetail["findings"][number];
   detail: PrReviewDetail;
-  threadId?: string;
+  threadId?: PrAccess;
   refresh?: () => void;
   disabled: boolean;
 }) {
@@ -120,6 +122,20 @@ export function PullRequestReviewThreadCard({
                     <ChatMarkdown text={comment.body} />
                   </div>
                 </div>
+                {threadId && refresh ? (
+                  <PullRequestReactionBar
+                    reactions={
+                      entry.reactionSubjects.find(
+                        (subject) => subject.subjectId === comment.id,
+                      )?.reactions ?? []
+                    }
+                    canReact={detail.capabilities.react && !disabled}
+                    subjectId={comment.id}
+                    access={threadId}
+                    target={detail.observation}
+                    onRefresh={refresh}
+                  />
+                ) : null}
               </article>
             ))}
           </div>

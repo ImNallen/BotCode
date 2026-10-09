@@ -1,4 +1,9 @@
 import {
+  prInboxResult,
+  type PrAccess,
+  type PullRequestListState,
+} from "./panel/prInbox";
+import {
   usageHistoryReportSchema,
   usageHistoryRequestSchema,
   type UsageHistoryRequest,
@@ -17,6 +22,7 @@ import {
   prFileContents,
   type PrFileContentsRequest,
   prReviewDetail,
+  prCandidates,
   prCommitFiles,
   prFilesViewed,
   prSetFilesViewed,
@@ -793,7 +799,7 @@ export const pullRequestDestination = z.discriminatedUnion("kind", [
 ]);
 export type PullRequestDestination = z.infer<typeof pullRequestDestination>;
 export const preparePullRequestInput = z.object({
-  sourceThreadId: id,
+  sourceThreadId: z.union([id, z.object({ workspaceId: id })]),
   target: prObservation,
   destination: pullRequestDestination,
 });
@@ -945,6 +951,19 @@ export const ipc = {
       { workspaceId, threadId, scriptId, terminalId },
       z.null(),
     ),
+  pullRequestInbox: (input: {
+    workspaceId?: string;
+    state: PullRequestListState;
+    query: string;
+    limit: number;
+    cursors?: Record<string, string>;
+    continuation?: boolean;
+  }) =>
+    call(
+      "list_pull_requests",
+      { input: { ...input, workspaceId: input.workspaceId ?? null } },
+      prInboxResult,
+    ),
   threadPullRequests: (threadId: string, refresh = false) =>
     call("list_thread_pull_requests", { threadId, refresh }, threadPrSummary),
   linkPullRequest: (threadId: string, url: string) =>
@@ -1039,22 +1058,32 @@ export const ipc = {
     ),
   gitStatus: ({ workspaceId, threadId }: CheckoutRef) =>
     call("git_status", { workspaceId, threadId: threadId ?? null }, gitStatus),
-  readPullRequest: (threadId: string, key: PullRequestKey) =>
+  readPullRequest: (threadId: PrAccess, key: PullRequestKey) =>
     call("read_pull_request", { threadId, key }, prReviewDetail),
-  readPullRequestFilesViewed: (threadId: string, target: PrObservation) =>
+  readPullRequestCandidates: (
+    threadId: PrAccess,
+    target: PrObservation,
+    kind: "labels" | "reviewers",
+  ) =>
+    call(
+      "read_pull_request_candidates",
+      { threadId, target, kind },
+      prCandidates,
+    ),
+  readPullRequestFilesViewed: (threadId: PrAccess, target: PrObservation) =>
     call(
       "read_pull_request_files_viewed",
       { threadId, target: prObservation.parse(target) },
       prFilesViewed,
     ),
-  setPullRequestFilesViewed: (threadId: string, input: PrSetFilesViewed) =>
+  setPullRequestFilesViewed: (threadId: PrAccess, input: PrSetFilesViewed) =>
     call(
       "set_pull_request_files_viewed",
       { threadId, input: prSetFilesViewed.parse(input) },
       z.null(),
     ),
   readPullRequestFileContents: (
-    threadId: string,
+    threadId: PrAccess,
     input: PrFileContentsRequest,
   ) =>
     call(
@@ -1062,16 +1091,19 @@ export const ipc = {
       { threadId, input: prFileContentsRequest.parse(input) },
       prFileContents,
     ),
-  readPullRequestCommitFiles: (threadId: string, input: PrCommitFilesRequest) =>
+  readPullRequestCommitFiles: (
+    threadId: PrAccess,
+    input: PrCommitFilesRequest,
+  ) =>
     call(
       "read_pull_request_commit_files",
       { threadId, input: prCommitFilesRequest.parse(input) },
       prCommitFiles,
     ),
-  pullRequestOperations: (threadId: string, key: PullRequestKey) =>
+  pullRequestOperations: (threadId: PrAccess, key: PullRequestKey) =>
     call("pull_request_operations", { threadId, key }, z.array(prOperation)),
   reconcilePullRequest: (
-    threadId: string,
+    threadId: PrAccess,
     key: PullRequestKey,
     requestId: string,
   ) =>
@@ -1081,7 +1113,7 @@ export const ipc = {
       prChangeResult,
     ),
   acknowledgeUncertainUpdate: (
-    threadId: string,
+    threadId: PrAccess,
     input: AcknowledgeUncertainUpdate,
   ) =>
     call(
@@ -1089,10 +1121,10 @@ export const ipc = {
       { threadId, input: acknowledgeUncertainUpdate.parse(input) },
       prChangeResult,
     ),
-  changePullRequest: (threadId: string, input: PrReviewChange) =>
+  changePullRequest: (threadId: PrAccess, input: PrReviewChange) =>
     call("change_pull_request", { threadId, input }, prChangeResult),
   setReviewDisposition: (
-    threadId: string,
+    threadId: PrAccess,
     key: PullRequestKey,
     input: SetReviewDisposition,
   ) =>
@@ -1107,7 +1139,7 @@ export const ipc = {
       { workspaceId, threadId: threadId ?? null, branch },
       prLookup,
     ),
-  beginCommitMessage: (threadId: string, selection: CommitSelection) =>
+  beginCommitMessage: (threadId: PrAccess, selection: CommitSelection) =>
     call("begin_commit_message", { threadId, selection }, z.string()),
   awaitCommitMessage: (job: string) =>
     call("await_commit_message", { job }, z.string()),

@@ -51,8 +51,40 @@ export const lifecycleAction = z.discriminatedUnion("kind", [
   }),
 ]);
 export type LifecycleAction = z.infer<typeof lifecycleAction>;
+export const prReactionContent = z.enum([
+  "thumbs-up",
+  "thumbs-down",
+  "laugh",
+  "hooray",
+  "confused",
+  "heart",
+  "rocket",
+  "eyes",
+]);
+export const prReaction = z.object({
+  content: prReactionContent,
+  count: z.number().int().nonnegative(),
+  actors: z.array(z.string()).max(10),
+  viewerHasReacted: z.boolean(),
+});
+export const prReactionSubject = z.object({
+  subjectId: z.string(),
+  reactions: z.array(prReaction),
+});
+export type PrReactionContent = z.infer<typeof prReactionContent>;
+export type PrReaction = z.infer<typeof prReaction>;
 export const prReviewAction = z.discriminatedUnion("kind", [
   ...lifecycleAction.options,
+  z.object({
+    kind: z.literal("add_comment"),
+    body: z.string().trim().min(1).max(64000),
+  }),
+  z.object({
+    kind: z.literal("set_reaction"),
+    subjectId: z.string().nullable().optional(),
+    content: prReactionContent,
+    reacted: z.boolean(),
+  }),
   z.object({
     kind: z.literal("submit_review"),
     verdict: reviewVerdict,
@@ -71,6 +103,17 @@ export const prReviewAction = z.discriminatedUnion("kind", [
   }),
   z.object({ kind: z.literal("edit_title"), title: z.string() }),
   z.object({ kind: z.literal("edit_body"), body: z.string() }),
+  z.object({
+    kind: z.literal("set_label"),
+    name: z.string(),
+    applied: z.boolean(),
+  }),
+  z.object({
+    kind: z.literal("request_reviewer"),
+    id: z.string(),
+    reviewerKind: z.enum(["user", "team"]),
+    requested: z.boolean(),
+  }),
 ]);
 export const acknowledgeUncertainUpdate = z.object({
   key: pullRequestKey,
@@ -182,11 +225,16 @@ export const prReviewDetail = z.object({
     actions: z.array(lifecycleAction),
     explanation: z.string().nullable(),
     edit: z.boolean(),
+    labels: z.boolean().default(false),
+    requestReviewers: z.boolean().default(false),
+    comment: z.boolean().default(false),
+    react: z.boolean().default(false),
   }),
   operations: z.array(prOperation),
   observation: prObservation,
   snapshot: cachedPr.shape.snapshot.unwrap(),
   body: z.string(),
+  reactions: z.array(prReaction).default([]),
   author: prActor.nullable(),
   labels: z.array(z.object({ name: z.string(), color: z.string() })),
   reviewers: z.array(prActor.extend({ outcome: z.string().nullable() })),
@@ -198,6 +246,7 @@ export const prReviewDetail = z.object({
   verdicts: z.array(reviewVerdict),
   findings: z.array(
     z.object({
+      reactionSubjects: z.array(prReactionSubject).default([]),
       finding: reviewFinding,
       threadLocation: z
         .object({
@@ -269,3 +318,25 @@ export const prSetFilesViewed = z.object({
     .max(100),
 });
 export type PrSetFilesViewed = z.infer<typeof prSetFilesViewed>;
+
+export const prLabelCandidate = z.object({
+  name: z.string(),
+  color: z.string().nullable(),
+  description: z.string().nullable(),
+  isApplied: z.boolean(),
+});
+export const prReviewerCandidate = z.object({
+  id: z.string(),
+  kind: z.enum(["user", "team"]),
+  login: z.string(),
+  name: z.string().nullable(),
+  avatarUrl: z.string().nullable(),
+  isRequested: z.boolean(),
+});
+export const prCandidates = z.object({
+  labels: z.array(prLabelCandidate),
+  reviewers: z.array(prReviewerCandidate),
+  truncated: z.boolean(),
+});
+export type PrLabelCandidate = z.infer<typeof prLabelCandidate>;
+export type PrReviewerCandidate = z.infer<typeof prReviewerCandidate>;

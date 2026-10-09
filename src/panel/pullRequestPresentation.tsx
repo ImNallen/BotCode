@@ -355,9 +355,11 @@ function labelColor(color: string): string | null {
 export function PullRequestLabelChip({
   label,
   className,
+  children,
 }: {
   label: PrReviewDetail["labels"][number];
   className?: string;
+  children?: ReactNode;
 }) {
   const color = labelColor(label.color);
   return (
@@ -368,6 +370,7 @@ export function PullRequestLabelChip({
       {...(color ? { style: { "--label": color } as CSSProperties } : {})}
     >
       <span className="truncate">{label.name}</span>
+      {children}
     </Badge>
   );
 }
