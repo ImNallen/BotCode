@@ -5,6 +5,8 @@ import {
   useLayoutEffect,
   useRef,
 } from "react";
+import { XIcon } from "lucide-react";
+import { Button } from "./controls";
 import { cn } from "../lib/cn";
 
 const DIALOG_BACKDROP_CLASS =
@@ -23,6 +25,7 @@ export function Dialog({
   children,
   variant = "default",
   projectSearch,
+  showCloseButton = false,
 }: {
   variant?: "default" | "command";
   projectSearch?: "filePicker.toggle" | "projectSearch.toggle";
@@ -30,6 +33,7 @@ export function Dialog({
   onOpenChange: (open: boolean) => void;
   className?: string;
   children: ReactNode;
+  showCloseButton?: boolean;
 }) {
   if (!open) return null;
   return (
@@ -38,6 +42,7 @@ export function Dialog({
       className={className}
       variant={variant}
       projectSearch={projectSearch}
+      showCloseButton={showCloseButton}
     >
       {children}
     </ModalDialog>
@@ -50,12 +55,14 @@ function ModalDialog({
   onClose,
   className,
   children,
+  showCloseButton,
 }: {
   variant: "default" | "command";
   projectSearch?: "filePicker.toggle" | "projectSearch.toggle";
   onClose: () => void;
   className?: string;
   children: ReactNode;
+  showCloseButton: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useLayoutEffect(() => {
@@ -115,6 +122,17 @@ function ModalDialog({
           data-slot="dialog-popup"
         >
           {children}
+          {showCloseButton ? (
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label="Close"
+              className="absolute end-2 top-2"
+              onClick={onClose}
+            >
+              <XIcon />
+            </Button>
+          ) : null}
         </div>
       </div>
     </dialog>

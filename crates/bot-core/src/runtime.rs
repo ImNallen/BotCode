@@ -8,6 +8,7 @@ mod thread_actions;
 use thread_actions::DeleteCompletion;
 mod pr_checkout;
 mod pr_review;
+mod pr_stack;
 mod pull_requests;
 mod tools;
 mod writing;
@@ -212,6 +213,23 @@ enum Command {
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
     PrRead(PrAccess, PullRequestKey, Reply<PrReviewDetail>),
+    PrStackRead(PrAccess, PullRequestKey, Reply<Option<crate::PrStack>>),
+    PrStackChange(
+        PrAccess,
+        crate::PrStackChange,
+        Reply<crate::PrStackOperation>,
+    ),
+    PrStackOperations(
+        PrAccess,
+        PullRequestKey,
+        Reply<Vec<crate::PrStackOperation>>,
+    ),
+    PrStackReconcile(
+        PrAccess,
+        PullRequestKey,
+        String,
+        Reply<crate::PrStackOperation>,
+    ),
     PrCandidates(
         PrAccess,
         PrObservation,
@@ -476,6 +494,11 @@ impl App {
                         .pending_lifecycle_operations()?
                         .into_iter()
                         .map(|operation| (operation.input.request_id.clone(), operation))
+                        .collect();
+                    work.stack_pending = store
+                        .pending_stack_operations()?
+                        .into_iter()
+                        .map(|op| (op.input.request_id.clone(), op))
                         .collect();
                     work
                 },
@@ -990,6 +1013,14 @@ impl App {
         self.call(|reply| Command::PrRead(thread.into(), key, reply))
             .await
     }
+    pub async fn read_pull_request_stack(
+        &self,
+        access: impl Into<PrAccess>,
+        key: PullRequestKey,
+    ) -> Result<Option<crate::PrStack>> {
+        self.call(|reply| Command::PrStackRead(access.into(), key, reply))
+            .await
+    }
     pub async fn read_pull_request_candidates(
         &self,
         access: impl Into<PrAccess>,
@@ -1029,6 +1060,31 @@ impl App {
         input: PrCommitFilesRequest,
     ) -> Result<PrCommitFiles> {
         self.call(|reply| Command::PrCommitFiles(thread.into(), input, reply))
+            .await
+    }
+    pub async fn change_pull_request_stack(
+        &self,
+        access: impl Into<PrAccess>,
+        input: crate::PrStackChange,
+    ) -> Result<crate::PrStackOperation> {
+        self.call(|reply| Command::PrStackChange(access.into(), input, reply))
+            .await
+    }
+    pub async fn pull_request_stack_operations(
+        &self,
+        access: impl Into<PrAccess>,
+        key: PullRequestKey,
+    ) -> Result<Vec<crate::PrStackOperation>> {
+        self.call(|reply| Command::PrStackOperations(access.into(), key, reply))
+            .await
+    }
+    pub async fn reconcile_pull_request_stack(
+        &self,
+        access: impl Into<PrAccess>,
+        key: PullRequestKey,
+        id: String,
+    ) -> Result<crate::PrStackOperation> {
+        self.call(|reply| Command::PrStackReconcile(access.into(), key, id, reply))
             .await
     }
     pub async fn change_pull_request(
@@ -1696,6 +1752,12 @@ impl Prepare {
     }
 }
 enum Completion {
+    StackProgress {
+        access: PrAccess,
+        generation: u64,
+        operation: Box<crate::PrStackOperation>,
+        reply: Reply<()>,
+    },
     Models {
         epoch: u64,
         result: Result<Vec<ModelOption>>,
@@ -1745,6 +1807,7 @@ enum Completion {
 impl Completion {
     fn process_died(&self) -> bool {
         let error = match self {
+            Self::StackProgress { .. } => None,
             Self::Models { result, .. } => result.as_ref().err(),
             Self::Limits { result, .. } => result.as_ref().err(),
             Self::Launched { result, .. } => result.as_ref().err(),
@@ -2199,6 +2262,7 @@ impl Owner {
         self.poll_prs();
         let mut tick = tokio::time::interval(Duration::from_millis(90));
         let mut shutdown = None;
+        self.restore_stack_holds();
         loop {
             tokio::select! {
                 command=commands.recv()=>{
@@ -2439,6 +2503,17 @@ impl Owner {
                 let _ = reply.send(self.checkout(&id, thread));
             }
             Command::PrRead(thread, key, reply) => self.read_review(thread, key, reply),
+            Command::PrStackRead(access, key, reply) => self.read_pr_stack(access, key, reply),
+            Command::PrStackChange(access, input, reply) => {
+                self.change_pr_stack(access, input, reply)
+            }
+            Command::PrStackOperations(access, key, reply) => {
+                let result = self.stack_operations(&access, &key);
+                let _ = reply.send(result);
+            }
+            Command::PrStackReconcile(access, key, id, reply) => {
+                self.reconcile_pr_stack(access, key, id, reply)
+            }
             Command::PrCandidates(access, target, kind, reply) => {
                 self.read_candidates(access, target, kind, reply)
             }
@@ -3502,6 +3577,15 @@ impl Owner {
             return Ok(());
         }
         match done {
+            Completion::StackProgress {
+                access,
+                generation,
+                operation,
+                reply,
+            } => {
+                let result = self.persist_stack_progress(&access, generation, &operation);
+                let _ = reply.send(result);
+            }
             Completion::Models { epoch, result } if epoch == self.epoch => {
                 self.listing_models = false;
                 if let Ok(models) = &result {

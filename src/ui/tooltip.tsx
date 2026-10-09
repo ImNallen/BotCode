@@ -73,6 +73,10 @@ export function Tooltip({
           children.props.onBlur?.(event);
           setOpen(false);
         },
+        onKeyDownCapture: (event) => {
+          children.props.onKeyDownCapture?.(event);
+          if (event.key === "Escape") setOpen(false);
+        },
         onKeyDown: (event) => {
           children.props.onKeyDown?.(event);
           if (event.key === "Escape") setOpen(false);

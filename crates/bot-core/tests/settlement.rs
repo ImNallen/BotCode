@@ -44,6 +44,7 @@ fn link(lifecycle: PrLifecycle) -> LinkedPrSummary {
         pr: CachedPr {
             key: PullRequestKey::new("fixture", "project", 41).unwrap(),
             revision: 1,
+            stack: None,
             freshness: PrFreshness::Current { fetched_at: 9000 },
             snapshot: Some(PrSnapshot {
                 node_id: "PR_fixture_41".into(),

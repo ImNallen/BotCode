@@ -2,13 +2,8 @@ import { z } from "zod";
 import { cachedPr, pullRequestKey } from "./pullRequests";
 import { prSectionProblem } from "./prCoverage";
 import { reviewFinding } from "./reviews";
-export const prObservation = z.object({
-  key: pullRequestKey,
-  nodeId: z.string().min(1),
-  headOid: z.string().regex(/^[a-fA-F0-9]{40}$/),
-  viewer: z.string().min(1),
-});
-export const mergeMethod = z.enum(["merge", "squash", "rebase"]);
+import { prObservation, mergeMethod } from "./prIdentity";
+export { prObservation, mergeMethod } from "./prIdentity";
 export type MergeMethod = z.infer<typeof mergeMethod>;
 const prActor = z.object({
   login: z.string().min(1),

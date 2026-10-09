@@ -43,6 +43,7 @@ import { FilesSurface } from "./FilesSurface";
 import { PullRequestDetail } from "./PullRequestDetail";
 import { PullRequestsSurface } from "./PullRequestsSurface";
 import { pullRequestState } from "./pullRequestPresentation";
+import { stackLayerAccess } from "./pullRequestStack";
 import type { PullRequestKey, ThreadPrSummary } from "./pullRequests";
 import type { ReviewDraftRequest } from "./reviews";
 import type { PrObservation } from "./prReview";
@@ -447,6 +448,15 @@ export function RightPanel({
                 <PullRequestDetail
                   key={`${conversationId}/${active.key}`}
                   prKey={active.key}
+                  onSelectPullRequest={(key) =>
+                    open({ kind: "pull_request", key })
+                  }
+                  access={stackLayerAccess({
+                    key: active.key,
+                    linkedKeys: pullRequests.map((link) => link.pr.key),
+                    threadId: conversationId,
+                    workspaceId: checkout.workspaceId,
+                  })}
                   threadId={conversationId}
                   workspaceId={checkout.workspaceId}
                   canAskCodex={canAskCodex}

@@ -8,6 +8,8 @@ mod tests;
 type ReadWaiter = (PrAccess, WorkspaceId, u64, Reply<PrReviewDetail>);
 pub(super) enum ReviewCompletion {
     Checkout(Box<super::pr_checkout::Completion>),
+    Stack(Box<super::pr_stack::Completion>),
+    StackAction(Box<super::pr_stack::ActionCompletion>),
     Lifecycle(
         PrReviewChange,
         Result<PrChangeResult>,
@@ -75,6 +77,8 @@ pub(super) struct ReviewWork {
     observed: BTreeMap<PullRequestKey, Vec<ReviewObservation>>,
     pub(super) changing: HashSet<PullRequestKey>,
     pub(super) pending: BTreeMap<String, PrOperation>,
+    pub(super) stack_pending: BTreeMap<String, crate::PrStackOperation>,
+    pub(super) stack_holds: BTreeMap<String, Vec<PathBuf>>,
     holds: BTreeMap<PullRequestKey, Vec<PathBuf>>,
     pub(super) cancel: watch::Sender<bool>,
     cleanup_failure: Option<AppError>,
@@ -90,6 +94,8 @@ impl ReviewWork {
             observed: BTreeMap::new(),
             changing: HashSet::new(),
             pending: BTreeMap::new(),
+            stack_pending: BTreeMap::new(),
+            stack_holds: BTreeMap::new(),
             holds: BTreeMap::new(),
             cancel: watch::channel(false).0,
             cleanup_failure: None,
@@ -412,6 +418,12 @@ impl Owner {
         let admission = (|| {
             self.review_member(&thread, &input.target.key)?;
             input.validate()?;
+            if self.stack_pending_key(&input.target.key) {
+                return Err(AppError::new(
+                    "pr_pending",
+                    "Reconcile the pending stack operation before starting another.",
+                ));
+            }
             if let Some(result) = self.store.pr_operation(&input)? {
                 return Ok(Some(result));
             }
@@ -546,6 +558,8 @@ impl Owner {
     ) -> Result<()> {
         let worker_error = match &done {
             Ok(ReviewCompletion::Checkout(done)) => done.result.as_ref().err(),
+            Ok(ReviewCompletion::Stack(done)) => done.result.as_ref().err(),
+            Ok(ReviewCompletion::StackAction(_)) => None,
             Ok(ReviewCompletion::Read(_, result)) => result.as_ref().as_ref().err(),
             Ok(ReviewCompletion::FileContents { result, .. }) => result.as_ref().err(),
             Ok(ReviewCompletion::CommitFiles { result, .. }) => result.as_ref().err(),
@@ -575,6 +589,8 @@ impl Owner {
             )
         })? {
             ReviewCompletion::Checkout(done) => self.finish_pr_checkout(*done),
+            ReviewCompletion::Stack(done) => self.finish_pr_stack(*done)?,
+            ReviewCompletion::StackAction(done) => self.finish_stack_action(*done)?,
             ReviewCompletion::Candidates {
                 access,
                 generation,
@@ -952,7 +968,14 @@ impl Owner {
             .cloned()
             .collect())
     }
-    fn pr_checkout_paths(&self, key: &PullRequestKey) -> Result<Vec<PathBuf>> {
+    pub(super) fn pr_checkout_paths(&self, key: &PullRequestKey) -> Result<Vec<PathBuf>> {
+        self.pr_checkout_paths_except(key, &[])
+    }
+    pub(super) fn pr_checkout_paths_except(
+        &self,
+        key: &PullRequestKey,
+        owned: &[PathBuf],
+    ) -> Result<Vec<PathBuf>> {
         let mut paths = HashSet::new();
         for thread in self.threads.values().filter(|thread| {
             self.pr_summary(&thread.id)
@@ -977,7 +1000,10 @@ impl Owner {
                         .is_some_and(|w| t.root(w) == path)
                 })
             });
-            if self.leases.contains_key(path) || self.held.contains_key(path) || queued {
+            if self.leases.contains_key(path)
+                || (self.held.contains_key(path) && !owned.iter().any(|p| p == path))
+                || queued
+            {
                 return Err(AppError::new(
                     "checkout_busy",
                     "A linked conversation is using this checkout. Wait for it to finish.",

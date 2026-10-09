@@ -27,7 +27,15 @@ mod log;
 pub use keybindings::KeybindingsFile;
 mod pr_inbox;
 mod pr_review;
+mod pr_stack;
 pub use pr_inbox::{PrInboxInput, PrInboxResult};
+pub use pr_stack::actions::{
+    PrStackAction, PrStackCapabilities, PrStackChange, PrStackHead, PrStackOperation,
+    PrStackOutcome, PrStackProgress, PrStackResult,
+};
+pub use pr_stack::{
+    PrStack, PrStackLayer, PrStackMembership, PrStackState, SavedPrStack, SavedPrStackLayer,
+};
 pub mod process;
 mod project_search;
 mod pull_requests;

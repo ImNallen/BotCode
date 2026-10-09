@@ -5,6 +5,7 @@ import {
   CircleDotIcon,
   CircleXIcon,
   GitMergeIcon,
+  LayersIcon,
   GitPullRequestArrowIcon,
   GitPullRequestClosedIcon,
   GitPullRequestDraftIcon,
@@ -38,6 +39,7 @@ export const PullRequestGlyph = {
   closed: GitPullRequestClosedIcon,
   merged: GitMergeIcon,
   conflicting: TriangleAlertIcon,
+  stack: LayersIcon,
 } as const;
 
 const PULL_REQUEST_STATE_PRESENTATION = {

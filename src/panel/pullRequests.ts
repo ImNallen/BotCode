@@ -1,9 +1,7 @@
 import { z } from "zod";
-export const pullRequestKey = z
-  .string()
-  .regex(/^github\.com\/[a-z0-9_.-]+\/[a-z0-9_.-]+\/[1-9][0-9]*$/)
-  .brand<"PullRequestKey">();
-export type PullRequestKey = z.infer<typeof pullRequestKey>;
+import { savedPullRequestStack } from "./pullRequestStack";
+import { pullRequestKey, type PullRequestKey } from "./pullRequestKey";
+export { pullRequestKey, type PullRequestKey } from "./pullRequestKey";
 const lifecycle = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("open"), draft: z.boolean() }),
   z.object({ kind: z.literal("closed"), closedAt: z.string().nullable() }),
@@ -12,6 +10,7 @@ const lifecycle = z.discriminatedUnion("kind", [
 export const cachedPr = z.object({
   key: pullRequestKey,
   revision: z.number(),
+  stack: savedPullRequestStack.nullable().optional(),
   snapshot: z
     .object({
       nodeId: z.string(),

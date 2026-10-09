@@ -1,4 +1,10 @@
 import {
+  pullRequestStack,
+  prStackChange,
+  prStackOperation,
+  type PrStackChange,
+} from "./panel/pullRequestStack";
+import {
   prInboxResult,
   type PrAccess,
   type PullRequestListState,
@@ -1058,6 +1064,34 @@ export const ipc = {
     ),
   gitStatus: ({ workspaceId, threadId }: CheckoutRef) =>
     call("git_status", { workspaceId, threadId: threadId ?? null }, gitStatus),
+  changePullRequestStack: (threadId: PrAccess, input: PrStackChange) =>
+    call(
+      "change_pull_request_stack",
+      { threadId, input: prStackChange.parse(input) },
+      prStackOperation,
+    ),
+  pullRequestStackOperations: (threadId: PrAccess, key: PullRequestKey) =>
+    call(
+      "pull_request_stack_operations",
+      { threadId, key },
+      z.array(prStackOperation),
+    ),
+  reconcilePullRequestStack: (
+    threadId: PrAccess,
+    key: PullRequestKey,
+    requestId: string,
+  ) =>
+    call(
+      "reconcile_pull_request_stack",
+      { threadId, key, requestId },
+      prStackOperation,
+    ),
+  readPullRequestStack: (threadId: PrAccess, key: PullRequestKey) =>
+    call(
+      "read_pull_request_stack",
+      { threadId, key },
+      pullRequestStack.nullable(),
+    ),
   readPullRequest: (threadId: PrAccess, key: PullRequestKey) =>
     call("read_pull_request", { threadId, key }, prReviewDetail),
   readPullRequestCandidates: (

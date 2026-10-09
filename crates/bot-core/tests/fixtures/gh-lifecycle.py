@@ -73,7 +73,11 @@ if args[:2] == ['pr', 'create']:
 if args[:2] == ['api', 'graphql'] and state.get('exists') and state.get('failReadAfterCreate'):
     mode = 'error'
 if mode == 'slow':
-    time.sleep(state.get('delay', 10))
+    delay = state.get('delay', 10)
+    for operation, duration in state.get('sectionDelays', {}).items():
+        if operation in query:
+            delay = duration
+    time.sleep(delay)
 if mode == 'hang':
     child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)'])
     time.sleep(0.05)
@@ -93,7 +97,7 @@ if 'BotReviewMeta' in query and state.get('metaHeads'):
     update_state(lambda current: current.update(metaIndex=current.get('metaIndex', 0) + 1))
 url = f'https://github.com/{repo}/pull/{number}'
 row = {'number': number, 'title': state.get('title', 'Durable fixture pull request'), 'url': url,
-       'baseRefName': 'main', 'headRefName': branch, 'isCrossRepository': False}
+       'baseRefName': state.get('base', 'main'), 'headRefName': branch, 'isCrossRepository': False}
 pr = {'id': state.get('nodeId', f'PR_fixture_{number}'), **row, 'state': state.get('lifecycle', 'OPEN'),
       'isDraft': state.get('draft', False), 'headRefOid': sha, 'baseRefOid': state.get('baseRefOid', 'e' * 40),
       'mergeable': state.get('mergeable', 'MERGEABLE'), 'mergeStateStatus': state.get('mergeStateStatus', 'CLEAN'),
@@ -107,6 +111,53 @@ pr = {'id': state.get('nodeId', f'PR_fixture_{number}'), **row, 'state': state.g
       'additions': state.get('additions', 1), 'deletions': state.get('deletions', 1), 'changedFiles': state.get('changedFiles', 1),
       'reactionGroups': state.get('reactionGroups', []), 'labels': {'nodes': state.get('labels', [])}, 'reviewRequests': {'nodes': state.get('reviewRequests', [])},
       'latestReviews': {'nodes': state.get('latestReviews', [])}}
+if 'BotStackPermissions' in query:
+    if state.get('stackPermissionMode')=='error':print('Fixture permissions unavailable',file=sys.stderr);sys.exit(1)
+    stack_layer = next((layer for layer in state.get('stack', {}).get('pull_requests', []) if layer['number'] == number), None)
+    head = stack_layer['head']['sha'] if stack_layer else sha
+    print(json.dumps({'data': {'viewer': {'login': state.get('stackViewer', state.get('viewer','fixture-viewer'))}, 'repository': {'viewerPermission':state.get('viewerPermission','WRITE'), **{key:state.get(key,True) for key in ['mergeCommitAllowed','squashMergeAllowed','rebaseMergeAllowed']}, 'pullRequest':{'id':state.get('nodeId',f'PR_fixture_{number}'),'headRefOid':head}}}}))
+    sys.exit(0)
+if 'BotStackQueueStatus' in query:
+    if state.get('stackQueueMode')=='error':print('Fixture queue unavailable',file=sys.stderr);sys.exit(1)
+    if state.get('stackQueueMode')=='invalid':print(json.dumps({'data':{'repository':{}}}));sys.exit(0)
+    entries={}
+    for layer in state.get('stack',{}).get('pull_requests',[]):
+        entries[f"pr{layer['number']}"]={'id':f"PR_fixture_{layer['number']}",'state':state.get('stackQueueState',{}).get(str(layer['number']),'OPEN'),'headRefOid':layer['head']['sha'],'mergeQueueEntry':{'id':'queue'} if state.get('stackQueued',True) else None}
+    if state.get('stackQueueMode')=='missing-entry':entries[f'pr{number}'].pop('mergeQueueEntry',None)
+    print(json.dumps({'data':{'repository':entries}}));sys.exit(0)
+if 'BotStackBranchAccess' in query:
+    layers=state.get('stack',{}).get('pull_requests',[])
+    print(json.dumps({'data':{'repository':{f"pr{layer['number']}":state.get('stackAccess',{}).get(str(layer['number']),{'headRepository':{'viewerPermission':'WRITE'},'maintainerCanModify':False}) for layer in layers}}}))
+    sys.exit(0)
+if 'BotStackRebaseBranch' in query:
+    layers=state['stack']['pull_requests']
+    layer=next(layer for layer in layers if layer['number']==number)
+    ids = re.search(r'processed:nodes\(ids:(\[[^]]*\])\)',query)
+    processed = [{'headRefOid':next(layer['head']['sha'] for layer in layers if f"PR_fixture_{layer['number']}"==node)} for node in json.loads(ids[1])] if ids else []
+    print(json.dumps({'data':{'processed':processed,'repository':{'pullRequest':{'id':f'PR_fixture_{number}','headRefOid':layer['head']['sha'],'baseRef':{'compare':{'behindBy':state.get('stackBehind',{}).get(str(number),1)}}}}}}))
+    sys.exit(0)
+if 'mutation BotStackRebase(' in query:
+    if state.get('stackRebaseFail')==number:
+        print(json.dumps({'errors':[{'message':'Fixture rebase refused'}]}));sys.exit(0)
+    if state.get('stackRebaseUncertain')==number:
+        print('Fixture connection lost',file=sys.stderr);sys.exit(1)
+    head = format(number,'x')[-1]*40
+    def update_stack(current):
+        for layer in current['stack']['pull_requests']:
+            if layer['number']==number:layer['head']['sha']=head
+        if state.get('stackChangeEarlier')==number:
+            current['stack']['pull_requests'][0]['head']['sha']='f'*40
+    update_state(update_stack)
+    print(json.dumps({'data':{'updatePullRequestBranch':{'pullRequest':{'headRefOid':head}}}}))
+    sys.exit(0)
+if any('/merge-async' in arg for arg in args):
+    endpoint=next(arg for arg in args if '/merge-async' in arg)
+    if state.get('stackMergeMode')=='uncertain':print('Fixture connection lost',file=sys.stderr);sys.exit(1)
+    responses=state.get('stackMergeResponses',[{'status':'merged','details':{}}])
+    index=state.get('stackMergeIndex',0)
+    response=responses[min(index,len(responses)-1)]
+    update_state(lambda current:current.update(stackMergeIndex=current.get('stackMergeIndex',0)+1))
+    print(json.dumps(response));sys.exit(0)
 if args[:2] == ['api', '--method']:
     method = args[2]
     path = next(arg for arg in args if arg.startswith('repos/'))
@@ -144,6 +195,25 @@ elif args[:2] == ['pr', 'create']:
     print(url)
 elif args[:2] == ['pr', 'view']:
     print(json.dumps(row))
+elif args[:2] == ['api', 'graphql'] and 'PullRequestStackMemberships' in query:
+    if 'stackMembershipResponse' in state:
+        print(json.dumps(state['stackMembershipResponse']))
+    elif state.get('stackMembershipErrors'):
+        print(json.dumps({'errors': [{'message': 'Stack fields unavailable'}]}))
+    else:
+        data = {}
+        for alias, requested in re.findall(r'(s\d+): repository\([^)]*\) \{ pullRequest\(number: (\d+)\)', query):
+            membership = state.get('stackMemberships', {}).get(requested)
+            if 'stackMemberships' not in state:
+                stack = state.get('stack')
+                if stack:
+                    layers = stack.get('pull_requests', [])
+                    position = next((index + 1 for index, layer in enumerate(layers) if str(layer['number']) == requested), None)
+                    if position:
+                        base = stack.get('base', 'main')
+                        membership = {'number': stack['number'], 'size': len(layers), 'base': base['ref'] if isinstance(base, dict) else base, 'position': position}
+            data[alias] = {'pullRequest': {'stack': {'number': membership['number'], 'size': membership['size'], 'baseRefName': membership['base']}, 'stackEntry': {'position': membership['position']}} if membership else {'stack': None, 'stackEntry': None}}
+        print(json.dumps({'data': data}))
 elif args[:2] == ['api', 'graphql'] and 'BotInboxList' in query:
     search_query = variables['search']
     if any(partition in search_query for partition in state.get('inboxFailPartitions', [])):
@@ -162,7 +232,7 @@ elif args[:2] == ['api', 'graphql'] and 'BotInboxList' in query:
     query = search_query
     normalized = []
     for row in rows:
-        row = {'headRefName': 'feature', 'baseRefName': 'main', 'state': 'OPEN', 'isDraft': False, 'mergeable': 'MERGEABLE', 'additions': 1, 'deletions': 1, 'createdAt': '2026-10-01T12:00:00Z', 'updatedAt': '2026-10-05T12:00:00Z', 'reviewRequests': [], 'reviewDecision': '', 'labels': [], 'statusCheckRollup': [{'conclusion': 'SUCCESS'}], **row}
+        row = {'headRefName': 'feature', 'baseRefName': state.get('base', 'main'), 'state': 'OPEN', 'isDraft': False, 'mergeable': 'MERGEABLE', 'additions': 1, 'deletions': 1, 'createdAt': '2026-10-01T12:00:00Z', 'updatedAt': '2026-10-05T12:00:00Z', 'reviewRequests': [], 'reviewDecision': '', 'labels': [], 'statusCheckRollup': [{'conclusion': 'SUCCESS'}], **row}
         saved = state.get('perNumber', {}).get(str(row['number']), {})
         if row['number'] == state.get('number', 41):
             saved = {**state, **saved}
@@ -359,6 +429,28 @@ elif args[:2] == ['api', 'graphql']:
     else:
         print('Unsupported fixture GraphQL operation', file=sys.stderr)
         sys.exit(2)
+elif args[:1] == ['api'] and any('/stacks' in arg for arg in args):
+    endpoint = next(arg for arg in args if '/stacks' in arg)
+    time.sleep(state.get('stackDelay', 0))
+    if 'pull_request=' in endpoint:
+        index=state.get('stackReads',0)
+        sequence=state.get('stackSequence')
+        if sequence:state['stack']=sequence[min(index,len(sequence)-1)]
+        update_state(lambda current:current.update(stackReads=current.get('stackReads',0)+1))
+    elif state.get('stackSequence'):
+        state['stack']=state['stackSequence'][min(max(state.get('stackReads',1)-1,0),len(state['stackSequence'])-1)]
+    if state.get('stackMode') == 'error':
+        print('gh: fixture refused (HTTP 403)', file=sys.stderr)
+        sys.exit(1)
+    if state.get('stackMode') == 'unsupported':
+        print('gh: Not Found (HTTP 404)', file=sys.stderr)
+        sys.exit(1)
+    if state.get('stackMode') == 'invalid':
+        print('{invalid')
+    elif 'pull_request=' in endpoint:
+        print(json.dumps(state.get('stackListing', [state['stack']] if state.get('stack') else [])))
+    else:
+        print(json.dumps(state.get('stackDetail', state.get('stack'))))
 elif args[:1] == ['api'] and '/commits/' in args[1]:
     oid = args[1].split('/commits/')[1].split('?')[0]
     page = int(args[1].split('page=')[-1]) if '?per_page=' in args[1] else 1

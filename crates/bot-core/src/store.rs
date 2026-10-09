@@ -49,11 +49,52 @@ impl Store {
                 CREATE TABLE pull_request_operations(request_id TEXT PRIMARY KEY, pr_key TEXT NOT NULL REFERENCES pull_requests(key), action_digest TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
                 PRAGMA user_version=3; COMMIT;")?;
         }
+        db.execute_batch("CREATE TABLE IF NOT EXISTS pull_request_stack_operations(request_id TEXT PRIMARY KEY, data TEXT NOT NULL);")?;
         db.execute(
             "UPDATE pull_request_operations SET state='uncertain' WHERE state='started'",
             [],
         )?;
         Ok(Self { db, _lock: lock })
+    }
+    pub(crate) fn stack_operation(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<crate::PrStackOperation>> {
+        let data: Option<String> = self
+            .db
+            .query_row(
+                "SELECT data FROM pull_request_stack_operations WHERE request_id=?1",
+                [request_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        data.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
+    }
+    pub(crate) fn pending_stack_operations(&self) -> Result<Vec<crate::PrStackOperation>> {
+        let mut statement = self
+            .db
+            .prepare("SELECT data FROM pull_request_stack_operations")?;
+        let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
+        let mut pending = vec![];
+        for row in rows {
+            let op: crate::PrStackOperation = serde_json::from_str(&row?)?;
+            if op.result.unresolved() {
+                pending.push(op);
+            }
+        }
+        Ok(pending)
+    }
+    pub(crate) fn save_stack_operation(&self, operation: &crate::PrStackOperation) -> Result<()> {
+        if let Some(previous) = self.stack_operation(&operation.input.request_id)?
+            && previous.input != operation.input
+        {
+            return Err(AppError::new(
+                "pr_request_conflict",
+                "This request ID was used for a different stack command.",
+            ));
+        }
+        self.db.execute("INSERT INTO pull_request_stack_operations(request_id,data) VALUES(?1,?2) ON CONFLICT(request_id) DO UPDATE SET data=excluded.data",params![operation.input.request_id,serde_json::to_string(operation)?])?;
+        Ok(())
     }
     pub fn close(self) -> Result<()> {
         drop(self.db);
