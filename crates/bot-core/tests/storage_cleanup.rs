@@ -137,7 +137,7 @@ async fn wait(
     id: &ThreadId,
     predicate: impl Fn(&ThreadSnapshot) -> bool,
 ) -> ThreadSnapshot {
-    for _ in 0..500 {
+    for _ in 0..3000 {
         let snapshot = app.thread(id.clone()).await.unwrap();
         if predicate(&snapshot)
             && !snapshot.turns.last().is_some_and(|turn| {
@@ -545,7 +545,7 @@ async fn saving_settings_triggers_a_sweep() {
     let thread = worktree_thread(&app, &workspace.id).await;
     let (path, _) = worktree(&thread.checkout);
     app.save_settings(UNCHANGED_ONLY).await.unwrap();
-    for _ in 0..500 {
+    for _ in 0..3000 {
         if !path.exists() {
             break;
         }

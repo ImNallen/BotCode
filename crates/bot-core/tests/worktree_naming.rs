@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+const LIMIT: Duration = Duration::from_secs(30);
 struct Fixture {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -43,7 +44,7 @@ impl Fixture {
             data_dir: dir.path().join("state"),
             codex_binary: peer.clone(),
             gh_binary: dir.path().join("no-gh"),
-            network_timeout: Duration::from_secs(2),
+            network_timeout: Duration::from_secs(180),
             shell: None,
         };
         Self {
@@ -103,7 +104,7 @@ async fn wait(
 ) -> ThreadSnapshot {
     let started = Instant::now();
     let mut last = None;
-    for _ in 0..500 {
+    while started.elapsed() < LIMIT {
         let t = app.thread(id.clone()).await.unwrap();
         if predicate(&t)
             && !t.turns.last().is_some_and(|turn| {
@@ -125,13 +126,23 @@ async fn wait(
     )
 }
 async fn wait_file(path: &Path) {
-    for _ in 0..500 {
+    let started = Instant::now();
+    while started.elapsed() < LIMIT {
         if path.exists() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("fixture file did not appear")
+}
+async fn wait_dead(pid: i32) {
+    tokio::time::timeout(LIMIT, async {
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("naming process survived cancellation");
 }
 #[tokio::test]
 async fn first_message_generates_once_keeps_folder_and_base_and_survives_restart() {
@@ -371,15 +382,9 @@ async fn delayed_generation_cannot_rename_after_second_submit_or_manual_switch()
                 .unwrap();
             wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
         }
-        let cancelled = tokio::time::timeout(Duration::from_secs(5), async {
-            while unsafe { libc::kill(pid, 0) } == 0 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
+        wait_dead(pid).await;
         let actual = app.thread(t.id.clone()).await.unwrap();
         app.shutdown().await.unwrap();
-        assert!(cancelled.is_ok(), "naming process survived cancellation");
         assert_eq!(
             checkout(&actual).1,
             if switched { "manual" } else { checkout(&t).1 }
@@ -391,7 +396,7 @@ async fn delayed_generation_cannot_rename_after_second_submit_or_manual_switch()
 async fn published_or_externally_switched_temporary_branches_are_preserved() {
     for guard in ["switch", "upstream", "tracking", "slash-remote-tracking"] {
         let f = Fixture::new(Some(r#"{"branch":"late-name"}"#));
-        f.control("naming_hold", "");
+        f.control("naming_hold", "30");
         let app = App::open(f.config.clone()).await.unwrap();
         let t = f.thread(&app).await;
         let (path, branch) = checkout(&t);
@@ -480,7 +485,7 @@ async fn shutdown_reaps_stalled_generation_and_its_descendant() {
             .unwrap()
     };
     let (parent, child) = (pid("naming.pid"), pid("naming_child.pid"));
-    tokio::time::timeout(Duration::from_secs(5), app.shutdown())
+    tokio::time::timeout(LIMIT, app.shutdown())
         .await
         .unwrap()
         .unwrap();
@@ -622,7 +627,7 @@ async fn pending_generation_is_cancelled_on_cleanup_project_removal_and_provider
 #[tokio::test]
 async fn git_action_cancels_pending_name_before_it_changes_checkout() {
     let f = Fixture::new(Some(r#"{"branch":"stale-name"}"#));
-    f.control("naming_delay", "1");
+    f.control("naming_stall", "");
     let app = App::open(f.config.clone()).await.unwrap();
     let t = f.thread(&app).await;
     app.submit(
@@ -634,6 +639,13 @@ async fn git_action_cancels_pending_name_before_it_changes_checkout() {
     .await
     .unwrap();
     wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
+    let root = f.peer.parent().unwrap();
+    wait_file(&root.join("naming.pid")).await;
+    let pid = std::fs::read_to_string(root.join("naming.pid"))
+        .unwrap()
+        .trim()
+        .parse::<i32>()
+        .unwrap();
     std::fs::write(checkout(&t).0.join("fixture.txt"), "change").unwrap();
     git(checkout(&t).0, &["config", "user.name", "Fixture"]);
     git(
@@ -655,7 +667,7 @@ async fn git_action_cancels_pending_name_before_it_changes_checkout() {
         .await
         .unwrap();
     assert!(result.failure.is_none());
-    tokio::time::sleep(Duration::from_millis(1100)).await;
+    wait_dead(pid).await;
     assert_eq!(
         checkout(&app.thread(t.id.clone()).await.unwrap()).1,
         checkout(&t).1

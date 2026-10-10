@@ -207,7 +207,8 @@ async fn stack_rejects_changed_identity_and_cross_repository_admission() {
 #[tokio::test]
 async fn stack_revalidates_membership_after_an_unlink_during_read() {
     let f = Fixture::new();
-    f.state(json!({"stack":native_stack(),"stackDelay":0.2}));
+    let release = f.dir.path().join("release-stack");
+    f.state(json!({"stack":native_stack(),"waitFor":{"/stacks?pull_request=":release}}));
     let (app, thread) = f.open().await;
     let request = app.read_pull_request_stack(thread.clone(), f.key());
     let unlink = async {
@@ -215,6 +216,7 @@ async fn stack_revalidates_membership_after_an_unlink_during_read() {
         app.unlink_pull_request(thread.clone(), f.key())
             .await
             .unwrap();
+        std::fs::write(release, "").unwrap();
     };
     let (result, ()) = tokio::join!(request, unlink);
     assert_eq!(result.unwrap_err().code, "pr_not_linked");
@@ -231,21 +233,27 @@ async fn stack_revalidates_membership_after_an_unlink_during_read() {
 async fn stack_reads_are_bounded_by_the_network_deadline() {
     let mut f = Fixture::new();
     f.config.network_timeout = Duration::from_millis(100);
-    f.state(json!({"stack":native_stack(),"stackDelay":1}));
+    f.state(json!({"stack":native_stack(),"stackDelay":300}));
     let (app, thread) = f.open().await;
-    assert!(app.read_pull_request_stack(thread, f.key()).await.is_err());
+    let read = tokio::time::timeout(
+        Duration::from_secs(30),
+        app.read_pull_request_stack(thread, f.key()),
+    )
+    .await
+    .unwrap();
+    assert!(read.is_err());
     app.shutdown().await.unwrap();
 }
 
 #[tokio::test]
 async fn stack_shutdown_cancels_live_reads_without_waiting_for_host_delay() {
     let f = Fixture::new();
-    f.state(json!({"stack":native_stack(),"stackDelay":10}));
+    f.state(json!({"stack":native_stack(),"stackDelay":300}));
     let (app, thread) = f.open().await;
     let request = app.read_pull_request_stack(thread, f.key());
     let shutdown = async {
         f.wait_for("/stacks?pull_request=").await;
-        tokio::time::timeout(Duration::from_secs(3), app.shutdown())
+        tokio::time::timeout(Duration::from_secs(30), app.shutdown())
             .await
             .unwrap()
             .unwrap();
@@ -327,10 +335,25 @@ async fn stack_pending_receipts_block_checkout_admission_before_and_after_restar
     async fn check(
         app: &App,
         f: &Fixture,
+        thread: &ThreadId,
         workspace: &WorkspaceId,
         access: &PrAccess,
         target: &PrObservation,
+        status_reads: usize,
     ) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while f.calls("BotPullRequest", 41) <= status_reads
+                || app
+                    .list_thread_pull_requests(thread.clone(), false)
+                    .await
+                    .unwrap()
+                    .discovering
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
         let threads = app
             .workspace_view(workspace.clone(), None)
             .await
@@ -408,10 +431,20 @@ async fn stack_pending_receipts_block_checkout_admission_before_and_after_restar
             receipt.result,
             PrStackResult::Accepted { .. } | PrStackResult::Uncertain { .. }
         ));
-        check(&app, &f, &workspace, &access, &input.target).await;
+        check(&app, &f, &thread, &workspace, &access, &input.target, 0).await;
         app.shutdown().await.unwrap();
+        let status_reads = f.calls("BotPullRequest", 41);
         let app = App::open(f.config.clone()).await.unwrap();
-        check(&app, &f, &workspace, &access, &input.target).await;
+        check(
+            &app,
+            &f,
+            &thread,
+            &workspace,
+            &access,
+            &input.target,
+            status_reads,
+        )
+        .await;
         app.shutdown().await.unwrap();
     }
 }

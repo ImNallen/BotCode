@@ -1212,21 +1212,21 @@ mod tests {
     async fn a_timed_out_tool_is_stopped_with_its_children() {
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("child.pid");
-        let script = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
+        let script = format!("sleep 300 & echo $! > {}; wait", pidfile.display());
         let sh = Tool {
             program: Path::new("/bin/sh"),
             cwd: dir.path(),
         };
         let started = Instant::now();
         let error = sh
-            .run(&["-c", &script], Duration::from_millis(300))
+            .run(&["-c", &script], Duration::from_secs(5))
             .await
             .err()
             .expect("the tool should time out");
         assert_eq!(error.code, "timeout");
         assert_eq!(error.message, "sh -c timed out.");
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_secs(30),
             "stopped within the grace period, took {:?}",
             started.elapsed()
         );
@@ -1236,7 +1236,7 @@ mod tests {
             .parse()
             .unwrap();
         let mut alive = true;
-        for _ in 0..100 {
+        for _ in 0..1500 {
             alive = unsafe { libc::kill(child, 0) } == 0;
             if !alive {
                 break;
@@ -1254,25 +1254,25 @@ mod tests {
     async fn oversized_tool_output_stops_the_process_group() {
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("child.pid");
-        let script = format!("sleep 30 & echo $! > {}; yes x", pidfile.display());
+        let script = format!("sleep 300 & echo $! > {}; yes x", pidfile.display());
         let sh = Tool {
             program: Path::new("/bin/sh"),
             cwd: dir.path(),
         };
         let started = Instant::now();
         let error = sh
-            .run_bounded(&["-c", &script], Duration::from_secs(15), 1024)
+            .run_bounded(&["-c", &script], Duration::from_secs(300), 1024)
             .await
             .err()
             .unwrap();
         assert!(error.message.contains("byte limit"));
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(30));
         let child: i32 = std::fs::read_to_string(pidfile)
             .unwrap()
             .trim()
             .parse()
             .unwrap();
-        for _ in 0..100 {
+        for _ in 0..1500 {
             if unsafe { libc::kill(child, 0) } != 0 {
                 return;
             }

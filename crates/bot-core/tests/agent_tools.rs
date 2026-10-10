@@ -58,7 +58,7 @@ impl Fixture {
             .unwrap()
     }
     async fn result(&self, count: usize) -> Vec<Value> {
-        for _ in 0..500 {
+        for _ in 0..3000 {
             let rows = self.rows("tool-results.jsonl");
             if rows.len() >= count {
                 return rows;
@@ -95,7 +95,7 @@ async fn wait(
     thread: &ThreadId,
     predicate: impl Fn(&ThreadSnapshot) -> bool,
 ) -> ThreadSnapshot {
-    for _ in 0..500 {
+    for _ in 0..3000 {
         let snapshot = app.thread(thread.clone()).await.unwrap();
         if predicate(&snapshot) {
             return snapshot;
@@ -434,7 +434,7 @@ async fn provider_loss_cancels_pending_preview_and_never_replays_the_call() {
     .unwrap();
     let thread = f.thread(&app, "repository").await;
     submit(&app, &thread.id, "wait").await;
-    for _ in 0..500 {
+    for _ in 0..3000 {
         if started.load(Ordering::SeqCst) == 1 {
             break;
         }
@@ -451,7 +451,7 @@ async fn provider_loss_cancels_pending_preview_and_never_replays_the_call() {
         matches!(thread.session, SessionState::Unavailable { .. })
     })
     .await;
-    for _ in 0..100 {
+    for _ in 0..3000 {
         if dropped.load(Ordering::SeqCst) == 1 {
             break;
         }

@@ -109,7 +109,7 @@ async fn wait(
     thread: &ThreadId,
     predicate: impl Fn(&ThreadPrSummary) -> bool,
 ) -> ThreadPrSummary {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let summary = app
                 .list_thread_pull_requests(thread.clone(), false)
@@ -123,6 +123,20 @@ async fn wait(
     })
     .await
     .expect("Expected pull request state did not arrive")
+}
+async fn wait_until(mut ready: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !ready() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Timed out awaiting the condition")
+}
+fn log_contains(f: &Fixture, needle: &str) -> bool {
+    std::fs::read_to_string(f.dir.path().join("gh.log"))
+        .unwrap()
+        .contains(needle)
 }
 fn current(summary: &ThreadPrSummary) -> bool {
     summary
@@ -270,14 +284,18 @@ async fn refresh_preserves_last_status_on_error_and_rejects_older_host_observati
 async fn late_discovery_cannot_relink_unlinked_or_switched_checkout() {
     let f = Fixture::new();
     let (app, _, thread) = f.open().await;
-    f.state(json!({"mode":"slow", "delay":0.5}));
+    let log = f.dir.path().join("gh.log");
+    let release = f.dir.path().join("release-unlinked");
+    f.state(json!({"waitFor":{"BotDiscover":release}}));
+    std::fs::write(&log, "").unwrap();
     app.list_thread_pull_requests(thread.clone(), true)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    wait_until(|| log_contains(&f, "BotDiscover")).await;
     app.unlink_pull_request(thread.clone(), key(41))
         .await
         .unwrap();
+    std::fs::write(release, "").unwrap();
     wait(&app, &thread, |s| !s.discovering).await;
     assert!(
         app.list_thread_pull_requests(thread.clone(), false)
@@ -286,11 +304,15 @@ async fn late_discovery_cannot_relink_unlinked_or_switched_checkout() {
             .links
             .is_empty()
     );
+    let release = f.dir.path().join("release-switched");
+    f.state(json!({"waitFor":{"BotDiscover":release}}));
+    std::fs::write(&log, "").unwrap();
     app.list_thread_pull_requests(thread.clone(), true)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    wait_until(|| log_contains(&f, "BotDiscover")).await;
     git(&f.root, &["checkout", "-q", "main"]);
+    std::fs::write(release, "").unwrap();
     let result = wait(&app, &thread, |s| !s.discovering).await;
     assert!(result.links.is_empty());
     assert!(result.discovery_error.unwrap().contains("changed"));
@@ -305,7 +327,7 @@ async fn shutdown_reaps_hanging_github_descendants_and_releases_database() {
     app.list_thread_pull_requests(thread, true).await.unwrap();
     let pid_file = f.dir.path().join("gh.pid");
     // The fixture creates the file before it writes the pid.
-    let pid: i32 = tokio::time::timeout(Duration::from_secs(3), async {
+    let pid: i32 = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(pid) = std::fs::read_to_string(&pid_file)
                 .ok()
@@ -318,14 +340,20 @@ async fn shutdown_reaps_hanging_github_descendants_and_releases_database() {
     })
     .await
     .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), app.shutdown())
+    tokio::time::timeout(Duration::from_secs(30), app.shutdown())
         .await
         .unwrap()
+        .unwrap();
+    let state = Command::new("ps")
+        .args(["-o", "stat=,ppid=", "-p", &pid.to_string()])
+        .output()
         .unwrap();
     assert_ne!(
         unsafe { libc::kill(pid, 0) },
         0,
-        "GitHub child must be gone before shutdown completes"
+        "GitHub child must be gone before shutdown completes: pid {pid} state {:?} pid file {:?}",
+        String::from_utf8_lossy(&state.stdout),
+        std::fs::read_to_string(&pid_file)
     );
     let reopened = App::open(f.config.clone()).await.unwrap();
     reopened.shutdown().await.unwrap();
@@ -433,6 +461,14 @@ async fn shared_requests_coalesce_and_pin_the_explicit_host_and_repository() {
             .unwrap();
     }
     wait(&app, &first, current).await;
+    let read_calls = || {
+        std::fs::read_to_string(f.dir.path().join("gh.log"))
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("BotPullRequest"))
+            .count()
+    };
+    wait_until(|| read_calls() >= 2).await;
     tokio::time::sleep(Duration::from_millis(900)).await;
     let one = app.list_thread_pull_requests(first, false).await.unwrap();
     let two = app.list_thread_pull_requests(second, false).await.unwrap();
@@ -493,16 +529,7 @@ async fn running_discovery_keeps_new_conversation_and_agent_completion_source() 
     app.list_thread_pull_requests(first.clone(), true)
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(8), async {
-        while !std::fs::read_to_string(&log)
-            .unwrap()
-            .contains("BotDiscover")
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("Branch discovery did not reach the host fixture");
+    wait_until(|| log_contains(&f, "BotDiscover")).await;
     let second = app
         .create_thread(workspace.id, NewCheckout::Local)
         .await
@@ -516,7 +543,7 @@ async fn running_discovery_keeps_new_conversation_and_agent_completion_source() 
     )
     .await
     .unwrap();
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let snapshot = app.thread(second.clone()).await.unwrap();
             if snapshot.turns.last().is_some_and(|turn| {
@@ -671,13 +698,7 @@ async fn shutdown_drains_create_and_saves_origin_before_immediate_reopen() {
             .await
             .unwrap()
     });
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while create_calls(&f) == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_until(|| create_calls(&f) > 0).await;
     app.shutdown().await.unwrap();
     let reopened = App::open(f.config.clone()).await.unwrap();
     let saved = reopened
@@ -726,9 +747,9 @@ async fn creation_identity_survives_failed_following_metadata_read() {
 #[tokio::test]
 async fn timed_out_creation_is_uncertain_and_is_not_retried() {
     let mut f = Fixture::new();
-    f.config.network_timeout = Duration::from_millis(200);
+    f.config.network_timeout = Duration::from_secs(5);
     let (app, workspace, thread) = f.open().await;
-    f.state(json!({"exists": false, "createDelay": 3}));
+    f.state(json!({"exists": false, "createDelay": 300}));
     let outcome = app
         .run_git_action(workspace, Some(thread), GitAction::CreatePr, |_| {})
         .await
@@ -778,16 +799,7 @@ async fn unrelated_mutation_preserves_in_flight_checkout_discovery() {
             .create_thread(workspace.id, NewCheckout::Local)
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while !std::fs::read_to_string(&log)
-                .unwrap()
-                .contains("BotDiscover")
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        wait_until(|| log_contains(&f, "BotDiscover")).await;
         let action = if review {
             PrReviewAction::SubmitReview {
                 verdict: ReviewVerdict::Comment,

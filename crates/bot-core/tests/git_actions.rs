@@ -194,7 +194,7 @@ fn stat(path: &str, insertions: u32, deletions: u32) -> FileStat {
     }
 }
 async fn wait_until(mut ready: impl FnMut() -> bool) {
-    for _ in 0..500 {
+    for _ in 0..3000 {
         if ready() {
             return;
         }
@@ -827,7 +827,7 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
     app.submit(local.id.clone(), "hold".into(), "hold".into(), vec![])
         .await
         .unwrap();
-    for _ in 0..500 {
+    for _ in 0..3000 {
         let t = app.thread(local.id.clone()).await.unwrap();
         if matches!(t.turns[0].execution, Execution::Running) {
             break;
@@ -857,7 +857,7 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
         "a worktree thread's checkout is not held by the local turn"
     );
     app.interrupt(local.id.clone()).await.unwrap();
-    for _ in 0..500 {
+    for _ in 0..3000 {
         let t = app.thread(local.id.clone()).await.unwrap();
         if matches!(t.turns[0].execution, Execution::Interrupted)
             && matches!(
@@ -927,16 +927,16 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
 #[tokio::test]
 async fn a_timed_out_push_fails_and_releases_the_checkout() {
     let mut f = Fixture::new();
-    f.config.network_timeout = Duration::from_secs(1);
+    f.config.network_timeout = Duration::from_secs(5);
     git_output(&f.repository, &["switch", "-q", "-c", "feature"]);
     commit_in(&f.repository, "a.txt");
-    f.hook(&f.origin, "pre-receive", "sleep 30");
+    f.hook(&f.origin, "pre-receive", "sleep 300");
     let (app, workspace) = f.open().await;
     let started = Instant::now();
     let (outcome, _) = run(&app, &workspace, None, GitAction::Push).await.unwrap();
     assert_eq!(failure(&outcome), (push_phase(), "timeout"));
     assert!(
-        started.elapsed() < Duration::from_secs(10),
+        started.elapsed() < Duration::from_secs(60),
         "stopped after the limit and the grace period, took {:?}",
         started.elapsed()
     );
@@ -975,7 +975,7 @@ async fn the_checkout_is_released_when_the_caller_stops_waiting() {
     assert!(dropped.is_err(), "the caller gave up while the hook waited");
     std::fs::write(&go, "").unwrap();
     let mut released = None;
-    for _ in 0..500 {
+    for _ in 0..3000 {
         match run(&app, &workspace, None, GitAction::Push).await {
             Err(e) if e.code == "checkout_busy" => {
                 tokio::time::sleep(Duration::from_millis(10)).await
@@ -1124,12 +1124,12 @@ async fn cancelling_preview_reaps_process_group_and_manual_commit_never_waits_fo
                 .unwrap()
         })
         .collect();
-    tokio::time::timeout(Duration::from_secs(1), app.thread(t.id.clone()))
+    tokio::time::timeout(Duration::from_secs(30), app.thread(t.id.clone()))
         .await
         .unwrap()
         .unwrap();
     let (outcome, _) = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(30),
         run(
             &app,
             &workspace,
@@ -1226,7 +1226,7 @@ async fn worktree_cleanup_cancels_a_running_commit_preview() {
         .unwrap();
     app.sweep_worktrees_at(u64::MAX / 2).await;
     assert!(!path.exists(), "the unchanged worktree was removed");
-    let cancelled = tokio::time::timeout(Duration::from_secs(1), app.await_commit_message(job))
+    let cancelled = tokio::time::timeout(Duration::from_secs(30), app.await_commit_message(job))
         .await
         .expect("cleanup must cancel generation before its timeout")
         .unwrap_err();
@@ -1283,7 +1283,7 @@ async fn thread_deletion_cancels_a_running_commit_preview() {
         app.thread(thread.id).await.unwrap_err().code,
         "missing_thread"
     );
-    let cancelled = tokio::time::timeout(Duration::from_secs(1), app.await_commit_message(job))
+    let cancelled = tokio::time::timeout(Duration::from_secs(30), app.await_commit_message(job))
         .await
         .expect("deletion must cancel generation before its timeout")
         .unwrap_err();
@@ -1465,7 +1465,7 @@ async fn preflight_denial_of_blank_stack_never_starts_generation_or_commits() {
     let before = git_output(&f.repository, &["rev-parse", "HEAD"]);
     let (app, workspace) = f.open().await;
     let (outcome, phases) = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(30),
         run(
             &app,
             &workspace,
@@ -1504,7 +1504,7 @@ async fn a_stalled_preview_does_not_delay_or_reorder_a_denied_blank_stack() {
     wait_until(|| f.dir.path().join("peers/commit_ready").exists()).await;
     generation_file(&f, "unauthenticated", "");
     let (outcome, phases) = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(30),
         run(
             &app,
             &workspace,

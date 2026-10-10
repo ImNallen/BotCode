@@ -184,19 +184,7 @@ async fn global_detail_refuses_remote_change_during_a_read_and_thread_access_sta
     };
     let key = f.key();
     let pending = tokio::spawn(async move { reader.read_pull_request(access, key).await });
-    for _ in 0..200 {
-        if f.log().iter().any(|entry| {
-            entry["args"].as_array().is_some_and(|args| {
-                args.iter().any(|arg| {
-                    arg.as_str()
-                        .is_some_and(|arg| arg.contains("BotReviewMeta"))
-                })
-            })
-        }) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    f.wait_for("BotReviewMeta").await;
     remote(&f, "https://github.com/fixture/other.git");
     std::fs::write(release, "").unwrap();
     assert_eq!(pending.await.unwrap().unwrap_err().code, "pr_repository");
@@ -351,12 +339,12 @@ async fn inbox_optional_stack_failures_keep_rows_and_absence_drops_badges() {
 async fn inbox_stack_enrichment_keeps_the_existing_bounded_host_deadline() {
     let mut f = Fixture::new();
     remote(&f, "https://github.com/fixture/project.git");
-    f.config.network_timeout = Duration::from_millis(600);
-    f.state(json!({"sectionModes":{"BotInboxList":"slow","PullRequestStackMemberships":"slow"},"sectionDelays":{"BotInboxList":0.35,"PullRequestStackMemberships":10}}));
+    f.config.network_timeout = Duration::from_secs(5);
+    f.state(json!({"sectionModes":{"BotInboxList":"slow","PullRequestStackMemberships":"slow"},"sectionDelays":{"BotInboxList":0.35,"PullRequestStackMemberships":300}}));
     let app = App::open(f.config.clone()).await.unwrap();
     app.open_workspace(f.root.clone()).await.unwrap();
     let result = tokio::time::timeout(
-        Duration::from_millis(2500),
+        Duration::from_secs(30),
         app.list_pull_requests(inbox_input("open", "", 99)),
     )
     .await

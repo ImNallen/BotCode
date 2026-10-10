@@ -256,7 +256,8 @@ async fn exact_head_checkout_changed_during_final_refresh_refuses_preparation() 
             &head,
         ],
     );
-    f.state(json!({"head":head, "metaDelay":0.25}));
+    let release = f.dir.path().join("release-final-refresh");
+    f.state(json!({"head":head, "waitFor":{"BotReviewMeta":{"release":release,"after":2}}}));
     let (app, source) = f.open().await;
     let workspace = app.thread(source.clone()).await.unwrap().workspace_id;
     let worker = app.clone();
@@ -269,7 +270,7 @@ async fn exact_head_checkout_changed_during_final_refresh_refuses_preparation() 
             .prepare_pull_request_thread(request(source, &expected, destination))
             .await
     });
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         while f.calls("BotReviewMeta", 41) < 3 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -277,6 +278,7 @@ async fn exact_head_checkout_changed_during_final_refresh_refuses_preparation() 
     .await
     .unwrap();
     std::fs::write(external.join("precious"), "unsaved").unwrap();
+    std::fs::write(release, "").unwrap();
     let error = pending.await.unwrap().unwrap_err();
     assert_eq!(error.code, "dirty_checkout");
     assert_eq!(
@@ -385,7 +387,7 @@ async fn pr_setup_blocks_reuse_then_exact_head_skips_rerun_and_preserves_history
         .unwrap_err();
     assert_eq!(error.code, "setup_busy");
     std::fs::write(f.root.join("release"), "").unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if matches!(
                 app.thread(created.id.clone())

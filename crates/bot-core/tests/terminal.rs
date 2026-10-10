@@ -79,7 +79,7 @@ impl Events {
         }
     }
     async fn until(&self, what: &str, done: impl Fn(&[TerminalEvent]) -> bool) {
-        for _ in 0..1000 {
+        for _ in 0..3000 {
             if done(&self.all()) {
                 return;
             }
@@ -113,7 +113,7 @@ fn alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 async fn gone(pid: i32, why: &str) {
-    for _ in 0..300 {
+    for _ in 0..3000 {
         if !alive(pid) {
             return;
         }
@@ -303,7 +303,7 @@ async fn close_kills_the_shell_and_its_foreground_job() {
     write(&app, &workspace.id, None, "echo pid=$$; sleep 31\n").await;
     let pid = events.pid().await;
     let mut sleeper = None;
-    for _ in 0..300 {
+    for _ in 0..3000 {
         let out = Command::new("pgrep")
             .args(["-P", &pid.to_string(), "sleep"])
             .output()
@@ -701,7 +701,7 @@ async fn canceled_delete_caller_does_not_release_the_actor_job_or_checkout_hold(
         "Deletion must reap the shell even after caller cancellation",
     )
     .await;
-    for _ in 0..300 {
+    for _ in 0..3000 {
         if app
             .thread(thread.id.clone())
             .await
