@@ -118,8 +118,7 @@ fn describe_commit_failure(stderr: &str) -> String {
     stderr
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .next_back()
+        .rfind(|line| !line.is_empty())
         .unwrap_or("Git could not make the first commit.")
         .into()
 }

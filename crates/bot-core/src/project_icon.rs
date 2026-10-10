@@ -168,9 +168,11 @@ struct Cached {
     path: Option<PathBuf>,
     inserted: Instant,
 }
+type FaviconCache = HashMap<(PathBuf, Option<String>), Cached>;
+
 #[derive(Clone, Default)]
 pub(crate) struct FaviconResolver {
-    cache: Arc<Mutex<HashMap<(PathBuf, Option<String>), Cached>>>,
+    cache: Arc<Mutex<FaviconCache>>,
 }
 impl FaviconResolver {
     pub(crate) fn resolve(
@@ -192,14 +194,14 @@ impl FaviconResolver {
             }) if cached_path(&root, saved, path)? => Some(path.clone()),
             _ => {
                 let path = resolve_uncached(&root, saved)?;
-                if cache.len() >= 512 && !cache.contains_key(&key) {
-                    if let Some(oldest) = cache
+                if cache.len() >= 512
+                    && !cache.contains_key(&key)
+                    && let Some(oldest) = cache
                         .iter()
                         .min_by_key(|(_, entry)| entry.inserted)
                         .map(|(key, _)| key.clone())
-                    {
-                        cache.remove(&oldest);
-                    }
+                {
+                    cache.remove(&oldest);
                 }
                 cache.insert(
                     key,
@@ -273,10 +275,9 @@ fn resolve_uncached(root: &Path, saved: Option<&str>) -> Result<Option<PathBuf>>
     if let Some(icon) = crate::project::read(root)
         .ok()
         .and_then(|config| config.icon_path)
+        && let Some(path) = confined(root, &icon)?
     {
-        if let Some(path) = confined(root, &icon)? {
-            return Ok(Some(path));
-        }
+        return Ok(Some(path));
     }
     for candidate in CANDIDATES {
         if let Some(path) = confined(root, candidate)? {
@@ -344,24 +345,24 @@ fn icon_href(source: &str) -> Option<&str> {
             break;
         };
         let tag = &lower[start..start + end];
-        if icon_rel(tag, b'=') {
-            if let Some(range) = quoted_field(tag, "href", b'=') {
-                return source[start + range.start..start + range.end]
-                    .split('?')
-                    .next()
-                    .filter(|href| !href.is_empty());
-            }
+        if icon_rel(tag, b'=')
+            && let Some(range) = quoted_field(tag, "href", b'=')
+        {
+            return source[start + range.start..start + range.end]
+                .split('?')
+                .next()
+                .filter(|href| !href.is_empty());
         }
     }
     let mut offset = 0;
     for run in lower.split('}') {
-        if icon_rel(run, b':') {
-            if let Some(range) = quoted_field(run, "href", b':') {
-                return source[offset + range.start..offset + range.end]
-                    .split('?')
-                    .next()
-                    .filter(|href| !href.is_empty());
-            }
+        if icon_rel(run, b':')
+            && let Some(range) = quoted_field(run, "href", b':')
+        {
+            return source[offset + range.start..offset + range.end]
+                .split('?')
+                .next()
+                .filter(|href| !href.is_empty());
         }
         offset += run.len() + 1;
     }

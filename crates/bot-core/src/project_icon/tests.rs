@@ -106,7 +106,7 @@ fn confined_discovery_refuses_escape_paths_and_symlinks_including_cache_hits() {
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().join("project");
     fs::create_dir(&root).unwrap();
-    let outside = write(parent.path(), "escape.svg", "<svg>outside</svg>");
+    write(parent.path(), "escape.svg", "<svg>outside</svg>");
     write(&root, "t3.json", r#"{"iconPath":"../escape.svg"}"#);
     write(
         &root,
@@ -121,6 +121,7 @@ fn confined_discovery_refuses_escape_paths_and_symlinks_including_cache_hits() {
     );
     #[cfg(unix)]
     {
+        let outside = parent.path().join("escape.svg");
         let first = write(&root, "favicon.svg", "<svg>inside</svg>");
         let fallback = write(&root, "public/favicon.svg", "<svg>fallback</svg>");
         let resolver = FaviconResolver::default();
@@ -265,7 +266,7 @@ async fn open(state: &Path) -> App {
 async fn saved_icons_files_and_reset_persist_across_runtime_restart() {
     let root = tempfile::tempdir().unwrap();
     assert!(
-        std::process::Command::new("git")
+        crate::process::command("git")
             .args(["init", "-q"])
             .arg(root.path())
             .status()
