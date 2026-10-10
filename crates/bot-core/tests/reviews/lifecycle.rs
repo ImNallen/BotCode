@@ -277,12 +277,13 @@ async fn lifecycle_queue_and_auto_merge_stay_pending_and_disable_remains_availab
     )
     .await
     .unwrap();
-    for _ in 0..100 {
-        if app.thread(thread.clone()).await.unwrap().session == SessionState::Running {
-            break;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while app.thread(thread.clone()).await.unwrap().session != SessionState::Running {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    })
+    .await
+    .unwrap();
     assert_eq!(
         app.thread(thread.clone()).await.unwrap().session,
         SessionState::Running
@@ -529,8 +530,8 @@ async fn settlement_public_all_links_settings_inheritance_and_recent_activity() 
     )
     .await
     .unwrap();
-    for _ in 0..100 {
-        if app
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !app
             .thread(thread.clone())
             .await
             .unwrap()
@@ -538,10 +539,11 @@ async fn settlement_public_all_links_settings_inheritance_and_recent_activity() 
             .last()
             .is_some_and(|turn| matches!(turn.execution, Execution::Completed))
         {
-            break;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    })
+    .await
+    .unwrap();
     f.state(json!({"matchNumber":true,"perNumber":{"41":{"lifecycle":"MERGED","mergedAt":"2020-10-05T13:00:00Z"},"42":{"lifecycle":"CLOSED","closedAt":"2020-10-05T12:00:00Z"}}}));
     app.read_pull_request(thread.clone(), f.key())
         .await
@@ -585,17 +587,18 @@ async fn ordinary_uncached_refresh_confirms_pending_merge_receipts_without_repla
             app.list_thread_pull_requests(thread.clone(), true)
                 .await
                 .unwrap();
-            for _ in 0..100 {
-                if app
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while !app
                     .pull_request_operations(thread.clone(), f.key())
                     .await
                     .unwrap()
                     .is_empty()
                 {
-                    break;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+            })
+            .await
+            .unwrap();
         } else {
             app.read_pull_request(thread.clone(), f.key())
                 .await
@@ -1177,7 +1180,7 @@ async fn uncertain_update_acknowledgment_rechecks_membership_and_excludes_other_
     let calls = f.calls("BotReviewMeta", 41);
     let pending = app.acknowledge_uncertain_update(thread.clone(), acknowledgment(&input, &detail));
     let changed = async {
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             while f.calls("BotReviewMeta", 41) == calls {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -1405,7 +1408,7 @@ async fn old_epoch_merged_status_cannot_supersede_uncertain_update() {
     app.list_thread_pull_requests(thread.clone(), true)
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         while f.calls("BotPullRequest", 41) == calls {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

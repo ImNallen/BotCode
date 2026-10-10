@@ -77,7 +77,7 @@ async fn wait(
     id: &ThreadId,
     predicate: impl Fn(&ThreadSnapshot) -> bool,
 ) -> ThreadSnapshot {
-    for _ in 0..500 {
+    for _ in 0..3000 {
         let thread = app.thread(id.clone()).await.unwrap();
         if predicate(&thread) {
             return thread;

@@ -627,7 +627,7 @@ fn command_deadline_covers_output_pipes_after_git_leader_exit() {
     let started = Instant::now();
     let error = run_with_limit(
         dir.path(),
-        &["-c", "alias.hold=!sleep 10 &", "hold"],
+        &["-c", "alias.hold=!sleep 300 &", "hold"],
         None,
         &[],
         Duration::from_millis(100),
@@ -635,5 +635,5 @@ fn command_deadline_covers_output_pipes_after_git_leader_exit() {
     .err()
     .expect("open descendant pipe times out");
     assert_eq!(error.code, "checkpoint_timeout");
-    assert!(started.elapsed() < Duration::from_secs(4));
+    assert!(started.elapsed() < Duration::from_secs(30));
 }

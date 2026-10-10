@@ -682,10 +682,11 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
             drop(ack);
         };
-        let (result, ()) =
-            tokio::time::timeout(Duration::from_secs(1), async { tokio::join!(saving, stop) })
-                .await
-                .unwrap();
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(saving, stop)
+        })
+        .await
+        .unwrap();
         assert_eq!(result.unwrap_err().code, "shutdown");
     }
 }

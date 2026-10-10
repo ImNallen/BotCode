@@ -21,7 +21,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'exec':
         while True:
             time.sleep(1)
     if (root / f'{kind}_hold').exists():
-        deadline = time.time() + 10
+        deadline = time.time() + float((root / f'{kind}_hold').read_text() or 10)
         while not (root / f'{kind}_release').exists() and time.time() < deadline:
             time.sleep(0.01)
     if (root / f'{kind}_delay').exists():
@@ -32,7 +32,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'exec':
     pathlib.Path(sys.argv[sys.argv.index('--output-last-message') + 1]).write_text(output.read_text())
     sys.exit(0)
 log = root / 'calls.jsonl'
-(root / 'pid').write_text(str(os.getpid()))
+publish(root / 'pid', str(os.getpid()))
 with (root / 'launches.jsonl').open('a') as launches:
     launches.write(json.dumps({'time': time.time(), 'pid': os.getpid()}) + '\n')
 print(f'fixture stderr: started {os.getpid()}', file=sys.stderr, flush=True)

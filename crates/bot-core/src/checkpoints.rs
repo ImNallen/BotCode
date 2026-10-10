@@ -403,9 +403,21 @@ pub(crate) fn capture(root: &Path, checkpoint_ref: &str) -> Result<Checkpoint> {
     )?)?
     .trim()
     .to_owned();
+    // A sibling capture of the same reference holds its lock longer than Git's 100 ms default under load.
     let publish = git(
         root,
-        &[&DURABLE[..], &["update-ref", checkpoint_ref, &commit, ""]].concat(),
+        &[
+            &DURABLE[..],
+            &[
+                "-c",
+                "core.filesRefLockTimeout=10000",
+                "update-ref",
+                checkpoint_ref,
+                &commit,
+                "",
+            ],
+        ]
+        .concat(),
     );
     if let Err(error) = publish {
         if let Some(commit) = resolve(root, checkpoint_ref)? {

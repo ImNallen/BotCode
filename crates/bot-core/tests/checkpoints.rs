@@ -107,7 +107,7 @@ async fn wait(
 ) -> ThreadSnapshot {
     let started = Instant::now();
     let mut last = None;
-    for _ in 0..1000 {
+    for _ in 0..3000 {
         let t = app.thread(id.clone()).await.unwrap();
         if predicate(&t) {
             return t;
@@ -425,7 +425,7 @@ async fn active_turn_and_git_hold_refuse_both_revert_modes() {
         )
         .await
     });
-    for _ in 0..200 {
+    for _ in 0..3000 {
         if marker.exists() {
             break;
         }
@@ -671,7 +671,7 @@ async fn provider_loss_during_restore_keeps_one_live_worker_and_retry_coalesces(
             .revert_thread(id, "one-worker".into(), target, true)
             .await
     });
-    for _ in 0..300 {
+    for _ in 0..3000 {
         if marker.exists() {
             break;
         }
@@ -787,7 +787,13 @@ async fn folder_capture_save_retry_keeps_its_hold_after_another_thread_loses_the
         "checkout_busy"
     );
     db.execute_batch("DROP TRIGGER reject_folder;").unwrap();
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    wait(&app, &folder.id, |t| {
+        matches!(
+            &t.turns[0].checkpoint,
+            TurnCheckpoint::Unavailable { reason, .. } if reason == "Checkpoints require a Git repository."
+        )
+    })
+    .await;
     let rewound = app
         .revert_thread(
             folder.id.clone(),

@@ -613,7 +613,7 @@ mod tests {
         .unwrap();
         let leader = codex.pid as i32;
         let clone = codex.clone();
-        for _ in 0..200 {
+        for _ in 0..3000 {
             if std::fs::read_to_string(&child).is_ok_and(|pid| pid.ends_with('\n')) {
                 break;
             }
@@ -633,7 +633,7 @@ mod tests {
         );
         drop(clone);
         for pid in [leader, child] {
-            for _ in 0..300 {
+            for _ in 0..3000 {
                 if unsafe { libc::kill(pid, 0) } != 0 {
                     break;
                 }

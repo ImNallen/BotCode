@@ -62,6 +62,10 @@ with log.open('a') as file:
 for operation, release in state.get('waitFor', {}).items():
     name, _, target = operation.partition(':')
     if name in query and (not target or target == str(number)):
+        if isinstance(release, dict):
+            if sum(name in line for line in log.read_text().splitlines()) <= release['after']:
+                continue
+            release = release['release']
         while not Path(release).exists() and state_path.exists():
             time.sleep(0.01)
 mode = state.get('mode', 'ok')

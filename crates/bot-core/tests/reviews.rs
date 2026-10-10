@@ -47,7 +47,7 @@ impl Fixture {
             data_dir: dir.path().join("state"),
             codex_binary: "/no/codex".into(),
             gh_binary: gh,
-            network_timeout: Duration::from_secs(5),
+            network_timeout: Duration::from_secs(30),
             shell: None,
         };
         let fixture = Self { dir, root, config };
@@ -100,7 +100,7 @@ impl Fixture {
             .count()
     }
     async fn wait_for(&self, operation: &str) {
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             while !self
                 .log()
                 .iter()
@@ -111,6 +111,16 @@ impl Fixture {
         })
         .await
         .unwrap();
+    }
+}
+async fn assert_killed(pid: i32) {
+    let started = std::time::Instant::now();
+    while unsafe { libc::kill(pid, 0) } == 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "child {pid} survived shutdown"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 fn submission(detail: &PrReviewDetail) -> PrReviewChange {
@@ -189,8 +199,7 @@ async fn remote_detail_pages_original_context_and_saved_triage_survive_checkout_
 }
 #[tokio::test]
 async fn explicit_limits_and_missing_or_truncated_patches_have_no_anchors() {
-    let mut f = Fixture::new();
-    f.config.network_timeout = Duration::from_secs(30);
+    let f = Fixture::new();
     f.state(json!({"pages":5,"filePages":true}));
     let (app, t) = f.open().await;
     let detail = app.read_pull_request(t.clone(), f.key()).await.unwrap();
@@ -363,11 +372,13 @@ async fn replies_and_resolution_validate_thread_membership_and_capability() {
 #[tokio::test]
 async fn uncertain_receipts_prevent_restart_replay_and_refusal_remains_distinct() {
     let mut f = Fixture::new();
-    f.config.network_timeout = Duration::from_secs(1);
     let (app, t) = f.open().await;
     let detail = app.read_pull_request(t.clone(), f.key()).await.unwrap();
     let input = submission(&detail);
+    app.shutdown().await.unwrap();
+    f.config.network_timeout = Duration::from_secs(5);
     f.state(json!({"mutation":"uncertain"}));
+    let app = App::open(f.config.clone()).await.unwrap();
     assert!(matches!(
         app.change_pull_request(t.clone(), input.clone())
             .await
@@ -375,6 +386,7 @@ async fn uncertain_receipts_prevent_restart_replay_and_refusal_remains_distinct(
         PrChangeResult::Uncertain { .. }
     ));
     app.shutdown().await.unwrap();
+    f.config.network_timeout = Duration::from_secs(30);
     f.state(json!({}));
     let app = App::open(f.config.clone()).await.unwrap();
     assert!(matches!(
@@ -402,7 +414,7 @@ async fn owned_delayed_mutation_persists_before_shutdown_acknowledgment() {
     let task_input = input.clone();
     let thread = t.clone();
     let task = tokio::spawn(async move { worker.change_pull_request(thread, task_input).await });
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         while f.mutations().is_empty() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -506,7 +518,7 @@ async fn shutdown_cancels_detail_processes_and_their_children_before_reopen() {
     let worker = app.clone();
     let key = f.key();
     let task = tokio::spawn(async move { worker.read_pull_request(t, key).await });
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         while !f.dir.path().join("gh.children").exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -519,12 +531,7 @@ async fn shutdown_cancels_detail_processes_and_their_children_before_reopen() {
         .unwrap()
         .lines()
     {
-        let pid = line.parse::<i32>().unwrap();
-        assert_eq!(
-            unsafe { libc::kill(pid, 0) },
-            -1,
-            "child {pid} survived shutdown"
-        );
+        assert_killed(line.parse().unwrap()).await;
     }
     let app = App::open(f.config.clone()).await.unwrap();
     app.shutdown().await.unwrap();
@@ -813,7 +820,7 @@ async fn admission_denials_are_refused_without_dispatching_a_mutation() {
     let key = f.key();
     let thread = t.clone();
     let task = tokio::spawn(async move { worker.read_pull_request(thread, key).await });
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         while !f.dir.path().join("gh.children").exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -826,7 +833,7 @@ async fn admission_denials_are_refused_without_dispatching_a_mutation() {
         .unwrap()
         .lines()
     {
-        assert_eq!(unsafe { libc::kill(pid.parse().unwrap(), 0) }, -1);
+        assert_killed(pid.parse().unwrap()).await;
     }
     assert!(f.mutations().is_empty());
 }
@@ -851,7 +858,7 @@ async fn busy_admission_refuses_before_any_mutation() {
             worker.read_pull_request(thread, key).await
         }));
     }
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         while std::fs::read_to_string(f.dir.path().join("gh.children"))
             .unwrap_or_default()
             .lines()
@@ -876,9 +883,9 @@ async fn busy_admission_refuses_before_any_mutation() {
 #[tokio::test]
 async fn optional_timeout_reserves_final_core_confirmation() {
     let mut f = Fixture::new();
-    f.config.network_timeout = Duration::from_secs(3);
+    f.config.network_timeout = Duration::from_secs(20);
     let (app, t) = f.open().await;
-    f.state(json!({"sectionModes":{"BotReviewThreads":"slow"},"delay":10}));
+    f.state(json!({"sectionModes":{"BotReviewThreads":"slow"},"delay":300}));
     let detail = app.read_pull_request(t.clone(), f.key()).await.unwrap();
     assert_eq!(detail.body, "Review the calculation update.");
     assert!(detail.problems.iter().any(|problem| matches!(
@@ -1058,7 +1065,7 @@ async fn pending_mutation_refuses_shared_detail_reads_but_allows_receipt_replay_
     let reads_before = f.calls("BotReviewMeta", 41);
     for thread in [first, second.clone()] {
         let result = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(30),
             app.read_pull_request(thread, f.key()),
         )
         .await

@@ -286,7 +286,7 @@ for line in sys.stdin:
     method = frame.get('method')
     if method == 'initialize':
         if mode == 'stall':
-            time.sleep(30)
+            time.sleep(300)
         result = {}
     elif method == 'initialized':
         continue
@@ -345,7 +345,7 @@ for line in sys.stdin:
                 list_with_timeout(
                     &peer.binary,
                     Path::new("/checkout"),
-                    Duration::from_millis(250),
+                    Duration::from_secs(5),
                     peer.log()
                 )
                 .await

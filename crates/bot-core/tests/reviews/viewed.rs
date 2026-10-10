@@ -283,7 +283,8 @@ async fn viewed_unlink_invalidates_running_read() {
         .await
         .unwrap()
         .observation;
-    f.state(json!({"viewedReadDelay":0.3}));
+    let release = f.dir.path().join("release-viewed");
+    f.state(json!({"waitFor":{"BotFilesViewed":release}}));
     let worker = app.clone();
     let worker_thread = thread.clone();
     let task = tokio::spawn(async move {
@@ -293,6 +294,7 @@ async fn viewed_unlink_invalidates_running_read() {
     });
     f.wait_for("BotFilesViewed").await;
     app.unlink_pull_request(thread, f.key()).await.unwrap();
+    std::fs::write(release, "").unwrap();
     assert!(task.await.unwrap().is_err());
     app.shutdown().await.unwrap();
 }

@@ -193,7 +193,8 @@ impl Owner {
             return Ok(thread);
         }
         let dir = self.setup_dir(setup);
-        if dir.exists() && lock_attempt(&dir)?.is_none() {
+        // The wrapper publishes its receipt before it exits and releases the lock.
+        if dir.exists() && !dir.join("receipt").exists() && lock_attempt(&dir)?.is_none() {
             return Err(AppError::new(
                 "setup_busy",
                 "The prior setup process is still running.",

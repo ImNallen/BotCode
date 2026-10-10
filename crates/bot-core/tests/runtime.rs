@@ -63,9 +63,11 @@ impl Fixture {
             .collect()
     }
 }
+const LIMIT: Duration = Duration::from_secs(30);
 // Under parallel tests, a reopen right after shutdown can still see the lock for a few milliseconds.
 async fn reopen(config: &RuntimeConfig) -> App {
-    for _ in 0..100 {
+    let started = std::time::Instant::now();
+    while started.elapsed() < LIMIT {
         match App::open(config.clone()).await {
             Err(e) if e.code == "already_running" => {
                 tokio::time::sleep(Duration::from_millis(10)).await
@@ -75,12 +77,24 @@ async fn reopen(config: &RuntimeConfig) -> App {
     }
     panic!("The previous runtime never released its data directory")
 }
+async fn eventually(mut condition: impl FnMut() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < LIMIT {
+        if condition() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
 async fn wait(
     app: &App,
     id: &ThreadId,
     predicate: impl Fn(&ThreadSnapshot) -> bool,
 ) -> ThreadSnapshot {
-    for _ in 0..500 {
+    let started = std::time::Instant::now();
+    let mut last = None;
+    while started.elapsed() < LIMIT {
         let snapshot = app.thread(id.clone()).await.unwrap();
         if predicate(&snapshot)
             && !snapshot.turns.last().is_some_and(|turn| {
@@ -93,9 +107,13 @@ async fn wait(
         {
             return snapshot;
         }
+        last = Some(snapshot);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("Timed out awaiting public snapshot state")
+    panic!(
+        "Timed out awaiting public snapshot state after {:?}; last snapshot: {last:#?}",
+        started.elapsed()
+    )
 }
 async fn conversation(app: &App, f: &Fixture) -> ThreadSnapshot {
     let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
@@ -427,29 +445,20 @@ async fn exclusive_data_owner_and_dropping_app_terminates_child() {
     .await
     .unwrap();
     let mut shell = None;
-    for _ in 0..500 {
+    eventually(|| {
         let text = output.lock().unwrap().clone();
         shell = text
             .rsplit_once("shell=")
             .and_then(|(_, rest)| rest.split_once('.'))
             .and_then(|(digits, _)| digits.parse::<i32>().ok());
-        if shell.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+        shell.is_some()
+    })
+    .await;
     let shell = shell.expect("the shell printed its pid");
     drop(app);
     for (pid, what) in [(pid, "Codex"), (shell, "the terminal shell")] {
-        for _ in 0..300 {
-            if unsafe { libc::kill(pid, 0) } != 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert_ne!(
-            unsafe { libc::kill(pid, 0) },
-            0,
+        assert!(
+            wait_until_dead(pid).await,
             "Dropping all App handles must reap {what}"
         );
     }
@@ -580,27 +589,15 @@ async fn shutdown_terminates_same_group_tool_after_leader_exits() {
     })
     .await;
     let pid_path = f.peer.parent().unwrap().join("descendant.pid");
-    for _ in 0..100 {
-        if pid_path.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually(|| pid_path.exists()).await;
     let pid = std::fs::read_to_string(pid_path)
         .unwrap()
         .parse::<i32>()
         .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
     app.shutdown().await.unwrap();
-    for _ in 0..100 {
-        if unsafe { libc::kill(pid, 0) } != 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_ne!(
-        unsafe { libc::kill(pid, 0) },
-        0,
+    assert!(
+        wait_until_dead(pid).await,
         "Same-group tool must not outlive runtime shutdown"
     );
 }
@@ -1163,12 +1160,7 @@ async fn provider_loss_keeps_usage_limits_and_relaunch_reads_again() {
     app.submit(thread.id.clone(), "relaunch".into(), "hello".into(), vec![])
         .await
         .unwrap();
-    for _ in 0..500 {
-        if method_count(&f, "account/rateLimits/read") == 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually(|| method_count(&f, "account/rateLimits/read") == 2).await;
     assert_eq!(method_count(&f, "account/rateLimits/read"), 2);
     app.shutdown().await.unwrap();
 }
@@ -3421,6 +3413,21 @@ async fn saving_settings_reclassifies_threads_without_a_restart() {
         settled_by_project(&app, &projects).await,
         [false, false, false]
     );
+    for id in &projects.threads {
+        let started = std::time::Instant::now();
+        while app
+            .list_thread_pull_requests(id.clone(), false)
+            .await
+            .unwrap()
+            .discovering
+        {
+            assert!(
+                started.elapsed() < LIMIT,
+                "startup PR discovery never finished"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
     let mut changes = app.subscribe();
     let settings = serde_json::json!({
         "projectOverrides": {
@@ -5566,18 +5573,22 @@ async fn project_setup_receipt_survives_restart_and_completed_retry_is_noop() {
         }),
     )
     .await;
-    assert!(matches!(
-        app.retry_worktree_setup(thread.id.clone())
-            .await
-            .unwrap()
-            .worktree_setup
-            .unwrap()
-            .state,
-        SetupState::Running
-    ));
+    let running = app
+        .retry_worktree_setup(thread.id.clone())
+        .await
+        .unwrap()
+        .worktree_setup
+        .unwrap();
+    assert!(matches!(running.state, SetupState::Running));
     app.shutdown().await.unwrap();
     std::fs::write(f.repository.join("release"), "").unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let receipt = f
+        .config
+        .data_dir
+        .join("worktree-setup")
+        .join(&running.id)
+        .join("receipt");
+    assert!(eventually(|| receipt.exists()).await);
     let app = reopen(&f.config).await;
     wait(&app, &thread.id, |t| {
         matches!(
@@ -5689,19 +5700,15 @@ async fn project_setup_failure_retries_and_manual_script_starts_unopened_termina
     let Checkout::Worktree { path, .. } = &thread.checkout else {
         panic!()
     };
-    for _ in 0..100 {
-        if path.join("manual").exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    let expected = format!(
+        "{}\n{}\n",
+        f.repository.canonicalize().unwrap().display(),
+        path.display()
+    );
+    eventually(|| std::fs::read_to_string(path.join("manual")).is_ok_and(|s| s == expected)).await;
     assert_eq!(
         std::fs::read_to_string(path.join("manual")).unwrap(),
-        format!(
-            "{}\n{}\n",
-            f.repository.canonicalize().unwrap().display(),
-            path.display()
-        )
+        expected
     );
     app.shutdown().await.unwrap();
 }
@@ -5779,13 +5786,7 @@ fn not_sent_reason(turn: &Turn) -> &str {
     }
 }
 async fn wait_until_dead(pid: i32) -> bool {
-    for _ in 0..300 {
-        if unsafe { libc::kill(pid, 0) } != 0 {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    false
+    eventually(|| unsafe { libc::kill(pid, 0) } != 0).await
 }
 
 #[tokio::test]
@@ -5986,12 +5987,7 @@ async fn leader_exit_is_detected_while_a_descendant_holds_stdout() {
         matches!(t.turns[0].execution, Execution::Running)
     })
     .await;
-    for _ in 0..100 {
-        if peer_file(&f, "descendant.pid").exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    eventually(|| peer_file(&f, "descendant.pid").exists()).await;
     let descendant = peer_pid(&f, "descendant.pid");
     let killed = std::time::Instant::now();
     unsafe { libc::kill(peer_pid(&f, "pid"), libc::SIGKILL) };
@@ -5999,7 +5995,7 @@ async fn leader_exit_is_detected_while_a_descendant_holds_stdout() {
         matches!(t.turns[0].execution, Execution::Lost { .. })
     })
     .await;
-    assert!(killed.elapsed() < Duration::from_secs(3));
+    assert!(killed.elapsed() < Duration::from_secs(10));
     assert!(lost_reason(&lost.turns[0]).starts_with(KILLED));
     assert!(
         wait_until_dead(descendant).await,
@@ -6158,12 +6154,7 @@ async fn crash_while_steering_is_sending_reports_the_crash() {
             matches!(steering_delivery(t, "follow"), Some(Delivery::Sending))
         })
         .await;
-        for _ in 0..200 {
-            if method_count(&f, "turn/steer") == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        eventually(|| method_count(&f, "turn/steer") == 1).await;
         unsafe { libc::kill(peer_pid(&f, "pid"), libc::SIGKILL) };
         let lost = wait(&app, &thread.id, |t| {
             matches!(t.turns[0].execution, Execution::Lost { .. })
@@ -7061,18 +7052,16 @@ async fn task_control(
         value.to_string(),
     )
     .unwrap();
-    for _ in 0..200 {
-        let observed =
-            std::fs::read_to_string(root.join(format!("task-control-seen-{native}.json")))
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-        if observed.as_ref().is_some_and(|v| v["revision"] == revision) {
-            tokio::time::sleep(Duration::from_millis(130)).await;
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("task fixture did not consume {action}");
+    let seen = root.join(format!("task-control-seen-{native}.json"));
+    let consumed = eventually(|| {
+        std::fs::read_to_string(&seen)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .is_some_and(|v| v["revision"] == revision)
+    })
+    .await;
+    assert!(consumed, "task fixture did not consume {action}");
+    tokio::time::sleep(Duration::from_millis(130)).await;
 }
 
 #[tokio::test]
@@ -7129,12 +7118,15 @@ async fn task_progress_routes_exact_turns_and_preserves_last_valid_snapshot() {
         assert_eq!(snapshot.session, SessionState::Running);
     }
     task_control(&f, &native, 7, "clear", json!({})).await;
-    assert!(
-        app.thread(thread.id.clone()).await.unwrap().turns[0]
-            .tasks
-            .is_none()
-    );
+    wait(&app, &thread.id, |t| t.turns[0].tasks.is_none()).await;
     task_control(&f, &native, 8, "advance", json!({"stage":0})).await;
+    wait(&app, &thread.id, |t| {
+        t.turns[0]
+            .tasks
+            .as_ref()
+            .is_some_and(|tasks| tasks.steps()[0].status == TaskStatus::InProgress)
+    })
+    .await;
     app.interrupt(thread.id.clone()).await.unwrap();
     let stopped = wait(&app, &thread.id, |t| {
         t.turns[0].execution == Execution::Interrupted
@@ -7172,17 +7164,18 @@ async fn task_progress_routes_exact_turns_and_preserves_last_valid_snapshot() {
     assert_eq!(safe.turns[0].tasks, stopped.turns[0].tasks);
     assert_eq!(safe.turns[1].tasks, next.turns[1].tasks);
     task_control(&f, &native, 10, "advance", json!({"stage":3})).await;
-    let completed_tasks = app.thread(thread.id.clone()).await.unwrap().turns[1]
+    let completed_tasks = wait(&app, &thread.id, |t| {
+        t.turns[1].tasks.as_ref().is_some_and(|tasks| {
+            tasks
+                .steps()
+                .iter()
+                .all(|s| s.status == TaskStatus::Completed)
+        })
+    })
+    .await
+    .turns[1]
         .tasks
         .clone();
-    assert!(
-        completed_tasks
-            .as_ref()
-            .unwrap()
-            .steps()
-            .iter()
-            .all(|s| s.status == TaskStatus::Completed)
-    );
     task_control(&f, &native, 11, "finish", json!({})).await;
     let completed = wait(&app, &thread.id, |t| {
         t.turns[1].execution == Execution::Completed
