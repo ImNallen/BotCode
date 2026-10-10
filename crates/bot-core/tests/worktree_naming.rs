@@ -800,3 +800,68 @@ async fn shared_worktree_threads_keep_their_actual_branch_without_auto_renaming(
     app.shutdown().await.unwrap();
     assert!(f.invocations().is_empty());
 }
+
+#[tokio::test]
+async fn background_fetch_preserves_generation_and_applies_the_name_after_its_hold_releases() {
+    let f = Fixture::new(Some(r#"{"branch":"preserved-name"}"#));
+    f.control("naming_hold", "10");
+    let origin = f.peer.parent().unwrap().join("origin.git");
+    git(
+        f.peer.parent().unwrap(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            f.root.to_str().unwrap(),
+            origin.to_str().unwrap(),
+        ],
+    );
+    git(
+        &f.root,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    let app = App::open(f.config.clone()).await.unwrap();
+    let t = f.thread(&app).await;
+    app.submit(
+        t.id.clone(),
+        "first".into(),
+        "ordinary prompt".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    wait(&app, &t.id, |t| matches!(t.session, SessionState::Ready)).await;
+    wait_file(&f.peer.parent().unwrap().join("naming_ready")).await;
+    app.save_settings(r#"{"defaultAutoPull":false,"automaticGitFetchInterval":50}"#)
+        .await
+        .unwrap();
+    let mut subscription = app.subscribe();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let hint = subscription.recv().await.unwrap();
+            if hint.thread_id == t.id && hint.refresh_workspace {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let pid: i32 = std::fs::read_to_string(f.peer.parent().unwrap().join("naming.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        0,
+        "background refresh keeps the naming generator alive"
+    );
+    f.control("naming_release", "");
+    let named = wait(&app, &t.id, |thread| {
+        checkout(thread).1.ends_with("preserved-name")
+    })
+    .await;
+    assert!(checkout(&named).1.ends_with("preserved-name"));
+    app.shutdown().await.unwrap();
+}

@@ -1,4 +1,9 @@
 // Ported from T3 Code v0.0.45 settings/SettingsPanels.tsx, SettingsSidebarNav.tsx, SettingsGroup.tsx, settingsLayout.tsx, WorkspacePageContainer.tsx, WorkspacePageHeader.tsx and ui/number-field.tsx (MIT).
+import { GitHubProviderSettings } from "./GitHubProviderSettings";
+import {
+  SourceControlWritingRow,
+  GitFetchIntervalSettings,
+} from "./SourceControlSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
@@ -543,7 +548,16 @@ export function SettingsPage() {
     return null;
   };
   const row = (info: SettingsRowInfo) =>
-    info.id === "thread-notifications" ? (
+    info.id === "source-control-writing-style" ||
+    info.id === "follow-change-request-templates" ? (
+      <SourceControlWritingRow
+        key={info.id}
+        scope={scope}
+        templates={info.id === "follow-change-request-templates"}
+      />
+    ) : info.id === "git-fetch-interval" ? (
+      <GitFetchIntervalSettings key={info.id} />
+    ) : info.id === "thread-notifications" ? (
       <NotificationSettings key={info.id} info={info} />
     ) : info.setting ? (
       <ProjectSettingRow
@@ -632,6 +646,8 @@ export function SettingsPage() {
             <KeybindingsSettings />
           ) : (
             category.groups.map((group) => {
+              if (group.id === "source-control-providers")
+                return <GitHubProviderSettings key={group.id} />;
               const rows = visibleRows(group, scope);
               if (rows === undefined) return null;
               return (

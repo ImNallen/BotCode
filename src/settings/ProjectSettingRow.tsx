@@ -25,12 +25,19 @@ import { autoSettleDaysRow, projectSettingRows } from "./settingsCatalog";
 import type { SettingsScope } from "./settingsScope";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
 
+export const mergeMethodLabels = {
+  last: "Last selected",
+  merge: "Merge",
+  squash: "Squash and merge",
+  rebase: "Rebase and merge",
+};
+
 type WriteTarget =
   | { kind: "all" }
   | { kind: "project"; id: string }
   | { kind: "none" };
 
-function writeTarget(
+export function writeTarget(
   scope: SettingsScope | undefined,
   scratch: boolean,
 ): WriteTarget {
@@ -106,6 +113,61 @@ const controls: {
     ) => ReactNode;
   };
 } = {
+  sourceControlWritingStyle: {
+    scratch: false,
+    format: (style) => style.mode,
+    control: () => null,
+  },
+  defaultAutoPull: {
+    scratch: false,
+    format: (on) => (on ? "On" : "Off"),
+    control: (value, set, disabled) => (
+      <Switch
+        checked={value}
+        disabled={disabled}
+        onCheckedChange={set}
+        aria-label="Default automatic pull"
+      />
+    ),
+  },
+  pullRequestMergeMethod: {
+    scratch: false,
+    format: (method) => mergeMethodLabels[method ?? "last"],
+    control: (value, set, disabled) => (
+      <Menu
+        align="end"
+        trigger={(props) => (
+          <button
+            type="button"
+            {...props}
+            disabled={disabled}
+            aria-label="Default pull request merge method"
+            className={selectTrigger()}
+          >
+            <span className="min-w-0 flex-1 truncate text-left">
+              {mergeMethodLabels[value ?? "last"]}
+            </span>
+            <ChevronDownIcon
+              aria-hidden
+              className="-me-1 size-3 shrink-0 opacity-50"
+            />
+          </button>
+        )}
+      >
+        {(["last", "merge", "squash", "rebase"] as const).map((method) => (
+          <MenuItem
+            key={method}
+            role="menuitemradio"
+            aria-checked={(value ?? "last") === method}
+            className={selectItem}
+            onClick={() => set(method === "last" ? null : method)}
+          >
+            {mergeMethodLabels[method]}
+          </MenuItem>
+        ))}
+      </Menu>
+    ),
+  },
   defaultPermissionMode: {
     scratch: true,
     format: (preferred, capabilities) => {
@@ -245,7 +307,7 @@ const controls: {
   },
 };
 
-function SettingInheritance({
+export function SettingInheritance({
   summary,
   overridden,
   layers,
@@ -396,7 +458,11 @@ function ScopedProjectSettingRow<K extends ProjectSetting>({
       <SettingsRow
         id={id}
         title={labels.title}
-        description="Threads without a project start in their own folder."
+        description={
+          setting === "defaultAutoPull" || setting === "pullRequestMergeMethod"
+            ? "Source control settings require a repository project."
+            : "Threads without a project start in their own folder."
+        }
         control={control(value, write, true, capabilities)}
         disabled
       />

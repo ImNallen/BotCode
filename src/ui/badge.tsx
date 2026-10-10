@@ -1,4 +1,4 @@
-// Variant classes copied from pingdotgg/t3code 3e6b450 apps/web/src/components/ui/badge.tsx (MIT).
+// Variant classes copied from pingdotgg/t3code v0.0.45 apps/web/src/components/ui/badge.tsx (MIT).
 import { cva, type VariantProps } from "class-variance-authority";
 import type { ComponentProps } from "react";
 import { cn } from "../lib/cn";
@@ -12,12 +12,14 @@ const badgeVariants = cva(
     },
     variants: {
       size: {
+        sm: "h-5 min-w-5 rounded-[.25rem] px-[calc(--spacing(1)-1px)] text-xs leading-none sm:h-4 sm:min-w-4 sm:text-[.625rem]",
         control:
           "h-7 min-w-7 rounded-[var(--control-radius)] px-[calc(--spacing(2)-1px)] text-sm sm:h-6 sm:min-w-6 sm:text-xs",
         default:
           "h-5.5 min-w-5.5 px-[calc(--spacing(1)-1px)] text-sm sm:h-4.5 sm:min-w-4.5 sm:text-xs",
       },
       variant: {
+        warning: "bg-warning/8 text-warning-foreground dark:bg-warning/16",
         info: "bg-info/8 text-info-foreground dark:bg-info/16",
         outline:
           "border-input bg-background text-foreground dark:bg-input/32 [button&,a&]:hover:bg-accent/50 dark:[button&,a&]:hover:bg-input/48",

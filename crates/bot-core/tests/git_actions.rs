@@ -1360,7 +1360,13 @@ async fn blank_combined_action_generates_from_actual_index_and_new_commit_agains
     assert!(prompt.contains("Base branch: develop"));
     assert!(prompt.contains("Add the latest feature"));
     assert!(prompt.contains("earlier-feature.txt"));
-    assert!(!prompt.contains("base-only.txt"));
+    assert!(
+        !prompt
+            .split("\n\nCommits:\n")
+            .nth(1)
+            .unwrap()
+            .contains("base-only.txt")
+    );
     assert!(
         pr[0]["args"]
             .as_array()
@@ -1883,65 +1889,81 @@ async fn selected_unborn_preview_and_commit_leave_excluded_added_file_unstaged()
 
 #[tokio::test]
 async fn new_branch_collision_and_hook_failure_preserve_worktree_metadata() {
-    let f = Fixture::new();
-    git_output(&f.repository, &["branch", "FEATURE/add-file"]);
-    git_output(&f.repository, &["branch", "feature/add-file-2"]);
-    let (app, workspace) = f.open().await;
-    let thread = app
-        .create_thread(
-            workspace.clone(),
-            NewCheckout::Worktree {
-                base: "main".into(),
-                from_origin: false,
-            },
-        )
-        .await
-        .unwrap();
-    let Checkout::Worktree { path, .. } = &thread.checkout else {
-        panic!("expected worktree");
-    };
-    std::fs::write(path.join("selected.txt"), "branch change\n").unwrap();
-    f.hook(
-        &f.repository.join(".git"),
-        "pre-commit",
-        "echo validation-failed >&2; exit 1",
-    );
-    let (out, _) = run(
-        &app,
-        &workspace,
-        Some(&thread.id),
-        GitAction::Commit {
-            request: CommitRequest {
+    for stacked in [false, true] {
+        let f = Fixture::new();
+        git_output(
+            &f.repository,
+            &["config", "branch.autoSetupMerge", "always"],
+        );
+        git_output(&f.repository, &["branch", "FEATURE/add-file"]);
+        git_output(&f.repository, &["branch", "feature/add-file-2"]);
+        let (app, workspace) = f.open().await;
+        let thread = app
+            .create_thread(
+                workspace.clone(),
+                NewCheckout::Worktree {
+                    base: "main".into(),
+                    from_origin: false,
+                },
+            )
+            .await
+            .unwrap();
+        let Checkout::Worktree { path, .. } = &thread.checkout else {
+            panic!("expected worktree");
+        };
+        std::fs::write(path.join("selected.txt"), "branch change\n").unwrap();
+        f.hook(
+            &f.repository.join(".git"),
+            "pre-commit",
+            "echo validation-failed >&2; exit 1",
+        );
+        let (out, _) = run(&app, &workspace, Some(&thread.id), {
+            let request = CommitRequest {
                 message: Some(message("Add 'file'")),
                 selection: paths(&["selected.txt"]),
                 destination: CommitDestination::NewBranch,
-            },
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(out.branch.as_deref(), Some("feature/add-file-3"));
-    assert!(out.commit.is_none());
-    assert_eq!(failure(&out), (GitPhase::Commit, "git"));
-    assert_eq!(
-        git_output(path, &["branch", "--show-current"]),
-        "feature/add-file-3"
-    );
-    let saved = app.thread(thread.id.clone()).await.unwrap();
-    assert!(
-        matches!(saved.checkout, Checkout::Worktree { branch, .. } if branch == "feature/add-file-3")
-    );
-    std::fs::remove_file(f.repository.join(".git/hooks/pre-commit")).unwrap();
-    let (retried, _) = run(
-        &app,
-        &workspace,
-        Some(&thread.id),
-        selected_commit(&["selected.txt"]),
-    )
-    .await
-    .unwrap();
-    assert_eq!(retried.failure, None);
-    app.shutdown().await.unwrap();
+            };
+            if stacked {
+                GitAction::CommitPush { request }
+            } else {
+                GitAction::Commit { request }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(out.branch.as_deref(), Some("feature/add-file-3"));
+        assert!(out.commit.is_none());
+        assert!(
+            !Command::new("git")
+                .arg("-C")
+                .arg(path)
+                .args(["config", "--get", "branch.feature/add-file-3.remote"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert_eq!(failure(&out), (GitPhase::Commit, "git"));
+        assert_eq!(
+            git_output(path, &["branch", "--show-current"]),
+            "feature/add-file-3"
+        );
+        let saved = app.thread(thread.id.clone()).await.unwrap();
+        assert!(
+            matches!(saved.checkout, Checkout::Worktree { branch, .. } if branch == "feature/add-file-3")
+        );
+        std::fs::remove_file(f.repository.join(".git/hooks/pre-commit")).unwrap();
+        let (retried, _) = run(
+            &app,
+            &workspace,
+            Some(&thread.id),
+            selected_commit(&["selected.txt"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(retried.failure, None);
+        app.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -2070,5 +2092,930 @@ async fn post_commit_hook_failure_does_not_hide_the_commit_git_landed() {
     assert!(events.lock().unwrap().iter().any(
         |e| matches!(e, GitProgress::HookFinished { name, code: Some(9) } if name == "post-commit")
     ));
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_control_style_is_snapshotted_for_preview_commit_and_pr_with_base_template_toggle() {
+    for follow_templates in [true, false] {
+        let f = Fixture::new();
+        std::fs::create_dir(f.repository.join(".github")).unwrap();
+        std::fs::write(
+            f.repository.join(".github/pull_request_template.md"),
+            "## Committed base checklist\n<!-- Remove this comment -->\n- [ ] Check the change",
+        )
+        .unwrap();
+        git_output(&f.repository, &["add", "."]);
+        git_output(&f.repository, &["commit", "-qm", "docs: add base template"]);
+        git_output(&f.repository, &["push", "-q", "origin", "main"]);
+        git_output(&f.repository, &["checkout", "-qb", "feature"]);
+        std::fs::write(
+            f.repository.join(".github/pull_request_template.md"),
+            "## Feature replacement template",
+        )
+        .unwrap();
+        commit_in(&f.repository, "feature.txt");
+        std::fs::write(f.repository.join("feature.txt"), "changed feature\n").unwrap();
+        generation_file(
+            &f,
+            "commit_output",
+            r#"{"subject":"Change feature","body":""}"#,
+        );
+        generation_file(
+            &f,
+            "pr_output",
+            r###"{"title":"Change feature","body":"## Checklist\n- Not run"}"###,
+        );
+        let (app, workspace) = f.open().await;
+        app.save_settings(&serde_json::json!({ "automaticGitFetchInterval": 0, "sourceControlWritingStyle": { "mode": "custom", "customInstructions": "Wrong global instructions", "followChangeRequestTemplates": !follow_templates }, "projectOverrides": { workspace.to_string(): { "sourceControlWritingStyle": { "mode": "custom", "customInstructions": "Use the project writing policy", "followChangeRequestTemplates": follow_templates } } } }).to_string()).await.unwrap();
+        let thread = selected_thread(&app, &workspace).await;
+        let preview = app
+            .begin_commit_message(thread.id.clone(), CommitSelection::All)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.await_commit_message(preview).await.unwrap(),
+            "Change feature"
+        );
+        let (outcome, _) = run(
+            &app,
+            &workspace,
+            Some(&thread.id),
+            GitAction::CommitPushPr {
+                request: CommitRequest::default(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(outcome.failure.is_none(), "{outcome:?}");
+        let commits = generation_calls(&f, "commit");
+        assert_eq!(commits.len(), 2);
+        for call in commits {
+            let prompt = call["prompt"].as_str().unwrap();
+            assert!(prompt.contains("Additional instructions:\nUse the project writing policy"));
+            assert!(!prompt.contains("Wrong global instructions"));
+        }
+        let prs = generation_calls(&f, "pr");
+        let prompt = prs[0]["prompt"].as_str().unwrap();
+        assert!(prompt.contains("Use the project writing policy"));
+        assert_eq!(
+            prompt.contains("Repository change request template:"),
+            follow_templates
+        );
+        if follow_templates {
+            assert!(prompt.contains("## Committed base checklist"));
+            assert!(
+                prompt.contains("- drop HTML comments from the template in the generated body")
+            );
+            assert!(
+                !prompt.contains(
+                    "Repository change request template:\n## Feature replacement template"
+                )
+            );
+            assert!(!prompt.contains("include headings '## Summary'"));
+        } else {
+            assert!(prompt.contains("include headings '## Summary'"));
+        }
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn source_control_startup_auto_pull_runs_with_zero_fetch_interval_and_project_override() {
+    let f = Fixture::new();
+    let (app, workspace) = f.open().await;
+    app.save_settings(&serde_json::json!({ "defaultAutoPull": true, "automaticGitFetchInterval": 0, "projectOverrides": { workspace.to_string(): { "defaultAutoPull": false } } }).to_string()).await.unwrap();
+    app.shutdown().await.unwrap();
+    let before = git_output(&f.repository, &["rev-parse", "HEAD"]);
+    advance_origin(&f, "main", "remote.txt");
+    git_output(&f.repository, &["fetch", "-q", "origin"]);
+    let app = App::open(f.config.clone()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(git_output(&f.repository, &["rev-parse", "HEAD"]), before);
+    app.save_settings(r#"{"defaultAutoPull":true,"automaticGitFetchInterval":0}"#)
+        .await
+        .unwrap();
+    app.shutdown().await.unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    for _ in 0..100 {
+        if git_output(&f.repository, &["rev-parse", "HEAD"]) != before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let after = git_output(&f.repository, &["rev-parse", "HEAD"]);
+    assert_ne!(after, before);
+    advance_origin(&f, "main", "remote-again.txt");
+    let _subscription = app.subscribe();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        git_output(&f.repository, &["rev-parse", "HEAD"]),
+        after,
+        "zero disables later periodic refresh"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_control_periodic_fetch_requires_subscriber_and_drains_shutdown() {
+    let f = Fixture::new();
+    let (app, workspace) = f.open().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    app.save_settings(r#"{"defaultAutoPull":true,"automaticGitFetchInterval":50}"#)
+        .await
+        .unwrap();
+    let before = git_output(&f.repository, &["rev-parse", "HEAD"]);
+    advance_origin(&f, "main", "remote.txt");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(git_output(&f.repository, &["rev-parse", "HEAD"]), before);
+    let mut subscription = app.subscribe();
+    let thread = app
+        .create_thread(workspace.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if git_output(&f.repository, &["rev-parse", "HEAD"]) != before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert_ne!(git_output(&f.repository, &["rev-parse", "HEAD"]), before);
+    let hint = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let hint = subscription.recv().await.unwrap();
+            if hint.thread_id == thread.id && hint.refresh_workspace {
+                return hint;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(hint.workspace_id, workspace);
+    app.shutdown().await.unwrap();
+    assert!(!f.repository.join(".git/index.lock").exists());
+}
+
+#[tokio::test]
+async fn source_control_refresh_skips_a_running_checkout_and_retries_after_release() {
+    let f = Fixture::new();
+    let (app, workspace) = f.open().await;
+    let thread = selected_thread(&app, &workspace).await;
+    app.submit(thread.id.clone(), "hold".into(), "hold".into(), vec![])
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if matches!(
+            app.thread(thread.id.clone()).await.unwrap().turns[0].execution,
+            Execution::Running
+        ) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let before = git_output(&f.repository, &["rev-parse", "HEAD"]);
+    advance_origin(&f, "main", "remote.txt");
+    app.save_settings(r#"{"defaultAutoPull":true,"automaticGitFetchInterval":50}"#)
+        .await
+        .unwrap();
+    let _subscription = app.subscribe();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(git_output(&f.repository, &["rev-parse", "HEAD"]), before);
+    assert_eq!(
+        git_output(&f.repository, &["rev-parse", "origin/main"]),
+        before,
+        "busy checkout does not fetch"
+    );
+    app.interrupt(thread.id.clone()).await.unwrap();
+    for _ in 0..100 {
+        if git_output(&f.repository, &["rev-parse", "HEAD"]) != before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert_ne!(git_output(&f.repository, &["rev-parse", "HEAD"]), before);
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_control_shutdown_cancels_and_drains_the_held_network_job() {
+    let f = Fixture::new();
+    let marker = f.dir.path().join("fetch-started");
+    let pid_file = f.dir.path().join("fetch-pid");
+    let ssh = f.dir.path().join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\ntouch '{}'\nexec sleep 30\n",
+            pid_file.display(),
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git_output(
+        &f.repository,
+        &["remote", "set-url", "origin", "ssh://fixture.invalid/repo"],
+    );
+    git_output(
+        &f.repository,
+        &["config", "core.sshCommand", ssh.to_str().unwrap()],
+    );
+    let (app, workspace) = f.open().await;
+    app.save_settings(r#"{"defaultAutoPull":false,"automaticGitFetchInterval":50}"#)
+        .await
+        .unwrap();
+    let _subscription = app.subscribe();
+    for _ in 0..100 {
+        if marker.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(marker.exists());
+    assert_eq!(
+        run(&app, &workspace, None, GitAction::Push)
+            .await
+            .unwrap_err()
+            .code,
+        "checkout_busy"
+    );
+    tokio::time::timeout(Duration::from_secs(5), app.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    let pid: i32 = std::fs::read_to_string(pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "network child drained before shutdown returned"
+    );
+    assert!(!f.repository.join(".git/index.lock").exists());
+}
+
+#[tokio::test]
+async fn source_control_startup_admits_every_checkout_beyond_the_four_job_limit() {
+    let f = Fixture::new();
+    let (app, _) = f.open().await;
+    let mut roots = vec![f.repository.clone()];
+    for index in 0..5 {
+        let path = f.dir.path().join(format!("extra-{index}"));
+        git_output(
+            f.dir.path(),
+            &[
+                "clone",
+                "-q",
+                f.origin.to_str().unwrap(),
+                path.to_str().unwrap(),
+            ],
+        );
+        app.open_workspace(path.clone()).await.unwrap();
+        roots.push(path);
+    }
+    app.save_settings(r#"{"defaultAutoPull":false,"automaticGitFetchInterval":0}"#)
+        .await
+        .unwrap();
+    app.shutdown().await.unwrap();
+    advance_origin(&f, "main", "remote.txt");
+    let expected = git_output(&f.origin, &["rev-parse", "main"]);
+    for root in &roots {
+        git_output(root, &["fetch", "-q", "origin"]);
+        assert_ne!(git_output(root, &["rev-parse", "HEAD"]), expected);
+    }
+    std::fs::write(
+        f.config.data_dir.join("settings.json"),
+        r#"{"defaultAutoPull":true,"automaticGitFetchInterval":0}"#,
+    )
+    .unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    for _ in 0..100 {
+        if roots
+            .iter()
+            .all(|root| git_output(root, &["rev-parse", "HEAD"]) == expected)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    for root in &roots {
+        assert_eq!(
+            git_output(root, &["rev-parse", "HEAD"]),
+            expected,
+            "{} was admitted after earlier jobs completed",
+            root.display()
+        );
+    }
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_control_default_linked_checkout_pulls_at_startup_and_on_periodic_fetch() {
+    let f = Fixture::new();
+    let (app, workspace) = f.open().await;
+    app.save_settings(r#"{"defaultAutoPull":false,"automaticGitFetchInterval":0}"#)
+        .await
+        .unwrap();
+    app.switch_branch(workspace.clone(), None, "feature".into(), true)
+        .await
+        .unwrap();
+    let thread = app
+        .create_thread(
+            workspace.clone(),
+            NewCheckout::Worktree {
+                base: "main".into(),
+                from_origin: false,
+            },
+        )
+        .await
+        .unwrap();
+    app.switch_branch(
+        workspace.clone(),
+        Some(thread.id.clone()),
+        "main".into(),
+        false,
+    )
+    .await
+    .unwrap();
+    let Checkout::Worktree { path, .. } = &app.thread(thread.id.clone()).await.unwrap().checkout
+    else {
+        panic!("linked checkout");
+    };
+    let path = path.clone();
+    let root_before = git_output(&f.repository, &["rev-parse", "HEAD"]);
+    app.shutdown().await.unwrap();
+    advance_origin(&f, "main", "remote.txt");
+    git_output(&f.repository, &["fetch", "-q", "origin"]);
+    std::fs::write(
+        f.config.data_dir.join("settings.json"),
+        r#"{"defaultAutoPull":true,"automaticGitFetchInterval":0}"#,
+    )
+    .unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let expected = git_output(&f.origin, &["rev-parse", "main"]);
+    for _ in 0..100 {
+        if git_output(&path, &["rev-parse", "HEAD"]) == expected {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert_eq!(git_output(&path, &["rev-parse", "HEAD"]), expected);
+    assert_eq!(
+        git_output(&f.repository, &["rev-parse", "HEAD"]),
+        root_before
+    );
+    let mut subscription = app.subscribe();
+    app.save_settings(r#"{"defaultAutoPull":true,"automaticGitFetchInterval":50}"#)
+        .await
+        .unwrap();
+    advance_origin(&f, "main", "remote-again.txt");
+    let expected = git_output(&f.origin, &["rev-parse", "main"]);
+    for _ in 0..100 {
+        if git_output(&path, &["rev-parse", "HEAD"]) == expected {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert_eq!(git_output(&path, &["rev-parse", "HEAD"]), expected);
+    assert_eq!(
+        git_output(&f.repository, &["rev-parse", "HEAD"]),
+        root_before
+    );
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let hint = subscription.recv().await.unwrap();
+            if hint.thread_id == thread.id && hint.refresh_workspace {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    app.shutdown().await.unwrap();
+    git_output(
+        &f.repository,
+        &["worktree", "remove", path.to_str().unwrap()],
+    );
+    std::fs::write(
+        f.config.data_dir.join("settings.json"),
+        r#"{"defaultAutoPull":true,"automaticGitFetchInterval":0}"#,
+    )
+    .unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !path.exists(),
+        "removed worktree is not recreated by automatic refresh"
+    );
+    assert_eq!(
+        git_output(&f.repository, &["rev-parse", "HEAD"]),
+        root_before
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_control_generation_retains_the_policy_captured_before_a_settings_save() {
+    let f = Fixture::new();
+    std::fs::write(f.repository.join("new.txt"), "text").unwrap();
+    generation_file(&f, "commit_output", r#"{"subject":"Add text","body":""}"#);
+    generation_file(&f, "commit_hold", "10");
+    let (app, workspace) = f.open().await;
+    let thread = selected_thread(&app, &workspace).await;
+    app.save_settings(r#"{"automaticGitFetchInterval":0,"sourceControlWritingStyle":{"mode":"custom","customInstructions":"Captured old policy","followChangeRequestTemplates":true}}"#).await.unwrap();
+    let job = app
+        .begin_commit_message(thread.id.clone(), CommitSelection::All)
+        .await
+        .unwrap();
+    wait_until(|| f.dir.path().join("peers/commit_ready").exists()).await;
+    app.save_settings(r#"{"automaticGitFetchInterval":0,"sourceControlWritingStyle":{"mode":"custom","customInstructions":"Saved new policy","followChangeRequestTemplates":false}}"#).await.unwrap();
+    generation_file(&f, "commit_release", "");
+    assert_eq!(app.await_commit_message(job).await.unwrap(), "Add text");
+    let first = generation_calls(&f, "commit");
+    assert!(
+        first[0]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("Captured old policy")
+    );
+    assert!(
+        !first[0]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("Saved new policy")
+    );
+    let job = app
+        .begin_commit_message(thread.id, CommitSelection::All)
+        .await
+        .unwrap();
+    assert_eq!(app.await_commit_message(job).await.unwrap(), "Add text");
+    let calls = generation_calls(&f, "commit");
+    assert!(
+        calls[1]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("Saved new policy")
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_control_periodic_fetch_preserves_active_commit_preview_and_runs_after_release() {
+    let f = Fixture::new();
+    let (app, workspace) = f.open().await;
+    let thread = selected_thread(&app, &workspace).await;
+    std::fs::write(f.repository.join("new.txt"), "text").unwrap();
+    generation_file(&f, "commit_output", r#"{"subject":"Add text","body":""}"#);
+    generation_file(&f, "commit_hold", "10");
+    app.save_settings(r#"{"defaultAutoPull":false,"automaticGitFetchInterval":50}"#)
+        .await
+        .unwrap();
+    let job = app
+        .begin_commit_message(thread.id, CommitSelection::All)
+        .await
+        .unwrap();
+    wait_until(|| f.dir.path().join("peers/commit_ready").exists()).await;
+    let before = git_output(&f.repository, &["rev-parse", "origin/main"]);
+    advance_origin(&f, "main", "remote.txt");
+    let _subscription = app.subscribe();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        git_output(&f.repository, &["rev-parse", "origin/main"]),
+        before,
+        "preview keeps the deferred refresh from claiming its checkout"
+    );
+    generation_file(&f, "commit_release", "");
+    assert_eq!(
+        app.await_commit_message(job).await.unwrap(),
+        "Add text",
+        "periodic refresh did not cancel the preview"
+    );
+    for _ in 0..100 {
+        if git_output(&f.repository, &["rev-parse", "origin/main"]) != before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert_ne!(
+        git_output(&f.repository, &["rev-parse", "origin/main"]),
+        before,
+        "deferred refresh runs after preview is consumed"
+    );
+    assert_eq!(git_output(&f.repository, &["rev-parse", "HEAD"]), before);
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn feature_stacks_publish_only_selected_files_to_the_new_head_and_default_base() {
+    for opens in [false, true] {
+        let f = Fixture::new();
+        let original = git_output(&f.repository, &["rev-parse", "HEAD"]);
+        git_output(
+            &f.repository,
+            &["config", "branch.autoSetupMerge", "always"],
+        );
+        git_output(&f.repository, &["branch", "FEATURE/add-selected"]);
+        git_output(&f.repository, &["branch", "feature/add-selected-2"]);
+        std::fs::write(f.repository.join("selected.txt"), "approved change\n").unwrap();
+        std::fs::write(f.repository.join("excluded.txt"), "excluded change\n").unwrap();
+        git_output(&f.repository, &["add", "excluded.txt"]);
+        generation_file(
+            &f,
+            "prs.json",
+            r#"[{"number":8,"title":"Old main PR","url":"https://github.com/bot-code/fixture/pull/8","baseRefName":"develop","headRefName":"main","isCrossRepository":false,"state":"OPEN"}]"#,
+        );
+        f.hook(&f.repository.join(".git"), "pre-commit", "branch=$(git branch --show-current); if git config --get branch.$branch.remote; then exit 8; fi; test \"$(git config --get branch.$branch.gh-merge-base)\" = main");
+        let request = CommitRequest {
+            message: Some(message("Add selected\n\nKeep this typed body.")),
+            selection: paths(&["selected.txt"]),
+            destination: CommitDestination::NewBranch,
+        };
+        let action = if opens {
+            GitAction::CommitPushPr { request }
+        } else {
+            GitAction::CommitPush { request }
+        };
+        let (app, workspace) = f.open().await;
+        let (out, phases) = run(&app, &workspace, None, action).await.unwrap();
+        assert_eq!(out.failure, None, "{out:?}");
+        let branch = "feature/add-selected-3";
+        assert_eq!(out.branch.as_deref(), Some(branch));
+        assert_eq!(
+            phases,
+            if opens {
+                vec![
+                    GitPhase::Branch,
+                    GitPhase::Commit,
+                    push_phase(),
+                    GitPhase::Pr,
+                ]
+            } else {
+                vec![GitPhase::Branch, GitPhase::Commit, push_phase()]
+            }
+        );
+        assert_eq!(
+            git_output(&f.repository, &["log", "-1", "--format=%B"]),
+            "Add selected\n\nKeep this typed body."
+        );
+        assert_eq!(
+            git_output(
+                &f.repository,
+                &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]
+            ),
+            "selected.txt"
+        );
+        assert_eq!(
+            git_output(&f.repository, &["status", "--porcelain"]),
+            "?? excluded.txt"
+        );
+        assert_eq!(git_output(&f.repository, &["rev-parse", "main"]), original);
+        assert_eq!(git_output(&f.origin, &["rev-parse", "main"]), original);
+        assert_eq!(
+            git_output(&f.origin, &["rev-parse", branch]),
+            out.commit.as_ref().unwrap().sha
+        );
+        assert_eq!(
+            git_output(&f.repository, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+            format!("origin/{branch}")
+        );
+        assert_eq!(
+            git_output(
+                &f.repository,
+                &["config", &format!("branch.{branch}.gh-merge-base")]
+            ),
+            "main"
+        );
+        assert!(generation_calls(&f, "commit").is_empty());
+        if opens {
+            let pr = out.pr.unwrap();
+            assert!(pr.created);
+            assert_eq!(pr.pr.head, branch);
+            assert_eq!(pr.pr.base, "main");
+            assert_ne!(pr.pr.number, 8);
+            let calls = std::fs::read_to_string(f.dir.path().join("peers/calls.jsonl")).unwrap();
+            assert!(calls.lines().any(
+                |line| line.contains("BotDiscover") && line.contains(&format!("head={branch}"))
+            ));
+        } else {
+            assert!(out.pr.is_none());
+        }
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn feature_stack_generates_once_and_keeps_the_checkout_held_during_generation() {
+    let f = Fixture::new();
+    let (app, workspace) = f.open().await;
+    let thread = app
+        .create_thread(
+            workspace.clone(),
+            NewCheckout::Worktree {
+                base: "main".into(),
+                from_origin: false,
+            },
+        )
+        .await
+        .unwrap();
+    let Checkout::Worktree { path, .. } = &thread.checkout else {
+        panic!("expected worktree")
+    };
+    std::fs::write(path.join("selected.txt"), "selected generation input\n").unwrap();
+    std::fs::write(path.join("excluded.txt"), "excluded generation input\n").unwrap();
+    generation_file(
+        &f,
+        "commit_output",
+        r#"{"subject":"Generated feature","body":"Generated body"}"#,
+    );
+    generation_file(&f, "commit_hold", "10");
+    let running = {
+        let (app, workspace, id) = (app.clone(), workspace.clone(), thread.id.clone());
+        tokio::spawn(async move {
+            run(
+                &app,
+                &workspace,
+                Some(&id),
+                GitAction::CommitPush {
+                    request: CommitRequest {
+                        message: None,
+                        selection: paths(&["selected.txt"]),
+                        destination: CommitDestination::NewBranch,
+                    },
+                },
+            )
+            .await
+        })
+    };
+    wait_until(|| f.dir.path().join("peers/commit_ready").exists()).await;
+    assert_eq!(
+        app.submit(
+            thread.id.clone(),
+            "blocked".into(),
+            "blocked".into(),
+            vec![]
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "checkout_busy"
+    );
+    assert_eq!(
+        app.switch_branch(
+            workspace.clone(),
+            Some(thread.id.clone()),
+            "main".into(),
+            false
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "checkout_busy"
+    );
+    assert_eq!(
+        app.delete_thread(thread.id.clone()).await.unwrap_err().code,
+        "busy"
+    );
+    git_output(path, &["stash", "push", "--include-untracked"]);
+    app.save_settings(r#"{"storageCleanup":{"worktreeAfterDays":null,"worktreeUnchanged":true}}"#)
+        .await
+        .unwrap();
+    app.sweep_worktrees_at(u64::MAX / 2).await;
+    assert!(
+        path.exists(),
+        "the Git hold protects even a temporarily clean worktree from cleanup"
+    );
+    git_output(path, &["stash", "pop", "--index"]);
+    generation_file(&f, "commit_release", "");
+    let (out, _) = running.await.unwrap().unwrap();
+    assert_eq!(out.failure, None, "{out:?}");
+    assert_eq!(out.branch.as_deref(), Some("feature/generated-feature"));
+    let generated = generation_calls(&f, "commit");
+    assert_eq!(generated.len(), 1);
+    let prompt = generated[0]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("selected generation input"));
+    assert!(!prompt.contains("excluded generation input"));
+    assert_eq!(
+        git_output(path, &["log", "-1", "--format=%B"]),
+        "Generated feature\n\nGenerated body"
+    );
+    let saved = app.thread(thread.id.clone()).await.unwrap();
+    assert!(
+        matches!(saved.checkout, Checkout::Worktree { branch, .. } if branch == "feature/generated-feature")
+    );
+    app.delete_thread(thread.id).await.unwrap();
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn feature_stack_pr_preflight_reports_the_new_branch_without_committing() {
+    for missing in [true, false] {
+        let mut f = Fixture::new();
+        if missing {
+            f.config.gh_binary = f.dir.path().join("missing-gh");
+        } else {
+            generation_file(&f, "unauthenticated", "");
+        }
+        let (app, workspace) = f.open().await;
+        let thread = app
+            .create_thread(
+                workspace.clone(),
+                NewCheckout::Worktree {
+                    base: "main".into(),
+                    from_origin: false,
+                },
+            )
+            .await
+            .unwrap();
+        let Checkout::Worktree { path, .. } = &thread.checkout else {
+            panic!("expected worktree")
+        };
+        let before = git_output(path, &["rev-parse", "HEAD"]);
+        std::fs::write(path.join("selected.txt"), "selected\n").unwrap();
+        let (out, phases) = run(
+            &app,
+            &workspace,
+            Some(&thread.id),
+            GitAction::CommitPushPr {
+                request: CommitRequest {
+                    message: Some(message("New head")),
+                    selection: paths(&["selected.txt"]),
+                    destination: CommitDestination::NewBranch,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            failure(&out),
+            (
+                GitPhase::Pr,
+                if missing {
+                    "gh_missing"
+                } else {
+                    "gh_unauthenticated"
+                }
+            )
+        );
+        assert_eq!(out.branch.as_deref(), Some("feature/new-head"));
+        assert_eq!(phases, [GitPhase::Branch]);
+        assert!(out.commit.is_none() && out.push.is_none() && out.pr.is_none());
+        assert_eq!(git_output(path, &["rev-parse", "HEAD"]), before);
+        assert_eq!(
+            git_output(path, &["diff", "--cached", "--name-only"]),
+            "selected.txt"
+        );
+        assert_eq!(
+            git_output(
+                &f.origin,
+                &["for-each-ref", "--format=%(refname:short)", "refs/heads"]
+            ),
+            "main"
+        );
+        assert!(
+            matches!(app.thread(thread.id.clone()).await.unwrap().checkout, Checkout::Worktree { branch, .. } if branch == "feature/new-head")
+        );
+        app.delete_thread(thread.id).await.unwrap();
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn clean_feature_stacks_refuse_with_the_exact_message_without_mutation() {
+    let f = Fixture::new();
+    let (app, workspace) = f.open().await;
+    for action in [
+        GitAction::CommitPush {
+            request: CommitRequest {
+                destination: CommitDestination::NewBranch,
+                ..CommitRequest::default()
+            },
+        },
+        GitAction::CommitPushPr {
+            request: CommitRequest {
+                destination: CommitDestination::NewBranch,
+                ..CommitRequest::default()
+            },
+        },
+    ] {
+        let (out, phases) = run(&app, &workspace, None, action).await.unwrap();
+        assert_eq!(failure(&out), (GitPhase::Branch, "nothing_to_commit"));
+        assert_eq!(
+            out.failure.unwrap().error.message,
+            "Cannot create a feature branch because there are no changes to commit."
+        );
+        assert!(out.branch.is_none() && out.commit.is_none() && out.push.is_none());
+        assert!(phases.is_empty());
+        assert_eq!(
+            git_output(&f.repository, &["branch", "--show-current"]),
+            "main"
+        );
+        assert!(generation_calls(&f, "commit").is_empty());
+    }
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn feature_branch_preparation_failures_keep_the_branch_and_release_the_checkout() {
+    for fault in ["checkout", "base", "status"] {
+        let f = Fixture::new();
+        std::fs::write(f.repository.join("selected.txt"), "selected\n").unwrap();
+        let script = match fault {
+            "checkout" => "exit 9",
+            "base" => "touch \"$(git rev-parse --git-path config.lock)\"",
+            "status" => "printf broken > \"$(git rev-parse --git-path index)\"",
+            _ => unreachable!(),
+        };
+        f.hook(&f.repository.join(".git"), "post-checkout", script);
+        let before = git_output(&f.repository, &["rev-parse", "HEAD"]);
+        let (app, workspace) = f.open().await;
+        let (out, phases) = run(
+            &app,
+            &workspace,
+            None,
+            GitAction::CommitPush {
+                request: CommitRequest {
+                    message: Some(message("Partial branch")),
+                    ..CommitRequest {
+                        destination: CommitDestination::NewBranch,
+                        ..CommitRequest::default()
+                    }
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.failure.is_some(), "{fault}: {out:?}");
+        assert_eq!(out.failure.unwrap().phase, GitPhase::Branch, "{fault}");
+        assert_eq!(
+            out.branch.as_deref(),
+            Some("feature/partial-branch"),
+            "{fault}"
+        );
+        assert!(out.commit.is_none() && out.push.is_none());
+        assert_eq!(phases, [GitPhase::Branch]);
+        assert_eq!(git_output(&f.repository, &["rev-parse", "HEAD"]), before);
+        std::fs::remove_file(f.repository.join(".git/hooks/post-checkout")).unwrap();
+        if fault == "base" {
+            std::fs::remove_file(f.repository.join(".git/config.lock")).unwrap();
+        }
+        if fault == "status" {
+            std::fs::remove_file(f.repository.join(".git/index")).unwrap();
+            git_output(&f.repository, &["reset", "--mixed", "HEAD"]);
+        }
+        let (retry, _) = run(&app, &workspace, None, selected_commit(&["selected.txt"]))
+            .await
+            .unwrap();
+        assert_eq!(retry.failure, None);
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn commit_on_new_branch_remains_commit_only_without_inherited_tracking() {
+    let f = Fixture::new();
+    git_output(
+        &f.repository,
+        &["config", "branch.autoSetupMerge", "always"],
+    );
+    std::fs::write(f.repository.join("selected.txt"), "selected\n").unwrap();
+    let (app, workspace) = f.open().await;
+    let (out, phases) = run(
+        &app,
+        &workspace,
+        None,
+        GitAction::Commit {
+            request: CommitRequest {
+                message: Some(message("Commit only")),
+                selection: paths(&["selected.txt"]),
+                destination: CommitDestination::NewBranch,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.failure, None);
+    assert_eq!(out.branch.as_deref(), Some("feature/commit-only"));
+    assert_eq!(out.commit.unwrap().subject, "Commit only");
+    assert!(out.push.is_none() && out.pr.is_none());
+    assert_eq!(phases, [GitPhase::Commit]);
+    assert!(
+        !Command::new("git")
+            .arg("-C")
+            .arg(&f.repository)
+            .args(["config", "--get", "branch.feature/commit-only.remote"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(
+        git_output(
+            &f.origin,
+            &["for-each-ref", "--format=%(refname:short)", "refs/heads"]
+        ),
+        "main"
+    );
     app.shutdown().await.unwrap();
 }

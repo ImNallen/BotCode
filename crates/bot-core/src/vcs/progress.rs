@@ -7,12 +7,33 @@ pub(super) async fn read_output<R: AsyncRead + Unpin>(
     pipe: &mut Option<R>,
     captured: &mut Vec<u8>,
     bytes: u64,
+    prefix: bool,
     observer: Option<Observer<'_>>,
     stream: GitOutputStream,
 ) -> std::io::Result<()> {
     let Some(pipe) = pipe else {
         return Ok(());
     };
+    if prefix {
+        let mut buffer = [0; 4096];
+        let mut truncated = false;
+        loop {
+            let count = pipe.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            let remaining = (bytes as usize).saturating_sub(captured.len());
+            captured.extend_from_slice(&buffer[..count.min(remaining)]);
+            truncated |= count > remaining;
+        }
+        if truncated {
+            while std::str::from_utf8(captured).is_err() && !captured.is_empty() {
+                captured.pop();
+            }
+            captured.extend_from_slice(b"\n[truncated]");
+        }
+        return Ok(());
+    }
     let Some(observer) = observer else {
         pipe.take(bytes + 1).read_to_end(captured).await?;
         return if captured.len() as u64 > bytes {

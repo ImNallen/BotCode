@@ -1,5 +1,6 @@
 // Header, tabs and checks status follow pingdotgg/t3code 3e6b450 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx (MIT).
 // Title editing follows pingdotgg/t3code v0.0.45 apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx (MIT).
+import { projectSetting, usePreferences } from "../settings/preferences";
 import { PullRequestStackRecovery } from "./PullRequestStackRecovery";
 import { PullRequestStackMenu } from "./PullRequestStackMenu";
 import { usePullRequestStack } from "./usePullRequestStack";
@@ -295,13 +296,28 @@ export function PullRequestDetail({
     ? pullRequestState(detail.snapshot.lifecycle)
     : null;
   const stackBlocksMerge = !stackQuery.isFresh || !!stackQuery.data;
-  const allowedMergeMethods = stackQuery.data?.capabilities.mergeMethods ?? [];
+  const allowedMergeMethods = stackQuery.data?.capabilities.mergeMethods ?? [
+    ...new Set(
+      (detail?.capabilities.actions ?? []).flatMap((action) =>
+        action.kind === "merge" || action.kind === "enable_auto_merge"
+          ? [action.method]
+          : [],
+      ),
+    ),
+  ];
+  const { preferences } = usePreferences();
+  const configuredMergeMethod = projectSetting(
+    preferences,
+    handoff.workspaceId,
+    "pullRequestMergeMethod",
+  ).value;
   const selectedMergeMethod = resolvePullRequestMergeMethod(
     allowedMergeMethods,
     mergeMethodSelection?.pullRequestKey === prKey
       ? mergeMethodSelection.method
       : null,
     lastSelectedMergeMethod,
+    configuredMergeMethod,
   );
   const showsMergeMethods = showsPullRequestMergeMethods(
     detail,
@@ -333,7 +349,7 @@ export function PullRequestDetail({
         }
       : detail;
   const { primary, armedBadge }: HeaderControls = stackDetail
-    ? primaryControl(stackDetail)
+    ? primaryControl(stackDetail, selectedMergeMethod)
     : { primary: { kind: "none" }, armedBadge: null };
   const menu = menuActions(stackDetail?.capabilities.actions ?? [], primary);
   const checks = detail ? prChecks(detail.checks) : [];

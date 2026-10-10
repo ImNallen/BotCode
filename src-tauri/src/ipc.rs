@@ -286,6 +286,19 @@ pub async fn cancel_commit_message(app: State<'_, App>, job: String) -> Result<(
     app.cancel_commit_message(job).await
 }
 #[tauri::command]
+pub async fn github_publish_readiness(app: State<'_, App>) -> Result<PublishReadiness> {
+    app.github_publish_readiness().await
+}
+#[tauri::command]
+pub async fn publish_repository(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: Option<ThreadId>,
+    input: PublishInput,
+) -> Result<PublishOutcome> {
+    app.publish_repository(workspace_id, thread_id, input).await
+}
+#[tauri::command]
 pub async fn run_git_action(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

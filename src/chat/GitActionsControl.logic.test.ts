@@ -1,5 +1,6 @@
 // Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/GitActionsControl.logic.test.ts (MIT).
 import { assert, describe, it } from "../test/chai.ts";
+import { nextStep } from "./gitActions.ts";
 import {
   buildMenuItems,
   getMenuActionDisabledReason,
@@ -533,7 +534,7 @@ describe("when: on default ref without open PR", () => {
     });
   });
 
-  it("resolveQuickAction returns push when ref is ahead", () => {
+  it("resolveQuickAction returns commit_push with a Push label when ref is ahead", () => {
     const quick = resolveQuickAction(
       status({ refName: "main", aheadCount: 2, pr: null }),
       false,
@@ -541,12 +542,60 @@ describe("when: on default ref without open PR", () => {
     );
     assert.deepInclude(quick, {
       kind: "run_action",
-      // Bot Code: a clean push on the default ref runs push, not commit_push.
-      action: "push",
+      action: "commit_push",
       label: "Push",
       disabled: false,
     });
   });
+});
+
+describe("clean default-ref quick action continuations", () => {
+  for (const hasUpstream of [true, false]) {
+    it(`offers the feature-branch action with hasUpstream=${hasUpstream}`, () => {
+      const vcs = status({
+        refName: "main",
+        isDefaultRef: true,
+        hasUpstream,
+        aheadCount: 1,
+      });
+      const quick = resolveQuickAction(vcs, false, vcs.isDefaultRef);
+      assert.deepEqual(quick, {
+        kind: "run_action",
+        action: "commit_push",
+        label: "Push",
+        disabled: false,
+      });
+      if (!quick.action) throw new Error("Expected a runnable quick action");
+      const pending = { target: quick.action };
+      assert.deepEqual(nextStep(pending, vcs), {
+        kind: "confirm",
+        copy: {
+          title: "Push to default ref?",
+          description:
+            'This action will push local commits on "main". You can continue on this ref or create a feature ref and run the same action there.',
+          continueLabel: "Push to main",
+        },
+      });
+      assert.deepEqual(
+        nextStep({ ...pending, continuation: "feature_branch" }, vcs),
+        {
+          kind: "run",
+          action: {
+            kind: "commit_push",
+            request: {
+              message: null,
+              selection: { kind: "all" },
+              destination: { kind: "new_branch" },
+            },
+          },
+        },
+      );
+      assert.deepEqual(
+        nextStep({ ...pending, continuation: "current_branch" }, vcs),
+        { kind: "run", action: { kind: "push" } },
+      );
+    });
+  }
 });
 
 describe("when: working tree has local changes and ref is behind upstream", () => {
@@ -758,8 +807,7 @@ describe("when: ref has no upstream configured", () => {
     });
   });
 
-  // Bot Code: no publish flow; the quick action explains the missing origin instead.
-  it("resolveQuickAction asks for an origin remote when none exists", () => {
+  it("resolveQuickAction publishes a clean attached repository when no origin exists", () => {
     const quick = resolveQuickAction(
       status({
         hasUpstream: false,
@@ -771,10 +819,9 @@ describe("when: ref has no upstream configured", () => {
       false,
     );
     assert.deepEqual(quick, {
-      kind: "show_hint",
-      label: "Push",
-      disabled: true,
-      hint: 'Add an "origin" remote before pushing.',
+      kind: "open_publish",
+      label: "Publish repository",
+      disabled: false,
     });
   });
 
@@ -826,6 +873,13 @@ describe("when: ref has no upstream configured", () => {
         kind: "open_dialog",
         dialogAction: "commit",
       },
+      {
+        id: "publish",
+        label: "Publish repository...",
+        disabled: false,
+        icon: "publish",
+        kind: "open_publish",
+      },
     ]);
   });
 
@@ -848,7 +902,7 @@ describe("when: ref has no upstream configured", () => {
     });
   });
 
-  it("resolveQuickAction uses push-only on default ref when no upstream exists and commits are ahead", () => {
+  it("resolveQuickAction uses commit_push on default ref when no upstream exists and commits are ahead", () => {
     const quick = resolveQuickAction(
       status({
         refName: "main",
@@ -861,8 +915,7 @@ describe("when: ref has no upstream configured", () => {
     );
     assert.deepInclude(quick, {
       kind: "run_action",
-      // Bot Code: a clean push on the default ref runs push, not commit_push.
-      action: "push",
+      action: "commit_push",
       label: "Push",
       disabled: false,
     });
@@ -929,8 +982,8 @@ describe("resolveDefaultBranchActionDialogCopy", () => {
 
     assert.deepEqual(copy, {
       title: "Push to default ref?",
-      // Bot Code: no feature-ref clause; the dialog offers only Abort and Continue.
-      description: 'This action will push local commits on "main".',
+      description:
+        'This action will push local commits on "main". You can continue on this ref or create a feature ref and run the same action there.',
       continueLabel: "Push to main",
     });
   });
@@ -944,9 +997,8 @@ describe("resolveDefaultBranchActionDialogCopy", () => {
 
     assert.deepEqual(copy, {
       title: "Push & create PR from default ref?",
-      // Bot Code: no feature-ref clause; the dialog offers only Abort and Continue.
       description:
-        'This action will push local commits and create a pull request on "main".',
+        'This action will push local commits and create a pull request on "main". You can continue on this ref or create a feature ref and run the same action there.',
       continueLabel: "Push & create PR",
     });
   });
@@ -960,9 +1012,8 @@ describe("resolveDefaultBranchActionDialogCopy", () => {
 
     assert.deepEqual(copy, {
       title: "Commit, push & create PR from default ref?",
-      // Bot Code: no feature-ref clause; the dialog offers only Abort and Continue.
       description:
-        'This action will commit, push, and create a pull request on "main".',
+        'This action will commit, push, and create a pull request on "main". You can continue on this ref or create a feature ref and run the same action there.',
       continueLabel: "Commit, push & create PR",
     });
   });

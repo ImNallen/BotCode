@@ -1573,6 +1573,7 @@ impl CommitMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GitPhase {
+    Branch,
     Commit,
     Push { remote: String },
     Pr,
@@ -1792,4 +1793,94 @@ pub struct PreparePullRequestThread {
     pub source_thread_id: crate::PrAccess,
     pub target: crate::PrObservation,
     pub destination: PrCheckoutDestination,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PublishReadiness {
+    Ready {
+        account: String,
+    },
+    Unavailable {
+        reason: PublishUnavailable,
+        hint: String,
+    },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublishUnavailable {
+    Missing,
+    Unauthenticated,
+    Failed,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishInput {
+    pub repository: String,
+    pub visibility: RepositoryVisibility,
+    pub remote_name: String,
+    pub protocol: CloneProtocol,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryVisibility {
+    Private,
+    Public,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneProtocol {
+    Ssh,
+    Https,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishedRepository {
+    pub name_with_owner: String,
+    pub url: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishedRemote {
+    pub repository: PublishedRepository,
+    pub remote_name: String,
+    pub remote_url: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum PublishResult {
+    #[serde(rename_all = "camelCase")]
+    Pushed {
+        #[serde(flatten)]
+        remote: PublishedRemote,
+        branch: String,
+        upstream_branch: String,
+    },
+    RemoteAdded {
+        #[serde(flatten)]
+        remote: PublishedRemote,
+        branch: String,
+    },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PublishCompleted {
+    Nothing,
+    RepositoryCreated { repository: PublishedRepository },
+    RemoteAdded { remote: PublishedRemote },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PublishOutcome {
+    Succeeded {
+        result: PublishResult,
+    },
+    Failed {
+        message: String,
+        completed: PublishCompleted,
+    },
+    CreationUncertain {
+        repository: String,
+        message: String,
+    },
 }

@@ -104,7 +104,7 @@ export function Tooltip({
               </div>
             </div>
           </div>,
-          document.body,
+          anchor.current?.closest("dialog") ?? document.body,
         )}
     </>
   );

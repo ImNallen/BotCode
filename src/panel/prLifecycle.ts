@@ -53,6 +53,7 @@ export type HeaderControls = {
 };
 export function primaryControl(
   detail: Pick<PrReviewDetail, "capabilities" | "autoMergeMethod" | "snapshot">,
+  preferred?: MergeMethod,
 ): HeaderControls {
   const { primary: kind, actions } = detail.capabilities;
   const armedLabel = autoMergeLabel(detail.autoMergeMethod);
@@ -69,17 +70,23 @@ export function primaryControl(
           : { kind: "none" };
       }
       case "enable_auto_merge": {
-        const action = actions.find(
-          (item) => item.kind === "enable_auto_merge",
-        );
+        const action =
+          actions.find(
+            (item) =>
+              item.kind === "enable_auto_merge" && item.method === preferred,
+          ) ?? actions.find((item) => item.kind === "enable_auto_merge");
         return action?.kind === "enable_auto_merge"
           ? { kind: "action", action, label: autoMergeLabel(action.method) }
           : { kind: "none" };
       }
       case "merge": {
-        const action = actions.find(
-          (item) => item.kind === "merge" || item.kind === "enqueue",
-        );
+        const action =
+          actions.find(
+            (item) => item.kind === "merge" && item.method === preferred,
+          ) ??
+          actions.find(
+            (item) => item.kind === "merge" || item.kind === "enqueue",
+          );
         return action
           ? { kind: "action", action, label: lifecycleLabel(action) }
           : { kind: "none" };

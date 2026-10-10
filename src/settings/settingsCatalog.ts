@@ -1,6 +1,7 @@
 // Section order and labels follow pingdotgg/t3code v0.0.45 settings/settingsSearch.ts (MIT).
 import {
   ArchiveIcon,
+  GitBranchIcon,
   HardDriveIcon,
   KeyboardIcon,
   PaletteIcon,
@@ -15,6 +16,7 @@ import type { SettingsScope } from "./settingsScope";
 export const settingsSection = z.enum([
   "projects",
   "general",
+  "source-control",
   "appearance",
   "keybindings",
   "storage",
@@ -47,6 +49,30 @@ type SettingsCategory = {
 };
 
 export const projectSettingRows = {
+  sourceControlWritingStyle: {
+    title: "Source control writing style",
+    all: "In each project, matches recent change descriptions and change request titles.",
+    project:
+      "In each project, matches recent change descriptions and change request titles.",
+    resetLabel: "source control writing style",
+    keywords:
+      "source control writing style conventional commits custom instructions",
+  },
+  defaultAutoPull: {
+    title: "Automatically pull",
+    all: "Keeps the default branch current when the checkout has no local changes or commits. Projects can override it.",
+    project:
+      "Keeps this project's default branch current when the checkout has no local changes or commits.",
+    resetLabel: "default automatic pull",
+    keywords: "automatic pull default branch git",
+  },
+  pullRequestMergeMethod: {
+    title: "Default merge method",
+    all: "Pull requests start with this method. Last selected reuses whatever you chose most recently on this device.",
+    project: "Pull requests in this project start with this method.",
+    resetLabel: "default merge method",
+    keywords: "pull request merge squash rebase last selected",
+  },
   defaultPermissionMode: {
     title: "Permissions",
     all: "Default permissions for new threads. Projects can override them.",
@@ -277,7 +303,80 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "restore",
             title: "Restore defaults",
             description:
-              "Reset appearance, font sizes, follow-up behavior, the context window indicator, notifications, storage cleanup, new thread defaults and auto-settle, including project overrides, on this device.",
+              "Reset appearance, font sizes, follow-up behavior, the context window indicator, notifications, storage cleanup, new thread defaults, source control and auto-settle, including project overrides, on this device.",
+          },
+        ],
+      },
+    ],
+  },
+  "source-control": {
+    title: "Source Control",
+    icon: GitBranchIcon,
+    scoped: true,
+    groups: [
+      {
+        id: "source-control-defaults",
+        title: "Defaults",
+        when: "available",
+        rows: [
+          {
+            id: "automatic-pull",
+            title: projectSettingRows.defaultAutoPull.title,
+            description: projectSettingRows.defaultAutoPull.all,
+            keywords: projectSettingRows.defaultAutoPull.keywords,
+            setting: "defaultAutoPull",
+          },
+          {
+            id: "pull-request-merge-method",
+            title: projectSettingRows.pullRequestMergeMethod.title,
+            description: projectSettingRows.pullRequestMergeMethod.all,
+            keywords: projectSettingRows.pullRequestMergeMethod.keywords,
+            setting: "pullRequestMergeMethod",
+          },
+        ],
+      },
+      {
+        id: "version-control",
+        title: "Version Control",
+        rows: [
+          {
+            id: "git-fetch-interval",
+            title: "Git fetch interval",
+            description:
+              "Refresh remote branches in the background. Set to 0 to avoid automatic Git prompts.",
+          },
+        ],
+      },
+      {
+        id: "source-control-providers",
+        title: "Source Control Providers",
+        rows: [
+          {
+            id: "github-provider",
+            title: "GitHub",
+            description:
+              "Source control provider authentication and repository publishing.",
+            keywords: "gh login auth account rescan publish repository",
+          },
+        ],
+      },
+      {
+        id: "source-control-text-generation",
+        title: "Text generation",
+        when: "available",
+        rows: [
+          {
+            id: "source-control-writing-style",
+            title: "Source control writing style",
+            description: projectSettingRows.sourceControlWritingStyle.all,
+            keywords: projectSettingRows.sourceControlWritingStyle.keywords,
+            setting: "sourceControlWritingStyle",
+          },
+          {
+            id: "follow-change-request-templates",
+            title: "Follow change request templates",
+            description:
+              "Use the repository's template for change request descriptions when available.",
           },
         ],
       },

@@ -1,4 +1,5 @@
 // Structure, labels and classes follow pingdotgg/t3code v0.0.45 components/GitActionsControl.tsx (MIT).
+import { PublishRepositoryDialog } from "./PublishRepositoryDialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useEffect,
@@ -68,12 +69,14 @@ const noteTone = {
 
 function GitActionItemIcon({ icon }: { icon: GitActionIconName }) {
   if (icon === "commit") return <GitCommitIcon />;
-  if (icon === "push") return <CloudUploadIcon />;
+  if (icon === "push" || icon === "publish") return <CloudUploadIcon />;
   return <GitHub />;
 }
 
 function GitQuickActionIcon({ quickAction }: { quickAction: GitQuickAction }) {
   const className = "size-3.5";
+  if (quickAction.kind === "open_publish")
+    return <CloudUploadIcon className={className} />;
   if (quickAction.kind === "open_pr") return <GitHub className={className} />;
   if (quickAction.kind === "run_pull")
     return <CloudDownloadIcon className={className} />;
@@ -125,6 +128,12 @@ export function GitActionsControl({
     staleTime: 60_000,
   });
   const run = useGitRun(checkout);
+  const [publishThread, setPublishThread] = useState<string | null>(null);
+  const [publishing, setPublishing] = useState(false);
+  useEffect(() => {
+    setPublishThread(null);
+    setPublishing(false);
+  }, [thread.id]);
   const [pending, setPending] = useState<Pending | null>(null);
   useEffect(() => setPending(null), [thread.id]);
   if (!status.data) return null;
@@ -133,7 +142,7 @@ export function GitActionsControl({
     status: status.data,
     pr: pr.data,
     busy:
-      run?.state === "running"
+      run?.state === "running" || publishing
         ? { kind: "git" }
         : codexBusy(thread, threads)
           ? { kind: "codex" }
@@ -146,6 +155,11 @@ export function GitActionsControl({
 
   const advance = (next: Pending) => {
     const following = nextStep(next, vcs);
+    if (following.kind === "refuse") {
+      setPending(null);
+      onError(following.message);
+      return;
+    }
     if (following.kind !== "run") {
       setPending(next);
       return;
@@ -177,7 +191,8 @@ export function GitActionsControl({
   };
 
   const runQuickAction = () => {
-    if (quick.kind === "open_pr") openPr();
+    if (quick.kind === "open_publish") setPublishThread(thread.id);
+    else if (quick.kind === "open_pr") openPr();
     else if (quick.kind === "run_pull") start("pull");
     else if (quick.kind === "run_action" && quick.action) start(quick.action);
   };
@@ -255,7 +270,8 @@ export function GitActionsControl({
               <MenuItem
                 key={item.id}
                 onClick={() => {
-                  if (item.kind === "open_pr") openPr();
+                  if (item.kind === "open_publish") setPublishThread(thread.id);
+                  else if (item.kind === "open_pr") openPr();
                   else if (item.dialogAction) start(item.dialogAction);
                 }}
               >
@@ -273,6 +289,14 @@ export function GitActionsControl({
           ))}
         </Menu>
       </Group>
+      {publishThread === thread.id ? (
+        <PublishRepositoryDialog
+          key={thread.id}
+          checkout={checkout}
+          onClose={() => setPublishThread(null)}
+          onBusyChange={setPublishing}
+        />
+      ) : null}
       {pending && dialog?.kind === "compose" ? (
         <CommitDialog
           key={thread.id}
@@ -287,7 +311,12 @@ export function GitActionsControl({
         <DefaultBranchDialog
           copy={dialog.copy}
           onAbort={() => setPending(null)}
-          onContinue={() => advance({ ...pending, confirmed: true })}
+          onContinue={() =>
+            advance({ ...pending, continuation: "current_branch" })
+          }
+          onFeatureBranch={() =>
+            advance({ ...pending, continuation: "feature_branch" })
+          }
         />
       ) : null}
       {run ? (
@@ -597,10 +626,12 @@ function DefaultBranchDialog({
   copy,
   onAbort,
   onContinue,
+  onFeatureBranch,
 }: {
   copy: DefaultBranchActionDialogCopy;
   onAbort: () => void;
   onContinue: () => void;
+  onFeatureBranch: () => void;
 }) {
   return (
     <Dialog
@@ -628,6 +659,13 @@ function DefaultBranchDialog({
           onClick={onContinue}
         >
           {copy.continueLabel}
+        </Button>
+        <Button
+          className="w-full max-w-full sm:w-auto"
+          size="sm-multiline"
+          onClick={onFeatureBranch}
+        >
+          Check out feature branch & continue
         </Button>
       </DialogFooter>
     </Dialog>

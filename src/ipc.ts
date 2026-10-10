@@ -1,4 +1,10 @@
 import {
+  publishInput,
+  publishOutcome,
+  publishReadiness,
+  type PublishInput,
+} from "./chat/publishRepository";
+import {
   pullRequestStack,
   prStackChange,
   prStackOperation,
@@ -671,6 +677,7 @@ const prLookup = z.discriminatedUnion("kind", [
   }),
 ]);
 const gitPhase = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("branch") }),
   z.object({ kind: z.literal("commit") }),
   z.object({ kind: z.literal("push"), remote: z.string() }),
   z.object({ kind: z.literal("pr") }),
@@ -1179,6 +1186,21 @@ export const ipc = {
     call("await_commit_message", { job }, z.string()),
   cancelCommitMessage: (job: string) =>
     call("cancel_commit_message", { job }, z.null()),
+  githubPublishReadiness: () =>
+    call("github_publish_readiness", {}, publishReadiness),
+  publishRepository: (
+    { workspaceId, threadId }: CheckoutRef,
+    input: PublishInput,
+  ) =>
+    call(
+      "publish_repository",
+      {
+        workspaceId,
+        threadId: threadId ?? null,
+        input: publishInput.parse(input),
+      },
+      publishOutcome,
+    ),
   runGitAction: (
     { workspaceId }: CheckoutRef,
     originThreadId: string,

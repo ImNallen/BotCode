@@ -1,4 +1,5 @@
 mod progress;
+pub(crate) mod publish;
 mod staging;
 use crate::{domain::*, repo};
 use staging::new_branch_name;
@@ -52,6 +53,7 @@ impl Output {
     }
 }
 struct ToolExecution<'a> {
+    prefix: bool,
     input: Option<&'a [u8]>,
     env: &'a [(&'a str, &'a std::ffi::OsStr)],
     observer: Option<&'a (dyn Fn(GitProgress) + Send + Sync)>,
@@ -72,6 +74,27 @@ impl Tool<'_> {
         cancel: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<Output> {
         self.run_with_input(args, limit, bytes, cancel, None).await
+    }
+    pub async fn run_prefix(
+        &self,
+        args: &[&str],
+        limit: Duration,
+        bytes: u64,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<Output> {
+        self.run_observable(
+            args,
+            limit,
+            bytes,
+            cancel,
+            ToolExecution {
+                prefix: true,
+                input: None,
+                env: &[],
+                observer: None,
+            },
+        )
+        .await
     }
     pub async fn run_with_input(
         &self,
@@ -99,6 +122,7 @@ impl Tool<'_> {
             bytes,
             cancel,
             ToolExecution {
+                prefix: false,
                 input,
                 env,
                 observer: None,
@@ -115,6 +139,7 @@ impl Tool<'_> {
         execution: ToolExecution<'_>,
     ) -> Result<Output> {
         let ToolExecution {
+            prefix,
             input,
             env,
             observer,
@@ -159,8 +184,8 @@ impl Tool<'_> {
                         }
                         Ok::<_, std::io::Error>(())
                     },
-                    progress::read_output(&mut stdout, &mut out, bytes, observer, GitOutputStream::Stdout),
-                    progress::read_output(&mut stderr, &mut err, bytes, observer, GitOutputStream::Stderr),
+                    progress::read_output(&mut stdout, &mut out, bytes, prefix, observer, GitOutputStream::Stdout),
+                    progress::read_output(&mut stderr, &mut err, bytes, false, observer, GitOutputStream::Stderr),
                 )?;
             Ok::<_, std::io::Error>((status, out, err))
         }) => Some(result),
@@ -209,6 +234,7 @@ impl Tool<'_> {
             64 * 1024,
             &mut cancel,
             ToolExecution {
+                prefix: false,
                 input: None,
                 env: &env,
                 observer: Some(observer),
@@ -617,11 +643,34 @@ pub(crate) enum Plan {
     Pull {
         upstream: String,
     },
+    FeatureStack {
+        request: Box<CommitRequest>,
+        tail: CommitTail,
+        base: String,
+    },
     Stack {
-        commit: Option<Box<CommitRequest>>,
+        commit: Option<CommitStep>,
         push: Option<PushTarget>,
         pr: Option<PrStep>,
     },
+}
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CommitTail {
+    Push,
+    PushPr,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PreparedCommit {
+    message: CommitMessage,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CommitStep {
+    Requested(Box<CommitRequest>),
+    Prepared(PreparedCommit),
+}
+struct StackTargets {
+    push: Option<PushTarget>,
+    pr: Option<PrStep>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PushTarget {
@@ -641,19 +690,41 @@ pub(crate) fn plan(
     status: &GitStatus,
     pr: Option<&PrLookup>,
 ) -> std::result::Result<Plan, GitFailure> {
-    if matches!(&action, GitAction::CommitPush { request } | GitAction::CommitPushPr { request } if request.destination == CommitDestination::NewBranch)
+    if let GitAction::CommitPush { request } | GitAction::CommitPushPr { request } = &action
+        && request.destination == CommitDestination::NewBranch
     {
-        return Err(refuse(
-            GitPhase::Commit,
-            "invalid_commit_destination",
-            "Commit on a new branch is a commit-only action.",
-        ));
+        if status.files.is_empty() {
+            return Err(feature_no_changes());
+        }
+        let branch = status.branch.as_ref().ok_or_else(|| {
+            refuse(
+                GitPhase::Branch,
+                "detached_head",
+                "Check out a branch before creating a feature branch.",
+            )
+        })?;
+        let tail = if matches!(action, GitAction::CommitPushPr { .. }) {
+            CommitTail::PushPr
+        } else {
+            CommitTail::Push
+        };
+        return Ok(Plan::FeatureStack {
+            request: Box::new(request.clone()),
+            tail,
+            base: branch.base.clone(),
+        });
     }
     let (commit, pushes, opens) = match action {
         GitAction::Pull => return plan_pull(status),
-        GitAction::Commit { request } => (Some(Box::new(request)), false, false),
-        GitAction::CommitPush { request } => (Some(Box::new(request)), true, false),
-        GitAction::CommitPushPr { request } => (Some(Box::new(request)), true, true),
+        GitAction::Commit { request } => {
+            (Some(CommitStep::Requested(Box::new(request))), false, false)
+        }
+        GitAction::CommitPush { request } => {
+            (Some(CommitStep::Requested(Box::new(request))), true, false)
+        }
+        GitAction::CommitPushPr { request } => {
+            (Some(CommitStep::Requested(Box::new(request))), true, true)
+        }
         GitAction::Push => (None, true, false),
         GitAction::CreatePr => (None, false, true),
     };
@@ -671,6 +742,17 @@ pub(crate) fn plan(
             pr: None,
         });
     }
+    let StackTargets { push, pr } = stack_targets(commit.as_ref(), pushes, opens, status, pr)?;
+    Ok(Plan::Stack { commit, push, pr })
+}
+fn stack_targets(
+    commit: Option<&CommitStep>,
+    pushes: bool,
+    opens: bool,
+    status: &GitStatus,
+    pr: Option<&PrLookup>,
+) -> std::result::Result<StackTargets, GitFailure> {
+    let commits = commit.is_some();
     let upstream = status.branch.as_ref().and_then(|b| b.upstream.as_ref());
     let remote = upstream.map_or("origin", |u| u.remote.as_str());
     let phase = if pushes {
@@ -705,7 +787,7 @@ pub(crate) fn plan(
         ));
     }
     let ahead = upstream.map_or(branch.ahead_of_base, |u| u.ahead);
-    if pushes && commit.is_none() && ahead == 0 {
+    if pushes && !commits && ahead == 0 {
         return Err(refuse(
             phase,
             "nothing_to_push",
@@ -713,11 +795,11 @@ pub(crate) fn plan(
         ));
     }
     let pr = if opens {
-        Some(plan_pr(status, branch, commit.is_some(), pr)?)
+        Some(plan_pr(status, branch, commits, pr)?)
     } else {
         None
     };
-    let push = (commit.is_some() || pushes || upstream.is_none() || ahead > 0).then(|| {
+    let push = (commits || pushes || upstream.is_none() || ahead > 0).then(|| {
         let set_upstream = upstream.is_none();
         PushTarget {
             remote: remote.into(),
@@ -726,7 +808,7 @@ pub(crate) fn plan(
             record_base: (set_upstream && branch.base != branch.name).then(|| branch.base.clone()),
         }
     });
-    Ok(Plan::Stack { commit, push, pr })
+    Ok(StackTargets { push, pr })
 }
 fn plan_pr(
     status: &GitStatus,
@@ -812,6 +894,7 @@ pub(crate) struct Context {
     pub network: Duration,
     pub codex: PathBuf,
     pub model: Option<String>,
+    pub writing_style: crate::settings::WritingStyle,
     pub progress: Box<dyn Fn(GitProgress) + Send + Sync>,
 }
 pub(crate) async fn run(cx: &Context, action: GitAction) -> Result<GitOutcome> {
@@ -848,14 +931,52 @@ async fn steps(
             return Ok(());
         }
         Plan::Stack { commit, push, pr } => (commit, push, pr),
+        Plan::FeatureStack {
+            request,
+            tail,
+            base,
+        } => {
+            (cx.progress)(GitProgress::Phase {
+                phase: GitPhase::Branch,
+            });
+            let prepared = prepare_commit(cx, *request).await.map_err(|error| {
+                if error.code == "nothing_to_commit" {
+                    feature_no_changes()
+                } else {
+                    failed(GitPhase::Branch)(error)
+                }
+            })?;
+            let branch = checkout_feature(cx, &prepared.message, out)
+                .await
+                .map_err(failed(GitPhase::Branch))?;
+            git(&cx.root)
+                .ok(
+                    &["config", &repo::merge_base_key(&branch), &base],
+                    LOCAL,
+                    "git",
+                )
+                .await
+                .map_err(failed(GitPhase::Branch))?;
+            let status = status(&cx.root).await.map_err(failed(GitPhase::Branch))?;
+            let commit = CommitStep::Prepared(prepared);
+            let opens = tail == CommitTail::PushPr;
+            let mut targets = stack_targets(Some(&commit), true, opens, &status, None)?;
+            if targets.pr.is_some() {
+                let lookup = crate::pull_requests::current_branch(&cx.gh, &cx.root, &branch).await;
+                targets = stack_targets(Some(&commit), true, opens, &status, Some(&lookup))?;
+            }
+            (Some(commit), targets.push, targets.pr)
+        }
     };
     if let Some(message) = commit_message {
         (cx.progress)(GitProgress::Phase {
             phase: GitPhase::Commit,
         });
-        commit(cx, *message, out)
-            .await
-            .map_err(failed(GitPhase::Commit))?;
+        match message {
+            CommitStep::Requested(request) => commit(cx, *request, out).await,
+            CommitStep::Prepared(prepared) => commit_prepared(cx, prepared, out).await,
+        }
+        .map_err(failed(GitPhase::Commit))?;
     }
     if let Some(target) = push_target {
         let phase = GitPhase::Push {
@@ -882,7 +1003,22 @@ async fn steps(
     }
     Ok(())
 }
+fn feature_no_changes() -> GitFailure {
+    refuse(
+        GitPhase::Branch,
+        "nothing_to_commit",
+        "Cannot create a feature branch because there are no changes to commit.",
+    )
+}
 async fn commit(cx: &Context, request: CommitRequest, out: &mut GitOutcome) -> Result<()> {
+    let destination = request.destination.clone();
+    let prepared = prepare_commit(cx, request).await?;
+    if destination == CommitDestination::NewBranch {
+        checkout_feature(cx, &prepared.message, out).await?;
+    }
+    commit_prepared(cx, prepared, out).await
+}
+async fn prepare_commit(cx: &Context, request: CommitRequest) -> Result<PreparedCommit> {
     let root = &cx.root;
     let git = git(root);
     let (_send, mut cancel) = tokio::sync::watch::channel(false);
@@ -902,6 +1038,7 @@ async fn commit(cx: &Context, request: CommitRequest, out: &mut GitOutcome) -> R
                 cx.model.as_deref(),
                 root,
                 None,
+                &cx.writing_style,
                 &mut cancel,
             )
             .await
@@ -913,20 +1050,46 @@ async fn commit(cx: &Context, request: CommitRequest, out: &mut GitOutcome) -> R
             })?
         }
     };
-    if request.destination == CommitDestination::NewBranch {
-        let branch = new_branch_name(root, message.subject()).await?;
-        let switched = git
-            .run_observed(&["checkout", "-b", &branch], LOCAL, cx.progress.as_ref())
-            .await;
-        if git
-            .ok(&["symbolic-ref", "--short", "HEAD"], LOCAL, "git")
-            .await
-            .is_ok_and(|current| current.trim() == branch)
-        {
-            out.branch = Some(branch);
-        }
-        switched?.success(&mut out.warnings)?;
+    Ok(PreparedCommit { message })
+}
+async fn checkout_feature(
+    cx: &Context,
+    message: &CommitMessage,
+    out: &mut GitOutcome,
+) -> Result<String> {
+    let git = git(&cx.root);
+    let branch = new_branch_name(&cx.root, message.subject()).await?;
+    let switched = git
+        .run_observed(
+            &["checkout", "--no-track", "-b", &branch],
+            LOCAL,
+            cx.progress.as_ref(),
+        )
+        .await;
+    if git
+        .ok(&["symbolic-ref", "--short", "HEAD"], LOCAL, "git")
+        .await
+        .is_ok_and(|current| current.trim() == branch)
+    {
+        out.branch = Some(branch.clone());
     }
+    switched?.success(&mut out.warnings)?;
+    if out.branch.as_ref() != Some(&branch) {
+        return Err(AppError::new(
+            "git",
+            "Git did not check out the feature branch.",
+        ));
+    }
+    Ok(branch)
+}
+async fn commit_prepared(
+    cx: &Context,
+    prepared: PreparedCommit,
+    out: &mut GitOutcome,
+) -> Result<()> {
+    let root = &cx.root;
+    let git = git(root);
+    let message = prepared.message;
     let before = head(root).await.ok();
     let committed = git
         .run_observed(
@@ -999,6 +1162,7 @@ async fn open_pr(cx: &Context, step: PrStep, warnings: &mut Vec<String>) -> Resu
         &cx.root,
         &base,
         &head,
+        &cx.writing_style,
         &mut cancel,
     )
     .await
@@ -1323,5 +1487,422 @@ mod tests {
                 .code,
             "tool_missing"
         );
+    }
+}
+
+pub(crate) async fn automatic_refresh(
+    root: &Path,
+    auto_pull: bool,
+    fetch: bool,
+    network: Duration,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<bool> {
+    async fn command(
+        root: &Path,
+        args: &[&str],
+        limit: Duration,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<String> {
+        let out = git(root)
+            .run_cancellable(args, limit, 100_000, cancel)
+            .await?;
+        if out.code != Some(0) {
+            return Err(AppError::new("git", out.stderr.trim()));
+        }
+        Ok(out.stdout)
+    }
+    let remotes = command(root, &["remote"], LOCAL, cancel).await?;
+    if remotes.trim().is_empty() {
+        return Ok(false);
+    }
+    if fetch {
+        command(
+            root,
+            &["fetch", "--all", "--prune", "--no-recurse-submodules"],
+            network,
+            cancel,
+        )
+        .await?;
+    }
+    if !auto_pull {
+        return Ok(false);
+    }
+    let status = command(
+        root,
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "-z",
+            "--untracked-files=all",
+        ],
+        LOCAL,
+        cancel,
+    )
+    .await?;
+    let status = parse_porcelain(&status);
+    let Some(branch) = status
+        .head
+        .filter(|_| !status.unborn && status.paths.is_empty())
+    else {
+        return Ok(false);
+    };
+    if status
+        .ahead_behind
+        .is_none_or(|(ahead, behind)| ahead != 0 || behind == 0)
+    {
+        return Ok(false);
+    }
+    let default = command(
+        root,
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+        LOCAL,
+        cancel,
+    )
+    .await
+    .ok()
+    .and_then(|target| {
+        target
+            .trim()
+            .strip_prefix("refs/remotes/origin/")
+            .map(str::to_owned)
+    });
+    if default.as_deref() != Some(branch.as_str()) {
+        return Ok(false);
+    }
+    for name in [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+        "sequencer",
+    ] {
+        let path = command(
+            root,
+            &["rev-parse", "--path-format=absolute", "--git-path", name],
+            LOCAL,
+            cancel,
+        )
+        .await?;
+        if Path::new(path.trim()).exists() {
+            return Ok(false);
+        }
+    }
+    let merge = command(
+        root,
+        &["config", "--get", &format!("branch.{branch}.merge")],
+        LOCAL,
+        cancel,
+    )
+    .await?;
+    if merge.trim() != format!("refs/heads/{branch}") {
+        return Ok(false);
+    }
+    if !fetch {
+        let remote = command(
+            root,
+            &["config", "--get", &format!("branch.{branch}.remote")],
+            LOCAL,
+            cancel,
+        )
+        .await?;
+        if remote.trim() == "." || remote.trim().is_empty() {
+            return Ok(false);
+        }
+        command(
+            root,
+            &["fetch", "--no-recurse-submodules", "--", remote.trim()],
+            network,
+            cancel,
+        )
+        .await?;
+    }
+    let upstream = command(
+        root,
+        &["rev-parse", "--verify", "@{upstream}^{commit}"],
+        LOCAL,
+        cancel,
+    )
+    .await?;
+    let before = command(root, &["rev-parse", "--verify", "HEAD"], LOCAL, cancel).await?;
+    let fresh = command(
+        root,
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "-z",
+            "--untracked-files=all",
+        ],
+        LOCAL,
+        cancel,
+    )
+    .await?;
+    let fresh = parse_porcelain(&fresh);
+    if !fresh.paths.is_empty()
+        || fresh.head.as_deref() != Some(branch.as_str())
+        || fresh
+            .ahead_behind
+            .is_none_or(|(ahead, behind)| ahead != 0 || behind == 0)
+    {
+        return Ok(false);
+    }
+    command(
+        root,
+        &["merge", "--ff-only", "--no-edit", upstream.trim()],
+        network,
+        cancel,
+    )
+    .await?;
+    Ok(command(root, &["rev-parse", "--verify", "HEAD"], LOCAL, cancel).await? != before)
+}
+
+#[cfg(test)]
+mod automatic_refresh_tests {
+    use super::*;
+    fn git(root: &Path, args: &[&str]) -> String {
+        let out = crate::process::command("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().into()
+    }
+    struct Fixture {
+        dir: tempfile::TempDir,
+        local: PathBuf,
+        other: PathBuf,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            git(dir.path(), &["init", "-q", "-b", "main", "source"]);
+            let other = dir.path().join("source");
+            git(&other, &["config", "user.name", "Test"]);
+            git(&other, &["config", "user.email", "test@example.invalid"]);
+            std::fs::write(other.join("file"), "initial").unwrap();
+            git(&other, &["add", "."]);
+            git(&other, &["commit", "-qm", "Initial"]);
+            git(
+                dir.path(),
+                &["clone", "-q", "--bare", "source", "origin.git"],
+            );
+            git(
+                &other,
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    dir.path().join("origin.git").to_str().unwrap(),
+                ],
+            );
+            git(dir.path(), &["clone", "-q", "origin.git", "local"]);
+            let local = dir.path().join("local");
+            git(&local, &["config", "user.name", "Test"]);
+            git(&local, &["config", "user.email", "test@example.invalid"]);
+            std::fs::write(other.join("remote"), "advance").unwrap();
+            git(&other, &["add", "."]);
+            git(&other, &["commit", "-qm", "Advance remote"]);
+            git(&other, &["push", "-q", "origin", "main"]);
+            Self { dir, local, other }
+        }
+        async fn refresh(&self, enabled: bool) -> Result<bool> {
+            let (_send, mut cancel) = tokio::sync::watch::channel(false);
+            automatic_refresh(
+                &self.local,
+                enabled,
+                true,
+                Duration::from_secs(5),
+                &mut cancel,
+            )
+            .await
+        }
+    }
+    #[tokio::test]
+    async fn startup_with_zero_interval_uses_cached_status_before_any_network_access() {
+        let f = Fixture::new();
+        let before = git(&f.local, &["rev-parse", "HEAD"]);
+        let (_send, mut cancel) = tokio::sync::watch::channel(false);
+        assert!(
+            !automatic_refresh(&f.local, true, false, Duration::from_secs(5), &mut cancel)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            git(&f.local, &["rev-parse", "origin/main"]),
+            before,
+            "no uncached startup fetch"
+        );
+        git(&f.local, &["fetch", "-q", "origin"]);
+        assert!(
+            automatic_refresh(&f.local, true, false, Duration::from_secs(5), &mut cancel)
+                .await
+                .unwrap()
+        );
+    }
+    #[tokio::test]
+    async fn startup_does_not_guess_main_when_remote_default_is_unknown() {
+        let f = Fixture::new();
+        git(&f.local, &["fetch", "-q", "origin"]);
+        git(
+            &f.local,
+            &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+        );
+        let before = git(&f.local, &["rev-parse", "HEAD"]);
+        let (_send, mut cancel) = tokio::sync::watch::channel(false);
+        assert!(
+            !automatic_refresh(&f.local, true, false, Duration::from_secs(5), &mut cancel)
+                .await
+                .unwrap()
+        );
+        assert_eq!(git(&f.local, &["rev-parse", "HEAD"]), before);
+    }
+    #[tokio::test]
+    async fn fetch_only_keeps_head_and_enabled_clean_default_fast_forwards() {
+        let f = Fixture::new();
+        let before = git(&f.local, &["rev-parse", "HEAD"]);
+        assert!(!f.refresh(false).await.unwrap());
+        assert_eq!(git(&f.local, &["rev-parse", "HEAD"]), before);
+        assert_ne!(git(&f.local, &["rev-parse", "origin/main"]), before);
+        assert!(f.refresh(true).await.unwrap());
+        assert_eq!(
+            git(&f.local, &["rev-parse", "HEAD"]),
+            git(&f.other, &["rev-parse", "HEAD"])
+        );
+        assert!(!f.refresh(true).await.unwrap());
+    }
+    #[tokio::test]
+    async fn unsafe_or_unknown_checkouts_keep_their_head() {
+        for case in [
+            "disabled",
+            "feature",
+            "detached",
+            "dirty",
+            "staged",
+            "untracked",
+            "ahead",
+            "no_upstream",
+            "other_upstream",
+            "unknown_default",
+            "main_without_remote_head",
+            "merge_in_progress",
+        ] {
+            let f = Fixture::new();
+            match case {
+                "feature" => {
+                    git(&f.local, &["checkout", "-qb", "feature"]);
+                }
+                "detached" => {
+                    git(&f.local, &["checkout", "-q", "--detach"]);
+                }
+                "dirty" => {
+                    std::fs::write(f.local.join("file"), "dirty").unwrap();
+                }
+                "staged" => {
+                    std::fs::write(f.local.join("file"), "staged").unwrap();
+                    git(&f.local, &["add", "."]);
+                }
+                "untracked" => {
+                    std::fs::write(f.local.join("untracked"), "text").unwrap();
+                }
+                "ahead" => {
+                    std::fs::write(f.local.join("ahead"), "text").unwrap();
+                    git(&f.local, &["add", "."]);
+                    git(&f.local, &["commit", "-qm", "Local commit"]);
+                }
+                "no_upstream" => {
+                    git(&f.local, &["branch", "--unset-upstream"]);
+                }
+                "other_upstream" => {
+                    git(
+                        &f.local,
+                        &["config", "branch.main.merge", "refs/heads/other"],
+                    );
+                }
+                "main_without_remote_head" => {
+                    let origin = f.dir.path().join("origin.git");
+                    git(
+                        &origin,
+                        &[
+                            "update-ref",
+                            "refs/heads/develop",
+                            &git(&f.other, &["rev-parse", "HEAD"]),
+                        ],
+                    );
+                    git(&origin, &["symbolic-ref", "HEAD", "refs/heads/develop"]);
+                    git(
+                        &f.local,
+                        &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+                    );
+                }
+                "unknown_default" => {
+                    git(&f.local, &["branch", "-m", "custom"]);
+                    git(
+                        &f.local,
+                        &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+                    );
+                }
+                "merge_in_progress" => {
+                    std::fs::write(
+                        f.local.join(".git/MERGE_HEAD"),
+                        git(&f.local, &["rev-parse", "HEAD"]),
+                    )
+                    .unwrap();
+                }
+                _ => {}
+            }
+            let before = git(&f.local, &["rev-parse", "HEAD"]);
+            assert!(!f.refresh(case != "disabled").await.unwrap(), "{case}");
+            assert_eq!(git(&f.local, &["rev-parse", "HEAD"]), before, "{case}");
+        }
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_stops_a_network_child_and_leaves_no_lock() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new();
+        let marker = f.dir.path().join("ssh-started");
+        let ssh = f.dir.path().join("ssh");
+        std::fs::write(
+            &ssh,
+            format!("#!/bin/sh\ntouch '{}'\nexec sleep 30\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(
+            &f.local,
+            &["remote", "set-url", "origin", "ssh://fixture.invalid/repo"],
+        );
+        git(
+            &f.local,
+            &["config", "core.sshCommand", ssh.to_str().unwrap()],
+        );
+        let (sender, mut cancel) = tokio::sync::watch::channel(false);
+        let path = f.local.clone();
+        let job = tokio::spawn(async move {
+            automatic_refresh(&path, true, true, Duration::from_secs(60), &mut cancel).await
+        });
+        for _ in 0..100 {
+            if marker.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(marker.exists());
+        sender.send(true).unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(5), job)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, "cancelled");
+        assert!(!f.local.join(".git/index.lock").exists());
     }
 }

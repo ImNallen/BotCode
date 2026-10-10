@@ -33,24 +33,23 @@ export type GitStackedAction =
   | "commit_push"
   | "commit_push_pr";
 
-export type GitActionIconName = "commit" | "push" | "pr";
+export type GitActionIconName = "commit" | "push" | "pr" | "publish";
 
 export type GitDialogAction = "commit" | "push" | "create_pr";
 
 export interface GitActionMenuItem {
-  id: "commit" | "push" | "pr";
+  id: "commit" | "push" | "pr" | "publish";
   label: string;
   disabled: boolean;
   icon: GitActionIconName;
-  kind: "open_dialog" | "open_pr";
+  kind: "open_dialog" | "open_pr" | "open_publish";
   dialogAction?: GitDialogAction;
 }
 
 export interface GitQuickAction {
   label: string;
   disabled: boolean;
-  // Bot Code: no "open_publish", Bot Code has no publish flow.
-  kind: "run_action" | "run_pull" | "open_pr" | "show_hint";
+  kind: "run_action" | "run_pull" | "open_pr" | "open_publish" | "show_hint";
   action?: GitStackedAction;
   hint?: string;
 }
@@ -111,7 +110,16 @@ export function buildMenuItems(
   };
 
   if (!hasPrimaryRemote) {
-    return [commitItem];
+    return [
+      commitItem,
+      {
+        id: "publish",
+        label: "Publish repository...",
+        disabled: isBusy || !hasBranch,
+        icon: "publish",
+        kind: "open_publish",
+      },
+    ];
   }
 
   return [
@@ -219,12 +227,10 @@ export function resolveQuickAction(
           kind: "open_pr",
         };
       }
-      // Bot Code: no "Publish repository" flow, so the quick action explains what is missing.
       return {
-        label: "Push",
-        disabled: true,
-        kind: "show_hint",
-        hint: 'Add an "origin" remote before pushing.',
+        label: "Publish repository",
+        disabled: false,
+        kind: "open_publish",
       };
     }
     if (!isAhead) {
@@ -247,9 +253,7 @@ export function resolveQuickAction(
         label: "Push",
         disabled: false,
         kind: "run_action",
-        // Bot Code: T3 runs commit_push on the default ref to avoid its feature-branch path. Bot Code has no
-        // feature branches and its commits need a message, so a clean push is a push.
-        action: "push",
+        action: isDefaultRef ? "commit_push" : "push",
       };
     }
     return {
@@ -283,8 +287,7 @@ export function resolveQuickAction(
         label: "Push",
         disabled: false,
         kind: "run_action",
-        // Bot Code: push, not commit_push, as above.
-        action: "push",
+        action: isDefaultRef ? "commit_push" : "push",
       };
     }
     return {
@@ -349,6 +352,9 @@ export function getMenuActionDisabledReason({
     return "Commit is currently unavailable.";
   }
 
+  if (item.id === "publish")
+    return "Detached HEAD: check out a branch before publishing.";
+
   if (item.id === "push") {
     if (!hasBranch) {
       return "Detached HEAD: check out a branch before pushing.";
@@ -408,9 +414,7 @@ export function resolveDefaultBranchActionDialogCopy(input: {
   includesCommit: boolean;
 }): DefaultBranchActionDialogCopy {
   const branchLabel = input.branchName;
-  // Bot Code: the dialog offers only Abort and Continue, so the copy drops T3's
-  // "You can continue on this ref or create a feature ref and run the same action there."
-  const suffix = ` on "${branchLabel}".`;
+  const suffix = ` on "${branchLabel}". You can continue on this ref or create a feature ref and run the same action there.`;
 
   if (input.action === "push" || input.action === "commit_push") {
     if (input.includesCommit) {
