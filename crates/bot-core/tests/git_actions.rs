@@ -1949,7 +1949,14 @@ async fn hook_output_streams_while_blocked_and_named_lifecycle_flushes_before_co
     let f = Fixture::new();
     std::fs::write(f.repository.join("selected.txt"), "content\n").unwrap();
     let go = f.dir.path().join("release-streaming-hook");
-    f.hook(&f.repository.join(".git"), "pre-commit", &format!("printf 'first\\rsecond\\n'; echo error-line >&2; {}; printf trailing", polling::wait_for_file(&format!("'{}'", go.display()))));
+    f.hook(
+        &f.repository.join(".git"),
+        "pre-commit",
+        &format!(
+            "printf 'first\\rsecond\\n'; echo error-line >&2; {}; printf trailing",
+            polling::wait_for_file(&format!("'{}'", go.display()))
+        ),
+    );
     let (app, workspace) = f.open().await;
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();

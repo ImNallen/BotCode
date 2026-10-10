@@ -5690,7 +5690,9 @@ async fn project_setup_cleanup_stops_children_left_by_completed_attempt() {
     app.sweep_worktrees_at(u64::MAX / 2).await;
     assert!(!path.exists(), "cleanup did not remove the worktree");
     assert!(
-        tokio::time::timeout(Duration::from_secs(1), wait_until_dead(child)).await.unwrap_or(false),
+        tokio::time::timeout(Duration::from_secs(1), wait_until_dead(child))
+            .await
+            .unwrap_or(false),
         "setup child survived worktree cleanup"
     );
     assert!(eventually(|| unsafe { libc::kill(-pid, 0) } != 0).await);
