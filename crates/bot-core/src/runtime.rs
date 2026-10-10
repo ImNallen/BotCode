@@ -10,6 +10,7 @@ mod pr_checkout;
 mod pr_review;
 mod pr_stack;
 mod pull_requests;
+mod source_control;
 mod tools;
 mod writing;
 use crate::pr_review::*;
@@ -106,6 +107,7 @@ enum Hold {
     Cleanup,
     Restore,
     Git,
+    SourceControl,
     PullRequest,
     Naming,
     Checkpoint,
@@ -136,6 +138,9 @@ impl Hold {
                 Self::Restore => {
                     "Bot Code is restoring this thread's worktree. Try again in a moment."
                 }
+                Self::SourceControl => {
+                    "Bot Code is refreshing this checkout from its remote. Try again when it finishes."
+                }
                 Self::Git => {
                     "A Git action is running in this checkout. Try again when it finishes."
                 }
@@ -148,7 +153,8 @@ impl Hold {
                 "checkout_busy",
                 "Codex is working in this checkout. Git actions return when the turn finishes.",
             ),
-            Self::Delete
+            Self::SourceControl
+            | Self::Delete
             | Self::Switch
             | Self::Cleanup
             | Self::Restore
@@ -200,6 +206,12 @@ enum Command {
     PrList(ThreadId, bool, Reply<ThreadPrSummary>),
     PrLink(ThreadId, PullRequestKey, Reply<ThreadPrSummary>),
     PrUnlink(ThreadId, PullRequestKey, Reply<ThreadPrSummary>),
+    PublishRepository(
+        WorkspaceId,
+        Option<ThreadId>,
+        PublishInput,
+        Reply<PublishOutcome>,
+    ),
     RunGit(
         WorkspaceId,
         Option<ThreadId>,
@@ -286,7 +298,11 @@ enum Command {
     Arrange(ThreadId, Arrange, Reply<()>),
     Rename(ThreadId, String, Reply<ThreadSnapshot>),
     Delete(ThreadId, Reply<DeletedWorktree>),
-    AutoSettle(settings::AutoSettle, Reply<()>),
+    AutoSettle(
+        settings::AutoSettle,
+        settings::SourceControlSettings,
+        Reply<()>,
+    ),
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
     CleanupCandidates(Reply<(Vec<Candidate>, Vec<PathBuf>)>),
@@ -310,6 +326,7 @@ pub struct App {
     sweeps: Arc<Mutex<()>>,
     wake: Arc<Notify>,
     gh: PathBuf,
+    discovery_root: PathBuf,
     network_timeout: Duration,
     codex: PathBuf,
     script_shell: PathBuf,
@@ -460,6 +477,7 @@ impl App {
                 e.message
             ),
         }
+        let discovery_root = config.data_dir.clone();
         let worktrees = config.data_dir.join("worktrees");
         let gh = config.gh_binary.clone();
         let codex = config.codex_binary.clone();
@@ -474,6 +492,7 @@ impl App {
             config.data_dir.join("keybindings.json"),
         ));
         let auto_settle = settings::auto_settle(&settings);
+        let source_control_settings = settings::source_control(&settings);
         let (commands, rx) = mpsc::channel(128);
         let (changes, _) = broadcast::channel(256);
         let (limits, limits_rx) = watch::channel(None);
@@ -516,6 +535,8 @@ impl App {
                 workspaces,
                 threads,
                 auto_settle,
+                source_control_settings,
+                source_control: source_control::RefreshWork::default(),
                 leases: HashMap::new(),
                 held: HashMap::new(),
                 callbacks: HashMap::new(),
@@ -553,6 +574,7 @@ impl App {
             sweeps: Arc::new(Mutex::new(())),
             wake: Arc::new(Notify::new()),
             gh,
+            discovery_root,
             network_timeout,
             codex,
             script_shell,
@@ -1168,6 +1190,19 @@ impl App {
         self.call(|reply| Command::CancelCommitPreview(job, reply))
             .await
     }
+    pub async fn github_publish_readiness(&self) -> Result<PublishReadiness> {
+        Ok(vcs::publish::readiness(&self.discovery_root, &self.gh, self.network_timeout).await)
+    }
+    pub async fn publish_repository(
+        &self,
+        id: WorkspaceId,
+        thread: Option<ThreadId>,
+        input: PublishInput,
+    ) -> Result<PublishOutcome> {
+        self.call(|reply| Command::PublishRepository(id, thread, input, reply))
+            .await
+    }
+
     /// Runs a Git action on a thread's checkout, holding it against turns and other mutations.
     /// `Err` means the action never started. `progress` hears each step as it starts.
     pub async fn run_git_action(
@@ -1491,7 +1526,8 @@ impl App {
         settings::write(&self.settings, text)?;
         self.wake.notify_one();
         let rules = settings::auto_settle(&self.settings);
-        self.call(|r| Command::AutoSettle(rules, r)).await
+        self.call(|r| Command::AutoSettle(rules, settings::source_control(&self.settings), r))
+            .await
     }
     pub async fn shutdown(&self) -> Result<()> {
         self.project_search.invalidate();
@@ -1843,8 +1879,17 @@ enum RouteKind {
 struct GitCompletion {
     root: PathBuf,
     origin: Option<(ThreadId, u64)>,
-    result: Result<GitOutcome>,
-    reply: Reply<GitOutcome>,
+    payload: GitCompletionPayload,
+}
+enum GitCompletionPayload {
+    Git {
+        result: Box<Result<GitOutcome>>,
+        reply: Reply<GitOutcome>,
+    },
+    Publish {
+        result: Result<PublishOutcome>,
+        reply: Reply<PublishOutcome>,
+    },
 }
 struct Owner {
     tools: tools::ToolWork,
@@ -1865,6 +1910,8 @@ struct Owner {
     workspaces: HashMap<WorkspaceId, Workspace>,
     threads: HashMap<ThreadId, ThreadSnapshot>,
     auto_settle: settings::AutoSettle,
+    source_control_settings: settings::SourceControlSettings,
+    source_control: source_control::RefreshWork,
     leases: HashMap<PathBuf, ThreadId>,
     held: HashMap<PathBuf, Hold>,
     callbacks: HashMap<Callback, Route>,
@@ -1933,57 +1980,77 @@ impl Owner {
         let GitCompletion {
             root,
             origin,
-            mut result,
-            reply,
+            payload,
         } = completion.map_err(|error| AppError::new("git_worker", error))?;
-        let mut saved = Ok(());
-        if let (Some((id, generation)), Ok(outcome)) = (&origin, &mut result)
-            && self.pr_generation(id) == *generation
-            && let Some(opened) = &outcome.pr
-        {
-            let source = if opened.created {
-                PrLinkSource::GitCreated
-            } else {
-                PrLinkSource::GitReused
-            };
-            if let Err(error) = PullRequestKey::from_url(&opened.pr.url)
-                .and_then(|key| self.pr_membership(id, key, Some(source)))
-            {
-                saved = Err(error.clone());
-                outcome.failure = Some(GitFailure {
-                    phase: GitPhase::Pr,
-                    error,
-                });
-            }
-        }
-        if let Ok(outcome) = &mut result
-            && let Some(current) = &outcome.branch
-        {
-            let owners: Vec<_> = self.threads.values()
-                    .filter(|thread| matches!(&thread.checkout, Checkout::Worktree { path, .. } if *path == root))
-                    .map(|thread| thread.id.clone()).collect();
-            for id in owners {
-                if let Some(thread) = self.threads.get_mut(&id)
-                    && let Checkout::Worktree { branch, .. } = &mut thread.checkout
-                {
-                    *branch = current.clone();
-                }
-                if let Err(error) = self.commit(&id) {
-                    outcome.warnings.push(format!(
-                        "Branch created, but its saved metadata could not be updated: {}",
-                        error.message
-                    ));
-                    saved = Err(error);
-                }
-            }
-        }
         self.held.remove(&root);
         self.project_search.invalidate();
-        if refresh && let Some((id, _)) = origin {
-            let _ = self.refresh_prs(&id, true, PrLinkSource::BranchDiscovery);
+        match payload {
+            GitCompletionPayload::Publish { result, reply } => {
+                if refresh {
+                    for thread in self.threads.values().filter(|t| {
+                        self.workspaces
+                            .get(&t.workspace_id)
+                            .is_some_and(|w| t.root(w) == root)
+                    }) {
+                        let _ = self.changes.send(ChangeHint {
+                            refresh_workspace: true,
+                            ..self.thread_hint(thread)
+                        });
+                    }
+                }
+                let _ = reply.send(result);
+                Ok(())
+            }
+            GitCompletionPayload::Git { result, reply } => {
+                let mut result = *result;
+                let mut saved = Ok(());
+                if let (Some((id, generation)), Ok(outcome)) = (&origin, &mut result)
+                    && self.pr_generation(id) == *generation
+                    && let Some(opened) = &outcome.pr
+                {
+                    let source = if opened.created {
+                        PrLinkSource::GitCreated
+                    } else {
+                        PrLinkSource::GitReused
+                    };
+                    if let Err(error) = PullRequestKey::from_url(&opened.pr.url)
+                        .and_then(|key| self.pr_membership(id, key, Some(source)))
+                    {
+                        saved = Err(error.clone());
+                        outcome.failure = Some(GitFailure {
+                            phase: GitPhase::Pr,
+                            error,
+                        });
+                    }
+                }
+                if let Ok(outcome) = &mut result
+                    && let Some(current) = &outcome.branch
+                {
+                    let owners: Vec<_> = self.threads.values()
+                    .filter(|thread| matches!(&thread.checkout, Checkout::Worktree { path, .. } if *path == root))
+                    .map(|thread| thread.id.clone()).collect();
+                    for id in owners {
+                        if let Some(thread) = self.threads.get_mut(&id)
+                            && let Checkout::Worktree { branch, .. } = &mut thread.checkout
+                        {
+                            *branch = current.clone();
+                        }
+                        if let Err(error) = self.commit(&id) {
+                            outcome.warnings.push(format!(
+                                "Branch created, but its saved metadata could not be updated: {}",
+                                error.message
+                            ));
+                            saved = Err(error);
+                        }
+                    }
+                }
+                if refresh && let Some((id, _)) = origin {
+                    let _ = self.refresh_prs(&id, true, PrLinkSource::BranchDiscovery);
+                }
+                let _ = reply.send(result);
+                saved
+            }
         }
-        let _ = reply.send(result);
-        saved
     }
     fn claim_checkout(
         &mut self,
@@ -2014,8 +2081,10 @@ impl Owner {
         {
             return Err(turn_running());
         }
-        self.cancel_commit_previews(Some(&root));
-        self.invalidate_names(&root);
+        if hold != Hold::SourceControl {
+            self.cancel_commit_previews(Some(&root));
+            self.invalidate_names(&root);
+        }
         self.held.insert(root.clone(), hold);
         Ok(root)
     }
@@ -2304,6 +2373,9 @@ impl Owner {
                 Some(Ok(done))=self.delete_jobs.join_next(), if !self.delete_jobs.is_empty()=>{
                     self.finish_delete(done);
                 }
+                Some(done)=self.source_control.active.join_next(), if !self.source_control.active.is_empty()=>{
+                    self.finish_source_control_refresh(done);
+                }
                 Some(done)=self.git_jobs.join_next(), if !self.git_jobs.is_empty()=>{
                     if let Err(error)=self.finish_git_job(done, true) { eprintln!("Git completion failed: {}", error.message); }
                 }
@@ -2329,6 +2401,7 @@ impl Owner {
                     if let Err(error)=self.complete(done).await {self.lose(&error.message).await;}
                 }
                 _=tick.tick()=>{
+                    self.poll_source_control();
                     self.poll_setups();
                     self.expire_commit_previews();
                     self.retry_checkpoint_saves();
@@ -2353,6 +2426,7 @@ impl Owner {
         while let Some(Ok(done)) = self.delete_jobs.join_next().await {
             self.finish_delete(done);
         }
+        self.stop_source_control().await;
         let mut git_shutdown = Ok(());
         while let Some(completion) = self.git_jobs.join_next().await {
             if let Err(error) = self.finish_git_job(completion, false) {
@@ -2413,6 +2487,31 @@ impl Owner {
                 let result = self.pr_membership(&id, key, None);
                 let _ = reply.send(result);
             }
+            Command::PublishRepository(id, thread, input, reply) => {
+                match self.claim_checkout(&id, thread.clone(), Hold::Git) {
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                    Ok(root) => {
+                        let origin = thread.map(|id| {
+                            let generation = self.pr_generation(&id);
+                            (id, generation)
+                        });
+                        let gh = self.config.gh_binary.clone();
+                        let timeout = self.config.network_timeout;
+                        let worker_root = root.clone();
+                        let requested_repository = input.repository.clone();
+                        self.git_jobs.spawn(async move {
+                            let result = tokio::spawn(async move { vcs::publish::publish(&worker_root, &gh, timeout, input).await })
+                                .await.unwrap_or_else(|_| Ok(PublishOutcome::CreationUncertain {
+                                    repository: requested_repository,
+                                    message: "Publication stopped unexpectedly. Check GitHub and this checkout's remotes before retrying.".into(),
+                                }));
+                            GitCompletion { root, origin, payload: GitCompletionPayload::Publish { result, reply } }
+                        });
+                    }
+                }
+            }
             Command::RunGit(id, thread, action, progress, reply) => {
                 match self.claim_checkout(&id, thread.clone(), Hold::Git) {
                     Err(error) => {
@@ -2434,6 +2533,11 @@ impl Owner {
                             network: self.config.network_timeout,
                             codex: self.config.codex_binary.clone(),
                             model,
+                            writing_style: self
+                                .source_control_settings
+                                .for_project(&id)
+                                .writing_style
+                                .clone(),
                             progress,
                         };
                         self.git_jobs.spawn(async move {
@@ -2444,8 +2548,10 @@ impl Owner {
                             GitCompletion {
                                 root,
                                 origin,
-                                result,
-                                reply,
+                                payload: GitCompletionPayload::Git {
+                                    result: Box::new(result),
+                                    reply,
+                                },
                             }
                         });
                     }
@@ -2972,7 +3078,12 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
-            Command::AutoSettle(rules, reply) => {
+            Command::AutoSettle(rules, source_control, reply) => {
+                if source_control.fetch_interval() != self.source_control_settings.fetch_interval()
+                {
+                    self.source_control.deadlines.clear();
+                }
+                self.source_control_settings = source_control;
                 let now = now_ms();
                 let previous = std::mem::replace(&mut self.auto_settle, rules);
                 for t in self.threads.values() {

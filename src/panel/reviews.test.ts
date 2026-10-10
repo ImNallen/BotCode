@@ -45,7 +45,16 @@ import {
 import { PullRequestReviewComposer } from "./PullRequestReviewComposer.tsx";
 import { PullRequestTimeline } from "./PullRequestTimeline.tsx";
 import type { PrSectionProblem } from "./prCoverage.ts";
-import { PullRequestDetail } from "./PullRequestDetail.tsx";
+import { PullRequestDetail as PullRequestDetailContent } from "./PullRequestDetail.tsx";
+import { PreferencesProvider } from "../settings/preferences";
+
+function PullRequestDetail(
+  props: Parameters<typeof PullRequestDetailContent>[0],
+) {
+  return createElement(PreferencesProvider, {
+    children: createElement(PullRequestDetailContent, props),
+  });
+}
 const finding = reviewFinding.parse({
   observation: {
     prId: "PR_fixture",

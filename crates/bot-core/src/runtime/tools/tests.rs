@@ -70,6 +70,8 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
         workspaces: HashMap::from([(workspace.id.clone(), workspace.clone())]),
         threads: HashMap::new(),
         auto_settle: settings::auto_settle(&directory.path().join("settings.json")),
+        source_control_settings: settings::source_control(&directory.path().join("settings.json")),
+        source_control: source_control::RefreshWork::default(),
         leases: HashMap::new(),
         held: HashMap::new(),
         callbacks: HashMap::new(),

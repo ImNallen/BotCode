@@ -119,3 +119,154 @@ pub fn cleanup_rules(path: &Path) -> CleanupRules {
         worktree_unchanged: rules["worktreeUnchanged"].as_bool() == Some(true),
     }
 }
+
+// Source-control policy adapts T3 Code v0.0.45 unified settings (MIT).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WritingStyleMode {
+    #[default]
+    RepoConventions,
+    ConventionalCommits,
+    Custom,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WritingStyle {
+    pub mode: WritingStyleMode,
+    pub custom_instructions: String,
+    pub follow_change_request_templates: bool,
+}
+impl Default for WritingStyle {
+    fn default() -> Self {
+        Self {
+            mode: WritingStyleMode::RepoConventions,
+            custom_instructions: String::new(),
+            follow_change_request_templates: true,
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ProjectSourceControl {
+    pub writing_style: WritingStyle,
+    pub auto_pull: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceControlSettings {
+    default: ProjectSourceControl,
+    projects: HashMap<WorkspaceId, ProjectSourceControl>,
+    interval: Option<std::time::Duration>,
+}
+impl SourceControlSettings {
+    pub fn for_project(&self, id: &WorkspaceId) -> &ProjectSourceControl {
+        self.projects.get(id).unwrap_or(&self.default)
+    }
+    pub fn fetch_interval(&self) -> Option<std::time::Duration> {
+        self.interval
+    }
+}
+pub(crate) fn source_control(path: &Path) -> SourceControlSettings {
+    let settings: Value = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let style = |value: &Value| {
+        serde_json::from_value::<WritingStyle>(value.clone())
+            .ok()
+            .map(|mut style| {
+                style.custom_instructions = style.custom_instructions.trim().into();
+                style
+            })
+    };
+    let default = ProjectSourceControl {
+        writing_style: style(&settings["sourceControlWritingStyle"]).unwrap_or_default(),
+        auto_pull: settings["defaultAutoPull"].as_bool().unwrap_or(false),
+    };
+    let interval = settings["automaticGitFetchInterval"]
+        .as_u64()
+        .filter(|ms| *ms <= 9_007_199_254_740_991)
+        .unwrap_or(30_000);
+    SourceControlSettings {
+        projects: settings["projectOverrides"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(id, project)| {
+                Some((
+                    id.parse().ok()?,
+                    ProjectSourceControl {
+                        writing_style: style(&project["sourceControlWritingStyle"])
+                            .unwrap_or_else(|| default.writing_style.clone()),
+                        auto_pull: project["defaultAutoPull"]
+                            .as_bool()
+                            .unwrap_or(default.auto_pull),
+                    },
+                ))
+            })
+            .collect(),
+        default,
+        interval: (interval > 0).then(|| std::time::Duration::from_millis(interval)),
+    }
+}
+
+#[cfg(test)]
+mod source_control_tests {
+    use super::*;
+    #[test]
+    fn writing_styles_strip_unknown_fields_at_global_and_project_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let id = WorkspaceId::default();
+        fs::write(&path, serde_json::json!({ "sourceControlWritingStyle": { "mode": "custom", "customInstructions": "Global extra", "followChangeRequestTemplates": false, "futureOption": true }, "projectOverrides": { id.to_string(): { "sourceControlWritingStyle": { "mode": "conventional_commits", "customInstructions": "Project extra", "followChangeRequestTemplates": true, "futureOption": true } } } }).to_string()).unwrap();
+        let settings = source_control(&path);
+        assert_eq!(
+            settings
+                .for_project(&WorkspaceId::default())
+                .writing_style
+                .custom_instructions,
+            "Global extra"
+        );
+        assert_eq!(
+            settings.for_project(&id).writing_style.mode,
+            WritingStyleMode::ConventionalCommits
+        );
+        assert_eq!(
+            settings.for_project(&id).writing_style.custom_instructions,
+            "Project extra"
+        );
+    }
+    #[test]
+    fn source_control_defaults_and_independent_project_inheritance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let id = WorkspaceId::default();
+        let defaults = source_control(&path);
+        assert_eq!(
+            defaults.fetch_interval(),
+            Some(std::time::Duration::from_secs(30))
+        );
+        assert!(!defaults.for_project(&id).auto_pull);
+        assert!(
+            defaults
+                .for_project(&id)
+                .writing_style
+                .follow_change_request_templates
+        );
+        fs::write(&path, serde_json::json!({ "defaultAutoPull": true, "automaticGitFetchInterval": 0, "sourceControlWritingStyle": { "mode": "custom", "customInstructions": "  Short titles  ", "followChangeRequestTemplates": false }, "projectOverrides": { id.to_string(): { "defaultAutoPull": false, "sourceControlWritingStyle": { "mode": "invalid" } } } }).to_string()).unwrap();
+        let settings = source_control(&path);
+        assert_eq!(settings.fetch_interval(), None);
+        assert!(!settings.for_project(&id).auto_pull);
+        assert!(settings.for_project(&WorkspaceId::default()).auto_pull);
+        assert_eq!(
+            settings.for_project(&id).writing_style.custom_instructions,
+            "Short titles"
+        );
+        assert!(
+            !settings
+                .for_project(&id)
+                .writing_style
+                .follow_change_request_templates
+        );
+        fs::write(&path, r#"{"defaultAutoPull":"yes","automaticGitFetchInterval":-1,"sourceControlWritingStyle":{}}"#).unwrap();
+        assert_eq!(source_control(&path), defaults);
+    }
+}

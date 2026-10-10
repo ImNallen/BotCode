@@ -26,8 +26,9 @@ export function resolvePullRequestMergeMethod(
   allowed: readonly MergeMethod[],
   current: MergeMethod | null,
   lastSelected: MergeMethod,
+  configured: MergeMethod | null = null,
 ): MergeMethod {
-  for (const method of [current, lastSelected]) {
+  for (const method of [current, configured, lastSelected]) {
     if (method && allowed.includes(method)) return method;
   }
   return allowed[0] ?? "merge";

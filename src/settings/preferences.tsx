@@ -9,6 +9,7 @@ import {
 import { z } from "zod";
 import { ipc, native, permissionMode } from "../ipc";
 import { editorId } from "../lib/editors";
+import { mergeMethod } from "../panel/prIdentity";
 import { serial } from "../lib/serial";
 
 const favoriteModelSchema = z.object({
@@ -19,7 +20,19 @@ export type FavoriteModel = Readonly<z.infer<typeof favoriteModelSchema>>;
 
 export const autoSettleDefaultDays = 3;
 // Settings that a project can override. Null auto-settle days turn auto-settling off.
+export const sourceControlWritingStyleSchema = z.object({
+  mode: z.enum(["repo_conventions", "conventional_commits", "custom"]),
+  customInstructions: z.string().trim(),
+  followChangeRequestTemplates: z.boolean(),
+});
+export type SourceControlWritingStyle = z.infer<
+  typeof sourceControlWritingStyleSchema
+>;
+
 const projectSchema = z.object({
+  sourceControlWritingStyle: sourceControlWritingStyleSchema,
+  defaultAutoPull: z.boolean(),
+  pullRequestMergeMethod: mergeMethod.nullable(),
   defaultPermissionMode: permissionMode.nullable(),
   autoSettleOnMerge: z.boolean(),
   newThreadCheckout: z.enum(["local", "worktree"]),
@@ -30,6 +43,13 @@ export type ProjectValues = z.infer<typeof projectSchema>;
 export type ProjectSetting = keyof ProjectValues;
 export type ProjectOverride = Partial<ProjectValues>;
 export const builtInProject: ProjectValues = {
+  sourceControlWritingStyle: {
+    mode: "repo_conventions",
+    customInstructions: "",
+    followChangeRequestTemplates: true,
+  },
+  defaultAutoPull: false,
+  pullRequestMergeMethod: null,
   defaultPermissionMode: null,
   autoSettleOnMerge: true,
   newThreadCheckout: "local",
@@ -53,6 +73,11 @@ export const notificationModeSchema = z.enum([
 export type NotificationMode = z.infer<typeof notificationModeSchema>;
 
 const schema = z.object({
+  automaticGitFetchInterval: z
+    .number()
+    .int()
+    .min(0)
+    .max(Number.MAX_SAFE_INTEGER),
   newThreadCheckoutConfigured: z.boolean().default(false),
   notificationMode: notificationModeSchema,
   inAppNotificationsEnabled: z.boolean(),
@@ -75,7 +100,8 @@ export const checkoutModeLabels = {
   worktree: "New worktree",
 } as const satisfies Record<Preferences["newThreadCheckout"], string>;
 export type CheckoutMode = keyof typeof checkoutModeLabels;
-const defaults: Preferences = {
+export const defaults: Preferences = {
+  automaticGitFetchInterval: 30_000,
   newThreadCheckoutConfigured: false,
   notificationMode: "off",
   inAppNotificationsEnabled: false,
@@ -129,13 +155,17 @@ const Context = createContext<
   | null
 >(null);
 
-function readPreferences(): PreferenceState {
+export function readPreferences(): PreferenceState {
   try {
     const stored = storedText();
     if (stored === null)
       return { preferences: defaults, persistenceError: undefined };
     const object = z
       .object({
+        sourceControlWritingStyle: z.unknown().optional(),
+        defaultAutoPull: z.unknown().optional(),
+        pullRequestMergeMethod: z.unknown().optional(),
+        automaticGitFetchInterval: z.unknown().optional(),
         defaultPermissionMode: z.unknown().optional(),
         autoSettleOnMerge: z.unknown().optional(),
         appearance: z.unknown().optional(),
@@ -232,6 +262,17 @@ function readPreferences(): PreferenceState {
       : [];
     return {
       preferences: {
+        sourceControlWritingStyle: sourceControlWritingStyleSchema
+          .catch(builtInProject.sourceControlWritingStyle)
+          .parse(object.sourceControlWritingStyle),
+        defaultAutoPull: z.boolean().catch(false).parse(object.defaultAutoPull),
+        pullRequestMergeMethod: mergeMethod
+          .nullable()
+          .catch(null)
+          .parse(object.pullRequestMergeMethod),
+        automaticGitFetchInterval: schema.shape.automaticGitFetchInterval
+          .catch(30_000)
+          .parse(object.automaticGitFetchInterval),
         defaultPermissionMode: defaultPermissionMode.success
           ? defaultPermissionMode.data
           : defaults.defaultPermissionMode,

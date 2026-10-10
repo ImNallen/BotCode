@@ -8,11 +8,13 @@ export function SettingsGroup({
   id,
   title,
   hideTitle = false,
+  headerAction,
   children,
 }: {
   id: string;
   title: ReactNode;
   hideTitle?: boolean;
+  headerAction?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -36,6 +38,7 @@ export function SettingsGroup({
               {title}
             </h2>
           </div>
+          {headerAction}
         </div>
       )}
       <div className="relative overflow-visible text-foreground rounded-xl border border-border/60 bg-card/40 shadow-xs/5 [&>*+*]:border-t [&>*+*]:border-border/50 [&>[data-slot=settings-row]]:rounded-none">
@@ -54,8 +57,10 @@ export function SettingsRow({
   resetAction,
   disabled = false,
   onContextMenu,
+  children,
 }: {
   id: string;
+  children?: ReactNode;
   title: ReactNode;
   description: string;
   control: ReactNode;
@@ -96,6 +101,7 @@ export function SettingsRow({
           </div>
         ) : null}
       </div>
+      {children}
     </div>
   );
 }

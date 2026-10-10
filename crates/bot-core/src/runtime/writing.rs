@@ -15,6 +15,11 @@ pub(super) struct Writing {
     pending: HashMap<String, Preview>,
     pub active: tokio::task::JoinSet<(String, Result<String>)>,
 }
+impl Writing {
+    pub(super) fn has_preview(&self, root: &Path) -> bool {
+        self.pending.values().any(|preview| preview.root == root)
+    }
+}
 impl Owner {
     pub(super) fn begin_commit_preview(
         &mut self,
@@ -30,6 +35,11 @@ impl Owner {
                 "This checkout is busy. Enter a commit message or try again when it is idle.",
             ));
         }
+        let writing_style = self
+            .source_control_settings
+            .for_project(&t.workspace_id)
+            .writing_style
+            .clone();
         let model = self.resolve_model(&t.settings).map(str::to_owned);
         self.cancel_commit_previews(Some(&root));
         if self.writing.active.len() >= 4 || self.writing.pending.len() >= 4 {
@@ -60,6 +70,7 @@ impl Owner {
                     model.as_deref(),
                     &root,
                     &selection,
+                    &writing_style,
                     &mut receiver,
                 )
                 .await

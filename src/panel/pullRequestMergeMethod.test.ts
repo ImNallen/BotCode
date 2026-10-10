@@ -246,3 +246,32 @@ it("uses the selected strategy in stack confirmation and captured native input",
     assert.deepEqual(input.action, { kind: "merge", method });
   }
 });
+
+it("prefers the current PR choice, configured project default, then last selection", () => {
+  const allowed = ["merge", "squash", "rebase"] satisfies MergeMethod[];
+  assert.equal(
+    resolvePullRequestMergeMethod(allowed, "rebase", "merge", "squash"),
+    "rebase",
+  );
+  assert.equal(
+    resolvePullRequestMergeMethod(allowed, null, "merge", "squash"),
+    "squash",
+  );
+  assert.equal(
+    resolvePullRequestMergeMethod(
+      ["merge", "rebase"],
+      null,
+      "rebase",
+      "squash",
+    ),
+    "rebase",
+  );
+  assert.equal(
+    resolvePullRequestMergeMethod(allowed, null, "rebase", null),
+    "rebase",
+  );
+  assert.equal(
+    resolvePullRequestMergeMethod([], null, "rebase", "squash"),
+    "merge",
+  );
+});

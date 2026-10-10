@@ -407,7 +407,8 @@ describe("nextStep", () => {
         kind: "confirm",
         copy: {
           title: "Commit & push to default ref?",
-          description: 'This action will commit and push changes on "main".',
+          description:
+            'This action will commit and push changes on "main". You can continue on this ref or create a feature ref and run the same action there.',
           continueLabel: "Commit & push to main",
         },
       },
@@ -415,10 +416,13 @@ describe("nextStep", () => {
   });
 
   it("runs a confirmed push on the default branch", () => {
-    assert.deepEqual(nextStep({ target: "push", confirmed: true }, cleanMain), {
-      kind: "run",
-      action: { kind: "push" },
-    });
+    assert.deepEqual(
+      nextStep({ target: "push", continuation: "current_branch" }, cleanMain),
+      {
+        kind: "run",
+        action: { kind: "push" },
+      },
+    );
   });
 
   it("turns commit & push on a clean default branch into a confirmed push", () => {
@@ -426,12 +430,16 @@ describe("nextStep", () => {
       kind: "confirm",
       copy: {
         title: "Push to default ref?",
-        description: 'This action will push local commits on "main".',
+        description:
+          'This action will push local commits on "main". You can continue on this ref or create a feature ref and run the same action there.',
         continueLabel: "Push to main",
       },
     });
     assert.deepEqual(
-      nextStep({ target: "commit_push", confirmed: true }, cleanMain),
+      nextStep(
+        { target: "commit_push", continuation: "current_branch" },
+        cleanMain,
+      ),
       {
         kind: "run",
         action: { kind: "push" },
@@ -864,4 +872,121 @@ it("a post-commit warning keeps the landed commit visible without saying the com
   assert.equal(toast.type, "warning");
   assert.ok(toast.title.startsWith("Committed "));
   assert.equal(toast.description, "post-commit hook failed (exit 9).");
+});
+
+describe("feature-branch continuation", () => {
+  it("retains the original stack, approved message and selected files", () => {
+    const approved = commitRequest.parse({
+      message: "Keep the typed subject\n\nAnd body",
+      selection: { kind: "paths", paths: ["literal*.txt", "src/a.ts"] },
+      destination: { kind: "current" },
+    });
+    for (const target of ["commit", "commit_push", "commit_push_pr"] as const) {
+      const pending = { target, request: approved };
+      const vcs = toVcsStatus(status(onMain, dirty), undefined);
+      assert.deepEqual(
+        nextStep({ ...pending, continuation: "feature_branch" }, vcs),
+        {
+          kind: "run",
+          action: {
+            kind: target,
+            request: { ...approved, destination: { kind: "new_branch" } },
+          },
+        },
+      );
+      assert.equal(approved.destination.kind, "current");
+      assert.deepEqual(
+        nextStep({ ...pending, continuation: "current_branch" }, vcs),
+        {
+          kind: "run",
+          action: { kind: target, request: approved },
+        },
+      );
+    }
+  });
+
+  it("keeps a clean stacked request as a commit so native reports the feature no-changes error", () => {
+    for (const target of ["commit_push", "commit_push_pr"] as const) {
+      assert.deepEqual(
+        nextStep(
+          { target, continuation: "feature_branch" },
+          toVcsStatus(status(onMain), undefined),
+        ),
+        {
+          kind: "run",
+          action: {
+            kind: target,
+            request: {
+              message: null,
+              selection: { kind: "all" },
+              destination: { kind: "new_branch" },
+            },
+          },
+        },
+      );
+    }
+  });
+
+  it("refuses direct actions at the renderer boundary without producing a native action", () => {
+    for (const target of ["push", "create_pr", "pull"] as const) {
+      assert.deepEqual(
+        nextStep(
+          { target, continuation: "feature_branch" },
+          toVcsStatus(status(onMain), undefined),
+        ),
+        {
+          kind: "refuse",
+          message:
+            "Feature-branch checkout is only supported for commit actions.",
+        },
+      );
+    }
+  });
+
+  it("offers Create PR for the new pushed branch without reusing the previous default or PR", () => {
+    const pushed: GitOutcome = {
+      branch: "feature/new-work",
+      commit: { sha: SHA, subject: "New work" },
+      push: {
+        sha: SHA,
+        upstream: "origin/feature/new-work",
+        setUpstream: true,
+      },
+      pr: null,
+      pull: null,
+      failure: null,
+      warnings: [],
+    };
+    for (const previous of [undefined, openPr]) {
+      assert.deepEqual(
+        outcomeToast(
+          pushed,
+          toVcsStatus(status(onMain, dirty), previous),
+          previous,
+        ).cta,
+        {
+          kind: "run",
+          label: "Create PR",
+          target: "create_pr",
+        },
+      );
+    }
+    assert.deepEqual(
+      outcomeToast(
+        { ...pushed, branch: null },
+        toVcsStatus(status(onMain), undefined),
+        undefined,
+      ).cta,
+      { kind: "none" },
+    );
+    assert.deepEqual(
+      outcomeToast(
+        pushed,
+        toVcsStatus(status(onMain), undefined),
+        unavailable("missing"),
+      ).cta,
+      { kind: "none" },
+    );
+    assert.equal(phaseLabel({ kind: "branch" }), "Preparing feature branch...");
+  });
 });

@@ -199,15 +199,43 @@ export function codexBusy(
 export interface Pending {
   target: GitTarget;
   request?: CommitRequest;
-  confirmed?: boolean;
+  continuation?: "current_branch" | "feature_branch";
 }
 
 export type Step =
   | { kind: "compose" }
   | { kind: "confirm"; copy: DefaultBranchActionDialogCopy }
-  | { kind: "run"; action: GitAction };
+  | { kind: "run"; action: GitAction }
+  | { kind: "refuse"; message: string };
 
 export function nextStep(pending: Pending, vcs: VcsStatus): Step {
+  if (pending.continuation === "feature_branch") {
+    const { target, request } = pending;
+    switch (target) {
+      case "push":
+      case "create_pr":
+      case "pull":
+        return {
+          kind: "refuse",
+          message:
+            "Feature-branch checkout is only supported for commit actions.",
+        };
+      case "commit":
+      case "commit_push":
+      case "commit_push_pr":
+        if (!request && vcs.hasWorkingTreeChanges) return { kind: "compose" };
+        return {
+          kind: "run",
+          action: {
+            kind: target,
+            request: {
+              ...(request ?? { message: null, selection: { kind: "all" } }),
+              destination: { kind: "new_branch" },
+            },
+          },
+        };
+    }
+  }
   const action = toAction(pending, vcs);
   if (action === null) return { kind: "compose" };
   const { target } = pending;
@@ -216,7 +244,7 @@ export function nextStep(pending: Pending, vcs: VcsStatus): Step {
     target !== "commit" &&
     vcs.refName !== null &&
     pending.request?.destination.kind !== "new_branch" &&
-    !pending.confirmed &&
+    pending.continuation === undefined &&
     requiresDefaultBranchConfirmation(target, vcs.isDefaultRef)
   ) {
     return {
@@ -265,6 +293,8 @@ export function commitButtonLabel(target: GitTarget): string {
 
 export function phaseLabel(phase: GitPhase): string {
   switch (phase.kind) {
+    case "branch":
+      return "Preparing feature branch...";
     case "commit":
       return "Committing...";
     case "push":
@@ -310,6 +340,7 @@ function withDescription(title: string, description: string | undefined) {
 }
 
 const failedStep: Record<GitPhase["kind"], string> = {
+  branch: "Feature branch preparation",
   commit: "Commit",
   push: "Push",
   pr: "Create PR",
@@ -402,8 +433,8 @@ function completionCta(
   if (outcome.pr)
     return { kind: "open_pr", label: "View PR", url: outcome.pr.pr.url };
   if (outcome.push) {
-    if (before.isDefaultRef) return { kind: "none" };
-    if (before.pr)
+    if (!outcome.branch && before.isDefaultRef) return { kind: "none" };
+    if (!outcome.branch && before.pr)
       return { kind: "open_pr", label: "View PR", url: before.pr.url };
     if (ghHint(gh) === null)
       return { kind: "run", label: "Create PR", target: "create_pr" };

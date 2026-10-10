@@ -162,6 +162,8 @@ fn main() {
                 ipc::pull_request_operations,
                 ipc::set_review_disposition,
                 ipc::run_git_action,
+                ipc::github_publish_readiness,
+                ipc::publish_repository,
                 ipc::begin_commit_message,
                 ipc::await_commit_message,
                 ipc::cancel_commit_message,
