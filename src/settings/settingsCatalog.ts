@@ -132,6 +132,12 @@ const worktreeCleanupKeywords =
   "worktree cleanup disk storage delete threads old inactive unchanged worktrees retention days off";
 
 export const projectRows = {
+  icon: {
+    id: "project-icon",
+    title: "Project icon",
+    description: "Choose an icon, emoji, monogram, or image file.",
+    keywords: "favicon badge color",
+  },
   name: {
     id: "project-name",
     title: "Name",
@@ -164,12 +170,27 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         title: "Project",
         hideTitle: true,
         when: "repository",
-        rows: [projectRows.name],
+        rows: [projectRows.name, projectRows.icon],
       },
       {
         id: "project-new-threads",
         title: "New threads",
         rows: [projectRows.workspace],
+      },
+      {
+        id: "project-actions",
+        title: "Actions",
+        when: "repository",
+        rows: [
+          {
+            id: "project-actions-list",
+            title: "Actions",
+            description:
+              "Commands that run in this project's checkout or its worktree, with optional shortcuts.",
+            keywords:
+              "scripts t3.json setup preview command add edit delete action import",
+          },
+        ],
       },
       { id: "project-danger", title: "Danger", rows: [projectRows.remove] },
     ],

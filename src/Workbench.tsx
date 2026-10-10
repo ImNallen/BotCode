@@ -1,8 +1,11 @@
+import { usePreferences } from "./settings/preferences";
 import { readPrInboxPreferences } from "./panel/prInboxSearch";
 // Shell geometry follows pingdotgg/t3code v0.0.45 components/AppSidebarLayout.tsx and components/ui/sidebar.tsx, and components/NoProjectsHero.tsx at 6b286ae8a (MIT).
 import { usePreviewApplicationShortcuts } from "./preview/applicationShortcuts";
 import { useKeybindings } from "./keybindings/store";
 import { KeybindingErrors } from "./keybindings/KeybindingErrors";
+import { ProjectToasts } from "./project/ProjectToasts";
+import { ProjectCloneToastCoordinator } from "./project/ProjectCloneStatus";
 import { ThreadNotificationCoordinator } from "./notifications/ThreadNotificationCoordinator";
 import {
   useCallback,
@@ -85,6 +88,7 @@ function clampSidebar(width: number) {
 }
 
 export function Workbench() {
+  const { preferences } = usePreferences();
   useKeybindings();
   const selection = useSearch({ from: "__root__" });
   const navigate = useNavigate();
@@ -477,7 +481,11 @@ export function Workbench() {
         );
     },
     deleteArchived: (thread) => {
-      void confirmAndDeleteThread(thread, client)
+      void confirmAndDeleteThread(
+        thread,
+        client,
+        preferences.storageCleanup.worktreeOnDelete,
+      )
         .then((outcome) => {
           if (!outcome) return;
           setError(undefined);
@@ -609,6 +617,8 @@ export function Workbench() {
       >
         <EditorToasts />
         <KeybindingErrors />
+        <ProjectToasts />
+        <ProjectCloneToastCoordinator />
         <ThreadNotificationCoordinator
           workspaces={views.flatMap((view) => (view.data ? [view.data] : []))}
           workspaceIds={list.map((workspace) => workspace.id)}

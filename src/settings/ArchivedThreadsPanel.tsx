@@ -9,9 +9,11 @@ import { confirmAndDeleteThread, restoreThread } from "../threadActions";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { SettingsGroup, SettingsRow } from "./settingsLayout";
+import { usePreferences } from "./preferences";
 import { useSettingsScope } from "./settingsScope";
 
 export function ArchivedThreadsPanel() {
+  const { preferences } = usePreferences();
   const { scope, workspaces } = useSettingsScope();
   const client = useQueryClient();
   const [error, setError] = useState<string>();
@@ -47,7 +49,11 @@ export function ArchivedThreadsPanel() {
   const act = async (thread: ThreadSummary, action: "unarchive" | "delete") => {
     try {
       if (action === "delete") {
-        const outcome = await confirmAndDeleteThread(thread, client);
+        const outcome = await confirmAndDeleteThread(
+          thread,
+          client,
+          preferences.storageCleanup.worktreeOnDelete,
+        );
         if (!outcome) return;
         setError(undefined);
         setStatus(

@@ -10,7 +10,7 @@ const setup = {
   id: "setup",
   name: "Setup",
   command: "pnpm install",
-  icon: "configure",
+  icon: "configure" as const,
   runOnWorktreeCreate: true,
   async: false,
   previewUrl: null,

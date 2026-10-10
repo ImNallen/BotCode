@@ -1379,6 +1379,7 @@ async fn saved_files_and_ignore_edits_refresh_project_search() {
         query: "search-target".into(),
         limit: 50,
         refresh: false,
+        image_only: false,
     };
     let before = app
         .search_paths(
@@ -4011,6 +4012,235 @@ async fn delete_worktree_setting_retains_dirty_locked_and_default_off_but_remove
 }
 
 #[tokio::test]
+async fn manual_worktree_deletion_explicitly_removes_dirty_checkout_but_preserves_branch() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let local = conversation(&app, &f).await;
+    let keep = app
+        .create_thread(local.workspace_id.clone(), main_worktree())
+        .await
+        .unwrap();
+    let (kept_path, _) = worktree(&keep.checkout);
+    assert!(matches!(
+        app.delete_thread_with_worktree(keep.id, false)
+            .await
+            .unwrap(),
+        DeletedWorktree::NotRequested
+    ));
+    assert!(kept_path.exists());
+    let thread = app
+        .create_thread(local.workspace_id.clone(), main_worktree())
+        .await
+        .unwrap();
+    let (path, branch) = worktree(&thread.checkout);
+    std::fs::write(path.join("notes.txt"), "disposable draft").unwrap();
+    std::fs::write(path.join("README.md"), "disposable edit").unwrap();
+    assert!(matches!(
+        app.delete_thread_with_worktree(thread.id.clone(), true)
+            .await
+            .unwrap(),
+        DeletedWorktree::Removed
+    ));
+    assert!(!path.exists());
+    assert_eq!(
+        app.thread(thread.id.clone()).await.unwrap_err().code,
+        "missing_thread"
+    );
+    assert!(matches!(
+        app.delete_thread_with_worktree(thread.id, true)
+            .await
+            .unwrap(),
+        DeletedWorktree::NotRequested
+    ));
+    git_output(
+        &f.repository,
+        &["show-ref", "--verify", &format!("refs/heads/{branch}")],
+    );
+    app.delete_thread_with_worktree(local.id, true)
+        .await
+        .unwrap();
+    assert!(f.repository.exists());
+    let scratch = app.ensure_scratch().await.unwrap();
+    let folder = app
+        .create_thread(
+            scratch.id,
+            NewCheckout::Folder {
+                prompt: "keep scratch files".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let Checkout::Folder { path } = &folder.checkout else {
+        panic!("expected folder")
+    };
+    assert!(matches!(
+        app.delete_thread_with_worktree(folder.id, true)
+            .await
+            .unwrap(),
+        DeletedWorktree::NotRequested
+    ));
+    assert!(path.exists());
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn manual_worktree_deletion_handles_external_detached_and_already_missing_worktrees() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let local = conversation(&app, &f).await;
+    for (name, manual) in [("automatic", false), ("explicit", true), ("missing", true)] {
+        let path = f.repository.parent().unwrap().join(name);
+        git_output(
+            &f.repository,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                &path.to_string_lossy(),
+                "HEAD",
+            ],
+        );
+        let thread = app
+            .create_thread(
+                local.workspace_id.clone(),
+                NewCheckout::Registered { path: path.clone() },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(thread.checkout, Checkout::Worktree { .. }));
+        if name == "missing" {
+            std::fs::remove_dir_all(&path).unwrap();
+        } else {
+            std::fs::write(path.join("notes.txt"), "disposable external draft").unwrap();
+        }
+        app.save_settings(r#"{"storageCleanup":{"worktreeOnDelete":true}}"#)
+            .await
+            .unwrap();
+        let outcome = app
+            .delete_thread_with_worktree(thread.id, manual)
+            .await
+            .unwrap();
+        if manual {
+            assert!(matches!(outcome, DeletedWorktree::Removed), "{outcome:?}");
+            assert!(!path.exists());
+            assert!(
+                !git_output(&f.repository, &["worktree", "list", "--porcelain"]).contains(name)
+            );
+        } else {
+            assert!(
+                matches!(outcome, DeletedWorktree::Retained { .. }),
+                "{outcome:?}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(path.join("notes.txt")).unwrap(),
+                "disposable external draft"
+            );
+        }
+    }
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn manual_worktree_deletion_retains_shared_locked_nested_root_and_symlink_paths() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let local = conversation(&app, &f).await;
+    for kind in ["shared", "locked", "workspace", "symlink"] {
+        let thread = app
+            .create_thread(local.workspace_id.clone(), main_worktree())
+            .await
+            .unwrap();
+        let (path, _) = worktree(&thread.checkout);
+        let survivor = match kind {
+            "shared" => Some(
+                app.create_thread(
+                    local.workspace_id.clone(),
+                    NewCheckout::Existing {
+                        thread_id: thread.id.clone(),
+                    },
+                )
+                .await
+                .unwrap(),
+            ),
+            "locked" => {
+                git_output(
+                    &f.repository,
+                    &["worktree", "lock", &path.to_string_lossy()],
+                );
+                None
+            }
+            "workspace" => {
+                app.open_workspace(path.clone()).await.unwrap();
+                None
+            }
+            "symlink" => {
+                let moved = path.with_file_name("symlink-target");
+                std::fs::rename(&path, &moved).unwrap();
+                std::os::unix::fs::symlink(&moved, &path).unwrap();
+                None
+            }
+            _ => unreachable!(),
+        };
+        let outcome = app
+            .delete_thread_with_worktree(thread.id.clone(), true)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, DeletedWorktree::Retained { .. }),
+            "{kind}: {outcome:?}"
+        );
+        assert!(path.exists(), "{kind}");
+        assert_eq!(
+            app.thread(thread.id).await.unwrap_err().code,
+            "missing_thread"
+        );
+        if let Some(survivor) = survivor {
+            assert!(app.thread(survivor.id).await.is_ok());
+        }
+    }
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn manual_worktree_deletion_database_failure_retains_thread_and_dirty_files() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let local = conversation(&app, &f).await;
+    let thread = app
+        .create_thread(local.workspace_id, main_worktree())
+        .await
+        .unwrap();
+    let (path, _) = worktree(&thread.checkout);
+    std::fs::write(path.join("notes.txt"), "still here").unwrap();
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    db.execute_batch("CREATE TRIGGER refuse_thread_delete BEFORE DELETE ON threads BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
+    assert!(
+        app.delete_thread_with_worktree(thread.id.clone(), true)
+            .await
+            .is_err()
+    );
+    assert!(app.thread(thread.id.clone()).await.is_ok());
+    assert_eq!(
+        std::fs::read_to_string(path.join("notes.txt")).unwrap(),
+        "still here"
+    );
+    db.execute_batch("DROP TRIGGER refuse_thread_delete;")
+        .unwrap();
+    assert!(matches!(
+        app.delete_thread_with_worktree(thread.id, true)
+            .await
+            .unwrap(),
+        DeletedWorktree::Removed
+    ));
+    assert!(!path.exists());
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn delete_database_failure_keeps_thread_and_releases_checkout_and_terminal_gate() {
     let mut f = Fixture::new();
     f.config.shell = Some("/bin/sh".into());
@@ -5418,6 +5648,7 @@ async fn setup_thread(f: &Fixture, app: &App, script: serde_json::Value) -> Thre
     )
     .unwrap();
     let w = app.open_workspace(f.repository.clone()).await.unwrap();
+    import_project_file_actions(app, &w.id).await;
     app.create_thread(
         w.id,
         NewCheckout::Worktree {
@@ -5427,6 +5658,468 @@ async fn setup_thread(f: &Fixture, app: &App, script: serde_json::Value) -> Thre
     )
     .await
     .unwrap()
+}
+
+async fn import_project_file_actions(app: &App, id: &WorkspaceId) {
+    let config = app.project_file_config(id.clone()).await.unwrap();
+    let mut settings: serde_json::Value = app
+        .settings()
+        .unwrap()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !settings["projectSettingsOverrides"].is_object() {
+        settings["projectSettingsOverrides"] = serde_json::json!({});
+    }
+    settings["projectSettingsOverrides"][id.to_string()] =
+        serde_json::json!({"defaultProjectScripts":config.scripts});
+    app.save_settings(&settings.to_string()).await.unwrap();
+}
+
+fn project_action(id: &str, command: &str, setup: bool) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "name": id, "command": command, "icon": "play",
+        "runOnWorktreeCreate": setup
+    })
+}
+
+#[tokio::test]
+async fn project_actions_fold_existing_files_once_and_reset_to_global_defaults() {
+    let f = Fixture::new();
+    let file = b"{ // shared actions A\n\"scripts\":[{\"name\":\"A\",\"command\":\"echo A\"}],}\n";
+    std::fs::write(f.repository.join("t3.json"), file).unwrap();
+    let seed = App::open(f.config.clone()).await.unwrap();
+    let w = seed.open_workspace(f.repository.clone()).await.unwrap();
+    seed.shutdown().await.unwrap();
+    let settings_path = f.config.data_dir.join("settings.json");
+    std::fs::write(&settings_path, serde_json::json!({"defaultProjectScripts":[project_action("B","echo B",false)],"unknownPreference":"kept"}).to_string()).unwrap();
+    let app = reopen(&f.config).await;
+    let migrated: serde_json::Value =
+        serde_json::from_str(&app.settings().unwrap().unwrap()).unwrap();
+    assert_eq!(migrated["projectSettingsFolded"], true);
+    assert_eq!(migrated["unknownPreference"], "kept");
+    assert_eq!(
+        migrated["projectSettingsOverrides"][w.id.to_string()]["defaultProjectScripts"][0]["id"],
+        "a"
+    );
+    assert_eq!(
+        app.project_config(w.id.clone()).await.unwrap().scripts[0].id,
+        "a"
+    );
+    let mut edited = migrated;
+    edited["projectSettingsOverrides"][w.id.to_string()]["defaultProjectScripts"] =
+        serde_json::json!([project_action("C", "echo C", false)]);
+    app.save_settings(&edited.to_string()).await.unwrap();
+    assert_eq!(
+        app.project_config(w.id.clone()).await.unwrap().scripts[0].id,
+        "C"
+    );
+    app.shutdown().await.unwrap();
+    std::fs::write(
+        f.repository.join("t3.json"),
+        r#"{"scripts":[{"name":"Changed file","command":"echo changed"}]}"#,
+    )
+    .unwrap();
+    let before_restart = std::fs::read(&settings_path).unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(std::fs::read(&settings_path).unwrap(), before_restart);
+    assert_eq!(
+        app.project_config(w.id.clone()).await.unwrap().scripts[0].id,
+        "C"
+    );
+    edited["projectSettingsOverrides"] = serde_json::json!({});
+    edited["projectSettingsFolded"] = serde_json::Value::Bool(false);
+    app.save_settings(&edited.to_string()).await.unwrap();
+    assert_eq!(
+        app.project_config(w.id.clone()).await.unwrap().scripts[0].id,
+        "B"
+    );
+    let reset: serde_json::Value = serde_json::from_str(&app.settings().unwrap().unwrap()).unwrap();
+    assert_eq!(reset["projectSettingsFolded"], true);
+    assert!(
+        reset["projectScriptOverrides"]
+            .get(w.id.to_string())
+            .is_none()
+    );
+    app.shutdown().await.unwrap();
+    std::fs::write(f.repository.join("t3.json"), file).unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(app.project_config(w.id).await.unwrap().scripts[0].id, "B");
+    assert_eq!(std::fs::read(f.repository.join("t3.json")).unwrap(), file);
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_actions_fold_legacy_arrays_null_empty_and_canonical_precedence() {
+    for (legacy, canonical, expected) in [
+        (
+            serde_json::json!([project_action("legacy", "echo legacy", false)]),
+            None,
+            "legacy",
+        ),
+        (serde_json::Value::Null, None, "B"),
+        (serde_json::json!([]), None, "none"),
+        (
+            serde_json::json!([project_action("legacy", "echo legacy", false)]),
+            Some(project_action("canonical", "echo canonical", false)),
+            "canonical",
+        ),
+        (
+            serde_json::Value::Null,
+            Some(project_action("canonical", "echo canonical", false)),
+            "canonical",
+        ),
+    ] {
+        let f = Fixture::new();
+        let file = b"{\"scripts\":[{\"name\":\"A\",\"command\":\"echo A\"}]}\n";
+        std::fs::write(f.repository.join("t3.json"), file).unwrap();
+        let seed = App::open(f.config.clone()).await.unwrap();
+        let w = seed.open_workspace(f.repository.clone()).await.unwrap();
+        seed.shutdown().await.unwrap();
+        let mut settings = serde_json::json!({"defaultProjectScripts":[project_action("B","echo B",false)],"projectScriptOverrides":{w.id.to_string():legacy}});
+        if let Some(canonical) = canonical {
+            settings["projectSettingsOverrides"] = serde_json::json!({w.id.to_string():{"defaultProjectScripts":[canonical],"futureSetting":true}});
+        }
+        std::fs::write(
+            f.config.data_dir.join("settings.json"),
+            settings.to_string(),
+        )
+        .unwrap();
+        let app = reopen(&f.config).await;
+        let config = app.project_config(w.id.clone()).await.unwrap();
+        assert_eq!(
+            config
+                .scripts
+                .first()
+                .map(|script| script.id.as_str())
+                .unwrap_or("none"),
+            expected
+        );
+        let migrated: serde_json::Value =
+            serde_json::from_str(&app.settings().unwrap().unwrap()).unwrap();
+        assert_eq!(migrated["projectSettingsFolded"], true);
+        if expected == "canonical" {
+            assert_eq!(
+                migrated["projectSettingsOverrides"][w.id.to_string()]["futureSetting"],
+                true
+            );
+        }
+        assert_eq!(std::fs::read(f.repository.join("t3.json")).unwrap(), file);
+        app.shutdown().await.unwrap();
+        let app = reopen(&f.config).await;
+        assert_eq!(
+            app.project_config(w.id)
+                .await
+                .unwrap()
+                .scripts
+                .first()
+                .map(|script| script.id.as_str())
+                .unwrap_or("none"),
+            expected
+        );
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn project_actions_new_repository_files_remain_manual_imports_across_restart() {
+    let f = Fixture::new();
+    let file = b"{\"scripts\":[{\"name\":\"A\",\"command\":\"echo A\"}]}\n";
+    std::fs::write(f.repository.join("t3.json"), file).unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    assert_eq!(app.settings().unwrap(), None);
+    app.save_settings(
+        &serde_json::json!({"defaultProjectScripts":[project_action("B","echo B",false)]})
+            .to_string(),
+    )
+    .await
+    .unwrap();
+    let w = app.open_workspace(f.repository.clone()).await.unwrap();
+    assert_eq!(
+        app.project_config(w.id.clone()).await.unwrap().scripts[0].id,
+        "B"
+    );
+    assert_eq!(
+        app.project_file_config(w.id.clone()).await.unwrap().scripts[0].id,
+        "a"
+    );
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        app.project_config(w.id.clone()).await.unwrap().scripts[0].id,
+        "B"
+    );
+    assert_eq!(
+        app.project_file_config(w.id).await.unwrap().scripts[0].id,
+        "a"
+    );
+    assert_eq!(std::fs::read(f.repository.join("t3.json")).unwrap(), file);
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_actions_migration_preserves_untrusted_settings_on_startup_and_registration() {
+    for raw in [
+        b"{ invalid settings".as_slice(),
+        b"[]",
+        b"null",
+        b"true",
+        br#"{"defaultProjectScripts":null}"#,
+        br#"{"projectScriptOverrides":{"legacy":[{"id":"bad"}]}}"#,
+    ] {
+        let f = Fixture::new();
+        let seed = App::open(f.config.clone()).await.unwrap();
+        let w = seed.open_workspace(f.repository.clone()).await.unwrap();
+        seed.shutdown().await.unwrap();
+        std::fs::write(
+            f.repository.join("t3.json"),
+            r#"{"scripts":[{"name":"File","command":"echo file"}]}"#,
+        )
+        .unwrap();
+        let settings = f.config.data_dir.join("settings.json");
+        std::fs::write(&settings, raw).unwrap();
+        let app = reopen(&f.config).await;
+        assert_eq!(std::fs::read(&settings).unwrap(), raw);
+        assert_eq!(app.settings().unwrap().unwrap().as_bytes(), raw);
+        if !raw.starts_with(b"{\"defaultProjectScripts") {
+            assert!(app.project_config(w.id).await.unwrap().scripts.is_empty());
+        }
+        let another = f.repository.parent().unwrap().join("new-repository");
+        std::fs::create_dir(&another).unwrap();
+        git_output(&another, &["init", "-q", "-b", "main"]);
+        app.open_workspace(another).await.unwrap();
+        assert_eq!(std::fs::read(&settings).unwrap(), raw);
+        assert_eq!(app.settings().unwrap().unwrap().as_bytes(), raw);
+        assert!(!f.config.data_dir.join("settings.json.bak").exists());
+        app.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn project_actions_resolve_saved_defaults_overrides_and_legacy_imports() {
+    let f = Fixture::new();
+    let file = b"{ // shared repository actions\n\"worktreeSubmodules\":\"none\",\"scripts\":[{\"name\":\"File\",\"command\":\"echo file\"}],}\n";
+    std::fs::write(f.repository.join("t3.json"), file).unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let w = app.open_workspace(f.repository.clone()).await.unwrap();
+    let defaults = project_action("default", "echo default", false);
+    let override_action = project_action("override", "echo override", false);
+    let legacy = project_action("legacy", "echo legacy", false);
+    for (settings, expected) in [
+        (
+            serde_json::json!({"defaultProjectScripts":[defaults.clone()]}),
+            vec!["default"],
+        ),
+        (
+            serde_json::json!({"defaultProjectScripts":[defaults.clone()],"projectSettingsFolded":true}),
+            vec!["default"],
+        ),
+        (
+            serde_json::json!({"defaultProjectScripts":[defaults.clone()],"projectSettingsOverrides":{w.id.to_string():{"defaultProjectScripts":[override_action.clone()]}}}),
+            vec!["override"],
+        ),
+        (
+            serde_json::json!({"defaultProjectScripts":[defaults.clone()],"projectSettingsOverrides":{w.id.to_string():{"defaultProjectScripts":[]}}}),
+            vec![],
+        ),
+        (
+            serde_json::json!({"defaultProjectScripts":[defaults.clone()],"projectScriptOverrides":{w.id.to_string():null}}),
+            vec!["default"],
+        ),
+        (
+            serde_json::json!({"defaultProjectScripts":[defaults.clone()],"projectScriptOverrides":{w.id.to_string():[legacy.clone()]}}),
+            vec!["default"],
+        ),
+        (
+            serde_json::json!({"defaultProjectScripts":[defaults.clone()],"projectSettingsFolded":true,"projectScriptOverrides":{w.id.to_string():[legacy]},"projectSettingsOverrides":{w.id.to_string():{"defaultProjectScripts":[override_action]}}}),
+            vec!["override"],
+        ),
+    ] {
+        app.save_settings(&settings.to_string()).await.unwrap();
+        let config = app.project_config(w.id.clone()).await.unwrap();
+        assert_eq!(
+            config
+                .scripts
+                .iter()
+                .map(|script| script.id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(config.worktree_submodules, "none");
+        assert_eq!(
+            app.project_file_config(w.id.clone()).await.unwrap().scripts[0].id,
+            "file"
+        );
+        assert_eq!(std::fs::read(f.repository.join("t3.json")).unwrap(), file);
+    }
+    std::fs::remove_file(f.repository.join("t3.json")).unwrap();
+    app.save_settings(&serde_json::json!({"defaultProjectScripts":[defaults]}).to_string())
+        .await
+        .unwrap();
+    assert_eq!(
+        app.project_config(w.id.clone()).await.unwrap().scripts[0].id,
+        "default"
+    );
+    let invalid = b"{ invalid project JSON";
+    std::fs::write(f.repository.join("t3.json"), invalid).unwrap();
+    assert_eq!(
+        app.project_config(w.id.clone()).await.unwrap().scripts[0].id,
+        "default"
+    );
+    assert!(app.project_file_config(w.id).await.is_err());
+    assert_eq!(
+        std::fs::read(f.repository.join("t3.json")).unwrap(),
+        invalid
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_actions_validate_native_settings_and_default_optional_fields() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let w = app.open_workspace(f.repository.clone()).await.unwrap();
+    let valid = serde_json::json!({"defaultProjectScripts":[project_action(" legacy/id ", " echo saved ", false)]});
+    app.save_settings(&valid.to_string()).await.unwrap();
+    let script = app.project_config(w.id).await.unwrap().scripts.remove(0);
+    assert_eq!(script.id, "legacy/id");
+    assert_eq!(script.command, "echo saved");
+    assert!(script.r#async);
+    assert_eq!(script.preview_url, None);
+    assert!(!script.auto_open_preview);
+    for (key, value) in [
+        ("id", serde_json::json!(" ")),
+        ("name", serde_json::json!(" ")),
+        ("command", serde_json::json!(" ")),
+        ("icon", serde_json::json!("unknown")),
+        ("async", serde_json::json!("yes")),
+        ("previewUrl", serde_json::json!(" ")),
+        ("runOnWorktreeCreate", serde_json::Value::Null),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["defaultProjectScripts"][0][key] = value;
+        assert_eq!(
+            app.save_settings(&invalid.to_string())
+                .await
+                .unwrap_err()
+                .code,
+            "project_actions"
+        );
+        let saved: serde_json::Value =
+            serde_json::from_str(&app.settings().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            saved["defaultProjectScripts"],
+            valid["defaultProjectScripts"]
+        );
+    }
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_actions_saved_setup_and_manual_execution_survive_restart() {
+    let f = Fixture::new();
+    f.commit();
+    let file = b"{\"worktreeSubmodules\":\"none\",\"scripts\":[{\"name\":\"File\",\"command\":\"touch file-action-ran\",\"runOnWorktreeCreate\":true}]}\n";
+    std::fs::write(f.repository.join("t3.json"), file).unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let w = app.open_workspace(f.repository.clone()).await.unwrap();
+    let setup = serde_json::json!({
+        "id":"saved-setup", "name":"Saved setup", "icon":"configure", "runOnWorktreeCreate":true,
+        "async":false, "command":"printf '%s\\n%s\\n' \"$T3CODE_PROJECT_ROOT\" \"$T3CODE_WORKTREE_PATH\" > saved-setup"
+    });
+    let manual = project_action(
+        "saved-manual",
+        "printf '%s\\n%s\\n' \"$T3CODE_PROJECT_ROOT\" \"$T3CODE_WORKTREE_PATH\" > saved-manual",
+        false,
+    );
+    app.save_settings(&serde_json::json!({"projectSettingsFolded":true,"projectSettingsOverrides":{w.id.to_string():{"defaultProjectScripts":[setup,manual]}}}).to_string()).await.unwrap();
+    let thread = app
+        .create_thread(
+            w.id.clone(),
+            NewCheckout::Worktree {
+                base: "main".into(),
+                from_origin: false,
+            },
+        )
+        .await
+        .unwrap();
+    let done = wait(&app, &thread.id, |thread| {
+        matches!(
+            thread.worktree_setup.as_ref().unwrap().state,
+            SetupState::Succeeded
+        )
+    })
+    .await;
+    assert_eq!(
+        done.worktree_setup.unwrap().script.unwrap().id,
+        "saved-setup"
+    );
+    let Checkout::Worktree { path, .. } = &thread.checkout else {
+        panic!("expected worktree")
+    };
+    let expected = format!(
+        "{}\n{}\n",
+        f.repository.canonicalize().unwrap().display(),
+        path.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(path.join("saved-setup")).unwrap(),
+        expected
+    );
+    assert!(!path.join("file-action-ran").exists());
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    assert_eq!(
+        app.project_config(w.id.clone())
+            .await
+            .unwrap()
+            .scripts
+            .len(),
+        2
+    );
+    assert_eq!(
+        app.project_file_config(w.id.clone()).await.unwrap().scripts[0].id,
+        "file"
+    );
+    app.run_project_script(
+        w.id.clone(),
+        Some(thread.id.clone()),
+        "saved-manual".into(),
+        "actions-test".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        eventually(|| std::fs::read_to_string(path.join("saved-manual"))
+            .is_ok_and(|text| text == expected))
+        .await
+    );
+    assert_eq!(
+        app.run_project_script(
+            w.id.clone(),
+            Some(thread.id.clone()),
+            "file".into(),
+            "actions-test".parse().unwrap()
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "missing_script"
+    );
+    app.save_settings(&serde_json::json!({"projectSettingsFolded":true,"projectSettingsOverrides":{w.id.to_string():{"defaultProjectScripts":[]}}}).to_string()).await.unwrap();
+    assert_eq!(
+        app.run_project_script(
+            w.id,
+            Some(thread.id),
+            "saved-manual".into(),
+            "actions-test".parse().unwrap()
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "missing_script"
+    );
+    assert_eq!(std::fs::read(f.repository.join("t3.json")).unwrap(), file);
+    app.shutdown().await.unwrap();
 }
 async fn setup_pid(f: &Fixture, thread: &ThreadSnapshot) -> i32 {
     let pid = f
@@ -5897,11 +6590,14 @@ async fn project_config_accepts_jsonc_and_rejects_invalid_fields() {
         r#"{/* config */ "scripts":[{"name":" Run Tests ","command":" echo '//ok' ",},{"name":"Run Tests","command":"true"},],"worktreeSubmodules":"none",}"#,
     )
     .unwrap();
-    let config = app.project_config(w.id.clone()).await.unwrap();
+    let config = app.project_file_config(w.id.clone()).await.unwrap();
     assert_eq!(config.scripts[0].id, "run-tests");
     assert_eq!(config.scripts[1].id, "run-tests-2");
     assert_eq!(config.scripts[0].command, "echo '//ok'");
     assert!(config.scripts[0].r#async);
+    let effective = app.project_config(w.id.clone()).await.unwrap();
+    assert!(effective.scripts.is_empty());
+    assert_eq!(effective.worktree_submodules, "none");
     for invalid in [
         r#"{"scripts":[{"name":" ","command":"true"}]}"#,
         r#"{"scripts":[{"name":"x","command":"true","async":null}]}"#,
@@ -5909,7 +6605,10 @@ async fn project_config_accepts_jsonc_and_rejects_invalid_fields() {
     ] {
         std::fs::write(f.repository.join("t3.json"), invalid).unwrap();
         assert_eq!(
-            app.project_config(w.id.clone()).await.unwrap_err().code,
+            app.project_file_config(w.id.clone())
+                .await
+                .unwrap_err()
+                .code,
             "project_config"
         );
     }
@@ -5962,6 +6661,7 @@ async fn project_setup_failure_retries_and_manual_script_starts_unopened_termina
         .to_string(),
     )
     .unwrap();
+    import_project_file_actions(&app, &thread.workspace_id).await;
     app.run_project_script(
         thread.workspace_id.clone(),
         Some(thread.id.clone()),

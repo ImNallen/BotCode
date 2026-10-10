@@ -425,6 +425,8 @@ mod tests {
             root: "/fixture".into(),
             label: "Fixture".into(),
             kind: WorkspaceKind::Repository,
+            favicon_path: None,
+            project_icon: None,
         }
     }
     #[cfg(unix)]

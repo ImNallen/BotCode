@@ -220,8 +220,15 @@ enum Command {
         Reply<GitOutcome>,
     ),
     OpenWorkspace(PathBuf, Reply<Workspace>),
+    RegisterClone(Workspace, Reply<Workspace>),
     EnsureScratch(PathBuf, Reply<Workspace>),
     RenameWorkspace(WorkspaceId, String, Reply<Workspace>),
+    UpdateProjectIcon(
+        WorkspaceId,
+        Option<crate::ProjectIconOverride>,
+        Option<String>,
+        Reply<Workspace>,
+    ),
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
     PrRead(PrAccess, PullRequestKey, Reply<PrReviewDetail>),
@@ -297,7 +304,7 @@ enum Command {
     Interrupt(ThreadId, Reply<()>),
     Arrange(ThreadId, Arrange, Reply<()>),
     Rename(ThreadId, String, Reply<ThreadSnapshot>),
-    Delete(ThreadId, Reply<DeletedWorktree>),
+    Delete(ThreadId, bool, Reply<DeletedWorktree>),
     AutoSettle(
         settings::AutoSettle,
         settings::SourceControlSettings,
@@ -314,6 +321,8 @@ enum Command {
 }
 #[derive(Clone)]
 pub struct App {
+    project_favicons: crate::project_icon::FaviconResolver,
+    project_clones: crate::project_clone::ProjectClones,
     thread_search: crate::thread_search::ThreadSearch,
     usage_history: crate::usage_history::UsageHistory,
     commands: mpsc::Sender<Command>,
@@ -488,6 +497,7 @@ impl App {
             });
         let terminals = Terminals::new(config.shell.clone());
         let settings = config.data_dir.join("settings.json");
+        crate::project::fold_saved_scripts(&settings, &workspaces, false)?;
         let keybindings = Arc::new(crate::keybindings::Keybindings::new(
             config.data_dir.join("keybindings.json"),
         ));
@@ -502,8 +512,10 @@ impl App {
         let tools = tools::ToolWork::new(&config, agent_tools, &store)?;
         let log = RotatingLog::open(config.data_dir.join("logs").join("codex.log"));
         let project_search = crate::project_search::ProjectSearch::default();
+        let project_clones = crate::project_clone::ProjectClones::default();
         tokio::spawn(
             Owner {
+                project_clones: project_clones.clone(),
                 tools,
                 project_search: project_search.clone(),
                 prs,
@@ -562,6 +574,8 @@ impl App {
             .run(rx, signals, completions),
         );
         let app = Self {
+            project_favicons: crate::project_icon::FaviconResolver::default(),
+            project_clones,
             thread_search,
             usage_history,
             commands,
@@ -606,6 +620,88 @@ impl App {
             .map_err(|e| AppError::new("repository", e))??;
         self.call(|r| Command::OpenWorkspace(root, r)).await
     }
+    pub async fn start_project_clone(
+        &self,
+        remote_url: String,
+        destination: PathBuf,
+    ) -> Result<crate::ProjectCloneStartResult> {
+        let _guard = self.project_clones.actions.lock().await;
+        let snapshot = self.project_clones.claim(remote_url, destination)?;
+        let root = PathBuf::from(&snapshot.destination_path);
+        let workspace = Workspace {
+            id: snapshot.workspace_id.clone(),
+            label: root.file_name().unwrap().to_string_lossy().into_owned(),
+            root,
+            kind: WorkspaceKind::Repository,
+            favicon_path: None,
+            project_icon: None,
+        };
+        let workspace = match self
+            .call(|reply| Command::RegisterClone(workspace, reply))
+            .await
+        {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                self.project_clones
+                    .discard_locked(&snapshot.workspace_id)
+                    .await?;
+                return Err(error);
+            }
+        };
+        self.project_clones
+            .launch(&workspace.id, self.project_search.clone());
+        Ok(crate::ProjectCloneStartResult {
+            workspace,
+            snapshot,
+        })
+    }
+    pub async fn project_clones(&self) -> Result<Vec<crate::ProjectCloneSnapshot>> {
+        Ok(self.project_clones.list())
+    }
+    pub async fn cancel_project_clone(&self, workspace_id: WorkspaceId) -> Result<bool> {
+        self.project_clones.cancel(&workspace_id).await
+    }
+    pub async fn retry_project_clone(&self, workspace_id: WorkspaceId) -> Result<bool> {
+        self.project_clones
+            .retry(&workspace_id, self.project_search.clone())
+            .await
+    }
+    pub fn new_projects_root(&self) -> PathBuf {
+        self.discovery_root.join("projects")
+    }
+    pub async fn create_new_project(&self, name: String) -> Result<crate::NewProjectResult> {
+        let name = crate::new_project::validate_name(&name)?.to_owned();
+        let folder =
+            crate::new_project::create_folder(&self.new_projects_root(), &name, &[]).await?;
+        let workspace = match self.open_workspace(folder.root.clone()).await {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(folder.root);
+                return Err(error);
+            }
+        };
+        match self.rename_workspace(workspace.id.clone(), name).await {
+            Ok(workspace) => Ok(crate::NewProjectResult {
+                workspace,
+                commit_error: folder.commit_error,
+            }),
+            Err(error) => {
+                if let Err(cleanup) = self.remove_workspace(workspace.id).await {
+                    return Err(AppError::new(
+                        &error.code,
+                        format!(
+                            "{} The project folder was kept at {} because its registration could not be removed: {}",
+                            error.message,
+                            folder.root.display(),
+                            cleanup.message
+                        ),
+                    ));
+                }
+                let _ = std::fs::remove_dir_all(folder.root);
+                Err(error)
+            }
+        }
+    }
     pub fn scratch_available(&self) -> bool {
         self.scratch.is_some()
     }
@@ -616,8 +712,43 @@ impl App {
     pub async fn rename_workspace(&self, id: WorkspaceId, label: String) -> Result<Workspace> {
         self.call(|r| Command::RenameWorkspace(id, label, r)).await
     }
+    pub async fn update_project_icon(
+        &self,
+        id: WorkspaceId,
+        project_icon: Option<crate::ProjectIconOverride>,
+        favicon_path: Option<String>,
+    ) -> Result<Workspace> {
+        if project_icon.is_some() && favicon_path.is_some() {
+            return Err(AppError::new(
+                "project_icon",
+                "Choose either an icon or an image file.",
+            ));
+        }
+        let project_icon = project_icon
+            .map(crate::ProjectIconOverride::normalize)
+            .transpose()?;
+        let favicon_path = favicon_path
+            .map(crate::project_icon::normalize_favicon_path)
+            .transpose()?;
+        self.call(|reply| Command::UpdateProjectIcon(id, project_icon, favicon_path, reply))
+            .await
+    }
+    pub async fn project_favicon(&self, id: WorkspaceId) -> Result<Option<crate::ProjectFavicon>> {
+        let (workspace, _) = self.checkout(id, None).await?;
+        if workspace.kind == WorkspaceKind::Scratch || workspace.project_icon.is_some() {
+            return Ok(None);
+        }
+        let resolver = self.project_favicons.clone();
+        tokio::task::spawn_blocking(move || {
+            resolver.resolve(&workspace.root, workspace.favicon_path.as_deref())
+        })
+        .await
+        .map_err(|error| AppError::new("project_icon", error))?
+    }
     /// Deletes the project entry and its threads and closes its terminals. Files on disk are left alone.
     pub async fn remove_workspace(&self, id: WorkspaceId) -> Result<()> {
+        let _guard = self.project_clones.actions.lock().await;
+        self.project_clones.discard_locked(&id).await?;
         self.call(|r| Command::RemoveWorkspace(id.clone(), r))
             .await?;
         self.close_terminals(move |key| key.workspace == id).await
@@ -642,6 +773,17 @@ impl App {
     ) -> Result<WorkspaceView> {
         let (w, location) = self.checkout(id.clone(), thread).await?;
         let threads = self.call(|r| Command::Threads(id, r)).await?;
+        if self.project_clones.reject_incomplete(&w.id).is_err() {
+            return Ok(WorkspaceView {
+                file_coverage: crate::SearchCoverage::Complete,
+                workspace: w,
+                branch: String::new(),
+                files: vec![],
+                changes: vec![],
+                threads,
+                unavailable: None,
+            });
+        }
         let root = match &location {
             Location::Repository(root) | Location::Folder(root) => Some(root.clone()),
             _ => None,
@@ -1239,6 +1381,7 @@ impl App {
         id: WorkspaceId,
         checkout: NewCheckout,
     ) -> Result<ThreadSnapshot> {
+        self.project_clones.reject_incomplete(&id)?;
         if let NewCheckout::Registered { path } = checkout {
             return self.call(|r| Command::CreateRegistered(id, path, r)).await;
         }
@@ -1248,7 +1391,7 @@ impl App {
                 .await;
         }
         let (w, _) = self.checkout(id.clone(), None).await?;
-        let config = crate::project::read(&w.root)?;
+        let config = crate::project::resolve(&w.root, &self.settings, &id)?;
         let checkout = match (w.kind, checkout) {
             (WorkspaceKind::Repository, NewCheckout::Local) => Checkout::Local,
             (WorkspaceKind::Repository, NewCheckout::Worktree { base, from_origin }) => {
@@ -1280,6 +1423,10 @@ impl App {
             .await
     }
     pub async fn project_config(&self, id: WorkspaceId) -> Result<ProjectConfig> {
+        let (workspace, _) = self.checkout(id.clone(), None).await?;
+        crate::project::resolve(&workspace.root, &self.settings, &id)
+    }
+    pub async fn project_file_config(&self, id: WorkspaceId) -> Result<ProjectConfig> {
         let (workspace, _) = self.checkout(id, None).await?;
         crate::project::read(&workspace.root)
     }
@@ -1295,7 +1442,7 @@ impl App {
     ) -> Result<()> {
         let (w, location) = self.checkout(workspace.clone(), thread.clone()).await?;
         let cwd = location.repository()?;
-        let script = crate::project::read(&w.root)?
+        let script = crate::project::resolve(&w.root, &self.settings, &workspace)?
             .scripts
             .into_iter()
             .find(|s| s.id == script_id)
@@ -1502,7 +1649,14 @@ impl App {
         self.call(|r| Command::Rename(id, title, r)).await
     }
     pub async fn delete_thread(&self, id: ThreadId) -> Result<DeletedWorktree> {
-        self.call(|r| Command::Delete(id, r)).await
+        self.delete_thread_with_worktree(id, false).await
+    }
+    pub async fn delete_thread_with_worktree(
+        &self,
+        id: ThreadId,
+        delete_worktree: bool,
+    ) -> Result<DeletedWorktree> {
+        self.call(|r| Command::Delete(id, delete_worktree, r)).await
     }
     pub async fn arrange(&self, id: ThreadId, action: Arrange) -> Result<()> {
         self.call(|r| Command::Arrange(id, action, r)).await
@@ -1523,16 +1677,35 @@ impl App {
         self.keybindings.write(text, expected_text)
     }
     pub async fn save_settings(&self, text: &str) -> Result<()> {
-        settings::write(&self.settings, text)?;
+        let folded = self
+            .settings()?
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|settings| settings["projectSettingsFolded"].as_bool() == Some(true));
+        let mut parsed = serde_json::from_str::<serde_json::Value>(text).ok();
+        let folded = folded
+            || parsed
+                .as_ref()
+                .is_some_and(|value| value["projectSettingsFolded"].as_bool() == Some(true));
+        let text = if folded && let Some(value) = parsed.as_mut().filter(|value| value.is_object())
+        {
+            value["projectSettingsFolded"] = serde_json::Value::Bool(true);
+            crate::project::derive_legacy_scripts(value);
+            serde_json::to_string_pretty(value)?
+        } else {
+            text.to_owned()
+        };
+        settings::write(&self.settings, &text)?;
         self.wake.notify_one();
         let rules = settings::auto_settle(&self.settings);
         self.call(|r| Command::AutoSettle(rules, settings::source_control(&self.settings), r))
             .await
     }
     pub async fn shutdown(&self) -> Result<()> {
+        let clones = self.project_clones.shutdown().await;
         self.project_search.invalidate();
         self.close_terminals(|_| true).await?;
-        self.call(Command::Shutdown).await
+        self.call(Command::Shutdown).await?;
+        clones
     }
     /// Subscribes `on_event` to a terminal, starting its shell in the checkout when none runs.
     /// The first event is a history snapshot. Returns the subscription for `terminal_detach`.
@@ -1892,6 +2065,7 @@ enum GitCompletionPayload {
     },
 }
 struct Owner {
+    project_clones: crate::project_clone::ProjectClones,
     tools: tools::ToolWork,
     project_search: crate::project_search::ProjectSearch,
     closing: bool,
@@ -1942,6 +2116,7 @@ impl Owner {
         settings: SessionSettings,
         config: Option<ProjectConfig>,
     ) -> Result<ThreadSnapshot> {
+        self.project_clones.reject_incomplete(&workspace_id)?;
         self.workspace(&workspace_id)?;
         let setup = config.and_then(|config| project::setup_for(&checkout, config));
         let t = ThreadSnapshot {
@@ -2421,6 +2596,7 @@ impl Owner {
             let _ = provider.terminate().await;
         }
         commands.close();
+        let clone_shutdown = self.project_clones.shutdown().await;
         self.tools.revoke();
         while self.tools.jobs.join_next().await.is_some() {}
         while let Some(Ok(done)) = self.delete_jobs.join_next().await {
@@ -2446,6 +2622,7 @@ impl Owner {
         if let Some((reply, result)) = shutdown {
             let _ = reply.send(
                 result
+                    .and(clone_shutdown)
                     .and(git_shutdown)
                     .and(review_shutdown)
                     .and(pr_shutdown)
@@ -2563,23 +2740,65 @@ impl Owner {
                 let _ = reply.send(Ok(rows));
             }
             Command::OpenWorkspace(path, reply) => {
-                let result = (|| -> Result<Workspace> {
-                    let root = path;
-                    if let Some(w) = self.workspaces.values().find(|w| w.root == root) {
-                        return Ok(w.clone());
+                let result =
+                    (|| -> Result<Workspace> {
+                        let root = path;
+                        if self.held.iter().any(|(path, hold)| {
+                            matches!(hold, Hold::Delete) && root.starts_with(path)
+                        }) {
+                            return Err(Hold::Delete.refusal());
+                        }
+                        if let Some(w) = self.workspaces.values().find(|w| w.root == root) {
+                            return Ok(w.clone());
+                        }
+                        crate::project::fold_saved_scripts(
+                            &self.config.data_dir.join("settings.json"),
+                            &self.workspaces,
+                            true,
+                        )?;
+                        let w = Workspace {
+                            id: WorkspaceId::default(),
+                            label: root
+                                .file_name()
+                                .map(|v| v.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "Repository".into()),
+                            root,
+                            kind: WorkspaceKind::Repository,
+                            favicon_path: None,
+                            project_icon: None,
+                        };
+                        self.store.workspace(&w)?;
+                        self.workspaces.insert(w.id.clone(), w.clone());
+                        Ok(w)
+                    })();
+                let _ = reply.send(result);
+            }
+            Command::RegisterClone(workspace, reply) => {
+                let result = (|| {
+                    if self.held.iter().any(|(path, hold)| {
+                        matches!(hold, Hold::Delete) && workspace.root.starts_with(path)
+                    }) {
+                        return Err(Hold::Delete.refusal());
                     }
-                    let w = Workspace {
-                        id: WorkspaceId::default(),
-                        label: root
-                            .file_name()
-                            .map(|v| v.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "Repository".into()),
-                        root,
-                        kind: WorkspaceKind::Repository,
-                    };
-                    self.store.workspace(&w)?;
-                    self.workspaces.insert(w.id.clone(), w.clone());
-                    Ok(w)
+                    if self
+                        .workspaces
+                        .values()
+                        .any(|existing| existing.root == workspace.root)
+                    {
+                        return Err(AppError::new(
+                            "project_clone",
+                            "This destination is already an open project.",
+                        ));
+                    }
+                    crate::project::fold_saved_scripts(
+                        &self.config.data_dir.join("settings.json"),
+                        &self.workspaces,
+                        true,
+                    )?;
+                    self.store.workspace(&workspace)?;
+                    self.workspaces
+                        .insert(workspace.id.clone(), workspace.clone());
+                    Ok(workspace)
                 })();
                 let _ = reply.send(result);
             }
@@ -2597,6 +2816,8 @@ impl Owner {
                         root,
                         label: "No project".into(),
                         kind: WorkspaceKind::Scratch,
+                        favicon_path: None,
+                        project_icon: None,
                     };
                     self.store.workspace(&w)?;
                     self.workspaces.insert(w.id.clone(), w.clone());
@@ -2606,6 +2827,23 @@ impl Owner {
             }
             Command::RenameWorkspace(id, label, reply) => {
                 let _ = reply.send(self.rename_workspace(&id, &label));
+            }
+            Command::UpdateProjectIcon(id, project_icon, favicon_path, reply) => {
+                let result = (|| {
+                    let mut workspace = self.workspace(&id)?.clone();
+                    if workspace.kind == WorkspaceKind::Scratch {
+                        return Err(AppError::new(
+                            "invalid_workspace",
+                            "Threads without a project cannot have a project icon.",
+                        ));
+                    }
+                    workspace.project_icon = project_icon;
+                    workspace.favicon_path = favicon_path;
+                    self.store.update_workspace(&workspace)?;
+                    self.workspaces.insert(id, workspace.clone());
+                    Ok(workspace)
+                })();
+                let _ = reply.send(result);
             }
             Command::RemoveWorkspace(id, reply) => {
                 let _ = reply.send(self.remove_workspace(&id));
@@ -2898,9 +3136,13 @@ impl Owner {
             ) => {
                 if let Some(path) = restored {
                     self.held.remove(&path);
-                    let config = self
-                        .thread(&id)
-                        .and_then(|t| crate::project::read(&self.workspaces[&t.workspace_id].root));
+                    let config = self.thread(&id).and_then(|t| {
+                        crate::project::resolve(
+                            &self.workspaces[&t.workspace_id].root,
+                            &self.config.data_dir.join("settings.json"),
+                            &t.workspace_id,
+                        )
+                    });
                     if let Err(error) = config.and_then(|config| self.initialize_setup(&id, config))
                     {
                         let _ = reply.send(Err(error));
@@ -3047,7 +3289,9 @@ impl Owner {
                 })();
                 let _ = reply.send(result);
             }
-            Command::Delete(id, reply) => self.begin_delete(id, reply),
+            Command::Delete(id, delete_worktree, reply) => {
+                self.begin_delete(id, delete_worktree, reply)
+            }
             Command::Rename(id, title, reply) => {
                 let result = (|| {
                     let mut thread = self.thread(&id)?.clone();

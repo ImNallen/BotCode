@@ -44,6 +44,8 @@ pub struct PathSearchInput {
     pub limit: usize,
     #[serde(default)]
     pub refresh: bool,
+    #[serde(default)]
+    pub image_only: bool,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -453,6 +455,9 @@ fn search_paths(
         if index % 256 == 0 && stop.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
+        if input.image_only && crate::project_icon::image_mime(Path::new(&entry.path)).is_none() {
+            continue;
+        }
         if let Some(score) = path_score(&entry.folded, &query) {
             count += 1;
             hits.push((score, entry.path.as_str()));
@@ -805,6 +810,7 @@ mod tests {
                 query: " @./cmps ".into(),
                 limit: 50,
                 refresh: false,
+                image_only: false,
             },
             &AtomicBool::new(false),
         )
@@ -816,6 +822,7 @@ mod tests {
                 query: "file".into(),
                 limit: 200,
                 refresh: false,
+                image_only: false,
             },
             &AtomicBool::new(false),
         )
@@ -824,6 +831,47 @@ mod tests {
         assert!(paths.truncated);
         assert_eq!(paths.paths[0], "files/file-000.txt");
         assert_eq!(paths.indexed_files, 251);
+    }
+    #[tokio::test]
+    async fn image_path_search_filters_before_the_result_limit() {
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..250 {
+            write(root.path(), &format!("file-{index:03}.txt"), "");
+        }
+        for extension in ["avif", "gif", "ico", "jpeg", "jpg", "png", "SVG", "webp"] {
+            write(root.path(), &format!("z-image.{extension}"), "");
+        }
+        write(root.path(), "z-image.bmp", "");
+        let search = ProjectSearch::default();
+        let result = search
+            .paths(
+                root.path().into(),
+                "images".into(),
+                1,
+                PathSearchInput {
+                    query: "".into(),
+                    limit: 200,
+                    refresh: false,
+                    image_only: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.paths,
+            [
+                "z-image.SVG",
+                "z-image.avif",
+                "z-image.gif",
+                "z-image.ico",
+                "z-image.jpeg",
+                "z-image.jpg",
+                "z-image.png",
+                "z-image.webp"
+            ]
+        );
+        assert!(!result.truncated);
+        assert_eq!(result.indexed_files, 259);
     }
     #[test]
     fn grep_options_literal_regex_unicode_ranges_and_displayable_files() {
@@ -919,6 +967,7 @@ mod tests {
                             query: "alpha".into(),
                             limit: 50,
                             refresh: false,
+                            image_only: false,
                         },
                     )
                     .await
@@ -940,6 +989,7 @@ mod tests {
                             query: "beta".into(),
                             limit: 50,
                             refresh: false,
+                            image_only: false,
                         },
                     )
                     .await
@@ -968,6 +1018,7 @@ mod tests {
                         query: "alpha".into(),
                         limit: 50,
                         refresh: false,
+                        image_only: false,
                     }
                 )
                 .await
@@ -1027,6 +1078,7 @@ mod tests {
                     query: "".into(),
                     limit: 50,
                     refresh: false,
+                    image_only: false,
                 },
                 &AtomicBool::new(false),
             )
@@ -1096,6 +1148,7 @@ mod tests {
                     query: "".into(),
                     limit: 50,
                     refresh: false,
+                    image_only: false,
                 },
             )
             .await
@@ -1110,6 +1163,7 @@ mod tests {
                     query: "new".into(),
                     limit: 50,
                     refresh: true,
+                    image_only: false,
                 },
             )
             .await
@@ -1182,6 +1236,7 @@ mod tests {
                     query: "branch-b".into(),
                     limit: 50,
                     refresh: false,
+                    image_only: false,
                 },
             )
             .await
@@ -1200,6 +1255,7 @@ mod tests {
                     query: "branch-b".into(),
                     limit: 50,
                     refresh: false,
+                    image_only: false,
                 },
             )
             .await

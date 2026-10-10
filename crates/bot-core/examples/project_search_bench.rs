@@ -57,6 +57,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         query: query.into(),
                         limit,
                         refresh: false,
+                        image_only: false,
                     },
                 )
                 .await?;

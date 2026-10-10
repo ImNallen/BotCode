@@ -3,32 +3,40 @@ use super::*;
 pub(super) struct DeleteCompletion {
     id: ThreadId,
     root: PathBuf,
+    committed: bool,
     outcome: Result<DeletedWorktree>,
     reply: Reply<DeletedWorktree>,
 }
 
 impl Owner {
+    fn commit_thread_deletion(&mut self, id: &ThreadId) -> Result<()> {
+        let thread = self
+            .threads
+            .get(id)
+            .ok_or_else(|| AppError::new("missing_thread", "Conversation not found."))?
+            .clone();
+        self.store.delete_thread(&thread)?;
+        self.forget_pr_threads(&HashSet::from([id.clone()]));
+        self.callbacks.retain(|_, route| &route.thread != id);
+        self.dirty.remove(id);
+        self.threads.remove(id);
+        let mut hint = self.thread_hint(&thread);
+        hint.refresh_workspace = true;
+        let _ = self.changes.send(hint);
+        Ok(())
+    }
     pub(super) fn finish_delete(&mut self, completion: DeleteCompletion) {
         let DeleteCompletion {
             id,
             root,
+            committed,
             outcome,
             reply,
         } = completion;
         let result = outcome.and_then(|outcome| {
-            let thread = self
-                .threads
-                .get(&id)
-                .ok_or_else(|| AppError::new("missing_thread", "Conversation not found."))?
-                .clone();
-            self.store.delete_thread(&thread)?;
-            self.forget_pr_threads(&HashSet::from([id.clone()]));
-            self.callbacks.retain(|_, route| route.thread != id);
-            self.dirty.remove(&id);
-            self.threads.remove(&id);
-            let mut hint = self.thread_hint(&thread);
-            hint.refresh_workspace = true;
-            let _ = self.changes.send(hint);
+            if !committed {
+                self.commit_thread_deletion(&id)?;
+            }
             Ok(outcome)
         });
         self.held.remove(&root);
@@ -38,7 +46,12 @@ impl Owner {
         }
         let _ = reply.send(result);
     }
-    pub(super) fn begin_delete(&mut self, id: ThreadId, reply: Reply<DeletedWorktree>) {
+    pub(super) fn begin_delete(
+        &mut self,
+        id: ThreadId,
+        delete_worktree: bool,
+        reply: Reply<DeletedWorktree>,
+    ) {
         let plan = (|| {
             let Some(thread) = self.threads.get(&id) else {
                 return Ok(None);
@@ -106,6 +119,10 @@ impl Owner {
                 return;
             }
         };
+        if delete_worktree && let Err(error) = self.commit_thread_deletion(&id) {
+            let _ = reply.send(Err(error));
+            return;
+        }
         self.invalidate_names(&root);
         self.cancel_name(&id);
         self.held.insert(root.clone(), Hold::Delete);
@@ -123,7 +140,7 @@ impl Owner {
         self.delete_jobs.spawn(async move {
             let outcome = tokio::task::spawn_blocking(move || {
                 terminals.close(|key| key.thread.as_ref() == Some(&worker_id));
-                if !rules.worktree_on_delete {
+                if !delete_worktree && !rules.worktree_on_delete {
                     return DeletedWorktree::NotRequested;
                 }
                 if let Some(reason) = retention {
@@ -132,6 +149,12 @@ impl Owner {
                 let Some(candidate) = candidate else {
                     return DeletedWorktree::NotRequested;
                 };
+                if delete_worktree {
+                    return match cleanup::remove_explicit(&candidate, &roots) {
+                        Ok(()) => DeletedWorktree::Removed,
+                        Err(reason) => DeletedWorktree::Retained { reason },
+                    };
+                }
                 match (cleanup::Sweep {
                     worktrees: &worktrees,
                     roots: &roots,
@@ -149,6 +172,7 @@ impl Owner {
             DeleteCompletion {
                 id,
                 root,
+                committed: delete_worktree,
                 outcome,
                 reply,
             }

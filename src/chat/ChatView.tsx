@@ -1,5 +1,9 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/ChatView.tsx, chat/ChatHeader.tsx, chat/PanelLayoutControls.tsx and DraftHeroHeadline.tsx at 6b286ae8a (MIT).
 import { Toast, ToastViewport, type ToastType } from "../ui/toast";
+import {
+  ProjectCloneBanner,
+  useProjectClones,
+} from "../project/ProjectCloneStatus";
 import { Dialog } from "../ui/dialog";
 import { ProjectFilePicker } from "../search/ProjectFilePicker";
 import { ProjectContentSearchDialog } from "../search/ProjectContentSearchDialog";
@@ -236,6 +240,11 @@ export function ChatView({
   onOpenRepository: () => void;
 }) {
   const isScratch = scratch?.id === workspaceId;
+  const projectClones = useProjectClones();
+  const projectClone = projectClones.data?.find(
+    (clone) => clone.workspaceId === workspaceId,
+  );
+  const cloneBlocked = Boolean(projectClone && projectClone.phase !== "done");
   const client = useQueryClient();
   const terminalToggleShortcut = useShortcutLabel("terminal.toggle");
   const navigate = useNavigate({ from: "/" });
@@ -1426,6 +1435,7 @@ export function ChatView({
   }, [dropVersion, thread?.id, composer.activation, settings]);
   const attachments = readyAttachments(slots);
   const submit = () => {
+    if (cloneBlocked) return;
     if (handoffRef.current?.kind === "appending") return;
     if (!settings) return;
     if (!threadId && !isScratch) {
@@ -1692,10 +1702,7 @@ export function ChatView({
                   className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <WorkspaceBadge
-                    workspace={{
-                      kind: isScratch ? "scratch" : "repository",
-                      label,
-                    }}
+                    workspace={workspace ?? { kind: "scratch", label }}
                     className="size-3.5"
                   />
                   <WorkspaceBreadcrumbText className="max-w-40">
@@ -1728,6 +1735,7 @@ export function ChatView({
               ) : null}
               {!isScratch ? (
                 <ProjectScriptsControl
+                  workspaceId={workspaceId}
                   scripts={configQuery.data?.scripts ?? []}
                   onRun={runScript}
                 />
@@ -2004,6 +2012,7 @@ export function ChatView({
                         }}
                         followUpBehavior={effectiveFollowUpBehavior}
                         canSend={
+                          !cloneBlocked &&
                           prHandoff?.kind !== "appending" &&
                           (isUsageLimitsCommand(draft) ||
                             ((showPlanFollowUp ||
@@ -2059,16 +2068,26 @@ export function ChatView({
                           ) : null
                         }
                         notice={
+                          (projectClone &&
+                            projectClone.phase !== "done" &&
+                            !threadId) ||
                           usageNotice?.key === noticeKey ? (
-                            <ComposerUsageLimits
-                              now={usageNotice.now}
-                              onDismiss={() => {
-                                setUsageNotice(null);
-                                setComposerFocusRequest(
-                                  (current) => current + 1,
-                                );
-                              }}
-                            />
+                            <>
+                              {projectClone && !threadId ? (
+                                <ProjectCloneBanner clone={projectClone} />
+                              ) : null}
+                              {usageNotice?.key === noticeKey ? (
+                                <ComposerUsageLimits
+                                  now={usageNotice.now}
+                                  onDismiss={() => {
+                                    setUsageNotice(null);
+                                    setComposerFocusRequest(
+                                      (current) => current + 1,
+                                    );
+                                  }}
+                                />
+                              ) : null}
+                            </>
                           ) : null
                         }
                         contextUsage={

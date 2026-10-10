@@ -1,12 +1,17 @@
 // Rows, copy and confirmation follow pingdotgg/t3code v0.0.45 settings/ProjectsSettings.tsx and
 // ProjectSettingsPanel.tsx, with input classes from ui/input.tsx and alert classes from ui/alert.tsx (MIT).
 import { followUps } from "../chat/followUps";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { InfoIcon, Trash2Icon } from "lucide-react";
-import { checkoutKey, ipc, type Workspace } from "../ipc";
+import {
+  checkoutKey,
+  ipc,
+  type Workspace,
+  type ProjectIconOverride,
+} from "../ipc";
 import { workingSessions } from "../lib/sessions";
 import { Alert } from "../ui/alert";
 import { Button } from "../ui/controls";
@@ -14,7 +19,19 @@ import { ProjectSettingRow } from "./ProjectSettingRow";
 import { usePreferences } from "./preferences";
 import { projectRows } from "./settingsCatalog";
 import { SettingsScopeNotice, type SettingsScope } from "./settingsScope";
-import { SettingsGroup, SettingsRow } from "./settingsLayout";
+const ProjectIconPickerDialog = lazy(() =>
+  import("./ProjectIconPickerDialog").then((module) => ({
+    default: module.ProjectIconPickerDialog,
+  })),
+);
+import { ProjectActionsSettings } from "./ProjectActionsSettings";
+import { ProjectFaviconPickerDialog } from "./ProjectFaviconPickerDialog";
+import { WorkspaceBadge } from "../ProjectBadge";
+import {
+  SettingsGroup,
+  SettingsRow,
+  SettingResetButton,
+} from "./settingsLayout";
 
 export function ProjectsSettings({
   scope,
@@ -84,6 +101,31 @@ function ProjectSettings({
   const working = threads?.some((thread) =>
     workingSessions.has(thread.session.kind),
   );
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const [faviconPickerOpen, setFaviconPickerOpen] = useState(false);
+  const [savingIcon, setSavingIcon] = useState(false);
+  const setProjectIcon = async (
+    projectIcon: ProjectIconOverride | null,
+    faviconPath: string | null,
+  ) => {
+    setSavingIcon(true);
+    try {
+      await ipc.updateProjectIcon(workspace.id, projectIcon, faviconPath);
+      setError(undefined);
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["workspaces"] }),
+        client.invalidateQueries({ queryKey: ["workspace"] }),
+        client.invalidateQueries({
+          queryKey: ["project-favicon", workspace.id],
+        }),
+      ]);
+    } catch (error: unknown) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingIcon(false);
+    }
+  };
+  const icon = workspace.projectIcon;
   const [name, setName] = useState(workspace.label);
   const [error, setError] = useState<string>();
   const [removing, setRemoving] = useState(false);
@@ -196,7 +238,69 @@ function ProjectSettings({
               </span>
             }
           />
+          <SettingsRow
+            {...projectRows.icon}
+            description={
+              icon?.kind === "lucide"
+                ? `${icon.name} · ${icon.color}`
+                : icon?.kind === "monogram"
+                  ? `${icon.text} · ${icon.color}`
+                  : icon?.kind === "emoji"
+                    ? icon.emoji
+                    : (workspace.faviconPath ?? "Automatic")
+            }
+            resetAction={
+              icon || workspace.faviconPath ? (
+                <SettingResetButton
+                  label="project icon"
+                  disabled={savingIcon}
+                  onClick={() => void setProjectIcon(null, null)}
+                />
+              ) : null
+            }
+            control={
+              <div className="flex items-center gap-2">
+                <WorkspaceBadge workspace={workspace} className="size-6" />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label="Choose a project icon"
+                  disabled={savingIcon}
+                  onClick={() => setIconPickerOpen(true)}
+                >
+                  Choose icon
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label="Choose a project icon file"
+                  disabled={savingIcon}
+                  onClick={() => setFaviconPickerOpen(true)}
+                >
+                  Choose file
+                </Button>
+              </div>
+            }
+          />
         </SettingsGroup>
+      ) : null}
+      {iconPickerOpen ? (
+        <Suspense fallback={null}>
+          <ProjectIconPickerDialog
+            current={workspace.projectIcon}
+            projectName={workspace.label}
+            open={iconPickerOpen}
+            onOpenChange={setIconPickerOpen}
+            onSelect={(icon) => void setProjectIcon(icon, null)}
+          />
+        </Suspense>
+      ) : null}
+      {faviconPickerOpen ? (
+        <ProjectFaviconPickerDialog
+          workspace={workspace}
+          onOpenChange={setFaviconPickerOpen}
+          onSelect={(path) => void setProjectIcon(null, path)}
+        />
       ) : null}
       <SettingsGroup id="project-new-threads" title="New threads">
         <ProjectSettingRow
@@ -205,6 +309,9 @@ function ProjectSettings({
           scope={scope}
         />
       </SettingsGroup>
+      {workspace.kind === "repository" ? (
+        <ProjectActionsSettings workspaceId={workspace.id} />
+      ) : null}
       <SettingsGroup id="project-danger" title="Danger">
         <SettingsRow
           {...projectRows.remove}

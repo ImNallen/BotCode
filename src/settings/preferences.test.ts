@@ -257,6 +257,8 @@ it("defaults Working off, saves it on this device, and resets it without a proje
           root: "/project",
           label: "Project",
           kind: "repository",
+          projectIcon: null,
+          faviconPath: null,
         },
       },
     ] satisfies Array<import("./settingsScope").SettingsScope>) {

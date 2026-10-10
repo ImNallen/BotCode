@@ -48,6 +48,8 @@ function workspace(
       root: "/repo",
       label: "Fixture",
       kind: "repository",
+      projectIcon: null,
+      faviconPath: null,
     },
     branch,
     files: [branch],

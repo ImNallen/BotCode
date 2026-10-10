@@ -4,15 +4,21 @@ export function Checkbox({
   indeterminate = false,
   onCheckedChange,
   label,
+  tabIndex,
+  "aria-hidden": ariaHidden,
 }: {
   checked: boolean;
   indeterminate?: boolean;
   onCheckedChange: () => void;
   label: string;
+  tabIndex?: number;
+  "aria-hidden"?: boolean;
 }) {
   return (
     <button
       type="button"
+      tabIndex={tabIndex}
+      aria-hidden={ariaHidden}
       role="checkbox"
       aria-label={label}
       aria-checked={indeterminate ? "mixed" : checked}

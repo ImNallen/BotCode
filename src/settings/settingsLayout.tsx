@@ -58,12 +58,14 @@ export function SettingsRow({
   disabled = false,
   onContextMenu,
   children,
+  className,
 }: {
-  id: string;
+  id?: string;
+  className?: string;
   children?: ReactNode;
   title: ReactNode;
-  description: string;
-  control: ReactNode;
+  description?: ReactNode;
+  control?: ReactNode;
   inheritance?: ReactNode;
   resetAction?: ReactNode;
   disabled?: boolean;
@@ -76,7 +78,10 @@ export function SettingsRow({
       tabIndex={-1}
       aria-disabled={disabled || undefined}
       data-slot="settings-row"
-      className="@container/settings-row rounded-xl px-3 sm:px-4 aria-disabled:opacity-64 aria-disabled:[&_*]:text-muted-foreground py-3 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+      className={cn(
+        "@container/settings-row rounded-xl px-3 sm:px-4 aria-disabled:opacity-64 aria-disabled:[&_*]:text-muted-foreground py-3 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+        className,
+      )}
     >
       <div className="flex flex-col gap-3 @min-[32rem]/settings-row:grid @min-[32rem]/settings-row:grid-cols-[minmax(0,1fr)_minmax(10rem,auto)] @min-[32rem]/settings-row:items-center @min-[32rem]/settings-row:gap-8">
         <div className="min-w-0 flex-1 space-y-1">
@@ -109,10 +114,12 @@ export function SettingsRow({
 export function SettingResetButton({
   label,
   tooltip = "Reset to default",
+  disabled,
   onClick,
 }: {
   label: string;
   tooltip?: string;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -121,6 +128,7 @@ export function SettingResetButton({
       variant="ghost-muted"
       aria-label={`Reset ${label} to default`}
       title={tooltip}
+      disabled={disabled}
       onClick={(event) => {
         event.stopPropagation();
         onClick();

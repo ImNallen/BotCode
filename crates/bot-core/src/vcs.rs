@@ -84,7 +84,7 @@ impl Tool<'_> {
     ) -> Result<Output> {
         self.run_observable(
             args,
-            limit,
+            Some(limit),
             bytes,
             cancel,
             ToolExecution {
@@ -118,7 +118,7 @@ impl Tool<'_> {
     ) -> Result<Output> {
         self.run_observable(
             args,
-            limit,
+            Some(limit),
             bytes,
             cancel,
             ToolExecution {
@@ -130,10 +130,30 @@ impl Tool<'_> {
         )
         .await
     }
+    pub(crate) async fn clone_progress(
+        &self,
+        args: &[&str],
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+        observer: &(dyn Fn(GitProgress) + Send + Sync),
+    ) -> Result<Output> {
+        self.run_observable(
+            args,
+            None,
+            256 * 1024,
+            cancel,
+            ToolExecution {
+                prefix: false,
+                input: None,
+                env: &[("GIT_PROGRESS_DELAY", std::ffi::OsStr::new("0"))],
+                observer: Some(observer),
+            },
+        )
+        .await
+    }
     async fn run_observable(
         &self,
         args: &[&str],
-        limit: Duration,
+        limit: Option<Duration>,
         bytes: u64,
         cancel: &mut tokio::sync::watch::Receiver<bool>,
         execution: ToolExecution<'_>,
@@ -172,23 +192,28 @@ impl Tool<'_> {
         let mut stdin = child.stdin.take();
         let finished = tokio::select! {
             _ = cancel.changed() => None,
-            result = tokio::time::timeout(limit, async {
-            let (mut out, mut err) = (Vec::new(), Vec::new());
-            let (status, _, _, _) =
-                tokio::try_join!(
-                    child.wait(),
-                    async {
-                        if let (Some(mut pipe), Some(input)) = (stdin.take(), input) {
-                            pipe.write_all(input).await?;
-                            pipe.shutdown().await?;
-                        }
-                        Ok::<_, std::io::Error>(())
-                    },
-                    progress::read_output(&mut stdout, &mut out, bytes, prefix, observer, GitOutputStream::Stdout),
-                    progress::read_output(&mut stderr, &mut err, bytes, false, observer, GitOutputStream::Stderr),
-                )?;
-            Ok::<_, std::io::Error>((status, out, err))
-        }) => Some(result),
+            result = async {
+                let run = async {
+                    let (mut out, mut err) = (Vec::new(), Vec::new());
+                    let (status, _, _, _) = tokio::try_join!(
+                        child.wait(),
+                        async {
+                            if let (Some(mut pipe), Some(input)) = (stdin.take(), input) {
+                                pipe.write_all(input).await?;
+                                pipe.shutdown().await?;
+                            }
+                            Ok::<_, std::io::Error>(())
+                        },
+                        progress::read_output(&mut stdout, &mut out, bytes, prefix, observer, GitOutputStream::Stdout),
+                        progress::read_output(&mut stderr, &mut err, bytes, false, observer, GitOutputStream::Stderr),
+                    )?;
+                    Ok::<_, std::io::Error>((status, out, err))
+                };
+                match limit {
+                    Some(limit) => tokio::time::timeout(limit, run).await,
+                    None => Ok(run.await),
+                }
+            } => Some(result),
         };
         let Some(finished) = finished else {
             stop(&mut child, pid).await?;
@@ -230,7 +255,7 @@ impl Tool<'_> {
         let (_send, mut cancel) = tokio::sync::watch::channel(false);
         let run = self.run_observable(
             args,
-            limit,
+            Some(limit),
             64 * 1024,
             &mut cancel,
             ToolExecution {
@@ -289,6 +314,7 @@ async fn stop(child: &mut Child, pid: Option<u32>) -> Result<()> {
     }
     if tokio::time::timeout(GRACE, child.wait()).await.is_err() {
         let _ = child.kill().await;
+        let _ = child.wait().await;
     }
     let Some(pid) = pid else {
         return Ok(());

@@ -5,6 +5,8 @@ import ts from "typescript";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "lucide-react/dynamic")
+      return nextResolve("lucide-react/dynamic.mjs", context);
     if (specifier.startsWith(".") && context.parentURL) {
       const url = new URL(specifier, context.parentURL);
       for (const extension of [".ts", ".tsx"]) {

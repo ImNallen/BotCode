@@ -1,5 +1,13 @@
+mod new_project;
+mod project_clone;
+pub use project_clone::{
+    ProjectClonePhase, ProjectCloneSnapshot, ProjectCloneStage, ProjectCloneStartResult,
+};
 mod project;
+mod project_icon;
+pub use new_project::NewProjectResult;
 pub use project::{ProjectConfig, ProjectScript, SetupState, WorktreeSetup};
+pub use project_icon::{ProjectFavicon, ProjectIconColor, ProjectIconOverride};
 mod attachments;
 mod checkpoints;
 mod cleanup;

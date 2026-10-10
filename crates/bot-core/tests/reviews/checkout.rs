@@ -361,6 +361,9 @@ async fn pr_setup_blocks_reuse_then_exact_head_skips_rerun_and_preserves_history
     let head = prepare_fixture(&f);
     std::fs::write(f.root.join("t3.json"), json!({"scripts":[{"name":"Install","command":format!("echo once >> \"$T3CODE_PROJECT_ROOT/count\"; {}", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")), "runOnWorktreeCreate":true}]}).to_string()).unwrap();
     let (app, source) = f.open().await;
+    let workspace = app.thread(source.clone()).await.unwrap().workspace_id;
+    let config = app.project_file_config(workspace.clone()).await.unwrap();
+    app.save_settings(&json!({"projectSettingsOverrides":{workspace.to_string():{"defaultProjectScripts":config.scripts}}}).to_string()).await.unwrap();
     let created = app
         .prepare_pull_request_thread(request(
             source.clone(),

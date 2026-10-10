@@ -18,6 +18,7 @@ export type PaletteItem = {
   threadContentMatch?: MessageMatch;
   shortcut?: string;
   submenu?: boolean;
+  trailing?: ReactNode;
   execute: () => void;
 };
 export type PaletteGroup = { label: string; items: PaletteItem[] };
@@ -87,6 +88,11 @@ export function CommandPaletteResults({
                 )}
                 {item.shortcut ? (
                   <CommandShortcut>{item.shortcut}</CommandShortcut>
+                ) : null}
+                {item.trailing ? (
+                  <span className="pointer-events-none ms-auto flex">
+                    {item.trailing}
+                  </span>
                 ) : null}
                 {item.submenu ? (
                   <ChevronRightIcon className="-me-0.5 ms-auto size-4 shrink-0 text-muted-foreground/70" />

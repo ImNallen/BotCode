@@ -12,6 +12,8 @@ const workspace = {
   root: "/fixture",
   label: "Fixture",
   kind: "repository",
+  projectIcon: null,
+  faviconPath: null,
 } as const;
 function summary(
   id: string,

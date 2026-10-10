@@ -145,7 +145,11 @@ impl Owner {
                 let config = if prepared {
                     None
                 } else {
-                    Some(crate::project::read(&self.workspace(&workspace)?.root)?)
+                    Some(crate::project::resolve(
+                        &self.workspace(&workspace)?.root,
+                        &self.config.data_dir.join("settings.json"),
+                        &workspace,
+                    )?)
                 };
                 let checkout = if path == self.workspace(&workspace)?.root {
                     Checkout::Local

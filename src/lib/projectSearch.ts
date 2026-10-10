@@ -10,7 +10,7 @@ import {
 } from "../ipc";
 
 export type ProjectSearchRequest =
-  | { kind: "paths"; query: string; limit: number }
+  | { kind: "paths"; query: string; limit: number; imageOnly?: boolean }
   | ({ kind: "content" } & ContentSearchInput);
 export type ProjectSearchResponse =
   | { kind: "paths"; value: PathSearchResult }
@@ -63,6 +63,7 @@ export function useProjectSearch(
                   query: request.query,
                   limit: request.limit,
                   refresh,
+                  imageOnly: request.imageOnly ?? false,
                 })
                 .then(
                   (value): ProjectSearchResponse => ({ kind: "paths", value }),

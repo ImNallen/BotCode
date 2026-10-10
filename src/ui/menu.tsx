@@ -309,7 +309,7 @@ export function Menu({
                 {children}
               </div>
             </div>,
-            document.body,
+            anchor.current?.closest("dialog[open]") ?? document.body,
           )
         : null}
     </>

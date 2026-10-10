@@ -14,6 +14,8 @@ const workspace: Workspace = {
   root: "/project",
   label: "Project",
   kind: "repository",
+  projectIcon: null,
+  faviconPath: null,
 };
 const thread: ThreadSummary = {
   id: "058478ab-2c41-40e0-83b7-dd2c71b3c368",
@@ -117,6 +119,74 @@ it("validates retained-worktree deletion and metadata-only archive summaries at 
       reason: "working tree has changes",
     });
     assert.deepEqual(await ipc.threadSummaries(workspace.id), [thread]);
+  } finally {
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+it("offers manual deletion only for a sole-owner repository worktree, including archived owners", async () => {
+  const {
+    orphanedWorktreePath,
+    formatWorktreePathForDisplay,
+    manualWorktreePath,
+  } = await import("./threadActions");
+  const target = {
+    ...thread,
+    checkout: {
+      kind: "worktree" as const,
+      path: "/repo/worktrees/feature",
+      branch: "feature",
+    },
+  };
+  const shared = {
+    ...target,
+    id: "00000000-0000-4000-8000-000000000002",
+    archivedAtMs: 20,
+  };
+  assert.equal(orphanedWorktreePath(target, [target]), target.checkout.path);
+  assert.equal(orphanedWorktreePath(target, [target, shared]), null);
+  assert.equal(orphanedWorktreePath(thread, [thread]), null);
+  assert.equal(
+    formatWorktreePathForDisplay(" /repo/worktrees/feature/ "),
+    "feature",
+  );
+  assert.equal(
+    formatWorktreePathForDisplay("C:\\repo\\worktrees\\feature"),
+    "feature",
+  );
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: Object.assign(new EventTarget(), { crypto: globalThis.crypto }),
+  });
+  let reads = 0;
+  let rows = [target];
+  let kind = "repository";
+  mockIPC((command, args) => {
+    reads++;
+    if (command === "list_workspaces") return [{ ...workspace, kind }];
+    if (command === "list_thread_summaries") return rows;
+    if (command === "delete_thread") {
+      assert.deepEqual(args, { threadId: thread.id, deleteWorktree: true });
+      return { kind: "removed" };
+    }
+    throw new Error(`Unexpected ${command}`);
+  });
+  try {
+    assert.equal(await manualWorktreePath(target, true), null);
+    assert.equal(reads, 0);
+    assert.equal(await manualWorktreePath(target, false), target.checkout.path);
+    rows = [target, shared];
+    assert.equal(await manualWorktreePath(target, false), null);
+    rows = [target];
+    kind = "scratch";
+    assert.equal(await manualWorktreePath(target, false), null);
+    assert.deepEqual(await ipc.deleteThread(thread.id, true), {
+      kind: "removed",
+    });
   } finally {
     clearMocks();
     if (previousWindow)

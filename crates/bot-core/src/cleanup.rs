@@ -219,6 +219,43 @@ fn skip(candidate: &Candidate, reason: &str) {
         candidate.path.display()
     );
 }
+
+// Ports T3 Code v0.0.45 apps/web/src/hooks/useThreadActions.ts explicit force removal (MIT).
+pub(crate) fn remove_explicit(candidate: &Candidate, roots: &[PathBuf]) -> Checked<()> {
+    let path = &candidate.path;
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return git(&candidate.workspace_root, &["worktree", "prune"])
+                .map(drop)
+                .map_err(|error| error.message.trim().to_owned());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let canonical = dunce::canonicalize(path).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || &canonical != path {
+        return Err("path is a symlink or not canonical".into());
+    }
+    if roots.iter().any(|root| {
+        let real = dunce::canonicalize(root).unwrap_or_else(|_| root.clone());
+        root.starts_with(path) || real.starts_with(path)
+    }) {
+        return Err("a workspace root is inside this worktree".into());
+    }
+    let git_file =
+        std::fs::symlink_metadata(path.join(".git")).map_err(|error| error.to_string())?;
+    if !git_file.file_type().is_file() {
+        return Err(".git is not a file".into());
+    }
+    crate::repo::registered_worktree(&candidate.workspace_root, path)
+        .map_err(|error| error.message)?;
+    git(
+        &candidate.workspace_root,
+        &["worktree", "remove", "--force", &path.to_string_lossy()],
+    )
+    .map(drop)
+    .map_err(|error| error.message.trim().to_owned())
+}
 /// `refs/remotes/origin/<default>` after a fetch when the repository has an
 /// origin remote, else the local `refs/heads/<default>`.
 fn default_ref(root: &Path) -> Checked<String> {

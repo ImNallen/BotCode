@@ -47,6 +47,8 @@ function context(): ActionContext {
       label: "Project",
       root: "/tmp/project",
       kind: "repository",
+      projectIcon: null,
+      faviconPath: null,
     },
     branch: "main",
     scratchAvailable: true,
