@@ -2128,11 +2128,13 @@ impl Owner {
     }
     /// A thread with no running turn, no open approval, and no job or hold on its checkout.
     fn idle(&self, t: &ThreadSnapshot, root: &Path) -> bool {
+        !self.setup_busy(root) && self.idle_except_setup(t, root)
+    }
+    fn idle_except_setup(&self, t: &ThreadSnapshot, root: &Path) -> bool {
         !matches!(
             t.session,
             SessionState::Connecting | SessionState::Running | SessionState::Interrupting
-        ) && !self.setup_busy(root)
-            && !t.input_open()
+        ) && !t.input_open()
             && t.pending_revert.is_none()
             && !self.leases.contains_key(root)
             && !self.pending.iter().any(|job| job.thread() == &t.id)
@@ -2170,6 +2172,9 @@ impl Owner {
                 "cleanup_refused",
                 "the thread changed since the sweep began",
             ));
+        }
+        if let Some(setup) = &t.worktree_setup {
+            self.stop_setup(setup)?;
         }
         self.cancel_commit_previews(Some(&candidate.path));
         self.invalidate_names(&candidate.path);

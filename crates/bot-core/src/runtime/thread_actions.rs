@@ -59,12 +59,33 @@ impl Owner {
                     .get(job.thread())
                     .is_some_and(|other| other.root(&self.workspaces[&other.workspace_id]) == root)
             });
-            if !self.idle(thread, &root) || another_active || pending {
+            let another_setup = self.threads.values().any(|other| {
+                other.id != id
+                    && other
+                        .worktree_setup
+                        .as_ref()
+                        .is_some_and(|setup| setup.active() && Path::new(&setup.cwd) == root)
+            });
+            if !self.idle_except_setup(thread, &root) || another_setup || another_active || pending
+            {
                 return Err(AppError::new(
                     "busy",
                     "Stop running conversations and wait for checkout operations before deleting this thread.",
                 ));
             }
+            if let Some(setup) = &thread.worktree_setup {
+                self.stop_setup(setup)?;
+                if setup.active() {
+                    let mut thread = thread.clone();
+                    let setup = thread.worktree_setup.as_mut().unwrap();
+                    setup.state = crate::project::SetupState::Interrupted {
+                        reason: "Setup was canceled to delete the thread.".into(),
+                    };
+                    setup.completed_at_ms = Some(now_ms());
+                    self.install(thread)?;
+                }
+            }
+            let thread = self.thread(&id)?;
             let candidate = self.candidate(thread);
             let retention =
                 if matches!(thread.checkout, Checkout::Worktree { .. }) && candidate.is_none() {
