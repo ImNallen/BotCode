@@ -1,5 +1,7 @@
 #![cfg(unix)]
 #![allow(clippy::disallowed_methods)]
+#[path = "support/polling.rs"]
+mod polling;
 use bot_core::*;
 use std::{os::unix::fs::PermissionsExt, process::Command, time::Duration};
 struct Fixture {
@@ -5505,7 +5507,7 @@ async fn project_setup_waits_before_checkpoint_then_releases_failed_turn() {
         &app,
         serde_json::json!({
             "name": "Install",
-            "command": "while [ ! -e \"$T3CODE_PROJECT_ROOT/release\" ]; do sleep 0.05; done; echo prepared > dependency; echo setup-output; exit 7",
+            "command": format!("{}; echo prepared > dependency; echo setup-output; exit 7", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")),
             "runOnWorktreeCreate": true,
             "async": false
         }),
@@ -5568,7 +5570,7 @@ async fn project_setup_receipt_survives_restart_and_completed_retry_is_noop() {
         &app,
         serde_json::json!({
             "name": "Install",
-            "command": "echo once >> \"$T3CODE_PROJECT_ROOT/count\"; while [ ! -e \"$T3CODE_PROJECT_ROOT/release\" ]; do sleep 0.05; done; echo done",
+            "command": format!("echo once >> \"$T3CODE_PROJECT_ROOT/count\"; {}; echo done", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")),
             "runOnWorktreeCreate": true
         }),
     )
@@ -5718,7 +5720,7 @@ async fn project_setup_async_default_and_live_restart_do_not_duplicate_process()
     let f = Fixture::new();
     f.commit();
     let app = App::open(f.config.clone()).await.unwrap();
-    let thread=setup_thread(&f,&app,serde_json::json!({"name":"Install","command":"echo once >> \"$T3CODE_PROJECT_ROOT/count\"; while [ ! -e \"$T3CODE_PROJECT_ROOT/release\" ]; do sleep 0.05; done","runOnWorktreeCreate":true})).await;
+    let thread=setup_thread(&f,&app,serde_json::json!({"name":"Install","command":format!("echo once >> \"$T3CODE_PROJECT_ROOT/count\"; {}", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")),"runOnWorktreeCreate":true})).await;
     app.submit(
         thread.id.clone(),
         "async-turn".into(),
