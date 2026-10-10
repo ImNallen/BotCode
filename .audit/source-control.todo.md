@@ -69,5 +69,5 @@
 - [x] Check branch, repository, existing PRs and live agents. No active delegate holds the main worktree.
 - [x] Run Deslop against the reviewed diff. No additional code cleanup required.
 - [x] Resolve precommit CI Clippy findings through an isolated writer and independent review.
-- [x] Run remaining required CI checks. Full bot-core tests and strict workspace Clippy passed; commit and push follow.
-- [ ] Create a ready PR and register it with this T3 Code thread.
+- [x] Run remaining required CI checks, then commit and push this branch. Full bot-core tests and strict workspace Clippy passed.
+- [x] Create a ready PR and register it with this T3 Code thread. PR #88 targets main and is linked.
