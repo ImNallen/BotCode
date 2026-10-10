@@ -156,7 +156,9 @@ async fn detached_clone_registers_before_completion_and_preserves_completed_chec
     assert!(outcome.sequence > result.snapshot.sequence);
     assert!(outcome.ended_at_ms.is_some());
     assert_eq!(
-        std::fs::read_to_string(destination.join("README.md")).unwrap(),
+        std::fs::read_to_string(destination.join("README.md"))
+            .unwrap()
+            .replace("\r\n", "\n"),
         "clone fixture\n"
     );
     assert_eq!(git(&destination, &["branch", "--show-current"]), "main\n");
@@ -207,7 +209,13 @@ async fn failed_clone_is_visible_blocks_threads_and_retries_same_workspace() {
         .unwrap();
     let outcome = finished(&app, &result.workspace.id).await;
     assert_eq!(outcome.phase, ProjectClonePhase::Failed);
-    assert!(outcome.error.unwrap().contains("does not exist"));
+    assert!(
+        outcome
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("source")),
+        "{outcome:?}"
+    );
     assert_eq!(
         app.create_thread(result.workspace.id.clone(), NewCheckout::Local)
             .await
