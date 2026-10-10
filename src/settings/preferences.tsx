@@ -7,7 +7,13 @@ import {
   type ReactNode,
 } from "react";
 import { z } from "zod";
-import { ipc, native, permissionMode } from "../ipc";
+import {
+  ipc,
+  native,
+  permissionMode,
+  projectScript,
+  type ProjectScript,
+} from "../ipc";
 import { editorId } from "../lib/editors";
 import { mergeMethod } from "../panel/prIdentity";
 import { serial } from "../lib/serial";
@@ -72,7 +78,15 @@ export const notificationModeSchema = z.enum([
 ]);
 export type NotificationMode = z.infer<typeof notificationModeSchema>;
 
+const scriptSettingsOverrides = z.record(
+  z.uuid(),
+  z.object({ defaultProjectScripts: z.array(projectScript).optional() }),
+);
 const schema = z.object({
+  defaultProjectScripts: z.array(projectScript),
+  projectSettingsOverrides: scriptSettingsOverrides,
+  projectScriptOverrides: z.record(z.uuid(), z.array(projectScript).nullable()),
+  projectSettingsFolded: z.boolean(),
   automaticGitFetchInterval: z
     .number()
     .int()
@@ -101,6 +115,10 @@ export const checkoutModeLabels = {
 } as const satisfies Record<Preferences["newThreadCheckout"], string>;
 export type CheckoutMode = keyof typeof checkoutModeLabels;
 export const defaults: Preferences = {
+  defaultProjectScripts: [],
+  projectSettingsOverrides: {},
+  projectScriptOverrides: {},
+  projectSettingsFolded: false,
   automaticGitFetchInterval: 30_000,
   newThreadCheckoutConfigured: false,
   notificationMode: "off",
@@ -146,6 +164,10 @@ type PreferenceState = {
 const Context = createContext<
   | (PreferenceState & {
       update: (patch: Partial<Preferences>) => void;
+      saveActions: (
+        workspaceId: string | undefined,
+        scripts: readonly ProjectScript[] | null,
+      ) => Promise<void>;
       // An undefined field removes that override.
       patchProject: (workspaceId: string, patch: ProjectOverride) => void;
       forgetProject: (workspaceId: string) => void;
@@ -162,6 +184,10 @@ export function readPreferences(): PreferenceState {
       return { preferences: defaults, persistenceError: undefined };
     const object = z
       .object({
+        defaultProjectScripts: z.unknown().optional(),
+        projectSettingsOverrides: z.unknown().optional(),
+        projectScriptOverrides: z.unknown().optional(),
+        projectSettingsFolded: z.unknown().optional(),
         sourceControlWritingStyle: z.unknown().optional(),
         defaultAutoPull: z.unknown().optional(),
         pullRequestMergeMethod: z.unknown().optional(),
@@ -262,6 +288,16 @@ export function readPreferences(): PreferenceState {
       : [];
     return {
       preferences: {
+        defaultProjectScripts: schema.shape.defaultProjectScripts
+          .catch([])
+          .parse(object.defaultProjectScripts),
+        projectSettingsOverrides: scriptSettingsOverrides
+          .catch({})
+          .parse(object.projectSettingsOverrides),
+        projectScriptOverrides: schema.shape.projectScriptOverrides
+          .catch({})
+          .parse(object.projectScriptOverrides),
+        projectSettingsFolded: object.projectSettingsFolded === true,
         sourceControlWritingStyle: sourceControlWritingStyleSchema
           .catch(builtInProject.sourceControlWritingStyle)
           .parse(object.sourceControlWritingStyle),
@@ -345,8 +381,8 @@ export function readPreferences(): PreferenceState {
 export function PreferencesProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState(readPreferences);
   const current = useRef(state.preferences);
-  const update = (patch: Partial<Preferences>) => {
-    const parsed = schema.safeParse({
+  const persist = async (patch: Partial<Preferences>) => {
+    const parsed = schema.parse({
       ...current.current,
       ...patch,
       newThreadCheckoutConfigured:
@@ -355,18 +391,24 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
           ? true
           : current.current.newThreadCheckoutConfigured),
     });
-    if (!parsed.success) return;
-    current.current = parsed.data;
-    setState((state) => ({ ...state, preferences: parsed.data }));
-    void saveText(`${JSON.stringify(parsed.data, null, 2)}\n`).then(
-      () => setState((state) => ({ ...state, persistenceError: undefined })),
-      () =>
-        setState((state) => ({
-          ...state,
-          persistenceError:
-            "Changes apply now, but could not be saved. They may be lost when Bot Code restarts.",
-        })),
-    );
+    current.current = parsed;
+    setState((state) => ({ ...state, preferences: parsed }));
+    try {
+      await saveText(
+        `${JSON.stringify(parsed, (key, value) => (key === "defaultProjectScripts" && Array.isArray(value) ? value.map(({ async, previewUrl, autoOpenPreview, ...script }: ProjectScript) => ({ ...script, ...(async === false ? { async: false } : {}), ...(previewUrl ? { previewUrl, autoOpenPreview } : {}) })) : value), 2)}\n`,
+      );
+      setState((state) => ({ ...state, persistenceError: undefined }));
+    } catch (error: unknown) {
+      setState((state) => ({
+        ...state,
+        persistenceError:
+          "Changes apply now, but could not be saved. They may be lost when Bot Code restarts.",
+      }));
+      throw error;
+    }
+  };
+  const update = (patch: Partial<Preferences>) => {
+    void persist(patch).catch(() => {});
   };
   useLayoutEffect(() => {
     const scheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -398,6 +440,20 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       value={{
         ...state,
         update,
+        saveActions: (workspaceId, scripts) => {
+          if (!workspaceId)
+            return persist({ defaultProjectScripts: [...(scripts ?? [])] });
+          const { [workspaceId]: previous, ...others } =
+            current.current.projectSettingsOverrides;
+          const next = { ...previous };
+          if (scripts === null) delete next.defaultProjectScripts;
+          else next.defaultProjectScripts = [...scripts];
+          return persist({
+            projectSettingsOverrides: Object.keys(next).length
+              ? { ...others, [workspaceId]: next }
+              : others,
+          });
+        },
         patchProject: (workspaceId, patch) => {
           const { [workspaceId]: previous, ...others } =
             current.current.projectOverrides;
@@ -413,7 +469,15 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         forgetProject: (workspaceId) => {
           const { [workspaceId]: _, ...others } =
             current.current.projectOverrides;
-          update({ projectOverrides: others });
+          const { [workspaceId]: _actions, ...actionOthers } =
+            current.current.projectSettingsOverrides;
+          const { [workspaceId]: _legacy, ...legacyOthers } =
+            current.current.projectScriptOverrides;
+          update({
+            projectOverrides: others,
+            projectSettingsOverrides: actionOthers,
+            projectScriptOverrides: legacyOthers,
+          });
         },
         reset: () =>
           update({

@@ -16,6 +16,46 @@ import {
 } from "./ipc.ts";
 import { usageLimitsQuery } from "./usage/limits.ts";
 
+it("reads old project records as automatic icons and preserves saved icon variants", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { crypto: globalThis.crypto },
+  });
+  const project = {
+    id: "67ce24cf-70e2-44b3-99f4-53bd8d155d19",
+    root: "/fixture",
+    label: "Fixture",
+    kind: "repository",
+  };
+  try {
+    mockIPC(() => [project]);
+    assert.deepEqual(await ipc.workspaces(), [
+      { ...project, projectIcon: null, faviconPath: null },
+    ]);
+    for (const projectIcon of [
+      { kind: "lucide", name: "folder-code", color: "blue" },
+      { kind: "emoji", emoji: "👩‍💻" },
+      { kind: "monogram", text: "T3", color: "red" },
+    ]) {
+      mockIPC(() => [{ ...project, projectIcon, faviconPath: null }]);
+      assert.deepEqual((await ipc.workspaces())[0]?.projectIcon, projectIcon);
+    }
+    mockIPC(() => [
+      {
+        ...project,
+        projectIcon: { kind: "lucide", name: "../../icon", color: "unknown" },
+      },
+    ]);
+    await assert.rejects(ipc.workspaces(), /./);
+  } finally {
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
 it("reads the provider's permission subset and rejects unknown semantic modes", async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", {
@@ -99,6 +139,8 @@ it("refreshes the active branch picker after a worktree naming event without ref
       root: "/fixture",
       label: "Fixture",
       kind: "repository",
+      projectIcon: null,
+      faviconPath: null,
     },
     branch: temporaryBranch,
     files: [],

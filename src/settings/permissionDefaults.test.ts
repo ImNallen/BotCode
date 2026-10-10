@@ -28,6 +28,8 @@ const scope: SettingsScope = {
     label: "Fixture",
     root: "/fixture",
     kind: "repository",
+    projectIcon: null,
+    faviconPath: null,
   },
 };
 const capabilities: ProviderCapabilities = {

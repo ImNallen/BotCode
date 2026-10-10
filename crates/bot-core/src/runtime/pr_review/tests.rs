@@ -27,6 +27,7 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
     let (provider_events, signals) = mpsc::channel(1);
     let (done, completions) = mpsc::channel(1);
     let mut owner = Owner {
+        project_clones: Default::default(),
         tools: crate::runtime::tools::ToolWork::new(
             &RuntimeConfig {
                 data_dir: dir.path().into(),
@@ -202,6 +203,7 @@ async fn late_lifecycle_completion_preserves_supersession_and_cleanup_latch() {
     let (provider_events, _signals) = mpsc::channel(1);
     let (done, _completions) = mpsc::channel(1);
     let mut owner = Owner {
+        project_clones: Default::default(),
         tools: crate::runtime::tools::ToolWork::new(
             &RuntimeConfig {
                 data_dir: dir.path().into(),

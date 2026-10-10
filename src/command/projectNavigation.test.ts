@@ -13,18 +13,24 @@ const alpha: Workspace = {
   label: "Alpha",
   root: "/tmp/alpha",
   kind: "repository",
+  projectIcon: null,
+  faviconPath: null,
 };
 const beta: Workspace = {
   id: "beta",
   label: "Beta",
   root: "/tmp/beta",
   kind: "repository",
+  projectIcon: null,
+  faviconPath: null,
 };
 const scratch: Workspace = {
   id: "scratch",
   label: "No project",
   root: "/tmp/scratch",
   kind: "scratch",
+  projectIcon: null,
+  faviconPath: null,
 };
 
 it("the all-projects button picks among repositories and keeps scoped and Shift creation direct", () => {

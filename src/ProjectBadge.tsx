@@ -1,30 +1,23 @@
 // Monogram and color derivation copied from pingdotgg/t3code v0.0.45
 // projectIdentity.ts, projectIconColors.ts and ProjectMonogram.tsx (MIT).
 // The scratch icon follows chat/DraftHeroHeadline.tsx at 6b286ae8a (MIT).
-import { MessageSquareDashedIcon } from "lucide-react";
-import type { Workspace } from "./ipc";
+import { lazy, Suspense, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { IconName } from "lucide-react/dynamic";
+import {
+  PROJECT_ICON_COLORS,
+  projectIconColorClassName,
+} from "./project/projectIconColors";
+import { MessageSquareDashedIcon, FolderCodeIcon } from "lucide-react";
+import { ipc, native, type Workspace, type ProjectIconColor } from "./ipc";
 import { cn } from "./lib/cn";
 
-const COLORS = [
-  "text-gray-600 dark:text-gray-400",
-  "text-red-600 dark:text-red-400",
-  "text-orange-600 dark:text-orange-400",
-  "text-amber-600 dark:text-amber-400",
-  "text-yellow-600 dark:text-yellow-400",
-  "text-lime-600 dark:text-lime-400",
-  "text-green-600 dark:text-green-400",
-  "text-emerald-600 dark:text-emerald-400",
-  "text-teal-600 dark:text-teal-400",
-  "text-cyan-600 dark:text-cyan-400",
-  "text-sky-600 dark:text-sky-400",
-  "text-blue-600 dark:text-blue-400",
-  "text-indigo-600 dark:text-indigo-400",
-  "text-violet-600 dark:text-violet-400",
-  "text-purple-600 dark:text-purple-400",
-  "text-fuchsia-600 dark:text-fuchsia-400",
-  "text-pink-600 dark:text-pink-400",
-  "text-rose-600 dark:text-rose-400",
-];
+const COLORS = PROJECT_ICON_COLORS.map((option) => option.className);
+const DynamicIcon = lazy(() =>
+  import("lucide-react/dynamic").then((module) => ({
+    default: module.DynamicIcon,
+  })),
+);
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -45,12 +38,18 @@ function monogram(name: string): string {
   return Array.from(`${first}${second}`.toUpperCase()).slice(0, 2).join("");
 }
 
-function colorClassName(name: string): string {
+export function deriveProjectIdentity(name: string): {
+  monogram: string;
+  color: ProjectIconColor;
+} {
   const seed = normalize(name).toLocaleLowerCase("en-US") || "project";
   let index = 0;
   for (const glyph of seed)
     index = (index * 31 + (glyph.codePointAt(0) ?? 0)) % COLORS.length;
-  return COLORS[index] ?? "text-blue-600 dark:text-blue-400";
+  return {
+    monogram: monogram(name),
+    color: PROJECT_ICON_COLORS[index]?.value ?? "blue",
+  };
 }
 
 export function ProjectBadge({
@@ -60,7 +59,25 @@ export function ProjectBadge({
   name: string;
   className?: string;
 }) {
-  const text = monogram(name);
+  const identity = deriveProjectIdentity(name);
+  return (
+    <ProjectMonogram
+      text={identity.monogram}
+      color={identity.color}
+      className={className}
+    />
+  );
+}
+
+export function ProjectMonogram({
+  text,
+  color,
+  className,
+}: {
+  text: string;
+  color: ProjectIconColor;
+  className?: string;
+}) {
   return (
     <span
       aria-hidden="true"
@@ -73,7 +90,7 @@ export function ProjectBadge({
         viewBox="0 0 16 16"
         className={cn(
           "size-full overflow-hidden rounded-[25%] font-mono select-none",
-          colorClassName(name),
+          projectIconColorClassName(color),
         )}
         style={{
           backgroundColor: "color-mix(in srgb, currentColor 14%, transparent)",
@@ -102,17 +119,113 @@ export function WorkspaceBadge({
   workspace,
   className,
 }: {
-  workspace: Pick<Workspace, "kind" | "label">;
+  workspace: Workspace | { kind: "scratch"; label: string };
   className?: string;
 }) {
-  return workspace.kind === "scratch" ? (
-    <span
-      aria-hidden="true"
-      className={cn("inline-flex size-4 shrink-0", COLORS[0], className)}
-    >
-      <MessageSquareDashedIcon className="size-full" />
-    </span>
+  if (workspace.kind === "scratch")
+    return (
+      <span
+        aria-hidden="true"
+        className={cn("inline-flex size-4 shrink-0", COLORS[0], className)}
+      >
+        <MessageSquareDashedIcon className="size-full" />
+      </span>
+    );
+  const icon = workspace.projectIcon;
+  if (icon?.kind === "monogram")
+    return (
+      <ProjectMonogram
+        text={icon.text}
+        color={icon.color}
+        className={className}
+      />
+    );
+  if (icon?.kind === "emoji")
+    return (
+      <span
+        aria-hidden="true"
+        className={cn(
+          "inline-flex size-3.5 shrink-0 items-center justify-center leading-none [container-type:size]",
+          className,
+        )}
+      >
+        <span className="text-[length:80cqh] leading-none">{icon.emoji}</span>
+      </span>
+    );
+  if (icon?.kind === "lucide") {
+    const color = projectIconColorClassName(icon.color);
+    return (
+      <span
+        aria-hidden="true"
+        className={cn(
+          "inline-flex size-3.5 shrink-0 items-center justify-center",
+          color,
+          className,
+        )}
+      >
+        <Suspense
+          fallback={<FolderCodeIcon className="size-full text-inherit" />}
+        >
+          <DynamicIcon
+            name={icon.name as IconName}
+            className={cn("size-full", color)}
+            fallback={() => (
+              <FolderCodeIcon className="size-full text-inherit" />
+            )}
+          />
+        </Suspense>
+      </span>
+    );
+  }
+  return <ProjectFavicon workspace={workspace} className={className} />;
+}
+
+function ProjectFavicon({
+  workspace,
+  className,
+}: {
+  workspace: Workspace;
+  className?: string;
+}) {
+  const favicon = useQuery({
+    queryKey: ["project-favicon", workspace.id, workspace.faviconPath],
+    queryFn: () => ipc.projectFavicon(workspace.id),
+    enabled: native,
+    staleTime: 60_000,
+  });
+  const src = favicon.data?.dataUrl;
+  return src ? (
+    <FaviconImage
+      key={src}
+      src={src}
+      name={workspace.label}
+      className={className}
+    />
   ) : (
     <ProjectBadge name={workspace.label} className={className} />
+  );
+}
+function FaviconImage({
+  src,
+  name,
+  className,
+}: {
+  src: string;
+  name: string;
+  className?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  return failed ? (
+    <ProjectBadge name={name} className={className} />
+  ) : (
+    <img
+      src={src}
+      alt=""
+      className={cn(
+        "size-3.5 shrink-0 rounded-[25%] object-contain",
+        className,
+      )}
+      onError={() => setFailed(true)}
+    />
   );
 }

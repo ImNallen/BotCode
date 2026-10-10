@@ -392,6 +392,8 @@ mod persisted_tests {
             root: dir.path().join("repository"),
             label: "Project".into(),
             kind: WorkspaceKind::Repository,
+            favicon_path: None,
+            project_icon: None,
         };
         std::fs::create_dir(&workspace.root).unwrap();
         let mut store = crate::store::Store::open(dir.path()).unwrap();
@@ -543,6 +545,8 @@ mod persisted_tests {
                 root: dir.path().join(format!("p{project}")),
                 label: format!("P{project}"),
                 kind: WorkspaceKind::Repository,
+                favicon_path: None,
+                project_icon: None,
             };
             store.workspace(&workspace).unwrap();
             for i in 0..60 {

@@ -16,6 +16,8 @@ const context: ActionContext = {
     label: "Fixture",
     root: "/tmp/fixture",
     kind: "repository",
+    projectIcon: null,
+    faviconPath: null,
   },
   branch: "main",
   scratchAvailable: true,

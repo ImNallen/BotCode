@@ -7,7 +7,7 @@ import { useKeybindings } from "../keybindings/store";
 // Ported from pingdotgg/t3code v0.0.45 components/CommandPalette.tsx (MIT).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArchiveIcon,
   ArrowLeftIcon,
@@ -15,6 +15,8 @@ import {
   CommandIcon,
   FolderIcon,
   FolderPlusIcon,
+  FolderGit2Icon,
+  GithubIcon,
   MessageSquareDashedIcon,
   MessageSquareIcon,
 } from "lucide-react";
@@ -36,6 +38,10 @@ import {
   type PalettePage,
 } from "../lib/actions";
 import { Dialog } from "../ui/dialog";
+import { Checkbox } from "../ui/checkbox";
+import { notifyProject } from "../project/ProjectToasts";
+import { ProjectCloneFlow } from "../project/ProjectCloneFlow";
+import { newProjectFolderName } from "../project/newProject";
 import { Button } from "../ui/controls";
 import { CommandFooterAction } from "../ui/command";
 import { Kbd, KbdGroup } from "../ui/kbd";
@@ -109,7 +115,10 @@ export function CommandPalette({
   const [highlighted, setHighlighted] = useState<string>();
   const [browse, setBrowse] = useState<BrowseStatus>({ kind: "loading" });
   const [operationError, setOperationError] = useState<string>();
-  const [pending, setPending] = useState<"adding" | "choosing" | null>(null);
+  const [pending, setPending] = useState<
+    "adding" | "choosing" | "creating" | null
+  >(null);
+  const [publishOnCreate, setPublishOnCreate] = useState(false);
   const [retry, setRetry] = useState(0);
   const generation = useRef(0);
   const browseGeneration = useRef(0);
@@ -135,6 +144,20 @@ export function CommandPalette({
       ?.focus();
   }, [location, retry]);
   const isBrowsing = location.kind === "project-local";
+  const isNewProject = location.kind === "project-new";
+  const projectsRoot = useQuery({
+    queryKey: ["new-projects-root"],
+    queryFn: ipc.newProjectsRoot,
+    enabled: isNewProject,
+  });
+  const github = useQuery({
+    queryKey: ["github-publish-readiness"],
+    queryFn: ipc.githubPublishReadiness,
+    enabled: isNewProject,
+  });
+  const newPath = projectsRoot.data
+    ? `${projectsRoot.data.replace(/[\\/]$/, "")}/${newProjectFolderName(query.trim())}`
+    : null;
   const cwd =
     context.workspace?.kind === "repository"
       ? context.workspace.root
@@ -290,11 +313,89 @@ export function CommandPalette({
       ? archived.find(({ thread }) => thread.id === location.threadId)?.thread
       : undefined;
   const changeLocation = (next: Location) => {
+    if (pending === "creating") return;
     invalidateView();
     setLocation(next);
     setQuery(next.kind === "project-local" ? "~/" : "");
     setBrowse({ kind: "loading" });
     setHighlighted(undefined);
+    setPublishOnCreate(false);
+  };
+  const createProject = async () => {
+    if (
+      blocked ||
+      pendingGeneration.current !== null ||
+      !query.trim() ||
+      query.trim().length > 200
+    )
+      return;
+    const current = generation.current;
+    pendingGeneration.current = current;
+    setPending("creating");
+    setOperationError(undefined);
+    try {
+      const name = query.trim();
+      const result = await ipc.createNewProject(name);
+      notifyProject(
+        result.commitError ? "warning" : "success",
+        result.commitError
+          ? `Created ${name} without a first commit`
+          : `Created ${name}`,
+        result.commitError
+          ? `${result.commitError} The project is in ${result.workspace.root}.`
+          : result.workspace.root,
+      );
+      if (publishOnCreate && github.data?.kind === "ready") {
+        const repository = `${github.data.account}/${result.workspace.root.split(/[\\/]/).at(-1)}`;
+        void ipc
+          .publishRepository(
+            { workspaceId: result.workspace.id },
+            {
+              repository,
+              visibility: "private",
+              remoteName: "origin",
+              protocol: "ssh",
+            },
+          )
+          .then(
+            (outcome) => {
+              if (outcome.kind === "succeeded")
+                notifyProject(
+                  "success",
+                  "Published to GitHub",
+                  outcome.result.repository.nameWithOwner,
+                );
+              else
+                notifyProject(
+                  "error",
+                  "Could not create the GitHub repository",
+                  `${outcome.message} Use Publish Repository in the Git menu to try again.`,
+                );
+            },
+            (error: unknown) =>
+              notifyProject(
+                "error",
+                "Could not create the GitHub repository",
+                `${error instanceof Error ? error.message : String(error)} Use Publish Repository in the Git menu to try again.`,
+              ),
+          );
+      }
+      await client.invalidateQueries({ queryKey: ["workspaces"] });
+      if (mounted.current && current === generation.current) {
+        onNewThread(result.workspace.id);
+        close(false);
+      }
+    } catch (error: unknown) {
+      if (mounted.current && current === generation.current)
+        setOperationError(
+          error instanceof Error ? error.message : String(error),
+        );
+    } finally {
+      if (mounted.current && current === generation.current) {
+        pendingGeneration.current = null;
+        setPending(null);
+      }
+    }
   };
   const currentContext: ActionContext = {
     ...context,
@@ -496,75 +597,161 @@ export function CommandPalette({
     ? []
     : location.kind === "new-thread-in"
       ? [{ label: "Projects", items: projectItems }]
-      : location.kind === "project-sources"
+      : isNewProject
         ? [
             {
-              label: "Sources",
-              items: matchesSearch(
-                "Local folder Browse a folder on disk directory",
-                needle,
-              )
-                ? [
-                    {
-                      id: "command-source-local",
-                      title: "Local folder",
-                      description: "Browse a folder on disk",
-                      icon: (
-                        <FolderPlusIcon className="size-4 text-icon-muted" />
-                      ),
-                      submenu: true,
-                      execute: () => changeLocation({ kind: "project-local" }),
-                    },
-                  ]
-                : [],
+              label: "Options",
+              items:
+                github.data?.kind === "ready"
+                  ? [
+                      {
+                        id: "command-new-project-github",
+                        title: "Create private repository on GitHub",
+                        description: `${github.data.account}/${newProjectFolderName(query.trim())}`,
+                        icon: <GithubIcon className="size-4 text-icon-muted" />,
+                        trailing: (
+                          <Checkbox
+                            tabIndex={-1}
+                            aria-hidden
+                            checked={publishOnCreate}
+                            label="Create private repository on GitHub"
+                            onCheckedChange={() => {}}
+                          />
+                        ),
+                        execute: () => {
+                          if (pending !== "creating")
+                            setPublishOnCreate((value) => !value);
+                        },
+                      },
+                    ]
+                  : [],
+            },
+            {
+              label: "",
+              items: [
+                {
+                  id: "command-new-project-existing",
+                  title: "Add existing project",
+                  description: "Open a folder or clone a repository",
+                  icon: <FolderPlusIcon className="size-4 text-icon-muted" />,
+                  submenu: true,
+                  execute: () => changeLocation({ kind: "project-sources" }),
+                },
+              ],
             },
           ]
-        : location.kind === "project-local"
-          ? [{ label: "Directories", items: browseItems }]
-          : location.kind === "archived"
-            ? [
-                {
-                  label: "Archived threads",
-                  items: archived
-                    .filter(({ thread }) => matchesSearch(thread.title, needle))
-                    .map(({ thread, workspace }) => ({
-                      id: `command-archive-${thread.id}`,
-                      title: thread.title,
-                      description: workspace?.label,
-                      icon: <ArchiveIcon className="size-4 text-icon-muted" />,
-                      submenu: true,
-                      execute: () =>
-                        changeLocation({
-                          kind: "archive-actions",
-                          threadId: thread.id,
-                        }),
-                    })),
-                },
-              ]
-            : location.kind === "root"
-              ? [
-                  { label: "Actions", items: actionItems },
-                  ...(!actionsOnly
+        : location.kind === "project-sources"
+          ? [
+              {
+                label: "Sources",
+                items: [
+                  ...(matchesSearch(
+                    "New project Start a new Git repository from a name create empty git init",
+                    needle,
+                  )
                     ? [
                         {
-                          label: needle.trim() ? "Threads" : "Recent threads",
-                          items: threadItems,
+                          id: "command-source-new",
+                          title: "New project",
+                          description: "Start a new Git repository from a name",
+                          icon: (
+                            <FolderGit2Icon className="size-4 text-icon-muted" />
+                          ),
+                          submenu: true,
+                          execute: () =>
+                            changeLocation({ kind: "project-new" }),
                         },
                       ]
                     : []),
-                ]
-              : [
+                  ...(matchesSearch(
+                    "Local folder Browse a folder on disk directory",
+                    needle,
+                  )
+                    ? [
+                        {
+                          id: "command-source-local",
+                          title: "Local folder",
+                          description: "Browse a folder on disk",
+                          icon: (
+                            <FolderPlusIcon className="size-4 text-icon-muted" />
+                          ),
+                          submenu: true,
+                          execute: () =>
+                            changeLocation({ kind: "project-local" }),
+                        },
+                      ]
+                    : []),
+                  ...(matchesSearch(
+                    "Git URL Clone from a remote URL repository",
+                    needle,
+                  )
+                    ? [
+                        {
+                          id: "command-source-git-url",
+                          title: "Git URL",
+                          description: "Clone from a remote URL",
+                          icon: (
+                            <GithubIcon className="size-4 text-icon-muted" />
+                          ),
+                          submenu: true,
+                          execute: () =>
+                            changeLocation({ kind: "project-clone" }),
+                        },
+                      ]
+                    : []),
+                ],
+              },
+            ]
+          : location.kind === "project-local"
+            ? [{ label: "Directories", items: browseItems }]
+            : location.kind === "archived"
+              ? [
                   {
-                    label:
-                      location.kind === "snooze"
-                        ? "Snooze thread"
-                        : location.kind === "copy"
-                          ? "Copy"
-                          : (archiveTarget?.title ??
-                            "Archived thread unavailable"),
-                    items: actionItems,
+                    label: "Archived threads",
+                    items: archived
+                      .filter(({ thread }) =>
+                        matchesSearch(thread.title, needle),
+                      )
+                      .map(({ thread, workspace }) => ({
+                        id: `command-archive-${thread.id}`,
+                        title: thread.title,
+                        description: workspace?.label,
+                        icon: (
+                          <ArchiveIcon className="size-4 text-icon-muted" />
+                        ),
+                        submenu: true,
+                        execute: () =>
+                          changeLocation({
+                            kind: "archive-actions",
+                            threadId: thread.id,
+                          }),
+                      })),
                   },
-                ];
+                ]
+              : location.kind === "root"
+                ? [
+                    { label: "Actions", items: actionItems },
+                    ...(!actionsOnly
+                      ? [
+                          {
+                            label: needle.trim() ? "Threads" : "Recent threads",
+                            items: threadItems,
+                          },
+                        ]
+                      : []),
+                  ]
+                : [
+                    {
+                      label:
+                        location.kind === "snooze"
+                          ? "Snooze thread"
+                          : location.kind === "copy"
+                            ? "Copy"
+                            : (archiveTarget?.title ??
+                              "Archived thread unavailable"),
+                      items: actionItems,
+                    },
+                  ];
   const items = groups.flatMap((group) => group.items);
   const active =
     items.find((item) => item.id === highlighted) ??
@@ -580,12 +767,31 @@ export function CommandPalette({
           ? "archived"
           : location.kind === "project-local"
             ? "project-sources"
-            : "root",
+            : location.kind === "project-new"
+              ? "project-sources"
+              : "root",
     });
   const archivesLoading =
     archivesOpen && archiveQueries.some((query) => query.isPending);
   const archivesFailed =
     archivesOpen && archiveQueries.some((query) => query.isError);
+  if (location.kind === "project-clone")
+    return (
+      <ProjectCloneFlow
+        cwd={cwd}
+        blocked={blocked}
+        onBack={() => changeLocation({ kind: "project-sources" })}
+        onClose={() => close(true)}
+        onStarted={async (workspace) => {
+          await client.invalidateQueries({ queryKey: ["workspaces"] });
+          await client.invalidateQueries({ queryKey: ["project-clones"] });
+          if (mounted.current) {
+            onNewThread(workspace.id);
+            close(false);
+          }
+        }}
+      />
+    );
   return (
     <Dialog
       open
@@ -609,7 +815,29 @@ export function CommandPalette({
           }
           showBackHint={location.kind !== "root"}
           inputAccessory={
-            isBrowsing ? (
+            isNewProject ? (
+              <Button
+                variant="outline"
+                size="xs"
+                tabIndex={-1}
+                className="absolute inset-e-2.5 top-1/2 -translate-y-1/2"
+                aria-label="Create (Enter)"
+                disabled={
+                  blocked ||
+                  pending !== null ||
+                  !query.trim() ||
+                  query.trim().length > 200 ||
+                  !projectsRoot.data
+                }
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void createProject()}
+              >
+                <span>{pending === "creating" ? "Creating" : "Create"}</span>
+                <KbdGroup className="pointer-events-none -me-0.5">
+                  <Kbd>Enter</Kbd>
+                </KbdGroup>
+              </Button>
+            ) : isBrowsing ? (
               <Button
                 variant="outline"
                 size="xs"
@@ -649,9 +877,10 @@ export function CommandPalette({
             ) : undefined
           }
           inputProps={{
-            className: isBrowsing
-              ? "*:data-[slot=autocomplete-input]:pe-32!"
-              : undefined,
+            className:
+              isBrowsing || isNewProject
+                ? "*:data-[slot=autocomplete-input]:pe-32!"
+                : undefined,
             ...(location.kind !== "root"
               ? {
                   startAddon: (
@@ -670,8 +899,9 @@ export function CommandPalette({
             onChange: (event) => {
               changeQuery(event.target.value);
             },
-            placeholder:
-              location.kind === "root"
+            placeholder: isNewProject
+              ? "Project name"
+              : location.kind === "root"
                 ? "Search threads or type > for actions…"
                 : location.kind === "new-thread-in"
                   ? "New thread in…"
@@ -692,6 +922,11 @@ export function CommandPalette({
             "aria-activedescendant": active?.id,
             onKeyDown: (event) => {
               if (event.nativeEvent.isComposing) return;
+              if (isNewProject && event.key === "Enter") {
+                event.preventDefault();
+                if (!event.repeat) void createProject();
+                return;
+              }
               if (location.kind === "new-thread-in") {
                 const command = resolveShortcutCommand(event, bindings, {
                   context: shortcutContext,
@@ -738,6 +973,32 @@ export function CommandPalette({
             },
           }}
         >
+          {isNewProject && projectsRoot.data ? (
+            <div className="p-2 pb-0">
+              <div className="flex min-h-8 items-center gap-2 rounded-sm px-2 py-1.5">
+                <FolderGit2Icon className="size-4 text-icon-muted" />
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-foreground text-sm">
+                    {query.trim() || "New project"}
+                  </span>
+                  <span className="truncate text-muted-foreground/85 text-xs">
+                    {query.trim()
+                      ? `Creates ${newPath}`
+                      : `Goes in ${projectsRoot.data}`}
+                  </span>
+                </span>
+              </div>
+            </div>
+          ) : null}
+          {isNewProject && projectsRoot.isError ? (
+            <div
+              role="alert"
+              className="px-4 py-2 text-sm text-error-foreground"
+            >
+              Could not load the projects folder.{" "}
+              <button onClick={() => void projectsRoot.refetch()}>Retry</button>
+            </div>
+          ) : null}
           {operationError || (isBrowsing && browse.kind === "error") ? (
             <div
               role="alert"
@@ -814,32 +1075,34 @@ export function CommandPalette({
             emptyMessage={
               blocked
                 ? "Finish the current operation before running commands."
-                : isBrowsing
-                  ? browse.kind === "loading"
-                    ? "Loading directories…"
-                    : browse.kind === "error"
-                      ? "Could not browse this directory."
-                      : "No matching directories."
-                  : location.kind === "new-thread-in"
-                    ? workspacesLoading
-                      ? "Loading projects…"
-                      : "No matching projects."
-                    : location.kind === "project-sources"
-                      ? "No matching sources."
-                      : archivesLoading
-                        ? "Loading archived threads…"
-                        : location.kind === "archived"
-                          ? "No archived threads found."
-                          : location.kind === "archive-actions" &&
-                              !archiveTarget
-                            ? "This archived thread is no longer available."
-                            : actionsOnly
-                              ? "No matching actions."
-                              : activeMessageSearch.kind === "loading"
-                                ? "Searching messages…"
-                                : activeMessageSearch.kind === "error"
-                                  ? "Message search unavailable. Title and action matches remain available."
-                                  : "No matching threads or actions."
+                : isNewProject
+                  ? ""
+                  : isBrowsing
+                    ? browse.kind === "loading"
+                      ? "Loading directories…"
+                      : browse.kind === "error"
+                        ? "Could not browse this directory."
+                        : "No matching directories."
+                    : location.kind === "new-thread-in"
+                      ? workspacesLoading
+                        ? "Loading projects…"
+                        : "No matching projects."
+                      : location.kind === "project-sources"
+                        ? "No matching sources."
+                        : archivesLoading
+                          ? "Loading archived threads…"
+                          : location.kind === "archived"
+                            ? "No archived threads found."
+                            : location.kind === "archive-actions" &&
+                                !archiveTarget
+                              ? "This archived thread is no longer available."
+                              : actionsOnly
+                                ? "No matching actions."
+                                : activeMessageSearch.kind === "loading"
+                                  ? "Searching messages…"
+                                  : activeMessageSearch.kind === "error"
+                                    ? "Message search unavailable. Title and action matches remain available."
+                                    : "No matching threads or actions."
             }
           />
           {location.kind === "root" && !actionsOnly ? (

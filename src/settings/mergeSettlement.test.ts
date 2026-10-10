@@ -36,6 +36,8 @@ function inspectPreferences(stored: unknown) {
           label: "Fixture",
           root: "/fixture",
           kind: "repository",
+          projectIcon: null,
+          faviconPath: null,
         },
       },
     });

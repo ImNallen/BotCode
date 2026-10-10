@@ -259,6 +259,15 @@ function Dismiss({
 }
 
 export const ComposerBanner = {
+  Separator: () => (
+    <span
+      aria-hidden
+      data-slot="composer-banner-separator"
+      className="mx-1 inline-block flex-none text-muted-foreground/40"
+    >
+      ·
+    </span>
+  ),
   ButtonRow,
   ListRow,
   Count,

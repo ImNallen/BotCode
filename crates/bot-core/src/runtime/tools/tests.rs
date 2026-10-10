@@ -39,6 +39,8 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
         root: directory.path().into(),
         label: "fixture".into(),
         kind: WorkspaceKind::Repository,
+        favicon_path: None,
+        project_icon: None,
     };
     store.workspace(&workspace).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -52,6 +54,7 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
     )
     .unwrap();
     let mut owner = Owner {
+        project_clones: Default::default(),
         tools,
         project_search: crate::project_search::ProjectSearch::default(),
         closing: false,

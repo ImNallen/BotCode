@@ -9,6 +9,35 @@ pub async fn open_workspace(app: State<'_, App>, path: String) -> Result<Workspa
     app.open_workspace(path.into()).await
 }
 #[tauri::command]
+pub async fn start_project_clone(
+    app: State<'_, App>,
+    remote_url: String,
+    destination: String,
+) -> Result<ProjectCloneStartResult> {
+    app.start_project_clone(remote_url, destination.into())
+        .await
+}
+#[tauri::command]
+pub async fn project_clones(app: State<'_, App>) -> Result<Vec<ProjectCloneSnapshot>> {
+    app.project_clones().await
+}
+#[tauri::command]
+pub async fn cancel_project_clone(app: State<'_, App>, workspace_id: WorkspaceId) -> Result<bool> {
+    app.cancel_project_clone(workspace_id).await
+}
+#[tauri::command]
+pub async fn retry_project_clone(app: State<'_, App>, workspace_id: WorkspaceId) -> Result<bool> {
+    app.retry_project_clone(workspace_id).await
+}
+#[tauri::command]
+pub fn new_projects_root(app: State<'_, App>) -> String {
+    app.new_projects_root().to_string_lossy().into_owned()
+}
+#[tauri::command]
+pub async fn create_new_project(app: State<'_, App>, name: String) -> Result<NewProjectResult> {
+    app.create_new_project(name).await
+}
+#[tauri::command]
 pub async fn rename_workspace(
     app: State<'_, App>,
     workspace_id: WorkspaceId,
@@ -19,6 +48,23 @@ pub async fn rename_workspace(
 #[tauri::command]
 pub async fn remove_workspace(app: State<'_, App>, workspace_id: WorkspaceId) -> Result<()> {
     app.remove_workspace(workspace_id).await
+}
+#[tauri::command]
+pub async fn update_project_icon(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    project_icon: Option<ProjectIconOverride>,
+    favicon_path: Option<String>,
+) -> Result<Workspace> {
+    app.update_project_icon(workspace_id, project_icon, favicon_path)
+        .await
+}
+#[tauri::command]
+pub async fn project_favicon(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+) -> Result<Option<ProjectFavicon>> {
+    app.project_favicon(workspace_id).await
 }
 #[tauri::command]
 pub fn scratch_available(app: State<'_, App>) -> bool {
@@ -654,8 +700,13 @@ pub async fn rename_thread(
     app.rename_thread(thread_id, title).await
 }
 #[tauri::command]
-pub async fn delete_thread(app: State<'_, App>, thread_id: ThreadId) -> Result<DeletedWorktree> {
-    app.delete_thread(thread_id).await
+pub async fn delete_thread(
+    app: State<'_, App>,
+    thread_id: ThreadId,
+    delete_worktree: Option<bool>,
+) -> Result<DeletedWorktree> {
+    app.delete_thread_with_worktree(thread_id, delete_worktree.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]
@@ -672,6 +723,13 @@ pub async fn project_config(
     workspace_id: WorkspaceId,
 ) -> Result<ProjectConfig> {
     app.project_config(workspace_id).await
+}
+#[tauri::command]
+pub async fn project_file_config(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+) -> Result<ProjectConfig> {
+    app.project_file_config(workspace_id).await
 }
 #[tauri::command]
 pub async fn retry_worktree_setup(

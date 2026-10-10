@@ -42,6 +42,8 @@ const workspace = {
   root: "/project",
   label: "Project",
   kind: "repository" as const,
+  projectIcon: null,
+  faviconPath: null,
 };
 const row = (id: string, patch: Partial<ThreadSummary> = {}) => ({
   workspace,

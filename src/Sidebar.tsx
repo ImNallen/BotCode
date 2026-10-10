@@ -454,7 +454,11 @@ export function Sidebar({
           : () => onNewThread(row.workspace.id);
     if (action === "delete") {
       try {
-        const outcome = await confirmAndDeleteThread(row.thread, client);
+        const outcome = await confirmAndDeleteThread(
+          row.thread,
+          client,
+          preferences.storageCleanup.worktreeOnDelete,
+        );
         if (!outcome) return;
         setActionError(undefined);
         setActionStatus(

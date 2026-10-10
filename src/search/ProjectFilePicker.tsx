@@ -40,10 +40,16 @@ export function ProjectFilePicker({
   checkout,
   projectName,
   onOpenFile,
+  imageOnly = false,
+  onPickExternal,
+  externalPending,
 }: {
   checkout: CheckoutRef;
   projectName: string;
   onOpenFile: (path: string) => void;
+  imageOnly?: boolean;
+  onPickExternal?: () => void;
+  externalPending?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
@@ -51,6 +57,7 @@ export function ProjectFilePicker({
     kind: "paths",
     query,
     limit: PROJECT_FILE_PICKER_RESULT_LIMIT,
+    imageOnly,
   });
   const result =
     search.response?.kind === "paths" ? search.response.value : null;
@@ -65,22 +72,23 @@ export function ProjectFilePicker({
   };
   return (
     <CommandPaletteContent
-      escapeLabel="Back"
+      escapeLabel={imageOnly ? "Close" : "Back"}
       panelSize="tall-list"
-      testId="project-file-picker"
-      footerActionLabel="Open file"
+      testId={imageOnly ? "project-favicon-picker" : "project-file-picker"}
+      footerActionLabel={imageOnly ? "Select icon" : "Open file"}
       footerTrailing={
         <button
           className="text-xs text-muted-foreground hover:text-foreground"
-          onClick={search.refresh}
+          disabled={externalPending}
+          onClick={onPickExternal ?? search.refresh}
         >
-          Refresh
+          {onPickExternal ? "Open in Finder" : "Refresh"}
         </button>
       }
       inputProps={{
         value: query,
-        placeholder: "Search files…",
-        "aria-label": "Search files",
+        placeholder: imageOnly ? "Search image files…" : "Search files…",
+        "aria-label": imageOnly ? "Search image files" : "Search files",
         role: "combobox",
         "aria-expanded": true,
         "aria-controls": "project-file-results",
@@ -161,11 +169,19 @@ export function ProjectFilePicker({
           {search.error ??
             (search.pending
               ? query.trim()
-                ? "Searching workspace files…"
-                : "Indexing workspace files…"
+                ? imageOnly
+                  ? "Searching project files…"
+                  : "Searching workspace files…"
+                : imageOnly
+                  ? "Indexing project files…"
+                  : "Indexing workspace files…"
               : query.trim()
-                ? "No matching files."
-                : "No files found.")}
+                ? imageOnly
+                  ? "No matching image files."
+                  : "No matching files."
+                : imageOnly
+                  ? "No image files found."
+                  : "No files found.")}
         </div>
       )}
       {result?.indexCoverage.kind === "limited" ? (
@@ -173,7 +189,7 @@ export function ProjectFilePicker({
           {result.indexCoverage.reason}
         </p>
       ) : null}
-      {result ? (
+      {result && !imageOnly ? (
         <p className="px-4 pb-2 text-xs text-muted-foreground">
           {result.indexedFiles.toLocaleString()} indexed files
           {result.truncated ? ". Showing the first 200 matches." : "."}

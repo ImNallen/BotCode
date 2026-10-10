@@ -1,5 +1,5 @@
 // Ports T3 Code v0.0.45 packages/contracts/src/t3ProjectFile.ts and apps/web/src/projectScripts.ts (MIT).
-use crate::{AppError, Result};
+use crate::{AppError, Result, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -12,9 +12,15 @@ pub struct ProjectScript {
     pub command: String,
     pub icon: String,
     pub run_on_worktree_create: bool,
+    #[serde(default = "default_async")]
     pub r#async: bool,
+    #[serde(default)]
     pub preview_url: Option<String>,
+    #[serde(default)]
     pub auto_open_preview: bool,
+}
+fn default_async() -> bool {
+    true
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -172,6 +178,179 @@ pub(crate) fn read(root: &Path) -> Result<ProjectConfig> {
         )?
         .unwrap_or("recursive".into()),
     })
+}
+
+fn saved_scripts(value: &Value) -> Result<Vec<ProjectScript>> {
+    let invalid = |reason: String| {
+        AppError::new(
+            "project_actions",
+            format!("Invalid project actions: {reason}"),
+        )
+    };
+    let mut scripts: Vec<ProjectScript> =
+        serde_json::from_value(value.clone()).map_err(|error| invalid(error.to_string()))?;
+    for script in &mut scripts {
+        for (key, text) in [
+            ("id", &mut script.id),
+            ("name", &mut script.name),
+            ("command", &mut script.command),
+        ] {
+            *text = text.trim().into();
+            if text.is_empty() {
+                return Err(invalid(format!("{key} must be a nonempty string")));
+            }
+        }
+        if !["play", "test", "lint", "configure", "build", "debug"].contains(&script.icon.as_str())
+        {
+            return Err(invalid("unknown icon".into()));
+        }
+        if let Some(url) = &mut script.preview_url {
+            *url = url.trim().into();
+            if url.is_empty() {
+                return Err(invalid("previewUrl must be a nonempty string".into()));
+            }
+        }
+    }
+    Ok(scripts)
+}
+
+pub(crate) fn validate_saved_scripts(settings: &Value) -> Result<()> {
+    if let Some(value) = settings.get("defaultProjectScripts") {
+        saved_scripts(value)?;
+    }
+    if let Some(entries) = settings
+        .get("projectSettingsOverrides")
+        .and_then(Value::as_object)
+    {
+        for entry in entries.values() {
+            if let Some(value) = entry.get("defaultProjectScripts") {
+                saved_scripts(value)?;
+            }
+        }
+    }
+    if let Some(entries) = settings
+        .get("projectScriptOverrides")
+        .and_then(Value::as_object)
+    {
+        for value in entries.values().filter(|value| !value.is_null()) {
+            saved_scripts(value)?;
+        }
+    }
+    Ok(())
+}
+
+// Ports T3 Code v0.0.45 packages/shared/src/projectScripts.ts (MIT).
+pub(crate) fn resolve(
+    root: &Path,
+    settings_path: &Path,
+    id: &WorkspaceId,
+) -> Result<ProjectConfig> {
+    let mut config = read(root).unwrap_or_else(|_| ProjectConfig {
+        scripts: vec![],
+        icon_path: None,
+        default_thread_env_mode: None,
+        worktree_submodules: "recursive".into(),
+    });
+    let settings: Value = crate::settings::read(settings_path)?
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let id = id.to_string();
+    let project = settings["projectSettingsOverrides"].get(&id);
+    let override_scripts = project.and_then(|entry| entry.get("defaultProjectScripts"));
+    let defaults = settings.get("defaultProjectScripts");
+    let legacy = settings["projectScriptOverrides"].get(&id);
+    let scripts = if let Some(value) = override_scripts {
+        Some(value)
+    } else if settings["projectSettingsFolded"].as_bool() == Some(true) {
+        defaults
+    } else {
+        match legacy {
+            Some(Value::Null) => defaults,
+            Some(value) => Some(value),
+            None => defaults,
+        }
+    };
+    config.scripts = scripts.map(saved_scripts).transpose()?.unwrap_or_default();
+    Ok(config)
+}
+
+// Ports T3 Code v0.0.45 apps/server/src/serverSettings.ts foldLegacyProjectSettings (MIT).
+pub(crate) fn fold_saved_scripts(
+    path: &Path,
+    workspaces: &std::collections::HashMap<WorkspaceId, crate::Workspace>,
+    new_project: bool,
+) -> Result<()> {
+    let mut value: Value = match crate::settings::read(path)? {
+        None => serde_json::json!({}),
+        Some(text) => match serde_json::from_str(&text) {
+            Ok(value) if Value::is_object(&value) => value,
+            _ => return Ok(()),
+        },
+    };
+    if value["projectSettingsFolded"].as_bool() == Some(true) {
+        return Ok(());
+    }
+    if validate_saved_scripts(&value).is_err() {
+        return Ok(());
+    }
+    let legacy = value["projectScriptOverrides"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if workspaces.is_empty() && legacy.is_empty() && !new_project {
+        return Ok(());
+    }
+    let mut entries = value["projectSettingsOverrides"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let set = |entries: &mut serde_json::Map<String, Value>, id: String, scripts: Value| {
+        let entry = entries.entry(id).or_insert_with(|| serde_json::json!({}));
+        if let Some(entry) = entry.as_object_mut() {
+            entry.entry("defaultProjectScripts").or_insert(scripts);
+        }
+    };
+    for (id, scripts) in &legacy {
+        if !scripts.is_null() {
+            set(
+                &mut entries,
+                id.clone(),
+                serde_json::to_value(saved_scripts(scripts)?)?,
+            );
+        }
+    }
+    for workspace in workspaces
+        .values()
+        .filter(|workspace| workspace.kind == crate::WorkspaceKind::Repository)
+    {
+        let id = workspace.id.to_string();
+        if legacy.get(&id).is_some_and(Value::is_null) {
+            continue;
+        }
+        let scripts = read(&workspace.root)
+            .map(|config| config.scripts)
+            .unwrap_or_default();
+        if !scripts.is_empty() {
+            set(&mut entries, id, serde_json::to_value(scripts)?);
+        }
+    }
+    entries.retain(|_, entry| entry.as_object().is_some_and(|entry| !entry.is_empty()));
+    value["projectSettingsOverrides"] = Value::Object(entries);
+    value["projectSettingsFolded"] = Value::Bool(true);
+    derive_legacy_scripts(&mut value);
+    crate::settings::write(
+        path,
+        &format!("{}\n", serde_json::to_string_pretty(&value)?),
+    )
+}
+pub(crate) fn derive_legacy_scripts(settings: &mut Value) {
+    let entries = settings["projectSettingsOverrides"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, entry)| Some((id.clone(), entry.get("defaultProjectScripts")?.clone())))
+        .collect();
+    settings["projectScriptOverrides"] = Value::Object(entries);
 }
 fn jsonc(input: &str) -> Result<String> {
     let mut bytes = input.as_bytes().to_vec();

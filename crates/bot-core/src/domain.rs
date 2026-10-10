@@ -87,6 +87,10 @@ pub struct Workspace {
     pub label: String,
     #[serde(default)]
     pub kind: WorkspaceKind,
+    #[serde(default)]
+    pub favicon_path: Option<String>,
+    #[serde(default)]
+    pub project_icon: Option<crate::ProjectIconOverride>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]

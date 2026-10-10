@@ -74,6 +74,8 @@ export type PalettePage =
   | "new-thread-in"
   | "project-sources"
   | "project-local"
+  | "project-new"
+  | "project-clone"
   | "archive-actions";
 export type ActionContext = {
   pageOpen: boolean;
@@ -221,6 +223,26 @@ const definitions = {
     submenu: true,
     available: () => true,
     run: (c) => c.openSubmenu("project-sources"),
+  },
+  "project.new": {
+    icon: FolderPlusIcon,
+    title: "New project",
+    keywords: "create empty repository git init",
+    group: "Navigation",
+    palette: "root",
+    submenu: true,
+    available: () => true,
+    run: (c) => c.openSubmenu("project-new"),
+  },
+  "project.clone": {
+    icon: GitBranchIcon,
+    title: "Clone repository",
+    keywords: "git URL local project",
+    group: "Navigation",
+    palette: "root",
+    submenu: true,
+    available: () => true,
+    run: (c) => c.openSubmenu("project-clone"),
   },
   "chat.newWithoutProject": {
     icon: MessageSquareDashedIcon,

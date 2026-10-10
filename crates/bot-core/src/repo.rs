@@ -472,6 +472,8 @@ pub fn diff(root: &Path, path: &str, basis: DiffBasis) -> Result<DiffView> {
             root: root.into(),
             label: String::new(),
             kind: WorkspaceKind::Repository,
+            favicon_path: None,
+            project_icon: None,
         },
         vec![],
     )?;

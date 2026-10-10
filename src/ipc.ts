@@ -4,6 +4,7 @@ import {
   publishReadiness,
   type PublishInput,
 } from "./chat/publishRepository";
+import { projectCloneSnapshot } from "./project/clones";
 import {
   pullRequestStack,
   prStackChange,
@@ -292,11 +293,61 @@ const approval = z.object({
     }),
   ]),
 });
+const projectIconColor = z.enum([
+  "gray",
+  "red",
+  "orange",
+  "amber",
+  "yellow",
+  "lime",
+  "green",
+  "emerald",
+  "teal",
+  "cyan",
+  "sky",
+  "blue",
+  "indigo",
+  "violet",
+  "purple",
+  "fuchsia",
+  "pink",
+  "rose",
+]);
+const projectIcon = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("lucide"),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    color: projectIconColor,
+  }),
+  z.object({
+    kind: z.literal("emoji"),
+    emoji: z.string().trim().min(1).max(32),
+  }),
+  z.object({
+    kind: z.literal("monogram"),
+    text: z
+      .string()
+      .trim()
+      .min(1)
+      .max(32)
+      .regex(/^[\p{L}\p{N}][\p{L}\p{N}\p{M}\u200c\u200d]*$/u),
+    color: projectIconColor,
+  }),
+]);
+export type ProjectIconColor = z.infer<typeof projectIconColor>;
+export type ProjectIconOverride = z.infer<typeof projectIcon>;
 const workspace = z.object({
   id,
   root: z.string(),
   label: z.string(),
   kind: z.enum(["repository", "scratch"]),
+  projectIcon: projectIcon.nullable().optional().default(null),
+  faviconPath: z.string().nullable().optional().default(null),
 });
 const browseDirectory = z.object({
   path: z.string(),
@@ -430,14 +481,14 @@ const turnDiff = z.discriminatedUnion("kind", [
   reason,
 ]);
 export const projectScript = z.object({
-  id: z.string(),
-  name: z.string(),
-  command: z.string(),
-  icon: z.string(),
+  id: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  command: z.string().trim().min(1),
+  icon: z.enum(["play", "test", "lint", "configure", "build", "debug"]),
   runOnWorktreeCreate: z.boolean(),
-  async: z.boolean(),
-  previewUrl: z.string().nullable(),
-  autoOpenPreview: z.boolean(),
+  async: z.boolean().default(true),
+  previewUrl: z.string().trim().min(1).nullable().optional().default(null),
+  autoOpenPreview: z.boolean().default(false),
 });
 export const projectConfig = z.object({
   scripts: z.array(projectScript),
@@ -949,6 +1000,8 @@ async function call<S extends z.ZodType>(
 export const ipc = {
   searchThreadMessages: (query: string) =>
     call("search_thread_messages", { query }, threadMessageSearch),
+  projectFileConfig: (workspaceId: string) =>
+    call("project_file_config", { workspaceId }, projectConfig),
   projectConfig: (workspaceId: string) =>
     call("project_config", { workspaceId }, projectConfig),
   retryWorktreeSetup: (threadId: string) =>
@@ -985,10 +1038,50 @@ export const ipc = {
     call("unlink_pull_request", { threadId, key }, threadPrSummary),
   workspaces: () => call("list_workspaces", {}, z.array(workspace)),
   openWorkspace: (path: string) => call("open_workspace", { path }, workspace),
+  newProjectsRoot: () => call("new_projects_root", {}, z.string()),
+  projectClones: () =>
+    call("project_clones", {}, z.array(projectCloneSnapshot)),
+  startProjectClone: (remoteUrl: string, destination: string) =>
+    call(
+      "start_project_clone",
+      { remoteUrl, destination },
+      z.object({ workspace, snapshot: projectCloneSnapshot }),
+    ),
+  cancelProjectClone: (workspaceId: string) =>
+    call("cancel_project_clone", { workspaceId }, z.boolean()),
+  retryProjectClone: (workspaceId: string) =>
+    call("retry_project_clone", { workspaceId }, z.boolean()),
+  createNewProject: (name: string) =>
+    call(
+      "create_new_project",
+      { name },
+      z.object({ workspace, commitError: z.string().nullable() }),
+    ),
   browseDirectory: (path: string, cwd?: string) =>
     call("browse_directory", { path, cwd }, browseDirectory),
   renameWorkspace: (workspaceId: string, label: string) =>
     call("rename_workspace", { workspaceId, label }, workspace),
+  updateProjectIcon: (
+    workspaceId: string,
+    projectIcon: ProjectIconOverride | null,
+    faviconPath: string | null,
+  ) =>
+    call(
+      "update_project_icon",
+      { workspaceId, projectIcon, faviconPath },
+      workspace,
+    ),
+  projectFavicon: (workspaceId: string) =>
+    call(
+      "project_favicon",
+      { workspaceId },
+      z
+        .object({
+          path: z.string(),
+          dataUrl: z.string().startsWith("data:image/"),
+        })
+        .nullable(),
+    ),
   removeWorkspace: (workspaceId: string) =>
     call("remove_workspace", { workspaceId }, z.null()),
   scratchAvailable: () => call("scratch_available", {}, z.boolean()),
@@ -1003,7 +1096,12 @@ export const ipc = {
     { workspaceId, threadId }: CheckoutRef,
     caller: string,
     sequence: number,
-    input: { query: string; limit: number; refresh?: boolean },
+    input: {
+      query: string;
+      limit: number;
+      refresh?: boolean;
+      imageOnly?: boolean;
+    },
   ) =>
     call(
       "search_paths",
@@ -1362,10 +1460,10 @@ export const ipc = {
     call("list_thread_summaries", { workspaceId }, z.array(threadSummary)),
   renameThread: (threadId: string, title: string) =>
     call("rename_thread", { threadId, title }, thread),
-  deleteThread: (threadId: string) =>
+  deleteThread: (threadId: string, deleteWorktree = false) =>
     call(
       "delete_thread",
-      { threadId },
+      { threadId, ...(deleteWorktree ? { deleteWorktree: true } : {}) },
       z.discriminatedUnion("kind", [
         z.object({ kind: z.literal("not_requested") }),
         z.object({ kind: z.literal("removed") }),
