@@ -1,5 +1,7 @@
 #![cfg(unix)]
 #![allow(clippy::disallowed_methods)]
+#[path = "support/polling.rs"]
+mod polling;
 use bot_core::*;
 use std::{
     os::unix::fs::PermissionsExt,
@@ -874,9 +876,9 @@ async fn git_actions_and_codex_turns_exclude_each_other() {
         &f.repository.join(".git"),
         "pre-commit",
         &format!(
-            "touch {}; while [ ! -e {} ]; do sleep 0.05; done",
+            "touch {}; {}",
             started.display(),
-            go.display()
+            polling::wait_for_file(&format!("'{}'", go.display()))
         ),
     );
     let action = {
@@ -954,7 +956,7 @@ async fn the_checkout_is_released_when_the_caller_stops_waiting() {
     f.hook(
         &f.repository.join(".git"),
         "pre-commit",
-        &format!("while [ ! -e {} ]; do sleep 0.05; done", go.display()),
+        &polling::wait_for_file(&format!("'{}'", go.display())),
     );
     let (app, workspace) = f.open().await;
     let dropped = tokio::time::timeout(
@@ -1947,7 +1949,14 @@ async fn hook_output_streams_while_blocked_and_named_lifecycle_flushes_before_co
     let f = Fixture::new();
     std::fs::write(f.repository.join("selected.txt"), "content\n").unwrap();
     let go = f.dir.path().join("release-streaming-hook");
-    f.hook(&f.repository.join(".git"), "pre-commit", &format!("printf 'first\\rsecond\\n'; echo error-line >&2; while [ ! -e '{}' ]; do sleep 0.05; done; printf trailing", go.display()));
+    f.hook(
+        &f.repository.join(".git"),
+        "pre-commit",
+        &format!(
+            "printf 'first\\rsecond\\n'; echo error-line >&2; {}; printf trailing",
+            polling::wait_for_file(&format!("'{}'", go.display()))
+        ),
+    );
     let (app, workspace) = f.open().await;
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();

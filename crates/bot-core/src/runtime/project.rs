@@ -13,6 +13,9 @@ impl Owner {
     }
     pub(super) fn initialize_setup(&mut self, id: &ThreadId, config: ProjectConfig) -> Result<()> {
         let mut thread = self.thread(id)?.clone();
+        if let Some(setup) = &thread.worktree_setup {
+            self.stop_setup(setup)?;
+        }
         thread.worktree_setup = setup_for(&thread.checkout, config);
         self.install(thread)?;
         self.begin_setup(id);
@@ -35,6 +38,37 @@ impl Owner {
     }
     fn setup_dir(&self, setup: &WorktreeSetup) -> PathBuf {
         self.config.data_dir.join("worktree-setup").join(&setup.id)
+    }
+    pub(super) fn stop_setup(&self, setup: &WorktreeSetup) -> Result<()> {
+        let dir = self.setup_dir(setup);
+        if !dir.exists() || lock_attempt(&dir)?.is_some() {
+            return Ok(());
+        }
+        let pid = std::fs::read_to_string(dir.join("pid"))?
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|pid| *pid > 0 && *pid <= i32::MAX as u32)
+            .ok_or_else(|| AppError::new("setup_pid", "The setup process ID is invalid."))?;
+        crate::process::kill_tree(pid, crate::process::Kill::Polite);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        while crate::process::tree_alive(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if crate::process::tree_alive(pid) {
+            crate::process::kill_tree(pid, crate::process::Kill::Force);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        while crate::process::tree_alive(pid) || lock_attempt(&dir)?.is_none() {
+            if std::time::Instant::now() >= deadline {
+                return Err(AppError::new(
+                    "setup_busy",
+                    "The setup process did not stop.",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Ok(())
     }
     fn launch_setup(&mut self, id: &ThreadId) -> Result<()> {
         let mut thread = self.thread(id)?.clone();
@@ -100,7 +134,11 @@ impl Owner {
         let ids: Vec<_> = self
             .threads
             .values()
-            .filter(|t| t.worktree_setup.as_ref().is_some_and(WorktreeSetup::active))
+            .filter(|t| {
+                t.worktree_setup
+                    .as_ref()
+                    .is_some_and(|setup| setup.active() || !Path::new(&setup.cwd).is_dir())
+            })
             .map(|t| t.id.clone())
             .collect();
         for id in ids {
@@ -113,6 +151,19 @@ impl Owner {
         let mut thread = self.thread(id)?.clone();
         let setup = thread.worktree_setup.as_mut().unwrap();
         let dir = self.setup_dir(setup);
+        if !Path::new(&setup.cwd).is_dir() {
+            self.stop_setup(setup)?;
+            if !setup.active() {
+                return Ok(());
+            }
+            setup.state = SetupState::Interrupted {
+                reason: "The worktree was removed during setup.".into(),
+            };
+            setup.completed_at_ms = Some(now_ms());
+            self.install(thread)?;
+            self.release_setup_prompt(id);
+            return Ok(());
+        }
         if matches!(setup.state, SetupState::Pending) && !dir.exists() {
             return self.launch_setup(id);
         }
@@ -192,14 +243,7 @@ impl Owner {
         if setup.active() || matches!(setup.state, SetupState::Succeeded) {
             return Ok(thread);
         }
-        let dir = self.setup_dir(setup);
-        // The wrapper publishes its receipt before it exits and releases the lock.
-        if dir.exists() && !dir.join("receipt").exists() && lock_attempt(&dir)?.is_none() {
-            return Err(AppError::new(
-                "setup_busy",
-                "The prior setup process is still running.",
-            ));
-        }
+        self.stop_setup(setup)?;
         if !Path::new(&setup.cwd).is_dir() {
             return Err(worktree_removed());
         }
@@ -264,8 +308,7 @@ fn lock_attempt(dir: &Path) -> Result<Option<std::fs::File>> {
     }
 }
 
-/// A detached setup run that records its exit code in `receipt`. It holds the attempt's lock
-/// until it exits, so a held lock without a receipt means it is still running.
+/// A detached setup run that records its exit code in `receipt`.
 struct SetupAttempt<'a> {
     dir: &'a Path,
     #[cfg_attr(windows, allow(dead_code))]
@@ -294,13 +337,15 @@ impl SetupAttempt<'_> {
                 quote(command)
             )
         });
+        let wait_for_children = r#"while ps -eo pgid=,pid=,ppid= | awk -v group="$$" '$1 == group && $2 != group && $3 != group { found = 1 } END { exit !found }'; do sleep 0.2; done;"#;
         let wrapper = format!(
-            "echo $$ > {pid}; {submodules}; code=$?; if [ \"$code\" -ne 0 ]; then printf 'Submodule checkout failed with code %s.\\n' \"$code\"; fi; {run_script}printf '%s\\n' \"$code\" > {temp}; mv {temp} {receipt}; exit \"$code\"",
+            "echo $$ > {pid_temp}; mv {pid_temp} {pid}; {submodules}; code=$?; if [ \"$code\" -ne 0 ]; then printf 'Submodule checkout failed with code %s.\\n' \"$code\"; fi; {run_script}printf '%s\\n' \"$code\" > {temp}; mv {temp} {receipt}; {wait_for_children} exit \"$code\"",
+            pid_temp = quote(&self.dir.join("pid.child.tmp").to_string_lossy()),
             pid = quote(&self.dir.join("pid").to_string_lossy()),
             temp = quote(&self.dir.join("receipt.tmp").to_string_lossy()),
             receipt = quote(&self.dir.join("receipt").to_string_lossy())
         );
-        let mut process = crate::process::command("/bin/sh");
+        let mut process = crate::process::grouped("/bin/sh");
         let lock_fd = lock.as_raw_fd();
         unsafe {
             process.pre_exec(move || {
@@ -315,7 +360,16 @@ impl SetupAttempt<'_> {
         }
         process.arg("-c").arg(wrapper);
         configure(&mut process);
-        process.spawn()
+        let mut child = process.spawn()?;
+        let pid_temp = self.dir.join("pid.owner.tmp");
+        if let Err(error) = std::fs::write(&pid_temp, child.id().to_string())
+            .and_then(|_| std::fs::rename(&pid_temp, self.dir.join("pid")))
+        {
+            crate::process::kill_tree(child.id(), crate::process::Kill::Force);
+            let _ = child.wait();
+            return Err(error);
+        }
+        Ok(child)
     }
 
     /// Windows cannot hand a lock to a child, so the PowerShell wrapper takes it by opening
@@ -336,7 +390,7 @@ impl SetupAttempt<'_> {
             None => Default::default(),
         };
         drop(lock);
-        let mut process = crate::process::command("powershell.exe");
+        let mut process = crate::process::grouped("powershell.exe");
         process
             .args(["-NoLogo", "-NoProfile", "-NonInteractive"])
             .args(["-ExecutionPolicy", "Bypass", "-File"])
@@ -345,6 +399,29 @@ impl SetupAttempt<'_> {
             .env("BOT_CODE_SETUP_SUBMODULES", self.submodules)
             .env("BOT_CODE_SETUP_SCRIPT", script);
         configure(&mut process);
-        process.spawn()
+        let mut child = process.spawn()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if std::fs::read_to_string(self.dir.join("pid"))
+                .ok()
+                .and_then(|pid| pid.trim().parse::<u32>().ok())
+                == Some(child.id())
+            {
+                return Ok(child);
+            }
+            let error = match child.try_wait() {
+                Ok(None) if std::time::Instant::now() < deadline => None,
+                Ok(_) => Some(std::io::Error::other(
+                    "Setup did not publish its process ID.",
+                )),
+                Err(error) => Some(error),
+            };
+            if let Some(error) = error {
+                crate::process::kill_tree(child.id(), crate::process::Kill::Force);
+                let _ = child.wait();
+                return Err(error);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }

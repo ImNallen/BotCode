@@ -359,7 +359,7 @@ async fn late_head_change_retains_prepared_checkout_updates_shared_owners_and_re
 async fn pr_setup_blocks_reuse_then_exact_head_skips_rerun_and_preserves_history() {
     let f = Fixture::new();
     let head = prepare_fixture(&f);
-    std::fs::write(f.root.join("t3.json"), json!({"scripts":[{"name":"Install","command":"echo once >> \"$T3CODE_PROJECT_ROOT/count\"; while [ ! -e \"$T3CODE_PROJECT_ROOT/release\" ]; do sleep 0.05; done", "runOnWorktreeCreate":true}]}).to_string()).unwrap();
+    std::fs::write(f.root.join("t3.json"), json!({"scripts":[{"name":"Install","command":format!("echo once >> \"$T3CODE_PROJECT_ROOT/count\"; {}", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")), "runOnWorktreeCreate":true}]}).to_string()).unwrap();
     let (app, source) = f.open().await;
     let created = app
         .prepare_pull_request_thread(request(

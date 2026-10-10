@@ -1,5 +1,7 @@
 #![cfg(unix)]
 #![allow(clippy::disallowed_methods)]
+#[path = "support/polling.rs"]
+mod polling;
 use bot_core::*;
 use std::{os::unix::fs::PermissionsExt, process::Command, time::Duration};
 struct Fixture {
@@ -5426,6 +5428,277 @@ async fn setup_thread(f: &Fixture, app: &App, script: serde_json::Value) -> Thre
     .await
     .unwrap()
 }
+async fn setup_pid(f: &Fixture, thread: &ThreadSnapshot) -> i32 {
+    let pid = f
+        .config
+        .data_dir
+        .join("worktree-setup")
+        .join(&thread.worktree_setup.as_ref().unwrap().id)
+        .join("pid");
+    assert!(
+        eventually(|| std::fs::read_to_string(&pid).is_ok_and(|v| v.trim().parse::<i32>().is_ok()))
+            .await
+    );
+    std::fs::read_to_string(pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn project_setup_thread_deletion_stops_wrapper_and_stubborn_child() {
+    let mut f = Fixture::new();
+    f.config.shell = Some("/bin/bash".into());
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    for remove in [false, true] {
+        app.save_settings(
+            &serde_json::json!({"storageCleanup":{"worktreeOnDelete":remove}}).to_string(),
+        )
+        .await
+        .unwrap();
+        let trap = if remove { "exec 198>&-" } else { "" };
+        let thread = setup_thread(
+            &f,
+            &app,
+            serde_json::json!({
+                "name":"Install",
+                "command":format!("trap '{trap}' TERM; echo $$ > \"$T3CODE_PROJECT_ROOT/setup-child\"; {}", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")),
+                "runOnWorktreeCreate":true
+            }),
+        ).await;
+        let pid = setup_pid(&f, &thread).await;
+        let child_file = f.repository.join("setup-child");
+        assert!(
+            eventually(|| std::fs::read_to_string(&child_file)
+                .is_ok_and(|v| v.trim().parse::<i32>().is_ok()))
+            .await
+        );
+        let child = std::fs::read_to_string(&child_file)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        assert_eq!(unsafe { libc::kill(child, 0) }, 0);
+        let (path, _) = worktree(&thread.checkout);
+        let outcome = app.delete_thread(thread.id.clone()).await.unwrap();
+        if remove {
+            assert!(matches!(outcome, DeletedWorktree::Removed));
+        } else {
+            assert!(matches!(outcome, DeletedWorktree::NotRequested));
+        }
+        assert_eq!(path.exists(), !remove);
+        assert!(
+            wait_until_dead(pid).await,
+            "setup wrapper survived thread deletion"
+        );
+        assert!(
+            wait_until_dead(child).await,
+            "setup child survived thread deletion"
+        );
+        assert!(
+            eventually(|| unsafe { libc::kill(-pid, 0) } != 0).await,
+            "setup process group survived thread deletion"
+        );
+        std::fs::remove_file(child_file).unwrap();
+    }
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_setup_immediate_thread_deletion_stops_new_attempt() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = setup_thread(
+        &f,
+        &app,
+        serde_json::json!({
+            "name":"Install",
+            "command":polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\""),
+            "runOnWorktreeCreate":true
+        }),
+    )
+    .await;
+    app.delete_thread(thread.id.clone()).await.unwrap();
+    let pid = setup_pid(&f, &thread).await;
+    assert!(
+        wait_until_dead(pid).await,
+        "new setup survived immediate deletion"
+    );
+    assert!(eventually(|| unsafe { libc::kill(-pid, 0) } != 0).await);
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_setup_external_worktree_removal_stops_attempt() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    for completed in [false, true] {
+        let polling = polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"");
+        let command = if completed {
+            format!("({polling}) & echo $! > \"$T3CODE_PROJECT_ROOT/setup-child\"; exit 0")
+        } else {
+            format!("echo $$ > \"$T3CODE_PROJECT_ROOT/setup-child\"; {polling}")
+        };
+        let thread = setup_thread(
+            &f,
+            &app,
+            serde_json::json!({
+                "name":"Install",
+                "command":command,
+                "runOnWorktreeCreate":true
+            }),
+        )
+        .await;
+        let pid = setup_pid(&f, &thread).await;
+        let child_file = f.repository.join("setup-child");
+        assert!(
+            eventually(|| std::fs::read_to_string(&child_file)
+                .is_ok_and(|v| v.trim().parse::<i32>().is_ok()))
+            .await
+        );
+        let child = std::fs::read_to_string(&child_file)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        assert_eq!(unsafe { libc::kill(child, 0) }, 0);
+        if completed {
+            wait(&app, &thread.id, |t| {
+                matches!(
+                    t.worktree_setup.as_ref().unwrap().state,
+                    SetupState::Succeeded
+                )
+            })
+            .await;
+        }
+        let (path, _) = worktree(&thread.checkout);
+        git_output(
+            &f.repository,
+            &["worktree", "remove", "--force", &path.to_string_lossy()],
+        );
+        if !completed {
+            wait(&app, &thread.id, |t| {
+                matches!(
+                    t.worktree_setup.as_ref().unwrap().state,
+                    SetupState::Interrupted { .. }
+                )
+            })
+            .await;
+        }
+        assert!(
+            wait_until_dead(pid).await,
+            "setup survived worktree removal"
+        );
+        assert!(
+            wait_until_dead(child).await,
+            "setup child survived worktree removal"
+        );
+        assert!(eventually(|| unsafe { libc::kill(-pid, 0) } != 0).await);
+        std::fs::remove_file(child_file).unwrap();
+    }
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_setup_retry_stops_children_left_by_failed_attempt() {
+    let f = Fixture::new();
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = setup_thread(&f, &app, serde_json::json!({
+        "name":"Install",
+        "command":format!("if [ -e \"$T3CODE_PROJECT_ROOT/attempted\" ]; then exit 0; fi; touch \"$T3CODE_PROJECT_ROOT/attempted\"; ({}) & echo $! > \"$T3CODE_PROJECT_ROOT/setup-child\"; exit 7", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")),
+        "runOnWorktreeCreate":true
+    })).await;
+    let pid = setup_pid(&f, &thread).await;
+    wait(&app, &thread.id, |t| {
+        matches!(
+            t.worktree_setup.as_ref().unwrap().state,
+            SetupState::Failed {
+                exit_code: Some(7),
+                ..
+            }
+        )
+    })
+    .await;
+    let child = std::fs::read_to_string(f.repository.join("setup-child"))
+        .unwrap()
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::kill(child, 0) },
+        0,
+        "failed attempt must still have a live child"
+    );
+    let retried = app.retry_worktree_setup(thread.id.clone()).await.unwrap();
+    assert_ne!(
+        retried.worktree_setup.as_ref().unwrap().id,
+        thread.worktree_setup.as_ref().unwrap().id
+    );
+    assert!(
+        wait_until_dead(child).await,
+        "old setup child survived retry"
+    );
+    assert!(eventually(|| unsafe { libc::kill(-pid, 0) } != 0).await);
+    wait(&app, &thread.id, |t| {
+        matches!(
+            t.worktree_setup.as_ref().unwrap().state,
+            SetupState::Succeeded
+        )
+    })
+    .await;
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_setup_cleanup_stops_children_left_by_completed_attempt() {
+    let mut f = Fixture::new();
+    f.config.shell = Some("/bin/bash".into());
+    f.commit();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = setup_thread(&f, &app, serde_json::json!({
+        "name":"Install",
+        "command":format!("(exec 198>&-; {}) & echo $! > \"$T3CODE_PROJECT_ROOT/setup-child\"; exit 0", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")),
+        "runOnWorktreeCreate":true
+    })).await;
+    let pid = setup_pid(&f, &thread).await;
+    wait(&app, &thread.id, |t| {
+        matches!(
+            t.worktree_setup.as_ref().unwrap().state,
+            SetupState::Succeeded
+        )
+    })
+    .await;
+    let child = std::fs::read_to_string(f.repository.join("setup-child"))
+        .unwrap()
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::kill(child, 0) },
+        0,
+        "completed attempt must still have a live child"
+    );
+    let (path, _) = worktree(&thread.checkout);
+    app.save_settings(r#"{"storageCleanup":{"worktreeAfterDays":null,"worktreeUnchanged":true}}"#)
+        .await
+        .unwrap();
+    app.sweep_worktrees_at(u64::MAX / 2).await;
+    assert!(!path.exists(), "cleanup did not remove the worktree");
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), wait_until_dead(child))
+            .await
+            .unwrap_or(false),
+        "setup child survived worktree cleanup"
+    );
+    assert!(eventually(|| unsafe { libc::kill(-pid, 0) } != 0).await);
+    app.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn project_setup_runs_after_submodule_failure_without_replaying_success() {
     let f = Fixture::new();
@@ -5505,7 +5778,7 @@ async fn project_setup_waits_before_checkpoint_then_releases_failed_turn() {
         &app,
         serde_json::json!({
             "name": "Install",
-            "command": "while [ ! -e \"$T3CODE_PROJECT_ROOT/release\" ]; do sleep 0.05; done; echo prepared > dependency; echo setup-output; exit 7",
+            "command": format!("{}; echo prepared > dependency; echo setup-output; exit 7", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")),
             "runOnWorktreeCreate": true,
             "async": false
         }),
@@ -5568,7 +5841,7 @@ async fn project_setup_receipt_survives_restart_and_completed_retry_is_noop() {
         &app,
         serde_json::json!({
             "name": "Install",
-            "command": "echo once >> \"$T3CODE_PROJECT_ROOT/count\"; while [ ! -e \"$T3CODE_PROJECT_ROOT/release\" ]; do sleep 0.05; done; echo done",
+            "command": format!("echo once >> \"$T3CODE_PROJECT_ROOT/count\"; {}; echo done", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")),
             "runOnWorktreeCreate": true
         }),
     )
@@ -5718,7 +5991,7 @@ async fn project_setup_async_default_and_live_restart_do_not_duplicate_process()
     let f = Fixture::new();
     f.commit();
     let app = App::open(f.config.clone()).await.unwrap();
-    let thread=setup_thread(&f,&app,serde_json::json!({"name":"Install","command":"echo once >> \"$T3CODE_PROJECT_ROOT/count\"; while [ ! -e \"$T3CODE_PROJECT_ROOT/release\" ]; do sleep 0.05; done","runOnWorktreeCreate":true})).await;
+    let thread=setup_thread(&f,&app,serde_json::json!({"name":"Install","command":format!("echo once >> \"$T3CODE_PROJECT_ROOT/count\"; {}", polling::wait_for_file("\"$T3CODE_PROJECT_ROOT/release\"")),"runOnWorktreeCreate":true})).await;
     app.submit(
         thread.id.clone(),
         "async-turn".into(),
