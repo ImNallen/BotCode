@@ -340,6 +340,7 @@ dependencies = [
  "base64 0.22.1",
  "block2",
  "bot-core",
+ "cc",
  "dunce",
  "objc2",
  "objc2-app-kit",

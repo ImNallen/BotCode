@@ -18,6 +18,7 @@ pub(crate) async fn generate(
     cancel: &mut watch::Receiver<bool>,
     limit: Duration,
 ) -> Result<String> {
+    let binary = crate::onboarding::resolve_binary(binary);
     let cwd = tempfile::tempdir()?;
     let schema = cwd.path().join("schema.json");
     let output = cwd.path().join("response.json");
@@ -42,7 +43,7 @@ pub(crate) async fn generate(
     }
     args.push("-");
     let result = vcs::Tool {
-        program: binary,
+        program: &binary,
         cwd: cwd.path(),
     }
     .run_with_input(&args, limit, OUTPUT_BYTES, cancel, Some(prompt.as_bytes()))

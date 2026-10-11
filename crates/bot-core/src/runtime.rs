@@ -66,7 +66,9 @@ impl RuntimeConfig {
             });
         Ok(Self {
             data_dir,
-            codex_binary: vcs::installed_binary("codex", "BOT_CODE_CODEX_BIN"),
+            codex_binary: std::env::var_os("BOT_CODE_CODEX_BIN")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| "codex".into()),
             gh_binary: vcs::installed_binary("gh", "BOT_CODE_GH_BIN"),
             network_timeout: Duration::from_secs(180),
             shell: std::env::var_os("BOT_CODE_SHELL").map(PathBuf::from),
@@ -342,6 +344,7 @@ pub struct App {
     script_dialect: crate::project::Dialect,
     log: RotatingLog,
     terminals: Terminals,
+    setup_terminals: Terminals,
     attachments: Attachments,
     project_search: crate::project_search::ProjectSearch,
 }
@@ -496,6 +499,7 @@ impl App {
                 crate::project::Dialect::of(&shell)
             });
         let terminals = Terminals::new(config.shell.clone());
+        let setup_terminals = Terminals::new(config.shell.clone());
         let settings = config.data_dir.join("settings.json");
         crate::project::fold_saved_scripts(&settings, &workspaces, false)?;
         let keybindings = Arc::new(crate::keybindings::Keybindings::new(
@@ -595,6 +599,7 @@ impl App {
             script_dialect,
             log,
             terminals,
+            setup_terminals,
             attachments,
             project_search,
         };
@@ -1704,8 +1709,102 @@ impl App {
         let clones = self.project_clones.shutdown().await;
         self.project_search.invalidate();
         self.close_terminals(|_| true).await?;
+        let terminals = self.setup_terminals.clone();
+        tokio::task::spawn_blocking(move || terminals.close(|_| true))
+            .await
+            .map_err(|error| AppError::new("terminal", error))?;
         self.call(Command::Shutdown).await?;
         clones
+    }
+    pub async fn codex_readiness(&self) -> crate::CodexReadiness {
+        crate::onboarding::readiness(&self.codex, &self.discovery_root).await
+    }
+    fn setup_terminal_key(terminal: TerminalId) -> TerminalKey {
+        TerminalKey {
+            workspace: WorkspaceId(uuid::Uuid::nil()),
+            thread: None,
+            terminal,
+        }
+    }
+    pub async fn setup_terminal_open(
+        &self,
+        terminal_id: TerminalId,
+        action: crate::CodexSetupAction,
+    ) -> Result<String> {
+        let cwd = self.discovery_root.join("agent-setup");
+        std::fs::create_dir_all(&cwd)?;
+        let command = crate::onboarding::setup_command(action, &self.codex);
+        let key = Self::setup_terminal_key(terminal_id);
+        let terminals = self.setup_terminals.clone();
+        let typed = command.clone();
+        tokio::task::spawn_blocking(move || {
+            let subscription = terminals
+                .attach(
+                    key.clone(),
+                    Some(&cwd),
+                    TerminalSize::new(80, 24)?,
+                    Arc::new(|_| {}),
+                )?
+                .ok_or_else(|| AppError::new("terminal", "The setup terminal did not start."))?;
+            terminals.detach(subscription);
+            if let Err(error) = terminals.write(&key, typed.as_bytes()) {
+                terminals.close(|candidate| *candidate == key);
+                return Err(error);
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| AppError::new("terminal", error))??;
+        Ok(command)
+    }
+    pub async fn setup_terminal_attach(
+        &self,
+        terminal_id: TerminalId,
+        cols: u16,
+        rows: u16,
+        on_event: impl Fn(TerminalEvent) + Send + Sync + 'static,
+    ) -> Result<u64> {
+        let terminals = self.setup_terminals.clone();
+        let key = Self::setup_terminal_key(terminal_id);
+        let size = TerminalSize::new(cols, rows)?;
+        tokio::task::spawn_blocking(move || terminals.attach(key, None, size, Arc::new(on_event)))
+            .await
+            .map_err(|error| AppError::new("terminal", error))??
+            .ok_or_else(|| AppError::new("terminal", "The setup terminal is closed."))
+    }
+    pub fn setup_terminal_detach(&self, subscription: u64) {
+        self.setup_terminals.detach(subscription);
+    }
+    pub async fn setup_terminal_write(&self, terminal_id: TerminalId, data: String) -> Result<()> {
+        if data.is_empty() || data.len() > MAX_WRITE_BYTES {
+            return Err(AppError::new(
+                "invalid_terminal_input",
+                "Invalid setup terminal input.",
+            ));
+        }
+        let key = Self::setup_terminal_key(terminal_id);
+        let terminals = self.setup_terminals.clone();
+        tokio::task::spawn_blocking(move || terminals.write(&key, data.as_bytes()))
+            .await
+            .map_err(|error| AppError::new("terminal", error))?
+    }
+    pub fn setup_terminal_resize(
+        &self,
+        terminal_id: TerminalId,
+        cols: u16,
+        rows: u16,
+    ) -> Result<()> {
+        self.setup_terminals.resize(
+            &Self::setup_terminal_key(terminal_id),
+            TerminalSize::new(cols, rows)?,
+        )
+    }
+    pub async fn setup_terminal_close(&self, terminal_id: TerminalId) -> Result<()> {
+        let key = Self::setup_terminal_key(terminal_id);
+        let terminals = self.setup_terminals.clone();
+        tokio::task::spawn_blocking(move || terminals.close(|candidate| *candidate == key))
+            .await
+            .map_err(|error| AppError::new("terminal", error))
     }
     /// Subscribes `on_event` to a terminal, starting its shell in the checkout when none runs.
     /// The first event is a history snapshot. Returns the subscription for `terminal_detach`.

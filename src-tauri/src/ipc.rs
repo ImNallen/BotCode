@@ -792,3 +792,54 @@ pub async fn prepare_pull_request_thread(
 pub async fn list_pull_requests(app: State<'_, App>, input: PrInboxInput) -> Result<PrInboxResult> {
     app.list_pull_requests(input).await
 }
+
+#[tauri::command]
+pub async fn codex_readiness(app: State<'_, App>) -> Result<CodexReadiness> {
+    Ok(app.codex_readiness().await)
+}
+#[tauri::command]
+pub async fn setup_terminal_open(
+    app: State<'_, App>,
+    terminal_id: TerminalId,
+    action: CodexSetupAction,
+) -> Result<String> {
+    app.setup_terminal_open(terminal_id, action).await
+}
+#[tauri::command]
+pub async fn setup_terminal_attach(
+    app: State<'_, App>,
+    terminal_id: TerminalId,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<TerminalEvent>,
+) -> Result<u64> {
+    app.setup_terminal_attach(terminal_id, cols, rows, move |event| {
+        let _ = on_event.send(event);
+    })
+    .await
+}
+#[tauri::command]
+pub fn setup_terminal_detach(app: State<'_, App>, subscription: u64) {
+    app.setup_terminal_detach(subscription);
+}
+#[tauri::command]
+pub async fn setup_terminal_write(
+    app: State<'_, App>,
+    terminal_id: TerminalId,
+    data: String,
+) -> Result<()> {
+    app.setup_terminal_write(terminal_id, data).await
+}
+#[tauri::command]
+pub fn setup_terminal_resize(
+    app: State<'_, App>,
+    terminal_id: TerminalId,
+    cols: u16,
+    rows: u16,
+) -> Result<()> {
+    app.setup_terminal_resize(terminal_id, cols, rows)
+}
+#[tauri::command]
+pub async fn setup_terminal_close(app: State<'_, App>, terminal_id: TerminalId) -> Result<()> {
+    app.setup_terminal_close(terminal_id).await
+}

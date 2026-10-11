@@ -9,6 +9,7 @@ import {
   Settings2Icon,
 } from "lucide-react";
 import { z } from "zod";
+import { isMac } from "../permissions/platform";
 import { actionIds, actions } from "../lib/actions";
 import type { ProjectSetting } from "./preferences";
 import type { SettingsScope } from "./settingsScope";
@@ -200,6 +201,24 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
     icon: Settings2Icon,
     scoped: true,
     groups: [
+      ...(isMac
+        ? [
+            {
+              id: "mac-permissions",
+              title: "macOS permissions",
+              hideTitle: true,
+              rows: [
+                {
+                  id: "mac-permissions-controls",
+                  title: "macOS permissions",
+                  description:
+                    "Screen Recording and Accessibility. Optional for Codex.",
+                  keywords: "screen recording accessibility permissions",
+                },
+              ],
+            },
+          ]
+        : []),
       {
         id: "application",
         title: "Application",

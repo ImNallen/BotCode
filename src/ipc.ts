@@ -912,12 +912,22 @@ export const workspaceTarget = (
   thread_id: threadId ?? null,
   path,
 });
+export const codexReadiness = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("missing") }),
+  z.object({ kind: z.literal("unauthenticated"), version: z.string() }),
+  z.object({ kind: z.literal("ready"), version: z.string() }),
+  z.object({ kind: z.literal("attention"), message: z.string() }),
+]);
+export type CodexReadiness = z.infer<typeof codexReadiness>;
+export type CodexSetupAction = "install" | "sign_in";
 export type TerminalEvent = z.infer<typeof terminalEvent>;
-export type TerminalTarget = {
-  workspaceId: string;
-  threadId: string | null;
-  terminalId: string;
-};
+export type TerminalTarget =
+  | { owner: "setup"; terminalId: string }
+  | {
+      workspaceId: string;
+      threadId: string | null;
+      terminalId: string;
+    };
 export type Branches = z.infer<typeof branches>;
 export type Branch = Branches["branches"][number];
 export type ThreadSummary = z.infer<typeof threadSummary>;
@@ -1315,8 +1325,11 @@ export const ipc = {
       gitOutcome,
     );
   },
+  codexReadiness: () => call("codex_readiness", {}, codexReadiness),
+  setupTerminalOpen: (terminalId: string, action: CodexSetupAction) =>
+    call("setup_terminal_open", { terminalId, action }, z.string()),
   terminalAttach: (
-    { workspaceId, threadId, terminalId }: TerminalTarget,
+    target: TerminalTarget,
     size: { cols: number; rows: number },
     onEvent: (event: TerminalEvent) => void,
   ) => {
@@ -1325,11 +1338,9 @@ export const ipc = {
       if (event.success) onEvent(event.data);
     });
     return call(
-      "terminal_attach",
+      "owner" in target ? "setup_terminal_attach" : "terminal_attach",
       {
-        workspaceId,
-        threadId,
-        terminalId,
+        ...target,
         cols: clamp(size.cols, 1, 1000),
         rows: clamp(size.rows, 1, 500),
         onEvent: channel,
@@ -1337,37 +1348,36 @@ export const ipc = {
       z.number(),
     );
   },
-  terminalDetach: (subscription: number) =>
-    call("terminal_detach", { subscription }, z.null()),
-  terminalWrite: async (
-    { workspaceId, threadId, terminalId }: TerminalTarget,
-    data: string,
-  ) => {
+  terminalDetach: (subscription: number, target?: TerminalTarget) =>
+    call(
+      target && "owner" in target ? "setup_terminal_detach" : "terminal_detach",
+      { subscription },
+      z.null(),
+    ),
+  terminalWrite: async (target: TerminalTarget, data: string) => {
     for (const chunk of chunkTerminalInput(data))
       await call(
-        "terminal_write",
-        { workspaceId, threadId, terminalId, data: chunk },
+        "owner" in target ? "setup_terminal_write" : "terminal_write",
+        { ...target, data: chunk },
         z.null(),
       );
   },
-  terminalResize: (
-    { workspaceId, threadId, terminalId }: TerminalTarget,
-    cols: number,
-    rows: number,
-  ) =>
+  terminalResize: (target: TerminalTarget, cols: number, rows: number) =>
     call(
-      "terminal_resize",
+      "owner" in target ? "setup_terminal_resize" : "terminal_resize",
       {
-        workspaceId,
-        threadId,
-        terminalId,
+        ...target,
         cols: clamp(cols, 1, 1000),
         rows: clamp(rows, 1, 500),
       },
       z.null(),
     ),
-  terminalClose: ({ workspaceId, threadId, terminalId }: TerminalTarget) =>
-    call("terminal_close", { workspaceId, threadId, terminalId }, z.null()),
+  terminalClose: (target: TerminalTarget) =>
+    call(
+      "owner" in target ? "setup_terminal_close" : "terminal_close",
+      target,
+      z.null(),
+    ),
   openUrl: (url: string) => call("open_url", { url }, z.null()),
   availableEditors: () => call("available_editors", {}, z.array(editorId)),
   openInEditor: (

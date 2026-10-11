@@ -24,6 +24,14 @@ A thread can also start without a project, as in T3 commit `6b286ae8a`. A launch
 
 Appearance follows the system by default. The local preferences owner in `src/settings/preferences.tsx` applies the system, light or dark choice, and the prompt and code font sizes. The macOS window keeps an overlay titlebar with native traffic lights at `{16, 28}`. That centers them in the 52px header, level with the sidebar toggle, as T3's Electron position `{16, 19}` does. Elements that carry T3's `drag-region` class also carry `data-tauri-drag-region="deep"`, which gives Tauri the same rule: the subtree drags and clickable children opt out.
 
+## First-run setup
+
+The welcome wizard ports T3 Code v0.0.45 `components/onboarding/WelcomeWizard.tsx`, limited to the local computer and Codex. It reuses the existing T3 wizard primitive, with its wide popup, progress rows, labels and class strings. **Connect** selects **This computer**. **Agents** checks the configured Codex executable and its app-server account readiness. **Install** and **Sign in** open a separate Ghostty terminal and type the source command without Enter. Closing it refreshes readiness. Leaving setup stops its terminal. Continue remains available while Codex is missing or unauthenticated, as in T3.
+
+The gate runs before the workbench and queued-message sender. It waits for an authoritative project read and saves completion durably before entering the app. Existing installations with a project skip the wizard and record completion. Failed reads and saves retain recovery. The completion timestamp survives preference resets. Other providers and remote-computer setup are omitted.
+
+Six frontend startup tests, five native readiness and setup-terminal tests, and twelve existing terminal tests passed. The packaged Tauri app was verified with disposable repositories and fresh isolated data directories. Checks covered row and checkbox selection, Escape, Ready and Not authenticated, sign-in waiting for Enter, readiness refresh, the exact pretyped installer without execution, continuing without Codex, adding a local repository, restart persistence and the existing-project skip. `scripts/verify-onboarding.py` prepares the isolated fixture and reports its saved state and local protocol calls.
+
 ## Browser preview
 
 Preview occupies an ordinary right-panel tab. Its URL row, input group, navigation controls, empty state, discovery rows, and responsive toolbar port T3 v0.0.45's preview components and browser toolbar. The launcher and **+** menu expose it in repository, folder, and no-project drafts. **B** selects it while the launcher is visible. With no page, **No preview yet** offers an address and bounded discovery of local HTTP HTML servers.

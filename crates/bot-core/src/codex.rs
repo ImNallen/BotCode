@@ -151,7 +151,9 @@ impl Codex {
         events: mpsc::Sender<Signal>,
         log: RotatingLog,
     ) -> Result<Self> {
-        let mut command = Command::from(crate::process::grouped(binary));
+        let mut command = Command::from(crate::process::grouped(
+            crate::onboarding::resolve_binary(&binary),
+        ));
         command
             .arg("app-server")
             .stdin(std::process::Stdio::piped())

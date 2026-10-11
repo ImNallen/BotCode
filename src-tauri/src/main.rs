@@ -3,6 +3,7 @@
 mod edit_history;
 mod filesystem;
 mod ipc;
+mod mac_permissions;
 mod notifications;
 mod preview;
 mod workspace_files;
@@ -105,6 +106,8 @@ fn main() {
         })
         .invoke_handler({
             let commands: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                mac_permissions::mac_permission_status,
+                mac_permissions::mac_permission_open,
                 ipc::search_thread_messages,
                 preview::preview_state,
                 preview::preview_open,
@@ -206,6 +209,13 @@ fn main() {
                 ipc::keybindings_file,
                 ipc::save_keybindings_file,
                 ipc::save_settings,
+                ipc::codex_readiness,
+                ipc::setup_terminal_open,
+                ipc::setup_terminal_attach,
+                ipc::setup_terminal_detach,
+                ipc::setup_terminal_write,
+                ipc::setup_terminal_resize,
+                ipc::setup_terminal_close,
                 ipc::terminal_attach,
                 ipc::terminal_detach,
                 ipc::terminal_write,

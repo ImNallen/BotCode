@@ -12,6 +12,8 @@ mod attachments;
 mod checkpoints;
 mod cleanup;
 mod codex;
+mod onboarding;
+pub use onboarding::{CodexReadiness, CodexSetupAction};
 mod tool_bridge;
 mod tools;
 pub use tool_bridge::run_agent_tools_stdio;
