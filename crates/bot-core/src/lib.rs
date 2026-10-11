@@ -67,7 +67,7 @@ mod settlement;
 pub use settlement::{SettlementInput, SettlementRules, settlement_at};
 mod store;
 mod terminal;
-pub use terminal::{TerminalEvent, TerminalId};
+pub use terminal::{TerminalEvent, TerminalId, TerminalLabel, TerminalLabels};
 mod usage_history;
 pub use usage_history::{UsageHistoryReport, UsageHistoryRequest, UsagePeriod};
 mod usage;

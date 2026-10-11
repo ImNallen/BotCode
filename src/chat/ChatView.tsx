@@ -180,7 +180,7 @@ import {
   ComposerContextProvider,
   type ComposerContextChannel,
 } from "./ComposerContextProvider";
-import { PersistentThreadTerminalDrawer } from "../terminal/ThreadTerminalDrawer";
+import { TerminalDrawerSlot } from "../terminal/TerminalDrawerHost";
 import {
   terminalScopeKey,
   toggleTerminalOpen,
@@ -192,6 +192,8 @@ import {
 
 import { resolveThreadEnvMode } from "./projectScripts";
 import { ProjectScriptsControl } from "./ProjectScriptsControl";
+import { ChatHeaderActions } from "./ChatHeaderActions";
+import { MenuSeparator } from "../ui/menu";
 import type { ProjectScript } from "../ipc";
 import { createPanelTerminal } from "../terminal/terminalStore";
 import { previewIpc, subscribePreview } from "../preview/ipc";
@@ -998,12 +1000,24 @@ export function ChatView({
             ),
       absolutePath: (link) =>
         link.kind === "external" || !root ? link.path : `${root}/${link.path}`,
+      previewScope: scopeForPreview(workspaceId, threadId),
     };
-  }, [view, threadId, checkoutWorkspace, checkoutThread]);
+  }, [view, workspaceId, threadId, checkoutWorkspace, checkoutThread]);
   const terminalAvailable = !(isScratch && !threadId);
   const terminalScope = terminalScopeKey(workspaceId, threadId ?? null);
   const terminalState = useTerminalState(terminalScope);
   const terminalOpen = terminalState.terminalOpen;
+  const lastTerminal = useRef({ scope: terminalScope, open: terminalOpen });
+  useEffect(() => {
+    const previous = lastTerminal.current;
+    lastTerminal.current = { scope: terminalScope, open: terminalOpen };
+    if (previous.scope !== terminalScope || !previous.open || terminalOpen)
+      return;
+    const frame = requestAnimationFrame(() =>
+      setComposerFocusRequest((current) => current + 1),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [terminalScope, terminalOpen]);
   const runScript = (script: ProjectScript) => {
     const capturedScope = previewScopeRef.current;
     const surfaceId = createPanelTerminal(terminalScope);
@@ -1830,47 +1844,67 @@ export function ChatView({
                 </h2>
               </WorkspaceBreadcrumbItem>
             </WorkspaceBreadcrumb>
-            <div
-              data-chat-header-actions
-              className={cn(
-                "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
+            <ChatHeaderActions
+              className={
                 panelOpen
                   ? "pr-0"
                   : terminalAvailable
                     ? "pr-19.25 sm:pr-15.25 @3xl/header-actions:pr-16.25"
-                    : "pr-10.25 sm:pr-7.25 @3xl/header-actions:pr-8.25",
-              )}
+                    : "pr-10.25 sm:pr-7.25 @3xl/header-actions:pr-8.25"
+              }
+              hasActions={!isScratch || checkoutOpenable || Boolean(gitThread)}
             >
-              {checkoutOpenable ? (
-                <OpenInPicker target={workspaceTarget(checkout, "")} />
-              ) : null}
-              {!isScratch ? (
-                <ProjectScriptsControl
-                  workspaceId={workspaceId}
-                  scripts={configQuery.data?.scripts ?? []}
-                  onRun={runScript}
-                />
-              ) : null}
-              {gitThread ? (
-                <GitActionsControl
-                  checkout={checkout}
-                  thread={gitThread}
-                  threads={view?.threads ?? []}
-                  onError={setError}
-                  onOpenPullRequests={() => {
-                    const links =
-                      client.getQueryData<ThreadPrSummary>([
-                        "thread-prs",
-                        gitThread.id,
-                      ])?.links ?? pullRequests;
-                    setPanel((current) =>
-                      openSurface(current, pullRequestSurface(links)),
-                    );
-                    setPanelOpen(true);
-                  }}
-                />
-              ) : null}
-            </div>
+              {(presentation, closeMenu) => (
+                <>
+                  {!isScratch ? (
+                    <ProjectScriptsControl
+                      workspaceId={workspaceId}
+                      scripts={configQuery.data?.scripts ?? []}
+                      onRun={runScript}
+                      presentation={presentation}
+                      onRequestMenuClose={closeMenu}
+                    />
+                  ) : null}
+                  {checkoutOpenable ? (
+                    <>
+                      {presentation === "menu" && !isScratch ? (
+                        <MenuSeparator />
+                      ) : null}
+                      <OpenInPicker
+                        target={workspaceTarget(checkout, "")}
+                        presentation={presentation}
+                      />
+                    </>
+                  ) : null}
+                  {gitThread ? (
+                    <>
+                      {presentation === "menu" &&
+                      (!isScratch || checkoutOpenable) ? (
+                        <MenuSeparator />
+                      ) : null}
+                      <GitActionsControl
+                        checkout={checkout}
+                        thread={gitThread}
+                        threads={view?.threads ?? []}
+                        onError={setError}
+                        onOpenPullRequests={() => {
+                          const links =
+                            client.getQueryData<ThreadPrSummary>([
+                              "thread-prs",
+                              gitThread.id,
+                            ])?.links ?? pullRequests;
+                          setPanel((current) =>
+                            openSurface(current, pullRequestSurface(links)),
+                          );
+                          setPanelOpen(true);
+                        }}
+                        presentation={presentation}
+                      />
+                    </>
+                  ) : null}
+                </>
+              )}
+            </ChatHeaderActions>
           </div>
         </header>
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -2306,33 +2340,11 @@ export function ChatView({
           </div>
         </div>
         {terminalAvailable ? (
-          <RenderErrorBoundary
-            resetKeys={[terminalScope, terminalOpen]}
-            fallback={({ error, reset }) =>
-              terminalOpen ? (
-                <div
-                  className="flex min-h-0 shrink-0 flex-col border-t border-border"
-                  style={{ height: terminalState.terminalHeight }}
-                >
-                  <ErrorView
-                    error={error}
-                    onRetry={reset}
-                    area="Terminal drawer"
-                    contained
-                  />
-                </div>
-              ) : null
-            }
-          >
-            <PersistentThreadTerminalDrawer
-              key={terminalScope}
-              workspaceId={workspaceId}
-              threadId={threadId ?? null}
-              fontSize={preferences.codeFontSize}
-              fileLinks={fileLinks}
-              onClosed={() => setComposerFocusRequest((current) => current + 1)}
-            />
-          </RenderErrorBoundary>
+          <TerminalDrawerSlot
+            workspaceId={workspaceId}
+            threadId={threadId ?? null}
+            fileLinks={fileLinks}
+          />
         ) : null}
       </div>
       {panelOpen ? (

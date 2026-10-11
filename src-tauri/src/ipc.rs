@@ -681,6 +681,10 @@ pub fn terminal_resize(
     app.terminal_resize(workspace_id, thread_id, terminal_id, cols, rows)
 }
 #[tauri::command]
+pub fn terminal_labels(app: State<'_, App>) -> TerminalLabels {
+    app.watch_terminal_labels().borrow().clone()
+}
+#[tauri::command]
 pub async fn terminal_close(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

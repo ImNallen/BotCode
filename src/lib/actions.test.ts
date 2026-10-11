@@ -283,6 +283,24 @@ it("leaves clear and new-terminal keys to the focused terminal and ignores compo
   assert.equal(matchAction(key("b"), ctx, true, "MacIntel"), "sidebar.toggle");
 });
 
+it("routes Command+J to the conversation's terminal drawer, including from a focused terminal", () => {
+  const ctx = context();
+  assert.equal(
+    matchAction(key("j"), ctx, false, "MacIntel"),
+    "terminal.toggle",
+  );
+  assert.equal(matchAction(key("j"), ctx, true, "MacIntel"), "terminal.toggle");
+  assert.equal(
+    matchAction(key("j"), { ...ctx, pageOpen: true }, false, "MacIntel"),
+    undefined,
+  );
+  assert.equal(
+    matchAction(key("j", { repeat: true }), ctx, true, "MacIntel"),
+    undefined,
+  );
+  assert.equal(matchAction(key("d"), ctx, true, "MacIntel"), undefined);
+});
+
 it("normal searches find matching actions alongside matching thread titles", () => {
   const ctx = context();
   assert.ok(ctx.thread);

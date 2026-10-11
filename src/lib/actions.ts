@@ -44,7 +44,7 @@ import {
   shortcutLabelForCommand,
 } from "../keybindings/keyboard";
 import { currentShortcutContext } from "./shortcutContext";
-import { revealLabel } from "./editors";
+import { revealInFileExplorerLabel } from "./editors";
 
 export type SidebarOperation =
   | {
@@ -350,7 +350,7 @@ const definitions = {
   },
   "editor.reveal": {
     icon: FolderTreeIcon,
-    title: revealLabel,
+    title: revealInFileExplorerLabel(),
     keywords: "folder file manager",
     group: "Navigation",
     palette: "root",
@@ -368,6 +368,7 @@ const definitions = {
     group: "Terminal",
     palette: "root",
     shortcutOwner: "terminal",
+    allowTerminal: true,
     available: (c) => !c.pageOpen && c.terminalAvailable,
     run: (c) => c.requestChat("terminal.toggle"),
   },
@@ -695,7 +696,7 @@ export function matchAction(
   });
   if (!isActionId(command)) return undefined;
   const action = actions[command];
-  return !action.shortcutOwner &&
+  return (!action.shortcutOwner || command === "terminal.toggle") &&
     (!terminalFocused || action.allowTerminal) &&
     action.available(context)
     ? command

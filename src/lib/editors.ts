@@ -1,6 +1,12 @@
-// Ported from pingdotgg/t3code v0.0.45 packages/contracts/src/editor.ts, apps/web/src/editorLabels.ts and editorPreferences.ts (MIT).
+// Ported from pingdotgg/t3code v0.0.45 packages/contracts/src/editor.ts, apps/web/src/editorLabels.ts,
+// editorPreferences.ts, components/preview/fileExplorerLabel.ts and components/chat/OpenInPicker.tsx (MIT).
+import { FolderClosedIcon } from "lucide-react";
 import { z } from "zod";
-import { isMacPlatform } from "./utils";
+import {
+  getLocalFileManagerName,
+  isMacPlatform,
+  isWindowsPlatform,
+} from "./utils";
 import {
   AntigravityIcon,
   AquaIcon,
@@ -8,6 +14,7 @@ import {
   CursorIcon,
   DataGripIcon,
   DataSpellIcon,
+  FileExplorerIcon,
   FinderIcon,
   GoLandIcon,
   IntelliJIdeaIcon,
@@ -33,7 +40,6 @@ type EditorDefinition = {
   readonly kind: "brand" | "generic";
 };
 
-// Bot Code runs only on macOS, so the file manager is always Finder.
 export const EDITORS = [
   { id: "cursor", label: "Cursor", Icon: CursorIcon, kind: "brand" },
   { id: "trae", label: "Trae", Icon: TraeIcon, kind: "brand" },
@@ -65,19 +71,57 @@ export const EDITORS = [
   { id: "rubymine", label: "RubyMine", Icon: RubyMineIcon, kind: "brand" },
   { id: "rustrover", label: "RustRover", Icon: RustRoverIcon, kind: "brand" },
   { id: "webstorm", label: "WebStorm", Icon: WebStormIcon, kind: "brand" },
-  { id: "file-manager", label: "Finder", Icon: FinderIcon, kind: "brand" },
+  {
+    id: "file-manager",
+    label: "File Manager",
+    Icon: FinderIcon,
+    kind: "brand",
+  },
 ] as const satisfies readonly EditorDefinition[];
 
-export type Editor = (typeof EDITORS)[number];
-export type EditorId = Editor["id"];
+export type EditorId = (typeof EDITORS)[number]["id"];
+export type Editor = EditorDefinition & { readonly id: EditorId };
 export const editorId = z.enum(
   EDITORS.map((editor) => editor.id) as [EditorId, ...EditorId[]],
 );
 
-export function editorById(id: EditorId): Editor {
+export function editorById(
+  id: EditorId,
+  platform: string = navigator.platform,
+): Editor {
+  if (id === "file-manager") return fileManagerEditor(platform);
   const editor = EDITORS.find((candidate) => candidate.id === id);
   if (!editor) throw new Error(`Unknown editor ${id}`);
   return editor;
+}
+
+export function fileManagerEditor(
+  platform: string = navigator.platform,
+): Editor {
+  return {
+    id: "file-manager",
+    label: editorLabelForPlatform("file-manager", platform),
+    Icon: isMacPlatform(platform)
+      ? FinderIcon
+      : isWindowsPlatform(platform)
+        ? FileExplorerIcon
+        : FolderClosedIcon,
+    kind:
+      isMacPlatform(platform) || isWindowsPlatform(platform)
+        ? "brand"
+        : "generic",
+  };
+}
+
+export function editorLabelForPlatform(
+  id: EditorId,
+  platform: string = navigator.platform,
+): string {
+  if (id === "file-manager") {
+    return getLocalFileManagerName(platform);
+  }
+
+  return EDITORS.find((editor) => editor.id === id)?.label ?? "Editor";
 }
 
 export function resolvePreferredEditor(
@@ -88,8 +132,13 @@ export function resolvePreferredEditor(
   return EDITORS.find((editor) => available.includes(editor.id))?.id ?? null;
 }
 
-export function installedEditors(available: readonly EditorId[]): Editor[] {
-  return EDITORS.filter((editor) => available.includes(editor.id));
+export function installedEditors(
+  available: readonly EditorId[],
+  platform: string = navigator.platform,
+): Editor[] {
+  return EDITORS.filter((editor) => available.includes(editor.id)).map(
+    (editor) => editorById(editor.id, platform),
+  );
 }
 
 export function openInEditorMenuLabel(id: EditorId | null): string {
@@ -98,6 +147,11 @@ export function openInEditorMenuLabel(id: EditorId | null): string {
     : `Open in ${editorById(id).label}`;
 }
 
-export const revealLabel = isMacPlatform(navigator.platform)
-  ? "Reveal in Finder"
-  : "Show in Explorer";
+export function revealInFileExplorerLabel(
+  platform: string = navigator.platform,
+): string {
+  const normalized = platform.toLowerCase();
+  if (normalized.includes("mac")) return "Reveal in Finder";
+  if (normalized.includes("win")) return "Reveal in File Explorer";
+  return "Reveal in Files";
+}

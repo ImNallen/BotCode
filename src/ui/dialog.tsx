@@ -5,6 +5,7 @@ import {
   useLayoutEffect,
   useRef,
 } from "react";
+import { createPortal } from "react-dom";
 import { XIcon } from "lucide-react";
 import { Button } from "./controls";
 import { cn } from "../lib/cn";
@@ -88,7 +89,7 @@ function ModalDialog({
     dialog?.showModal();
     return () => dialog?.close();
   }, []);
-  return (
+  const dialog = (
     <dialog
       ref={ref}
       aria-label={
@@ -168,6 +169,9 @@ function ModalDialog({
       </div>
     </dialog>
   );
+  return typeof document === "undefined"
+    ? dialog
+    : createPortal(dialog, document.body);
 }
 
 export function DialogHeader({ className, ...props }: ComponentProps<"div">) {

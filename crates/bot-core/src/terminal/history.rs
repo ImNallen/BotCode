@@ -34,9 +34,18 @@ impl History {
         }
     }
     pub fn append(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
+        let mut rest = text;
+        while !rest.is_empty() {
+            let mut end = rest.len().min(CHUNK_BYTES);
+            while !rest.is_char_boundary(end) {
+                end -= 1;
+            }
+            let (piece, tail) = rest.split_at(end);
+            self.append_piece(piece);
+            rest = tail;
         }
+    }
+    fn append_piece(&mut self, text: &str) {
         let newlines = text.matches('\n').count();
         match self.chunks.back_mut() {
             Some(last) if last.text.len() + text.len() <= CHUNK_BYTES => {

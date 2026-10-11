@@ -17,6 +17,7 @@ import {
 import { editorId } from "../lib/editors";
 import { mergeMethod } from "../panel/prIdentity";
 import { serial } from "../lib/serial";
+import { DEFAULT_LINK_TARGET, linkTargetSchema } from "../preview/linkTarget";
 
 const favoriteModelSchema = z.object({
   provider: z.string().min(1),
@@ -127,6 +128,7 @@ const schema = z.object({
   sendShortcut: sendShortcutSchema,
   // Null picks the first installed editor.
   preferredEditor: editorId.nullable(),
+  browserLinkTarget: linkTargetSchema,
   contextWindowMeter: z.boolean(),
   sidebarWorkingShelfEnabled: z.boolean(),
   favoriteModels: z.array(favoriteModelSchema),
@@ -157,6 +159,7 @@ export const defaults: Preferences = {
   composerCollapseOnScroll: true,
   sendShortcut: "enter",
   preferredEditor: null,
+  browserLinkTarget: DEFAULT_LINK_TARGET,
   contextWindowMeter: true,
   sidebarWorkingShelfEnabled: false,
   favoriteModels: [],
@@ -231,6 +234,7 @@ export function readPreferences(): PreferenceState {
         composerCollapseOnScroll: z.unknown().optional(),
         sendShortcut: z.unknown().optional(),
         preferredEditor: z.unknown().optional(),
+        browserLinkTarget: z.unknown().optional(),
         contextWindowMeter: z.unknown().optional(),
         sidebarWorkingShelfEnabled: z.unknown().optional(),
         notificationMode: z.unknown().optional(),
@@ -368,6 +372,9 @@ export function readPreferences(): PreferenceState {
           .nullable()
           .catch(null)
           .parse(object.preferredEditor ?? null),
+        browserLinkTarget: linkTargetSchema
+          .catch(defaults.browserLinkTarget)
+          .parse(object.browserLinkTarget),
         notificationMode: notificationModeSchema
           .catch("off")
           .parse(object.notificationMode),

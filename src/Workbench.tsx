@@ -53,6 +53,7 @@ import { SidebarFooter } from "./SidebarFooter";
 import { SettingsSidebar } from "./settings/SettingsPage";
 import type { SettingsSection } from "./settings/settingsCatalog";
 import { ChatView } from "./chat/ChatView";
+import { TerminalDrawerHost } from "./terminal/TerminalDrawerHost";
 import type { Surface } from "./panel/RightPanel";
 import { Button } from "./ui/controls";
 import { storage } from "./lib/storage";
@@ -746,77 +747,84 @@ export function Workbench() {
               opacity: pageOpen ? 0 : 1,
             }}
           >
-            {workspaces.isPending ||
-            availability.isPending ||
-            autoStartScratch ? null : workspaceId ? (
-              <ChatView
-                key={workspaceId}
-                workspaceId={workspaceId}
-                threadId={selection.thread}
-                prPanelRequest={prPanelRequest}
-                commandRequest={chatRequest}
-                onSelectWorkspace={selectWorkspace}
-                workspaces={repositories}
-                scratch={scratch}
-                scratchAvailable={scratchAvailable}
-                onStartScratch={() => void startScratch()}
-                onOpenRepository={() => void openRepository()}
-              />
-            ) : (
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
-                <header
-                  data-tauri-drag-region="deep"
-                  className="flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center gap-3 pl-(--workspace-gutter-start) pr-(--workspace-gutter-end) drag-region [[data-sidebar-state=collapsed]_&]:pl-[var(--workspace-titlebar-content-left)]"
+            <TerminalDrawerHost
+              workspaceIds={list.map((workspace) => workspace.id)}
+            >
+              {workspaces.isPending ||
+              availability.isPending ||
+              autoStartScratch ? null : workspaceId ? (
+                <ChatView
+                  key={workspaceId}
+                  workspaceId={workspaceId}
+                  threadId={selection.thread}
+                  prPanelRequest={prPanelRequest}
+                  commandRequest={chatRequest}
+                  onSelectWorkspace={selectWorkspace}
+                  workspaces={repositories}
+                  scratch={scratch}
+                  scratchAvailable={scratchAvailable}
+                  onStartScratch={() => void startScratch()}
+                  onOpenRepository={() => void openRepository()}
                 />
-                <div
-                  data-slot="empty"
-                  className="flex min-w-0 flex-1 flex-col items-center justify-center text-balance text-center gap-6 p-6 md:p-12 [&_[data-slot=empty-title]]:text-2xl sm:[&_[data-slot=empty-title]]:text-3xl"
-                >
-                  <div className="w-full max-w-lg px-8 py-12">
-                    <div className="flex flex-col items-center text-center max-w-none">
-                      <div
-                        data-slot="empty-title"
-                        className="font-semibold text-xl"
-                      >
-                        What should we work on?
-                      </div>
-                      <div
-                        data-slot="empty-description"
-                        className="text-muted-foreground text-sm [[data-slot=empty-title]+&]:mt-1"
-                      >
-                        {scratchAvailable
-                          ? "Add a project, or start without one."
-                          : "Add a project to start your first thread."}
-                      </div>
-                      <div className="mt-6 flex justify-center gap-2">
-                        <Button size="sm" onClick={() => void openRepository()}>
-                          <PlusIcon className="size-4" />
-                          Add project
-                        </Button>
-                        {scratchAvailable ? (
+              ) : (
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+                  <header
+                    data-tauri-drag-region="deep"
+                    className="flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center gap-3 pl-(--workspace-gutter-start) pr-(--workspace-gutter-end) drag-region [[data-sidebar-state=collapsed]_&]:pl-[var(--workspace-titlebar-content-left)]"
+                  />
+                  <div
+                    data-slot="empty"
+                    className="flex min-w-0 flex-1 flex-col items-center justify-center text-balance text-center gap-6 p-6 md:p-12 [&_[data-slot=empty-title]]:text-2xl sm:[&_[data-slot=empty-title]]:text-3xl"
+                  >
+                    <div className="w-full max-w-lg px-8 py-12">
+                      <div className="flex flex-col items-center text-center max-w-none">
+                        <div
+                          data-slot="empty-title"
+                          className="font-semibold text-xl"
+                        >
+                          What should we work on?
+                        </div>
+                        <div
+                          data-slot="empty-description"
+                          className="text-muted-foreground text-sm [[data-slot=empty-title]+&]:mt-1"
+                        >
+                          {scratchAvailable
+                            ? "Add a project, or start without one."
+                            : "Add a project to start your first thread."}
+                        </div>
+                        <div className="mt-6 flex justify-center gap-2">
                           <Button
                             size="sm"
-                            variant="outline"
-                            onClick={() => void startScratch()}
+                            onClick={() => void openRepository()}
                           >
-                            <MessageSquareDashedIcon className="size-4" />
-                            Start without a project
+                            <PlusIcon className="size-4" />
+                            Add project
                           </Button>
-                        ) : null}
+                          {scratchAvailable ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void startScratch()}
+                            >
+                              <MessageSquareDashedIcon className="size-4" />
+                              Start without a project
+                            </Button>
+                          ) : null}
+                        </div>
+                        {(error || workspaces.error) && (
+                          <p
+                            role="alert"
+                            className="mt-4 text-sm text-destructive-foreground"
+                          >
+                            {error ?? workspaces.error?.message}
+                          </p>
+                        )}
                       </div>
-                      {(error || workspaces.error) && (
-                        <p
-                          role="alert"
-                          className="mt-4 text-sm text-destructive-foreground"
-                        >
-                          {error ?? workspaces.error?.message}
-                        </p>
-                      )}
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+            </TerminalDrawerHost>
           </div>
           {pageOpen ? (
             <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col">

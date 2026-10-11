@@ -97,7 +97,7 @@ export function useEditorActions() {
           notifyEditorResult(
             "error",
             editor === "file-manager"
-              ? "Unable to open file"
+              ? "Could not open file"
               : `Could not open in ${editorById(editor).label}`,
             failure(error),
           ),
