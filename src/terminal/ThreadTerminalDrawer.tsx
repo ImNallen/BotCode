@@ -282,8 +282,8 @@ interface TerminalViewportProps {
   drawerHeight: number;
 }
 
-function TerminalViewport({
-  target: { workspaceId, threadId, terminalId },
+export function TerminalViewport({
+  target,
   fontSize,
   fileLinks,
   onSessionExited,
@@ -293,6 +293,10 @@ function TerminalViewport({
   resizeEpoch,
   drawerHeight,
 }: TerminalViewportProps) {
+  const terminalId = target.terminalId;
+  const owner = "owner" in target ? target.owner : "workspace";
+  const workspaceId = "workspaceId" in target ? target.workspaceId : null;
+  const threadId = "threadId" in target ? target.threadId : null;
   const composer = useComposerContext();
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<GhosttyTerminalSurface | null>(null);
@@ -324,7 +328,6 @@ function TerminalViewport({
     const mount = containerRef.current;
     if (!mount) return;
 
-    const target = { workspaceId, threadId, terminalId };
     const inOrder = serial();
     let attach: Promise<number | null> | null = null;
     let attachFailed = false;
@@ -587,7 +590,7 @@ function TerminalViewport({
           ?.then((subscription) =>
             subscription === null
               ? undefined
-              : inOrder(() => ipc.terminalDetach(subscription)),
+              : inOrder(() => ipc.terminalDetach(subscription, target)),
           )
           .catch(() => {});
       };
@@ -621,7 +624,7 @@ function TerminalViewport({
       teardown?.();
       if (hadFocus && mount.isConnected) mount.focus({ preventScroll: true });
     };
-  }, [workspaceId, threadId, terminalId]);
+  }, [owner, workspaceId, threadId, terminalId]);
 
   useEffect(() => {
     if (!autoFocus || !visible) return;

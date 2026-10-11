@@ -1,4 +1,5 @@
 // Ported from T3 Code v0.0.45 settings/SettingsPanels.tsx, SettingsSidebarNav.tsx, SettingsGroup.tsx, settingsLayout.tsx, WorkspacePageContainer.tsx, WorkspacePageHeader.tsx and ui/number-field.tsx (MIT).
+import { MacPermissions, isMac } from "../permissions/MacPermissions";
 import { GitHubProviderSettings } from "./GitHubProviderSettings";
 import {
   SourceControlWritingRow,
@@ -646,6 +647,21 @@ export function SettingsPage() {
             <KeybindingsSettings />
           ) : (
             category.groups.map((group) => {
+              if (group.id === "mac-permissions")
+                return isMac ? (
+                  <SettingsGroup
+                    key={group.id}
+                    id={group.id}
+                    title={group.title}
+                  >
+                    <div
+                      id="mac-permissions-controls"
+                      className="px-3 py-3 sm:px-4"
+                    >
+                      <MacPermissions />
+                    </div>
+                  </SettingsGroup>
+                ) : null;
               if (group.id === "source-control-providers")
                 return <GitHubProviderSettings key={group.id} />;
               const rows = visibleRows(group, scope);

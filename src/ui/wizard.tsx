@@ -12,9 +12,23 @@ import {
   DialogFooter,
 } from "./dialog";
 
-export function WizardPopup(props: ComponentProps<typeof Dialog>) {
+export function WizardPopup({
+  size = "default",
+  bottomStickOnMobile = true,
+  ...props
+}: ComponentProps<typeof Dialog> & {
+  readonly size?: "default" | "wide";
+  readonly bottomStickOnMobile?: boolean;
+}) {
   return (
-    <Dialog {...props} className="overflow-x-hidden overflow-y-auto max-w-xl">
+    <Dialog
+      {...props}
+      bottomStickOnMobile={bottomStickOnMobile}
+      className={cn(
+        "overflow-x-hidden overflow-y-auto",
+        size === "wide" ? "max-w-3xl" : "max-w-xl",
+      )}
+    >
       <div className="flex min-h-0 flex-col">{props.children}</div>
     </Dialog>
   );

@@ -8,6 +8,7 @@ import { loadStorage } from "./lib/storage";
 import { router } from "./router";
 import { loadPreferences, PreferencesProvider } from "./settings/preferences";
 import "./styles.css";
+import { FirstRunGate } from "./onboarding/FirstRunGate";
 import { FollowUpSender } from "./chat/FollowUpSender";
 import { ErrorView } from "./errors/ErrorView";
 import { RenderErrorBoundary } from "./errors/RenderErrorBoundary";
@@ -101,8 +102,10 @@ function Startup() {
   return (
     <QueryClientProvider client={client}>
       <PreferencesProvider>
-        <FollowUpSender />
-        <RouterProvider router={router} />
+        <FirstRunGate>
+          <FollowUpSender />
+          <RouterProvider router={router} />
+        </FirstRunGate>
       </PreferencesProvider>
     </QueryClientProvider>
   );

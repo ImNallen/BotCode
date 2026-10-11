@@ -13,7 +13,7 @@ const ROTATED: usize = 3;
 /// An append-only log that rotates at 1 MiB. Logging never fails the caller: an
 /// unopenable file drops lines and is retried on the next write.
 #[derive(Clone)]
-pub(crate) struct RotatingLog(Arc<Mutex<State>>);
+pub(crate) struct RotatingLog(Option<Arc<Mutex<State>>>);
 struct State {
     path: PathBuf,
     file: Option<File>,
@@ -27,16 +27,19 @@ impl RotatingLog {
             size: 0,
         };
         state.reopen();
-        Self(Arc::new(Mutex::new(state)))
+        Self(Some(Arc::new(Mutex::new(state))))
+    }
+    pub(crate) fn silent() -> Self {
+        Self(None)
     }
     pub(crate) fn line(&self, source: &str, text: &str) {
+        let Some(log) = &self.0 else {
+            return;
+        };
         let at = chrono::DateTime::<chrono::Utc>::from(SystemTime::now())
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let line = format!("{at} {source} {}\n", text.trim_end_matches(['\n', '\r']));
-        let mut guard = self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = log.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let state = &mut *guard;
         if state.size > 0 && state.size + line.len() as u64 > LIMIT {
             state.rotate();

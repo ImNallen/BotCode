@@ -26,6 +26,7 @@ export function Dialog({
   variant = "default",
   projectSearch,
   showCloseButton = false,
+  bottomStickOnMobile = true,
 }: {
   variant?: "default" | "command";
   projectSearch?: "filePicker.toggle" | "projectSearch.toggle";
@@ -34,6 +35,7 @@ export function Dialog({
   className?: string;
   children: ReactNode;
   showCloseButton?: boolean;
+  bottomStickOnMobile?: boolean;
 }) {
   if (!open) return null;
   return (
@@ -43,6 +45,7 @@ export function Dialog({
       variant={variant}
       projectSearch={projectSearch}
       showCloseButton={showCloseButton}
+      bottomStickOnMobile={bottomStickOnMobile}
     >
       {children}
     </ModalDialog>
@@ -56,6 +59,7 @@ function ModalDialog({
   className,
   children,
   showCloseButton,
+  bottomStickOnMobile,
 }: {
   variant: "default" | "command";
   projectSearch?: "filePicker.toggle" | "projectSearch.toggle";
@@ -63,6 +67,7 @@ function ModalDialog({
   className?: string;
   children: ReactNode;
   showCloseButton: boolean;
+  bottomStickOnMobile: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useLayoutEffect(() => {
@@ -101,7 +106,11 @@ function ModalDialog({
         className={
           variant === "command"
             ? "pointer-events-none fixed inset-0 z-50 flex flex-col items-center px-4 py-[max(--spacing(4),4vh)] sm:py-[10vh]"
-            : "fixed inset-0 z-50 grid grid-rows-[1fr_auto_1fr] justify-items-center p-4 max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12"
+            : cn(
+                "fixed inset-0 z-50 grid grid-rows-[1fr_auto_1fr] justify-items-center p-4",
+                bottomStickOnMobile &&
+                  "max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12",
+              )
         }
         data-slot="dialog-viewport"
         onClick={(event) => {
@@ -116,7 +125,9 @@ function ModalDialog({
               ? "pointer-events-auto max-h-105 max-w-xl text-foreground"
               : "max-h-full max-w-lg",
             variant === "command" && "overflow-hidden",
-            variant !== "command" && DIALOG_MOBILE_SHEET_CLASS,
+            variant !== "command" &&
+              bottomStickOnMobile &&
+              DIALOG_MOBILE_SHEET_CLASS,
             className,
           )}
           data-slot="dialog-popup"
