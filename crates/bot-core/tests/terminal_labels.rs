@@ -53,6 +53,7 @@ impl Fixture {
             workspace,
         }
     }
+    #[cfg(target_os = "macos")]
     async fn start(&self) {
         let subscription = self
             .app
@@ -60,6 +61,30 @@ impl Fixture {
             .await
             .unwrap();
         self.app.terminal_detach(subscription);
+    }
+    /// ConPTY asks for the cursor position before the shell runs and waits for the terminal to
+    /// answer, as Ghostty does in the app.
+    #[cfg(windows)]
+    async fn start_answering_cursor_queries(&self) {
+        let (queries, mut asked) = tokio::sync::mpsc::unbounded_channel();
+        self.app
+            .terminal_attach(self.workspace.clone(), None, term(), 80, 24, move |event| {
+                if let TerminalEvent::Output { data } = event
+                    && data.contains("\x1b[6n")
+                {
+                    let _ = queries.send(());
+                }
+            })
+            .await
+            .unwrap();
+        let (app, workspace) = (self.app.clone(), self.workspace.clone());
+        tokio::spawn(async move {
+            while asked.recv().await.is_some() {
+                let _ = app
+                    .terminal_write(workspace.clone(), None, term(), "\x1b[1;1R".into())
+                    .await;
+            }
+        });
     }
     async fn write(&self, data: &str) {
         self.app
@@ -128,7 +153,7 @@ async fn a_running_command_labels_its_terminal_until_it_ends() {
 #[tokio::test]
 async fn a_running_command_labels_its_terminal_until_it_is_closed() {
     let f = Fixture::new(None).await;
-    f.start().await;
+    f.start_answering_cursor_queries().await;
     f.write("ping -n 30 127.0.0.1\r\n").await;
     let running = f
         .until("the ping label", |l| {
