@@ -96,26 +96,35 @@ it("shows File Explorer, not Finder, on the Open button on Windows", () => {
 });
 
 it("the collapsed header menu offers Open in the preferred editor and an Open in… submenu", () => {
-  const menu = render(
-    { preferredEditor: "zed" },
-    ["cursor", "zed", "file-manager"],
-    false,
-    "menu",
-  );
-  assert.match(
-    menu,
-    /<button[^>]*role="menuitem"[^>]*data-density="touch"[^>]*>.*<span data-slot="menu-item-label"[^>]*>Open in Zed<\/span><kbd[^>]*>⌘O<\/kbd>/,
-  );
-  assert.match(
-    menu,
-    /data-slot="menu-sub-trigger" data-density="touch".*<span data-slot="menu-item-label"[^>]*>Open in…<\/span>/,
-  );
-  assert.ok(!/aria-label="Choose editor"/.test(menu));
-  const toolbar = render(
-    { preferredEditor: "zed" },
-    ["cursor", "zed", "file-manager"],
-    false,
-  );
-  assert.ok(/aria-label="Choose editor"/.test(toolbar));
-  assert.ok(!/Open in…/.test(toolbar));
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { platform: "MacIntel" },
+  });
+  try {
+    const menu = render(
+      { preferredEditor: "zed" },
+      ["cursor", "zed", "file-manager"],
+      false,
+      "menu",
+    );
+    assert.match(
+      menu,
+      /<button[^>]*role="menuitem"[^>]*data-density="touch"[^>]*>.*<span data-slot="menu-item-label"[^>]*>Open in Zed<\/span><kbd[^>]*>⌘O<\/kbd>/,
+    );
+    assert.match(
+      menu,
+      /data-slot="menu-sub-trigger" data-density="touch".*<span data-slot="menu-item-label"[^>]*>Open in…<\/span>/,
+    );
+    assert.ok(!/aria-label="Choose editor"/.test(menu));
+    const toolbar = render(
+      { preferredEditor: "zed" },
+      ["cursor", "zed", "file-manager"],
+      false,
+    );
+    assert.ok(/aria-label="Choose editor"/.test(toolbar));
+    assert.ok(!/Open in…/.test(toolbar));
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "navigator", previous);
+  }
 });
