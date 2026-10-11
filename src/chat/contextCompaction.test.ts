@@ -57,6 +57,7 @@ function thread(turns: Turn[], overrides: Partial<Thread> = {}): Thread {
     diagnostic: null,
     pendingRevert: null,
     lastRevert: null,
+    subagents: [],
     context: null,
     turns,
     ...overrides,

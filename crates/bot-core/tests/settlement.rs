@@ -40,6 +40,7 @@ fn thread() -> ThreadSnapshot {
         context: None,
         pending_revert: None,
         last_revert: None,
+        subagents: Default::default(),
     }
 }
 fn link(lifecycle: PrLifecycle) -> LinkedPrSummary {

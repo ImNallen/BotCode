@@ -52,6 +52,7 @@ const destination: Thread = {
   diagnostic: null,
   pendingRevert: null,
   lastRevert: null,
+  subagents: [],
   turns: [],
 };
 const target = prObservation.parse({

@@ -144,6 +144,7 @@ import {
 import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import { isUsageLimitsCommand, usageNoticeKey } from "../usage/limits";
 import { Timeline } from "./Timeline";
+import { deriveAgentPanelModel } from "./subagents";
 import { followUps, immediateIntent } from "./followUps";
 import { sendFollowUpNow } from "./FollowUpSender";
 import { EditFromHereDialog } from "./EditFromHereDialog";
@@ -608,6 +609,25 @@ export function ChatView({
     setPanel((current) => openSurface(current, { kind: "diff" }));
     setPanelOpen(true);
   };
+  const openAgents = () => {
+    setPanel((current) => openSurface(current, { kind: "agents" }));
+    setPanelOpen(true);
+  };
+  const subagents = thread?.subagents;
+  const agentPanel = useMemo(
+    () => deriveAgentPanelModel(subagents ?? []),
+    [subagents],
+  );
+  const agentBadgeCount =
+    panelOpen &&
+    panel.active !== null &&
+    panel.surfaces[panel.active]?.kind === "agents"
+      ? 0
+      : agentPanel.liveCount;
+  const liveAgentsLabel =
+    agentBadgeCount > 0
+      ? `${agentBadgeCount} ${agentBadgeCount === 1 ? "agent" : "agents"} working`
+      : null;
   const checkout: CheckoutRef = {
     workspaceId,
     threadId:
@@ -1776,12 +1796,28 @@ export function ChatView({
                   setPanelOpen((value) => !value);
                   setMaximized(false);
                 }}
-                aria-label="Toggle right panel"
-                title="Toggle right panel"
+                aria-label={
+                  liveAgentsLabel
+                    ? `Toggle right panel, ${liveAgentsLabel}`
+                    : "Toggle right panel"
+                }
+                title={
+                  liveAgentsLabel
+                    ? `Toggle right panel · ${liveAgentsLabel}`
+                    : "Toggle right panel"
+                }
                 variant="ghost"
                 size="sm"
               >
                 <PanelRightIcon className="size-4" />
+                {agentBadgeCount > 0 ? (
+                  <span
+                    aria-hidden
+                    className="absolute -top-1 -right-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-info px-1 text-3xs font-semibold tabular-nums text-white"
+                  >
+                    {agentBadgeCount}
+                  </span>
+                ) : null}
               </Toggle>
             </span>
           </div>
@@ -1985,6 +2021,7 @@ export function ChatView({
                     }}
                     onRemoveQueued={recoverQueue}
                     onOpenTurnDiff={openTurnDiff}
+                    onOpenAgents={openAgents}
                     onExpandImage={setExpandedImage}
                     onFileContextMenu={
                       checkoutOpenable
@@ -2388,6 +2425,7 @@ export function ChatView({
                 : null
             }
             onSelectTurn={selectTurnDiff}
+            agents={agentPanel}
           />
         </RenderErrorBoundary>
       ) : null}

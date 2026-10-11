@@ -432,6 +432,7 @@ impl Owner {
         next.approvals.retain(|a| retained.contains(&a.turn_id));
         next.user_questions
             .retain(|request| retained.contains(&request.turn_id));
+        next.subagents.retain_spawned_in(&retained);
         next.native_thread_id = native;
         next.session = if next.native_thread_id.is_some() {
             SessionState::Dormant

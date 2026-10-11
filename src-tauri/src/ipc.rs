@@ -67,6 +67,13 @@ pub async fn project_favicon(
     app.project_favicon(workspace_id).await
 }
 #[tauri::command]
+pub async fn native_app_icon(
+    app: State<'_, App>,
+    native_app: NativeAppRef,
+) -> Result<Option<String>> {
+    Ok(app.native_app_icon(native_app).await)
+}
+#[tauri::command]
 pub fn scratch_available(app: State<'_, App>) -> bool {
     app.scratch_available()
 }

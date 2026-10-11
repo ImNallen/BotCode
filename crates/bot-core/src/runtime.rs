@@ -331,6 +331,7 @@ enum Command {
 #[derive(Clone)]
 pub struct App {
     project_favicons: crate::project_icon::FaviconResolver,
+    native_app_icons: crate::native_app_icon::NativeAppIcons,
     project_clones: crate::project_clone::ProjectClones,
     thread_search: crate::thread_search::ThreadSearch,
     usage_history: crate::usage_history::UsageHistory,
@@ -427,6 +428,10 @@ impl App {
                 }
             }
             thread.expire_open_requests();
+            thread
+                .subagents
+                .backfill(thread.native_thread_id.as_deref(), &thread.turns);
+            thread.subagents.session_ended();
             thread.revision += 1;
             store.save(thread)?;
         }
@@ -499,6 +504,8 @@ impl App {
         }
         let discovery_root = config.data_dir.clone();
         let worktrees = config.data_dir.join("worktrees");
+        let native_app_icons =
+            crate::native_app_icon::NativeAppIcons::new(config.data_dir.join("native-app-icons"));
         let gh = config.gh_binary.clone();
         let codex = config.codex_binary.clone();
         let script_shell = crate::project::shell(config.shell.as_deref());
@@ -593,6 +600,7 @@ impl App {
         );
         let app = Self {
             project_favicons: crate::project_icon::FaviconResolver::default(),
+            native_app_icons,
             project_clones,
             thread_search,
             usage_history,
@@ -765,6 +773,9 @@ impl App {
         .await
         .map_err(|error| AppError::new("project_icon", error))?
     }
+    pub async fn native_app_icon(&self, app: NativeAppRef) -> Option<String> {
+        self.native_app_icons.data_url(&app).await
+    }
     /// Deletes the project entry and its threads, closes its terminals and deletes their saved
     /// history. Files in the project folder are left alone.
     pub async fn remove_workspace(&self, id: WorkspaceId) -> Result<()> {
@@ -917,6 +928,9 @@ impl App {
         range: Option<&str>,
         if_range: bool,
     ) -> workspace_files::FileResponse {
+        if let Some(request) = workspace_files::parse_image_view(uri_path) {
+            return self.serve_image_view(request).await;
+        }
         let Some(request) = workspace_files::parse(uri_path) else {
             return workspace_files::FileResponse::not_found();
         };
@@ -930,6 +944,32 @@ impl App {
         })
         .await
         .unwrap_or_else(|_| workspace_files::FileResponse::not_found())
+    }
+    async fn serve_image_view(
+        &self,
+        request: workspace_files::ImageViewRequest,
+    ) -> workspace_files::FileResponse {
+        let Ok(thread) = self.thread(request.thread).await else {
+            return workspace_files::FileResponse::not_found();
+        };
+        let viewed = thread
+            .turns
+            .iter()
+            .flat_map(|turn| &turn.items)
+            .find_map(|item| match item {
+                Item::ImageView { id, path } if *id == request.item => Some(path.clone()),
+                _ => None,
+            });
+        let Some(path) = viewed else {
+            return workspace_files::FileResponse::not_found();
+        };
+        let root = match self.checkout(thread.workspace_id, Some(thread.id)).await {
+            Ok((_, Location::Repository(root) | Location::Folder(root))) => Some(root),
+            _ => None,
+        };
+        tokio::task::spawn_blocking(move || workspace_files::respond_image(root.as_deref(), &path))
+            .await
+            .unwrap_or_else(|_| workspace_files::FileResponse::not_found())
     }
     pub async fn write_file(
         &self,
@@ -2276,6 +2316,7 @@ impl Owner {
             context: None,
             pending_revert: None,
             last_revert: None,
+            subagents: Default::default(),
         };
         self.store.save(&t)?;
         self.threads.insert(t.id.clone(), t.clone());
@@ -4546,6 +4587,7 @@ impl Owner {
             t.session = SessionState::Unavailable {
                 reason: headline.into(),
             };
+            t.subagents.session_ended();
             if lost_work {
                 t.diagnostic = Some(headline.into());
             }
@@ -4735,7 +4777,16 @@ impl Owner {
                 .send_if_modified(|limits| UsageLimits::apply_update(limits, p));
             return Ok(());
         }
-        let Some(id) = id else { return Ok(()) };
+        let Some(id) = id else {
+            if let Some(child) = native
+                && let Some(t) = self.threads.values_mut().find(|t| t.subagents.owns(child))
+                && let Some(event) = crate::subagents::ChildEvent::parse(method, p)
+                && t.subagents.apply(child, event, now_ms())
+            {
+                self.dirty.insert(t.id.clone());
+            }
+            return Ok(());
+        };
         let t = self.threads.get_mut(&id).unwrap();
         if method == "thread/tokenUsage/updated" {
             if let Some(context) = ContextUsage::from_update(p)
@@ -4856,6 +4907,11 @@ impl Owner {
                     required_string(value, "id")?;
                     if input_matches_turn {
                         reconcile_user_input(turn, value);
+                    }
+                    if let Some(native) = &t.native_thread_id
+                        && let Some(spawn) = crate::subagents::ActivityItem::parse(value, native)
+                    {
+                        t.subagents.apply_activity(spawn, &turn.id, now_ms());
                     }
                     if let Some(item) = normalize_item(value, method == "item/completed") {
                         if let Item::FileChange { text, .. } = &item {
@@ -5063,29 +5119,36 @@ fn normalize_item(v: &Value, complete: bool) -> Option<Item> {
                 complete,
             }
         }
-        "mcpToolCall" => Item::McpToolCall {
-            title: mcp_title(v),
-            server: string(v, "server"),
-            tool: string(v, "tool"),
-            status: tool_status(v, complete),
-            arguments: v.get("arguments").cloned().unwrap_or_default(),
-            result: v.get("result").filter(|r| !r.is_null()).map(|r| {
-                r.get("content")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
-                    .map(|c| string(c, "text"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }),
-            error: v
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            duration_ms: v.get("durationMs").and_then(Value::as_u64),
-            id,
-        },
+        "mcpToolCall" => {
+            let presentation = crate::tool_presentation::mcp_presentation(v);
+            Item::McpToolCall {
+                title: mcp_title(v, presentation.as_ref()),
+                server: string(v, "server"),
+                tool: string(v, "tool"),
+                status: tool_status(v, complete),
+                arguments: v.get("arguments").cloned().unwrap_or_default(),
+                result: v.get("result").filter(|r| !r.is_null()).map(|r| {
+                    r.get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
+                        .map(|c| string(c, "text"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }),
+                error: v
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                duration_ms: v.get("durationMs").and_then(Value::as_u64),
+                app_context: v
+                    .get("appContext")
+                    .and_then(|context| serde_json::from_value(context.clone()).ok()),
+                presentation: presentation.map(Box::new),
+                id,
+            }
+        }
         "dynamicToolCall" => Item::DynamicToolCall {
             id,
             tool: string(v, "tool"),
@@ -5164,7 +5227,7 @@ fn normalize_item(v: &Value, complete: bool) -> Option<Item> {
     })
 }
 // T3 CodexAdapter.ts itemTitle (740-780)
-fn mcp_title(v: &Value) -> String {
+fn mcp_title(v: &Value, presentation: Option<&ToolPresentation>) -> String {
     let (server, tool) = (string(v, "server"), string(v, "tool"));
     let name = tool
         .split(['.', '/', ':'])
@@ -5178,51 +5241,28 @@ fn mcp_title(v: &Value) -> String {
         .flatten()
         .and_then(|title| bounded(title, 80));
     intent
-        .or_else(|| computer_use_title(v, name))
+        .or_else(|| computer_use_title(v, name, presentation))
         .unwrap_or_else(|| format!("{server} · {tool}"))
 }
-// T3 CodexAdapter.ts computerUseToolTitle (691-738) and mcpToolPresentation's app name.
-fn computer_use_title(v: &Value, tool: &str) -> Option<String> {
+fn computer_use_title(
+    v: &Value,
+    tool: &str,
+    presentation: Option<&ToolPresentation>,
+) -> Option<String> {
     let status = v.get("status").and_then(Value::as_str);
     if item_type_words(&string(v, "server")) != "computer use" || status == Some("failed") {
         return None;
     }
     let args = v.get("arguments");
-    let argument_app = ["appName", "application", "app"]
-        .into_iter()
-        .find_map(|key| display_name(args?.get(key)?.as_str()?));
-    let surface = v
-        .pointer("/result/_meta/codex~1toolSurface")
-        .filter(|s| s.get("kind").and_then(Value::as_str) == Some("computerUse"));
-    let surface_app = surface.and_then(|s| {
-        let app = s.get("app")?;
-        match app.get("kind")?.as_str()? {
-            "displayName" => display_name(app.get("displayName")?.as_str()?),
-            "appId" => {
-                let name = match app.get("appId")?.as_str()?.trim().to_lowercase().as_str() {
-                    "com.apple.finder" => "Finder",
-                    "com.apple.safari" => "Safari",
-                    "com.google.chrome" => "Chrome",
-                    "com.microsoft.edgemac" => "Microsoft Edge",
-                    "org.mozilla.firefox" => "Firefox",
-                    "company.thebrowser.browser" => "Arc",
-                    _ => return None,
-                };
-                Some(name.to_owned())
-            }
-            _ => None,
-        }
-    });
-    let source = surface
-        .and_then(|_| {
-            v.pointer("/appContext/appName")
-                .and_then(Value::as_str)
-                .and_then(display_name)
-                .or_else(|| argument_app.clone())
-                .or(surface_app)
-        })
-        .filter(|name| name != "Computer Use");
-    let app = source.or(argument_app);
+    let app = presentation
+        .map(|p| &p.source)
+        .filter(|source| source.kind == ToolSourceKind::Computer && source.name != "Computer Use")
+        .map(|source| source.name.clone())
+        .or_else(|| {
+            ["appName", "application", "app"]
+                .into_iter()
+                .find_map(|key| crate::tool_presentation::display_name(args?.get(key)))
+        });
     let in_progress = status == Some("inProgress");
     let verb = |now: &str, done: &str| {
         let label = if in_progress { now } else { done };
@@ -5296,10 +5336,6 @@ fn item_type_words(raw: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
-}
-fn display_name(value: &str) -> Option<String> {
-    let name = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!name.is_empty() && name.chars().count() <= 160).then_some(name)
 }
 fn bounded(value: &str, max: usize) -> Option<String> {
     let text = value.split_whitespace().collect::<Vec<_>>().join(" ");

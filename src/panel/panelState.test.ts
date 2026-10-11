@@ -70,6 +70,19 @@ it("keeps one Preview tab available without a checkout or PR links", () => {
   });
 });
 
+it("keeps one Agents tab open in a workspace without a repository", () => {
+  const agents: Surface = { kind: "agents" };
+  const withDiff = openSurface(openSurface(emptyPanel, agents), {
+    kind: "diff",
+  });
+  assert.equal(surfaceTitle(agents), "Agents");
+  assert.deepEqual(eligibleSurfaces(withDiff, false), {
+    surfaces: [agents],
+    active: null,
+  });
+  assert.deepEqual(openSurface(withDiff, agents), { ...withDiff, active: 0 });
+});
+
 describe("terminal tabs", () => {
   const files: Surface = { kind: "files" };
   const diff: Surface = { kind: "diff" };
