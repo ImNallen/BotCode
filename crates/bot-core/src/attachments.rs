@@ -1,5 +1,6 @@
 // Ported from T3 Code v0.0.45 apps/server/src/attachmentStore.ts and packages/contracts/src/orchestration.ts.
 use crate::domain::*;
+use crate::workspace_files::{FileResponse, file_response};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -85,17 +86,40 @@ impl Attachments {
         self.dir
             .join(format!("{}.{}", attachment.id(), attachment.extension()))
     }
-    pub fn read(&self, file: &str) -> Result<(Vec<u8>, String)> {
-        let (_, extension) = parse_file_name(file)
-            .ok_or_else(|| AppError::new("invalid_attachment", "Invalid attachment name."))?;
-        let bytes = std::fs::read(self.dir.join(file))?;
-        let mime = sniff(&bytes)
-            .filter(|mime| mime.extension() == extension.as_str())
-            .map_or_else(
-                || "application/octet-stream".into(),
-                |mime| mime.as_str().into(),
-            );
-        Ok((bytes, mime))
+    /// Serves `<id>.<extension>` for the `botcode-attachment` scheme. Videos answer byte ranges,
+    /// because WebKit's media element only plays from 206 responses.
+    pub fn serve(&self, file: &str, range: Option<&str>, if_range: bool) -> FileResponse {
+        self.serve_file(file, range, if_range)
+            .unwrap_or_else(FileResponse::not_found)
+    }
+    fn serve_file(&self, file: &str, range: Option<&str>, if_range: bool) -> Option<FileResponse> {
+        let (_, extension) = parse_file_name(file)?;
+        let mut handle = std::fs::File::open(self.dir.join(file)).ok()?;
+        let meta = handle.metadata().ok()?;
+        if !meta.is_file() {
+            return None;
+        }
+        let mut headers = vec![(
+            "Cache-Control",
+            "private, max-age=31536000, immutable".to_owned(),
+        )];
+        let range = match video_mime_type(extension.as_str()) {
+            Some(mime) => {
+                headers.push(("Content-Type", mime.to_owned()));
+                headers.push(("Accept-Ranges", "bytes".to_owned()));
+                range.filter(|_| !if_range)
+            }
+            None => {
+                let mut header = [0; 12];
+                let length = handle.read(&mut header).ok()?;
+                let mime = sniff(&header[..length])
+                    .filter(|mime| mime.extension() == extension.as_str())
+                    .map_or("application/octet-stream", |mime| mime.as_str());
+                headers.push(("Content-Type", mime.to_owned()));
+                None
+            }
+        };
+        file_response(handle, meta.len(), range, headers)
     }
     pub fn validate(&self, attachment: &Attachment) -> Result<()> {
         let name = attachment.name();
@@ -234,6 +258,22 @@ pub fn too_large(name: &str) -> AppError {
 fn parse_file_name(file: &str) -> Option<(AttachmentId, AttachmentExtension)> {
     let (id, extension) = file.split_once('.')?;
     Some((id.parse().ok()?, extension.parse().ok()?))
+}
+// Ported from T3 Code v0.0.45 packages/shared/src/video.ts.
+const VIDEO_MIME_TYPES: &[(&str, &str)] = &[
+    ("avi", "video/x-msvideo"),
+    ("m4v", "video/mp4"),
+    ("mkv", "video/x-matroska"),
+    ("mov", "video/quicktime"),
+    ("mp4", "video/mp4"),
+    ("ogv", "video/ogg"),
+    ("webm", "video/webm"),
+];
+fn video_mime_type(extension: &str) -> Option<&'static str> {
+    VIDEO_MIME_TYPES
+        .iter()
+        .find(|(known, _)| *known == extension)
+        .map(|&(_, mime)| mime)
 }
 fn sniff(bytes: &[u8]) -> Option<ImageMime> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -414,14 +454,91 @@ mod tests {
             [format!("{}.png", first.id())]
         );
         assert_eq!(std::fs::read(store.path(&first)).unwrap(), PNG);
+        let served = store.serve(&format!("{}.png", first.id()), None, false);
+        assert_eq!((served.status, served.body.as_slice()), (200, PNG));
+        assert_eq!(store.serve("../settings.json", None, false).status, 404);
+    }
+
+    fn header<'a>(response: &'a FileResponse, name: &str) -> Option<&'a str> {
+        response
+            .headers
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[test]
+    fn serves_video_byte_ranges_for_the_media_element() {
+        let data = tempfile::tempdir().unwrap();
+        let store = Attachments::new(data.path());
+        let video = store
+            .stage(
+                "Clip.MOV",
+                b"0123456789",
+                AttachmentKind::File {
+                    mime_type: "application/octet-stream".into(),
+                    source: None,
+                },
+            )
+            .unwrap();
+        let file = format!("{}.mov", video.id());
+
+        let slice = store.serve(&file, Some("bytes=2-4"), false);
+        assert_eq!((slice.status, slice.body.as_slice()), (206, &b"234"[..]));
+        assert_eq!(header(&slice, "Content-Range"), Some("bytes 2-4/10"));
+        assert_eq!(header(&slice, "Content-Type"), Some("video/quicktime"));
+        assert_eq!(header(&slice, "Accept-Ranges"), Some("bytes"));
+        assert_eq!(header(&slice, "Content-Length"), Some("3"));
+
+        let full = store.serve(&file, None, false);
         assert_eq!(
-            store.read(&format!("{}.png", first.id())).unwrap(),
-            (PNG.to_vec(), "image/png".into())
+            (full.status, full.body.as_slice()),
+            (200, &b"0123456789"[..])
         );
-        assert_eq!(
-            store.read("../settings.json").unwrap_err().code,
-            "invalid_attachment"
-        );
+        assert_eq!(header(&full, "Content-Range"), None);
+
+        let past = store.serve(&file, Some("bytes=10-"), false);
+        assert_eq!((past.status, past.body.len()), (416, 0));
+        assert_eq!(header(&past, "Content-Range"), Some("bytes */10"));
+    }
+
+    #[test]
+    fn serves_images_and_other_files_whole_whatever_the_range() {
+        let data = tempfile::tempdir().unwrap();
+        let store = Attachments::new(data.path());
+        let image = store.stage("a.png", PNG, AttachmentKind::Image).unwrap();
+        let notes = store
+            .stage(
+                "notes.txt",
+                b"plain text",
+                AttachmentKind::File {
+                    mime_type: "text/plain".into(),
+                    source: None,
+                },
+            )
+            .unwrap();
+        for (file, body, mime) in [
+            (format!("{}.png", image.id()), PNG, "image/png"),
+            (
+                format!("{}.txt", notes.id()),
+                &b"plain text"[..],
+                "application/octet-stream",
+            ),
+        ] {
+            let served = store.serve(&file, Some("bytes=2-4"), false);
+            assert_eq!(
+                (served.status, served.body.as_slice()),
+                (200, body),
+                "{file}"
+            );
+            assert_eq!(header(&served, "Content-Type"), Some(mime), "{file}");
+            assert_eq!(
+                header(&served, "Cache-Control"),
+                Some("private, max-age=31536000, immutable")
+            );
+            assert_eq!(header(&served, "Content-Range"), None, "{file}");
+            assert_eq!(header(&served, "Accept-Ranges"), None, "{file}");
+        }
     }
 
     #[test]

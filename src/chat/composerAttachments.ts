@@ -1,6 +1,7 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/ChatView.tsx attachment recovery (MIT).
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Attachment, ImageAttachment, Thread } from "../ipc";
+import { isVideoExtension, videoMimeType } from "../lib/video";
 
 import type { ComposerContextRecord, MessageContext } from "./composerContext";
 import { importContext } from "./composerContext";
@@ -90,6 +91,17 @@ export const attachmentUrl = (attachment: Attachment) =>
     `${attachment.id}.${attachment.kind === "image" ? extensions[attachment.mimeType] : attachment.extension}`,
     "botcode-attachment",
   );
+
+export function attachmentMediaKind(
+  attachment: Attachment,
+): "image" | "video" | null {
+  if (attachment.kind === "image") return "image";
+  // The attachment scheme types the bytes by the stored extension alone.
+  return videoMimeType(attachment) !== null &&
+    isVideoExtension(attachment.extension)
+    ? "video"
+    : null;
+}
 
 export type ComposerInput = {
   threadId: string | undefined;

@@ -43,6 +43,7 @@ impl Fixture {
             codex_binary: peer.clone(),
             gh_binary: dir.path().join("no-gh"),
             network_timeout: Duration::from_secs(180),
+            compaction_timeout: Duration::from_secs(600),
             shell: None,
         };
         Self {
@@ -183,6 +184,49 @@ async fn regeneration_titles_the_thread_from_its_history_and_previous_title() {
         PEER_TITLE
     );
     reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn regeneration_uses_the_device_text_generation_model_without_a_project_override() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let t = f.worked_thread(&app).await;
+    std::fs::write(
+        f.config.data_dir.join("settings.json"),
+        serde_json::json!({
+            "textGenerationModelSelection": { "model": "device-writer", "effort": null },
+            "projectOverrides": {
+                WorkspaceId::default().to_string(): {
+                    "textGenerationModelSelection": { "model": "other-project-writer", "effort": "high" }
+                },
+                t.workspace_id.to_string(): {
+                    "textGenerationModelSelection": { "model": "", "effort": "high" }
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    app.regenerate_title(t.id.clone()).await.unwrap();
+    let calls = f.invocations();
+    let args: Vec<&str> = calls[0]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--model", "device-writer"]),
+        "{args:?}"
+    );
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg.starts_with("model_reasoning_effort")),
+        "a null effort leaves the model's default effort: {args:?}"
+    );
+    app.shutdown().await.unwrap();
 }
 
 #[tokio::test]

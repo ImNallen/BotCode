@@ -1,4 +1,5 @@
 // Ported from T3 Code v0.0.45 apps/web/src/composer-logic.ts and packages/shared/src/composerTrigger.ts (MIT).
+import type { SendShortcut } from "../settings/preferences";
 export type ComposerTriggerKind =
   | "path"
   | "pull-request"
@@ -8,7 +9,8 @@ export type ComposerSlashCommand =
   | "model"
   | "plan"
   | "default"
-  | "usage-limits";
+  | "usage-limits"
+  | "compact";
 export type ComposerTrigger = {
   kind: ComposerTriggerKind;
   query: string;
@@ -93,4 +95,34 @@ export function serializeComposerFileLink(path: string): string {
     .replaceAll("?", "%3F")
     .replaceAll("\\", "%5C");
   return `[${label}](${destination})`;
+}
+
+// T3's "background" intent sends a draft without leaving it; Bot Code has no
+// background draft submission, so that case sends normally.
+export type ComposerEnterIntent = "send" | "alternate" | "newline";
+
+export function composerEnterIntent(input: {
+  shiftKey: boolean;
+  modifierKey: boolean;
+  running: boolean;
+  sendShortcut: SendShortcut;
+  prompt: string;
+}): ComposerEnterIntent {
+  const requiresModifier =
+    input.sendShortcut === "mod-enter" ||
+    (input.sendShortcut === "mod-enter-multiline" &&
+      /[\r\n]/.test(input.prompt));
+  if (requiresModifier && !input.modifierKey) return "newline";
+  if (
+    input.shiftKey &&
+    !(requiresModifier && input.modifierKey && input.running)
+  )
+    return "newline";
+  if (
+    input.running &&
+    input.modifierKey &&
+    (!requiresModifier || input.shiftKey)
+  )
+    return "alternate";
+  return "send";
 }

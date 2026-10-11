@@ -50,6 +50,7 @@ function fixture(): Thread {
     lastRevert: null,
     turns: ids.map((id, index) => ({
       id,
+      kind: "prompt" as const,
       prompt: `Edit ${index + 1}`,
       attachments: [],
       tasks: null,
@@ -128,6 +129,7 @@ it("ties Edit from here and each changed-files card to the owning turn", () => {
         reverting: false,
         busy,
         onEdit() {},
+        onExpandImage() {},
         onRemoveQueued() {},
         onOpenTurnDiff() {},
       }),
@@ -201,6 +203,7 @@ it("parses old saved turns as unavailable instead of inventing HEAD-based turn d
   old.lastRevert = {
     requestId: "legacy",
     turnId: ids[0],
+    kind: "prompt" as const,
     prompt: "Saved",
     turnCount: 3,
   };

@@ -66,6 +66,50 @@ pub fn auto_settle(path: &Path) -> AutoSettle {
             .collect(),
     }
 }
+/// The model and reasoning effort for generated text. No effort uses the model's default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelSelection {
+    pub model: String,
+    pub effort: Option<String>,
+}
+impl ModelSelection {
+    // T3 Code v0.0.45 packages/contracts/src/model.ts DEFAULT_TEXT_GENERATION_MODEL and DEFAULT_TEXT_GENERATION_REASONING_EFFORT.
+    pub(crate) fn text_generation_default() -> Self {
+        Self {
+            model: "gpt-6-luna".into(),
+            effort: Some("low".into()),
+        }
+    }
+    fn parse(value: &Value) -> Option<Self> {
+        let model = value["model"].as_str().filter(|model| !model.is_empty())?;
+        let effort = match &value["effort"] {
+            Value::Null => None,
+            Value::String(effort)
+                if !effort.is_empty() && effort.bytes().all(|b| b.is_ascii_lowercase()) =>
+            {
+                Some(effort.clone())
+            }
+            _ => return None,
+        };
+        Some(Self {
+            model: model.into(),
+            effort,
+        })
+    }
+}
+/// Reads T3's `textGenerationModelSelection`: the project's override, else the device value,
+/// else T3's default. A malformed layer falls through to the next one.
+pub(crate) fn text_generation(path: &Path, workspace: &WorkspaceId) -> ModelSelection {
+    let settings: Value = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    ModelSelection::parse(
+        &settings["projectOverrides"][workspace.to_string()]["textGenerationModelSelection"],
+    )
+    .or_else(|| ModelSelection::parse(&settings["textGenerationModelSelection"]))
+    .unwrap_or_else(ModelSelection::text_generation_default)
+}
 pub fn read(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -214,6 +258,35 @@ pub(crate) fn source_control(path: &Path) -> SourceControlSettings {
 #[cfg(test)]
 mod source_control_tests {
     use super::*;
+    #[test]
+    fn text_generation_prefers_the_project_then_the_device_then_t3s_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let project: WorkspaceId = "7d4f3c56-62f8-4a36-9a5a-0f58a5a0f0a1".parse().unwrap();
+        let other = WorkspaceId::default();
+        let default = ModelSelection {
+            model: "gpt-6-luna".into(),
+            effort: Some("low".into()),
+        };
+        assert_eq!(text_generation(&path, &project), default);
+        fs::write(&path, serde_json::json!({ "textGenerationModelSelection": { "model": "device-writer", "effort": null }, "projectOverrides": { project.to_string(): { "textGenerationModelSelection": { "model": "project-writer", "effort": "high" } } } }).to_string()).unwrap();
+        assert_eq!(
+            text_generation(&path, &project),
+            ModelSelection {
+                model: "project-writer".into(),
+                effort: Some("high".into())
+            }
+        );
+        assert_eq!(
+            text_generation(&path, &other),
+            ModelSelection {
+                model: "device-writer".into(),
+                effort: None
+            }
+        );
+        fs::write(&path, serde_json::json!({ "textGenerationModelSelection": { "model": "device-writer", "effort": "x\" -c sandbox=\"danger" }, "projectOverrides": { project.to_string(): { "textGenerationModelSelection": { "model": "" } } } }).to_string()).unwrap();
+        assert_eq!(text_generation(&path, &project), default);
+    }
     #[test]
     fn writing_styles_strip_unknown_fields_at_global_and_project_scope() {
         let dir = tempfile::tempdir().unwrap();

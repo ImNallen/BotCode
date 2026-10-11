@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { getSchema } from "@tiptap/core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { composerEditorExtensions } from "./ComposerPromptEditor";
+import { composerExtensions } from "./ComposerPromptEditor";
 import {
   detectComposerTrigger,
   replaceTextRange,
@@ -58,7 +58,7 @@ it("serializes path chips without losing spaces, brackets, punctuation or Unicod
     "@scope/package",
     "folder\\file.txt",
   ];
-  const schema = getSchema(composerEditorExtensions);
+  const schema = getSchema(composerExtensions(false));
   for (const path of paths) {
     const link = serializeComposerFileLink(path);
     assert.equal(composerMentions(`Before ${link} after`)[0]?.path, path);

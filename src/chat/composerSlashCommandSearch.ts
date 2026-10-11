@@ -46,6 +46,13 @@ const commands: SlashItem[] = [
     label: "/usage-limits",
     description: "Show Codex usage limits",
   },
+  {
+    id: "slash:compact",
+    type: "slash-command",
+    command: "compact",
+    label: "/compact",
+    description: "Summarize the conversation and reduce context usage",
+  },
 ];
 
 export function standaloneComposerCommand(text: string) {
@@ -59,10 +66,13 @@ export function searchSlashCommandItems(
   query: string,
   planSupported: boolean,
   skills: readonly Skill[] = [],
+  compactAvailable = false,
 ): SlashSearchItem[] {
   const items: SlashSearchItem[] = commands.filter(
     (item) =>
-      planSupported || (item.command !== "plan" && item.command !== "default"),
+      (planSupported ||
+        (item.command !== "plan" && item.command !== "default")) &&
+      (compactAvailable || item.command !== "compact"),
   );
   items.push(...skillCommandItems(skills, "", true));
   const normalized = normalizeSearchQuery(query, {

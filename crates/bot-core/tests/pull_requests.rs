@@ -63,6 +63,7 @@ impl Fixture {
             codex_binary: PathBuf::from("/no/codex"),
             gh_binary: gh,
             network_timeout: Duration::from_secs(15),
+            compaction_timeout: Duration::from_secs(600),
             shell: None,
         };
         let fixture = Self { dir, root, config };

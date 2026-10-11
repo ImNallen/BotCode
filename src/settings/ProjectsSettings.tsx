@@ -304,6 +304,11 @@ function ProjectSettings({
       ) : null}
       <SettingsGroup id="project-new-threads" title="New threads">
         <ProjectSettingRow
+          id={projectRows.model.id}
+          setting="defaultModelSelection"
+          scope={scope}
+        />
+        <ProjectSettingRow
           id={projectRows.workspace.id}
           setting="newThreadCheckout"
           scope={scope}

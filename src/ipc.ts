@@ -545,6 +545,7 @@ const thread = z.object({
   turns: z.array(
     z.object({
       id,
+      kind: z.enum(["prompt", "compaction"]).default("prompt"),
       prompt: z.string(),
       context: messageContext.nullable().optional(),
       nativeTurnId: z.string().nullable(),

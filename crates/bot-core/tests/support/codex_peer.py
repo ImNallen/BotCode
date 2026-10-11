@@ -428,6 +428,30 @@ for line in sys.stdin:
                 emit({'id': request['id'], 'error': {'message': 'Reply lost after userMessage'}})
             else:
                 result(request, {'turnId': active})
+    elif method == 'thread/compact/start':
+        # Mirrors the frames Codex 0.162.0 sent for a real thread/compact/start.
+        if (root / 'compact_error').exists():
+            emit({'id': request['id'], 'error': {'code': -32600, 'message': (root / 'compact_error').read_text()}})
+            continue
+        result(request, {})
+        active = 'compact-' + str(request['id'])
+        def compact(thread=params['threadId'], turn=active):
+            event('thread/status/changed', {'threadId': thread, 'status': {'type': 'active', 'activeFlags': []}})
+            event('turn/started', {'threadId': thread, 'turn': {'id': turn, 'status': 'inProgress', 'items': []}})
+            item = {'type': 'contextCompaction', 'id': 'compaction-' + turn}
+            event('item/started', {'threadId': thread, 'turnId': turn, 'item': item})
+            if (root / 'compact_stall').exists():
+                return
+            while (root / 'compact_hold').exists() and not (root / 'compact_release').exists():
+                time.sleep(0.01)
+            usage = lambda total, inputs, cached, output: {'totalTokens': total, 'inputTokens': inputs, 'cachedInputTokens': cached, 'cacheWriteInputTokens': 0, 'outputTokens': output, 'reasoningOutputTokens': 0}
+            event('thread/tokenUsage/updated', {'threadId': thread, 'turnId': turn, 'tokenUsage': {'total': usage(20659, 20654, 13184, 5), 'last': usage(13067, 0, 0, 0), 'modelContextWindow': 258400}})
+            event('item/completed', {'threadId': thread, 'turnId': turn, 'item': item})
+            event('thread/status/changed', {'threadId': thread, 'status': {'type': 'idle'}})
+            event('turn/completed', {'threadId': thread, 'turn': {'id': turn, 'status': 'completed', 'items': []}})
+        threading.Thread(target=compact, daemon=True).start()
+    elif method == 'thread/inject_items':
+        result(request, {})
     elif method == 'turn/interrupt':
         result(request, {})
         task_state = task_turns.get(params['threadId'])

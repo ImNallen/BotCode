@@ -2,7 +2,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon, LayersIcon } from "lucide-react";
 import { cn } from "../lib/cn";
-import type { ProviderCapabilities } from "../ipc";
+import { useQuery } from "@tanstack/react-query";
+import { ipc, type ModelOption, type ProviderCapabilities } from "../ipc";
+import {
+  ModelSelectionPicker,
+  effortLabel,
+} from "../chat/ModelSelectionControls";
 import {
   PermissionModeOptions,
   permissionModeIcons,
@@ -17,6 +22,7 @@ import {
   checkoutModeLabels,
   projectSetting,
   usePreferences,
+  type ModelSelection,
   type ProjectOverride,
   type ProjectSetting,
   type ProjectValues,
@@ -90,18 +96,28 @@ function AutoSettleDaysInput({
   );
 }
 
+type RowEnvironment = {
+  capabilities?: ProviderCapabilities;
+  models?: ModelCatalog;
+};
+type ModelCatalog = {
+  options: ModelOption[];
+  loading: boolean;
+  error: string | undefined;
+  retry: () => void;
+};
+
 const controls: {
   [K in ProjectSetting]: {
-    format: (
-      value: ProjectValues[K],
-      capabilities: ProviderCapabilities | undefined,
-    ) => string;
+    format: (value: ProjectValues[K], env: RowEnvironment) => string;
     control: (
       value: ProjectValues[K],
       set: (value: ProjectValues[K]) => void,
       disabled: boolean,
-      capabilities: ProviderCapabilities | undefined,
+      env: RowEnvironment,
     ) => ReactNode;
+    // Shown under the description while the effective value is not a project override.
+    status?: (value: ProjectValues[K]) => string | undefined;
     // Whether No project can override it. New thread defaults cannot, because
     // those threads start in their own folder.
     scratch: boolean;
@@ -170,14 +186,14 @@ const controls: {
   },
   defaultPermissionMode: {
     scratch: true,
-    format: (preferred, capabilities) => {
+    format: (preferred, { capabilities }) => {
       const value = resolvePermissionMode({ preferred, capabilities });
       return (
         capabilities?.permissionModes.find((option) => option.value === value)
           ?.label ?? "Loading permissions..."
       );
     },
-    control: (preferred, set, disabled, capabilities) => {
+    control: (preferred, set, disabled, { capabilities }) => {
       const value = resolvePermissionMode({ preferred, capabilities });
       const selected = capabilities?.permissionModes.find(
         (option) => option.value === value,
@@ -278,6 +294,49 @@ const controls: {
         onCheckedChange={set}
         aria-label="Auto-settle merged pull requests"
       />
+    ),
+  },
+  defaultModelSelection: {
+    scratch: true,
+    format: (selection, { models }) =>
+      selection === null
+        ? "Automatic"
+        : modelSelectionLabel(selection, models?.options ?? []),
+    status: (selection) => (selection === null ? "Automatic" : undefined),
+    control: (selection, set, disabled, { models }) => (
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+        <ModelSelectionPicker
+          models={models?.options ?? []}
+          loading={models?.loading ?? false}
+          error={models?.error}
+          retry={models?.retry}
+          selection={selection ?? { model: null, effort: null }}
+          disabled={disabled}
+          onChange={(next) =>
+            set(next.model === null ? null : { ...next, model: next.model })
+          }
+        />
+      </div>
+    ),
+  },
+  textGenerationModelSelection: {
+    scratch: true,
+    format: (selection, { models }) =>
+      modelSelectionLabel(selection, models?.options ?? []),
+    control: (selection, set, disabled, { models }) => (
+      <div className="flex flex-wrap items-center justify-end gap-1.5">
+        <ModelSelectionPicker
+          models={models?.options ?? []}
+          loading={models?.loading ?? false}
+          error={models?.error}
+          retry={models?.retry}
+          selection={selection}
+          disabled={disabled}
+          onChange={(next) =>
+            set({ ...next, model: next.model ?? selection.model })
+          }
+        />
+      </div>
     ),
   },
   sidebarAutoSettleAfterDays: {
@@ -393,9 +452,44 @@ export function ProjectSettingRow<K extends ProjectSetting>(
 ) {
   return props.setting === "defaultPermissionMode" ? (
     <PermissionSettingRow id={props.id} scope={props.scope} />
+  ) : props.setting === "defaultModelSelection" ||
+    props.setting === "textGenerationModelSelection" ? (
+    <ModelSettingRow {...props} />
   ) : (
     <ScopedProjectSettingRow {...props} />
   );
+}
+
+function ModelSettingRow<K extends ProjectSetting>(
+  props: ProjectSettingRowProps<K>,
+) {
+  const query = useQuery({
+    queryKey: ["models"],
+    queryFn: ipc.models,
+    retry: false,
+  });
+  return (
+    <ScopedProjectSettingRow
+      {...props}
+      env={{
+        models: {
+          options: query.data ?? [],
+          loading: query.isPending,
+          error: query.error?.message,
+          retry: () => void query.refetch(),
+        },
+      }}
+    />
+  );
+}
+
+function modelSelectionLabel(
+  selection: ModelSelection,
+  models: readonly ModelOption[],
+) {
+  const option = models.find((model) => model.model === selection.model);
+  const effort = selection.effort ?? option?.defaultReasoningEffort;
+  return `${option?.displayName ?? selection.model}${effort ? ` · ${effortLabel(effort)}` : ""}`;
 }
 
 function PermissionSettingRow({
@@ -409,7 +503,7 @@ function PermissionSettingRow({
         id={id}
         setting="defaultPermissionMode"
         scope={scope}
-        capabilities={query.data}
+        env={{ capabilities: query.data }}
       />
       {query.error && !query.data ? (
         <div role="alert" className="px-4 pb-3 text-sm text-muted-foreground">
@@ -431,10 +525,10 @@ function ScopedProjectSettingRow<K extends ProjectSetting>({
   id,
   setting,
   scope,
-  capabilities,
-}: ProjectSettingRowProps<K> & { capabilities?: ProviderCapabilities }) {
+  env = {},
+}: ProjectSettingRowProps<K> & { env?: RowEnvironment }) {
   const { preferences, update, patchProject } = usePreferences();
-  const { format, control, scratch, detail } = controls[setting];
+  const { format, control, scratch, detail, status } = controls[setting];
   const target = writeTarget(scope, scratch);
   const labels = projectSettingRows[setting];
   const { value, overridden } = projectSetting(
@@ -463,7 +557,7 @@ function ScopedProjectSettingRow<K extends ProjectSetting>({
             ? "Source control settings require a repository project."
             : "Threads without a project start in their own folder."
         }
-        control={control(value, write, true, capabilities)}
+        control={control(value, write, true, env)}
         disabled
       />
     );
@@ -483,7 +577,7 @@ function ScopedProjectSettingRow<K extends ProjectSetting>({
           ? [
               {
                 label: "This project",
-                value: overridden ? format(value, capabilities) : "Inherits",
+                value: overridden ? format(value, env) : "Inherits",
                 set: overridden,
                 effective: overridden,
               },
@@ -491,7 +585,7 @@ function ScopedProjectSettingRow<K extends ProjectSetting>({
           : []),
         {
           label: "All projects",
-          value: format(allValue, capabilities),
+          value: format(allValue, env),
           set: true,
           effective: !overridden,
         },
@@ -504,7 +598,8 @@ function ScopedProjectSettingRow<K extends ProjectSetting>({
         id={id}
         title={labels.title}
         description={scoped ? labels.project : labels.all}
-        control={control(value, write, false, capabilities)}
+        control={control(value, write, false, env)}
+        status={overridden ? undefined : status?.(value)}
         inheritance={inheritance}
         resetAction={
           scoped ? (
@@ -515,7 +610,8 @@ function ScopedProjectSettingRow<K extends ProjectSetting>({
                 onClick={reset}
               />
             ) : null
-          ) : allValue !== builtInProject[setting] ? (
+          ) : JSON.stringify(allValue) !==
+            JSON.stringify(builtInProject[setting]) ? (
             <SettingResetButton label={labels.resetLabel} onClick={reset} />
           ) : null
         }

@@ -41,6 +41,7 @@ function fixture(): Thread {
     turns: [
       {
         id: turnId,
+        kind: "prompt" as const,
         prompt: "First",
         tasks: null,
         nativeTurnId: "native-turn",

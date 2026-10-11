@@ -31,6 +31,7 @@ impl Fixture {
                 codex_binary: peer,
                 gh_binary: directory.path().join("no-gh"),
                 network_timeout: Duration::from_secs(2),
+                compaction_timeout: Duration::from_secs(600),
                 shell: None,
             },
             directory,

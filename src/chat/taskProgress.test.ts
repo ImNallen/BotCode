@@ -8,6 +8,7 @@ import { ComposerTasksBadge, ComposerTasksContent } from "./ComposerTasksBadge";
 
 const turn: Thread["turns"][number] = {
   id: "turn",
+  kind: "prompt" as const,
   prompt: "Work",
   nativeTurnId: "native-turn",
   delivery: { kind: "accepted" },

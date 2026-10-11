@@ -5,7 +5,7 @@ import { EditorState } from "@tiptap/pm/state";
 import { history, undo } from "@tiptap/pm/history";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { composerEditorExtensions } from "./ComposerPromptEditor";
+import { composerExtensions } from "./ComposerPromptEditor";
 import {
   buildComposerDocument,
   composerDocumentMap,
@@ -83,7 +83,7 @@ const skill: ComposerContextRecord = {
   kind: "skill",
   name: "repo-proof",
 };
-const schema = getSchema(composerEditorExtensions);
+const schema = getSchema(composerExtensions(false));
 
 it("round trips every context payload through one document node and preserves cursor boundaries", () => {
   const content = [terminal, citation, review, skill].reduce(appendContext, {

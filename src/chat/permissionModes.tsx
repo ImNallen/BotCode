@@ -6,8 +6,10 @@ import {
   PenLineIcon,
   SparklesIcon,
 } from "lucide-react";
+import type { ModelSelection } from "../settings/preferences";
 import {
   ipc,
+  type ModelOption,
   type PermissionMode,
   type PermissionModeOption,
   type ProviderCapabilities,
@@ -74,22 +76,49 @@ export function finishDraftSettings({
   return acceptedAsThread ? newDraftSettings() : current;
 }
 
+type DraftModel = Pick<SessionSettings, "model" | "effort">;
+const providerDefaultModel: DraftModel = { model: null, effort: null };
+
+// A saved default the live catalog no longer lists falls back to the provider
+// default, as does an effort the model does not support. An unloaded catalog
+// trusts the saved choice.
+export function resolveDefaultModel(
+  selection: ModelSelection | null,
+  catalog: readonly ModelOption[] | undefined,
+): DraftModel {
+  if (selection === null) return providerDefaultModel;
+  if (catalog === undefined) return selection;
+  const option = catalog.find((model) => model.model === selection.model);
+  if (!option) return providerDefaultModel;
+  return {
+    model: option.model,
+    effort: option.supportedReasoningEfforts.some(
+      (supported) => supported.reasoningEffort === selection.effort,
+    )
+      ? selection.effort
+      : null,
+  };
+}
+
 export function draftSessionSettings({
   draft,
   preferred,
+  defaultModel = providerDefaultModel,
   capabilities,
 }: {
   draft: DraftSessionSettings;
   preferred: PermissionMode | null;
+  defaultModel?: DraftModel;
   capabilities: ProviderCapabilities | undefined;
 }): SessionSettings | undefined {
   const permissionMode = resolvePermissionMode({
     capabilities,
     preferred: draft.permissionMode ?? preferred,
   });
+  const untouched = draft.model === null && draft.effort === null;
   return permissionMode === undefined
     ? undefined
-    : { ...draft, permissionMode };
+    : { ...draft, ...(untouched ? defaultModel : {}), permissionMode };
 }
 
 export function captureDraftSettings({

@@ -48,7 +48,8 @@ impl Owner {
         }
         let previous = t.title.clone();
         let prompt = thread_title::regenerate_prompt(&previous, &context);
-        let model = self.resolve_model(&t.settings).map(str::to_owned);
+        let model =
+            settings::text_generation(&self.config.data_dir.join("settings.json"), &t.workspace_id);
         let binary = self.config.codex_binary.clone();
         self.supersede_title(&id);
         self.titles.requests += 1;
@@ -68,7 +69,7 @@ impl Owner {
             let result = tokio::spawn(async move {
                 thread_title::regenerate(
                     &binary,
-                    model.as_deref(),
+                    &model,
                     &prompt,
                     receiver,
                     crate::text_generation::LIMIT,

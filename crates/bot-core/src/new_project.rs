@@ -426,6 +426,7 @@ mod tests {
             codex_binary: f.dir.path().join("no-codex"),
             gh_binary: f.dir.path().join("no-gh"),
             network_timeout: Duration::from_secs(1),
+            compaction_timeout: Duration::from_secs(600),
             shell: None,
         }
     }

@@ -71,6 +71,7 @@ impl Fixture {
                 codex_binary: install("codex", include_str!("support/codex_peer.py")),
                 gh_binary: install("gh", include_str!("support/gh_peer.py")),
                 network_timeout: Duration::from_secs(60),
+                compaction_timeout: Duration::from_secs(600),
                 shell: None,
             },
             dir,
@@ -1040,6 +1041,19 @@ async fn preview_uses_selected_model_and_private_split_index_without_changing_st
         r#"{"subject":"Describe the staged changes","body":"- Include the new file"}"#,
     );
     let (app, workspace) = f.open().await;
+    std::fs::write(
+        f.config.data_dir.join("settings.json"),
+        serde_json::json!({
+            "textGenerationModelSelection": { "model": "device-writer", "effort": "medium" },
+            "projectOverrides": {
+                workspace.to_string(): {
+                    "textGenerationModelSelection": { "model": "project-writer", "effort": "high" }
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
     let t = selected_thread(&app, &workspace).await;
     let job = app
         .begin_commit_message(t.id, CommitSelection::All)
@@ -1059,8 +1073,14 @@ async fn preview_uses_selected_model_and_private_split_index_without_changing_st
     let args = calls[0]["args"].as_array().unwrap();
     assert!(
         args.windows(2)
-            .any(|pair| pair[0] == "--model" && pair[1] == "model-two")
+            .any(|pair| pair[0] == "--model" && pair[1] == "project-writer"),
+        "the project's text generation model wins over the device value: {args:?}"
     );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair[0] == "-c" && pair[1] == "model_reasoning_effort=\"high\"")
+    );
+    assert_eq!(args.iter().filter(|arg| *arg == "--model").count(), 1);
     let prompt = calls[0]["prompt"].as_str().unwrap();
     assert!(prompt.contains("+unstaged preview"));
     assert!(prompt.contains("+new preview"));
@@ -1372,7 +1392,7 @@ async fn blank_combined_action_generates_from_actual_index_and_new_commit_agains
             .as_array()
             .unwrap()
             .windows(2)
-            .any(|pair| pair[0] == "--model" && pair[1] == "model-two")
+            .any(|pair| pair[0] == "--model" && pair[1] == "gpt-6-luna")
     );
     let calls = f.gh_calls();
     let created = calls.iter().find(|args| args[1] == "create").unwrap();

@@ -1,5 +1,6 @@
 // Copied from pingdotgg/t3code v0.0.45 components/chat/ContextWindowMeter.tsx,
 // ContextWindowMeter.logic.ts, lib/contextWindow.ts and ui/popover.tsx (MIT).
+import { Minimize2Icon } from "lucide-react";
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ContextUsage } from "../ipc";
@@ -48,13 +49,20 @@ function measure(usage: ContextUsage) {
   };
 }
 
+type CompactProps = {
+  onCompact?: (() => void) | undefined;
+  compactDisabled?: boolean | undefined;
+  compactDisabledReason?: string | null | undefined;
+};
+
 export function ContextWindowMeter({
   usage,
   modelDisplayName,
+  ...compact
 }: {
   usage: ContextUsage;
   modelDisplayName: string | null;
-}) {
+} & CompactProps) {
   const { usedPercentage, normalizedPercentage, usageColor } = measure(usage);
   const radius = 9.75;
   const circumference = 2 * Math.PI * radius;
@@ -62,6 +70,9 @@ export function ContextWindowMeter({
   const [position, setPosition] = useState<CSSProperties | null>(null);
   const open = position !== null;
   const trigger = useRef<HTMLSpanElement>(null);
+  const popup = useRef<HTMLDivElement>(null);
+  // T3 keeps the card open briefly so the pointer can reach Compact context.
+  const closeDelay = compact.onCompact ? 150 : 0;
   const delay = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(delay.current), []);
   const show = (wait: number) => {
@@ -79,6 +90,11 @@ export function ContextWindowMeter({
     clearTimeout(delay.current);
     setPosition(null);
   };
+  const hideLater = () => {
+    if (!closeDelay) return hide();
+    clearTimeout(delay.current);
+    delay.current = setTimeout(() => setPosition(null), closeDelay);
+  };
   return (
     <span
       ref={trigger}
@@ -86,11 +102,14 @@ export function ContextWindowMeter({
       onPointerEnter={(event) => {
         if (event.pointerType !== "touch") show(150);
       }}
-      onPointerLeave={hide}
+      onPointerLeave={hideLater}
       onFocus={(event) => {
         if (event.target.matches(":focus-visible")) show(0);
       }}
-      onBlur={hide}
+      onBlur={(event) => {
+        if (!popup.current?.contains(event.relatedTarget as Node | null))
+          hide();
+      }}
       onKeyDown={(event) => {
         if (event.key === "Escape" && open) {
           event.preventDefault();
@@ -144,8 +163,11 @@ export function ContextWindowMeter({
           // backdrop filter, and a glass card inside it could not blur what lies behind.
           createPortal(
             <div
+              ref={popup}
               data-slot="popover-popup"
               style={position}
+              onPointerEnter={() => clearTimeout(delay.current)}
+              onPointerLeave={hideLater}
               className={cn(
                 "dropdown-glass relative flex h-(--popup-height,auto) w-(--popup-width,auto) origin-(--transform-origin) rounded-lg text-popover-foreground outline-none transition-[width,height,scale,opacity] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
                 "w-fit text-balance rounded-md text-xs shadow-md/5 before:rounded-[calc(var(--radius-md)-1px)]",
@@ -157,6 +179,7 @@ export function ContextWindowMeter({
               <ContextWindowDetails
                 usage={usage}
                 modelDisplayName={modelDisplayName}
+                {...compact}
               />
             </div>,
             document.body,
@@ -169,10 +192,13 @@ export function ContextWindowMeter({
 export function ContextWindowDetails({
   usage,
   modelDisplayName,
+  onCompact,
+  compactDisabled,
+  compactDisabledReason,
 }: {
   usage: ContextUsage;
   modelDisplayName: string | null;
-}) {
+} & CompactProps) {
   const { usedPercentage, normalizedPercentage, usageColor } = measure(usage);
   const totalProcessedTokens = usage.totalProcessedTokens;
   const showTotalProcessed =
@@ -230,6 +256,25 @@ export function ContextWindowDetails({
             ? `Context for ${modelDisplayName} compacts automatically when needed.`
             : "Context compacts automatically when needed."}
         </div>
+        {onCompact ? (
+          <>
+            <Button
+              size="xs"
+              variant="outline"
+              className="mt-1 w-full justify-center"
+              disabled={compactDisabled}
+              onClick={onCompact}
+            >
+              <Minimize2Icon aria-hidden="true" />
+              Compact context
+            </Button>
+            {compactDisabled && compactDisabledReason ? (
+              <div className="text-pretty text-secondary-label text-2xs">
+                {compactDisabledReason}
+              </div>
+            ) : null}
+          </>
+        ) : null}
       </div>
     </div>
   );

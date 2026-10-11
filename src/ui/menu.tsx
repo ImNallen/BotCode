@@ -117,8 +117,15 @@ export function Menu({
           : align === "end"
             ? rect.right - width
             : rect.left + (rect.width - width) / 2;
+      const placement = menuPlacement(
+        side,
+        popup.current.scrollHeight,
+        rect,
+        window.innerHeight,
+        sideOffset,
+      );
       const edge =
-        side === "bottom"
+        placement === "bottom"
           ? Math.min(
               window.innerHeight - 8,
               Math.max(8, rect.bottom + sideOffset),
@@ -132,9 +139,9 @@ export function Menu({
         maxWidth: "calc(100vw - 16px)",
         left: Math.max(8, Math.min(desiredLeft, window.innerWidth - width - 8)),
         ...availableHeight(
-          side === "bottom" ? window.innerHeight - edge - 8 : edge - 8,
+          placement === "bottom" ? window.innerHeight - edge - 8 : edge - 8,
         ),
-        ...(side === "bottom"
+        ...(placement === "bottom"
           ? { top: edge }
           : { bottom: window.innerHeight - edge }),
       });
@@ -351,6 +358,23 @@ export function MenuGroupLabel({ className, ...props }: ComponentProps<"div">) {
     />
   );
 }
+// Base UI flips a popup that does not fit on its side to the roomier one.
+export function menuPlacement(
+  side: "top" | "bottom",
+  contentHeight: number,
+  anchor: { top: number; bottom: number },
+  viewportHeight: number,
+  sideOffset: number,
+): "top" | "bottom" {
+  const roomAbove = anchor.top - sideOffset - 8;
+  const roomBelow = viewportHeight - anchor.bottom - sideOffset - 8;
+  if (side === "top" && contentHeight > roomAbove && roomBelow > roomAbove)
+    return "bottom";
+  if (side === "bottom" && contentHeight > roomBelow && roomAbove > roomBelow)
+    return "top";
+  return side;
+}
+
 function availableHeight(px: number) {
   return { "--available-height": `${Math.max(0, px)}px` } as CSSProperties;
 }

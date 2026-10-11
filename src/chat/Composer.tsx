@@ -18,8 +18,10 @@ import {
   XIcon,
   FileIcon,
   PaperclipIcon,
+  PlayIcon,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { flushSync } from "react-dom";
 import { isMacPlatform } from "../lib/utils";
 import { resolveCommand, useShortcutLabel } from "../lib/shortcuts";
 import { isTerminalFocused } from "../terminal/terminalKeys";
@@ -67,14 +69,33 @@ import type {
   SessionSettings,
 } from "../ipc";
 import { cn } from "../lib/cn";
-import { checkoutModeLabels, type CheckoutMode } from "../settings/preferences";
+import {
+  checkoutModeLabels,
+  usePreferences,
+  type CheckoutMode,
+} from "../settings/preferences";
 import { Button, selectItem, selectTrigger } from "../ui/controls";
 import { OpenAI } from "../ui/icons";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { ModelPicker } from "./ModelPicker";
+import {
+  EffortMenu,
+  composerControl,
+  selectedModelOption,
+} from "./ModelSelectionControls";
 import { ComposerSurface } from "./ComposerSurface";
 import { shouldHandleComposerAttachmentPaste } from "./composerAttachmentFiles";
-import { attachmentUrl, type ComposerAttachment } from "./composerAttachments";
+import {
+  attachmentIdentity,
+  attachmentMediaKind,
+  attachmentUrl,
+  type ComposerAttachment,
+} from "./composerAttachments";
+import {
+  buildExpandedImagePreview,
+  type ExpandedImagePreview,
+} from "./ExpandedImagePreview";
+import { prepareVideoFirstFrame } from "../lib/videoFirstFrame";
 import { makeWorkspaceFileDropHandlers } from "./workspaceFileDrop";
 import {
   ComposerPromptEditor,
@@ -86,17 +107,33 @@ import {
   composerSuggestionOptionId,
   type ComposerCommandItem,
 } from "./ComposerCommandMenu";
-import { detectComposerTrigger, pathBasename } from "./composer-logic";
+import {
+  composerEnterIntent,
+  detectComposerTrigger,
+  pathBasename,
+  type ComposerEnterIntent,
+} from "./composer-logic";
 import {
   searchSlashCommandItems,
   skillCommandItems,
 } from "./composerSlashCommandSearch";
+import { compactSlashCommandAvailable } from "./contextCompaction";
 import { useProjectSearch } from "../lib/projectSearch";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { PermissionModeOptions, permissionModeIcons } from "./permissionModes";
-
-const composerControl =
-  "relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap rounded-(--control-radius) border border-transparent text-base outline-none hover:bg-accent data-pressed:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 data-disabled:pointer-events-none data-disabled:opacity-64 pointer-coarse:after:absolute pointer-coarse:after:size-full pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 [&:active:not([aria-haspopup])]:scale-[0.97] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:-mx-0.5 [&_svg[data-composer-control-icon]]:mx-0 h-7 gap-1.5 px-2.5 font-medium text-secondary-label [&_svg:not([class*='text-'])]:text-muted-foreground hover:text-foreground sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 aria-pressed:bg-accent aria-pressed:text-accent-foreground aria-pressed:hover:bg-accent/80";
+import {
+  COMPOSER_SCROLL_COLLAPSE_THRESHOLD_PX,
+  COMPOSER_SCROLL_GESTURE_RESET_MS,
+  canScrollCollapseComposer,
+  createComposerScrollGestureState,
+  getRestingComposerImagePreviewCounts,
+  isTimelineScrollTarget,
+  recordComposerScrollGestureEvent,
+  resetComposerScrollGesture,
+  shouldUseRestingComposerLayout,
+  suppressActiveComposerScrollGesture,
+  useComposerMultilinePrompt,
+} from "./composerResting";
 
 const contextControl =
   "inline-flex h-7 min-w-0 items-center gap-1 border border-transparent px-1.75 font-normal text-muted-foreground/70 text-xs sm:h-6";
@@ -122,6 +159,7 @@ export function Composer({
   attachments,
   onAddAttachments,
   onRemoveAttachment,
+  onExpandImage,
   onSubmit,
   onStop,
   canSend,
@@ -155,6 +193,10 @@ export function Composer({
   showPlanFollowUp,
   onImplementInNewThread,
   onUsageLimits,
+  compactDisabledReason,
+  onCompactContext,
+  existingThread,
+  onRestingChange,
 }: {
   scopeKey: string;
   activation: number;
@@ -179,7 +221,8 @@ export function Composer({
     source?: AttachmentSource,
   ) => Promise<Attachment[]>;
   onRemoveAttachment: (key: string) => void;
-  onSubmit: () => void;
+  onExpandImage: (preview: ExpandedImagePreview) => void;
+  onSubmit: (intent: Exclude<ComposerEnterIntent, "newline">) => void;
   onStop: () => void;
   canSend: boolean;
   running: boolean;
@@ -229,7 +272,12 @@ export function Composer({
   showPlanFollowUp: boolean;
   onImplementInNewThread: () => void;
   onUsageLimits: () => void;
+  compactDisabledReason: string | null;
+  onCompactContext: () => void;
+  existingThread: boolean;
+  onRestingChange: (resting: boolean) => void;
 }) {
+  const { preferences } = usePreferences();
   const editor = useRef<ComposerEditorHandle>(null);
   const composerElement = useRef<HTMLFormElement>(null);
   const stashShortcutLabel = useShortcutLabel("composer.stash");
@@ -240,10 +288,12 @@ export function Composer({
   const scope = useRef(`${activation}:${scopeKey}`);
   scope.current = `${activation}:${scopeKey}`;
   const [pulsing, setPulsing] = useState(false);
+  const [scrollCollapsed, setScrollCollapsed] = useState(false);
   useEffect(() => {
     historyPosition.current = null;
     onCloseStash();
     pasteAsTextUntil.current = 0;
+    setScrollCollapsed(false);
   }, [scopeKey, activation]);
   useEffect(() => {
     if (historyPosition.current?.recalled !== value)
@@ -336,7 +386,18 @@ export function Composer({
               }))
             : []
           : trigger
-            ? searchSlashCommandItems(trigger.query, planSupported, skills)
+            ? searchSlashCommandItems(
+                trigger.query,
+                planSupported,
+                skills,
+                compactSlashCommandAvailable({
+                  prompt: value,
+                  trigger,
+                  attachmentCount: attachments.length,
+                  contextCount: records.length,
+                  disabledReason: compactDisabledReason,
+                }),
+              )
             : [];
   const skillMenuOpen =
     trigger?.kind === "skill" || trigger?.kind === "slash-command";
@@ -392,11 +453,20 @@ export function Composer({
               }
             : null;
     if (record && records.length >= 200) return;
+    // T3 inserts a provider command such as /compact for the user to send.
+    const command =
+      item.type === "slash-command" && item.command === "compact"
+        ? "/compact "
+        : null;
+    const end =
+      command && value[trigger.rangeEnd] === " "
+        ? trigger.rangeEnd + 1
+        : trigger.rangeEnd;
     const changed = editor.current?.replaceRange({
       start: trigger.rangeStart,
-      end: trigger.rangeEnd,
-      expectedText: value.slice(trigger.rangeStart, trigger.rangeEnd),
-      replacement: record ? `${contextReference(record)} ` : "",
+      end,
+      expectedText: value.slice(trigger.rangeStart, end),
+      replacement: record ? `${contextReference(record)} ` : (command ?? ""),
       records: record ? [record] : [],
     });
     if (!changed) return;
@@ -404,7 +474,7 @@ export function Composer({
     if (item.type === "slash-command") {
       if (item.command === "model") setModelPickerOpen(true);
       else if (item.command === "usage-limits") onUsageLimits();
-      else
+      else if (item.command !== "compact")
         onSettingsChange({
           ...settings,
           interactionMode: item.command === "plan" ? "plan" : "default",
@@ -536,6 +606,7 @@ export function Composer({
         return;
       if (command === "modelPicker.toggle") {
         if (settingsDisabled) return;
+        flushSync(() => setScrollCollapsed(false));
         setModelPickerOpen((open) => !open);
       } else if (command === "thread.stop") {
         if (!canStop || stopping) return;
@@ -551,6 +622,7 @@ export function Composer({
           "composer.branch",
         ].includes(command)
       ) {
+        flushSync(() => setScrollCollapsed(false));
         const button = document.querySelector<HTMLButtonElement>(
           `[data-composer-shortcut="${command}"]`,
         );
@@ -573,8 +645,20 @@ export function Composer({
     onStop,
   ]);
   const keys = (event: KeyboardEvent) => {
-    if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey)
-      return false;
+    if (event.isComposing || event.altKey) return false;
+    const modifierKey = event.metaKey || event.ctrlKey;
+    if (
+      trigger &&
+      active &&
+      modifierKey &&
+      !event.shiftKey &&
+      event.key === "Enter"
+    ) {
+      event.preventDefault();
+      selectSuggestion(active);
+      return true;
+    }
+    if (modifierKey) return enter(event, true);
     if (trigger && !event.shiftKey) {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -633,12 +717,21 @@ export function Composer({
         }
       }
     }
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      onSubmit();
-      return true;
-    }
-    return false;
+    return enter(event, false);
+  };
+  const enter = (event: KeyboardEvent, modifierKey: boolean) => {
+    if (event.key !== "Enter") return false;
+    const intent = composerEnterIntent({
+      shiftKey: event.shiftKey,
+      modifierKey,
+      running,
+      sendShortcut: preferences.sendShortcut,
+      prompt: value,
+    });
+    if (intent === "newline") return false;
+    event.preventDefault();
+    onSubmit(intent);
+    return true;
   };
   useLayoutEffect(() => {
     if (focusRequest) editor.current?.focus();
@@ -655,25 +748,21 @@ export function Composer({
     window.addEventListener("dragend", onWindowDragEnd);
     return () => window.removeEventListener("dragend", onWindowDragEnd);
   }, [isDragOverComposer]);
+  // The chat column around the composer adds the dropped files.
   const fileDrop = makeWorkspaceFileDropHandlers({
-    setDragActive: (active) => setIsDragOverComposer(active && !disabled),
-    addFiles: (files) => {
-      if (!disabled) attachFiles(files);
-    },
+    disabled,
+    setDragActive: setIsDragOverComposer,
   });
-  const selectedModel = settings.model
-    ? models.find((model) => model.model === settings.model)
-    : models.find((model) => model.isDefault);
-  const effort = settings.effort ?? selectedModel?.defaultReasoningEffort;
-  const effortLabel = (value: string) =>
-    ({
-      low: "Low",
-      medium: "Medium",
-      high: "High",
-      xhigh: "Extra high",
-      max: "Max",
-      ultra: "Ultra",
-    })[value] ?? value;
+  const expand = (attachment: Attachment) => {
+    const preview = buildExpandedImagePreview(
+      attachments.flatMap((slot) =>
+        slot.status === "ready" ? [slot.attachment] : [],
+      ),
+      attachmentIdentity(attachment),
+    );
+    if (preview) onExpandImage(preview);
+  };
+  const selectedModel = selectedModelOption(models, settings.model);
   const tasks = approval ? null : composerTasks(taskTurn);
   const [tasksExpanded, setTasksExpanded] = useState(false);
   useEffect(() => {
@@ -685,6 +774,167 @@ export function Composer({
   );
   const RuntimeIcon = permissionModeIcons[settings.permissionMode];
   const checkout = context?.checkout;
+  const [body, setBody] = useState<HTMLDivElement | null>(null);
+  const wrappedPrompt = useComposerMultilinePrompt(body);
+  const hasMultilinePrompt = value.includes("\n") || wrappedPrompt;
+  const hasExpandedChrome =
+    approval !== null ||
+    stashOpen ||
+    tasksExpanded ||
+    trigger !== null ||
+    isDragOverComposer ||
+    attachments.some((slot) => slot.status === "staging");
+  const canCollapse = canScrollCollapseComposer({
+    isExistingThread: existingThread,
+    collapseOnScroll: preferences.composerCollapseOnScroll,
+    hasMultilinePrompt,
+    hasExpandedChrome,
+    showsInlineTasksBadge:
+      tasks !== null && !tasksExpanded && Boolean(stashOpen || notice),
+  });
+  const [timelineOverflows, setTimelineOverflows] = useState(false);
+  const resting = shouldUseRestingComposerLayout({
+    isExistingThread: existingThread,
+    isScrollCollapsed: scrollCollapsed,
+    hasExpandedChrome,
+    hasMultilinePrompt,
+    timelineOverflows,
+  });
+  const collapseEligible = useRef(false);
+  collapseEligible.current = canCollapse && !resting;
+  useEffect(() => {
+    if (!canCollapse) setScrollCollapsed(false);
+  }, [canCollapse]);
+  useLayoutEffect(() => {
+    onRestingChange(resting);
+  }, [resting, onRestingChange]);
+  const scrollGesture = useRef(createComposerScrollGestureState());
+  const windowRefocus = useRef(false);
+  useEffect(() => {
+    if (!scrollCollapsed) return;
+    let frame: number | null = null;
+    const onWindowFocus = () => {
+      windowRefocus.current = true;
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        windowRefocus.current = false;
+      });
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => {
+      window.removeEventListener("focus", onWindowFocus);
+      if (frame !== null) cancelAnimationFrame(frame);
+      windowRefocus.current = false;
+    };
+  }, [scrollCollapsed]);
+  useEffect(() => {
+    if (!existingThread) return;
+    // The timeline mounts after the thread loads, so find it per event.
+    const timeline = () =>
+      document.querySelector<HTMLElement>("[data-chat-timeline-scroller]");
+    const atEnd = (scroller: HTMLElement) =>
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 2;
+    const measure = (scroller: HTMLElement) =>
+      setTimelineOverflows(scroller.scrollHeight > scroller.clientHeight + 1);
+    let intent: "toward-end" | "away-from-end" | null = null;
+    let resetTimer: number | null = null;
+    const finishGesture = () => {
+      if (resetTimer !== null) clearTimeout(resetTimer);
+      resetTimer = null;
+      resetComposerScrollGesture(scrollGesture.current);
+    };
+    const onWheel = (event: WheelEvent) => {
+      const scroller = timeline();
+      if (event.ctrlKey || !scroller || !(event.target instanceof Element))
+        return;
+      measure(scroller);
+      const targetsTimeline = isTimelineScrollTarget(
+        event.target,
+        scroller,
+        event.deltaY,
+      );
+      if (targetsTimeline) {
+        intent = event.deltaY > 0 ? "toward-end" : "away-from-end";
+        if (event.deltaY > 0 && atEnd(scroller)) setScrollCollapsed(false);
+      }
+      if (
+        !scroller.contains(event.target) &&
+        !scrollGesture.current.collapseSuppressed
+      )
+        return;
+      if (resetTimer !== null) clearTimeout(resetTimer);
+      resetTimer = window.setTimeout(
+        finishGesture,
+        COMPOSER_SCROLL_GESTURE_RESET_MS,
+      );
+      const canScrollInGestureDirection =
+        targetsTimeline &&
+        (event.deltaY < 0
+          ? scroller.scrollTop > 0
+          : scroller.scrollTop < scroller.scrollHeight - scroller.clientHeight);
+      const deltaPx =
+        Math.abs(event.deltaY) *
+        (event.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? 16
+          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? scroller.clientHeight
+            : 1);
+      if (
+        recordComposerScrollGestureEvent(scrollGesture.current, {
+          now: performance.now(),
+          deltaPx,
+          collapseThresholdPx: COMPOSER_SCROLL_COLLAPSE_THRESHOLD_PX,
+          collapseEligible: targetsTimeline && collapseEligible.current,
+          canScrollInGestureDirection,
+          scrollsTowardLogicalEnd: event.deltaY > 0 && atEnd(scroller),
+        })
+      )
+        setScrollCollapsed(true);
+    };
+    // Reaching the end lifts a scroll collapse, unless the last gesture was
+    // reading upward. Any pointer interaction, such as Scroll to end, counts.
+    const onPointerDown = () => {
+      intent = null;
+    };
+    const onScroll = (event: Event) => {
+      const scroller = timeline();
+      if (!scroller || event.target !== scroller) return;
+      measure(scroller);
+      if (atEnd(scroller) && intent !== "away-from-end")
+        setScrollCollapsed(false);
+    };
+    document.addEventListener("wheel", onWheel, {
+      capture: true,
+      passive: true,
+    });
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("scroll", onScroll, {
+      capture: true,
+      passive: true,
+    });
+    return () => {
+      document.removeEventListener("wheel", onWheel, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("scroll", onScroll, true);
+      finishGesture();
+    };
+  }, [existingThread, scopeKey]);
+  const expandForEditorChange = () => {
+    // Editor changes win over the momentum tail of the active scroll gesture.
+    suppressActiveComposerScrollGesture(
+      scrollGesture.current,
+      performance.now(),
+      COMPOSER_SCROLL_GESTURE_RESET_MS,
+    );
+    setScrollCollapsed(false);
+  };
+  const readyImages = attachments.flatMap((slot) =>
+    slot.status === "ready" && slot.attachment.kind === "image" ? [slot] : [],
+  );
+  const restingImageCounts = getRestingComposerImagePreviewCounts(
+    readyImages.length,
+  );
   return (
     <ComposerSurface.Shell contextStrip={context !== undefined}>
       <ComposerSurface.Host>
@@ -695,7 +945,31 @@ export function Composer({
             data-chat-composer-form="true"
             onSubmit={(event) => {
               event.preventDefault();
-              onSubmit();
+              onSubmit("send");
+            }}
+            onPointerDownCapture={(event) => {
+              const target = event.target;
+              if (
+                !(target instanceof Element) ||
+                target.closest(
+                  'button, a, input, select, [role="button"], [role="menuitem"]',
+                )
+              )
+                return;
+              setScrollCollapsed(false);
+              if (
+                resting &&
+                !target.closest('[data-testid="composer-editor"]')
+              ) {
+                // Clicking resting-surface padding would otherwise blur the editor.
+                event.preventDefault();
+                requestAnimationFrame(() => editor.current?.focus());
+              }
+            }}
+            onFocusCapture={() => {
+              // Focus returning from another window lands on the element that
+              // already held it, which is not a request to expand.
+              if (!windowRefocus.current) setScrollCollapsed(false);
             }}
           >
             <ComposerBanner.Dock>
@@ -800,24 +1074,27 @@ export function Composer({
                   onDrop={fileDrop.onDrop}
                 >
                   <div
+                    ref={setBody}
                     data-chat-composer-body="true"
                     className={cn(
                       "relative px-3 pb-2 sm:px-4",
                       "pt-3.5 sm:pt-4",
                       approvalState && "pb-3 sm:pb-4",
+                      resting && "py-2 sm:py-2",
                     )}
                   >
                     {attachments.some(
                       (slot) =>
                         slot.status === "staging" ||
-                        slot.attachment.kind === "image",
+                        (attachmentMediaKind(slot.attachment) !== null &&
+                          !(resting && slot.attachment.kind === "image")),
                     ) ? (
                       <div className="mb-3 flex max-w-full gap-2 flex-wrap">
                         {attachments
                           .filter(
                             (slot) =>
                               slot.status === "staging" ||
-                              slot.attachment.kind === "image",
+                              (slot.attachment.kind === "image" && !resting),
                           )
                           .map((image) => (
                             <div
@@ -826,11 +1103,18 @@ export function Composer({
                               className="group/attachment shrink-0 snap-start bg-background relative h-16 w-16 overflow-hidden rounded-lg border border-border/80"
                             >
                               {image.status === "ready" ? (
-                                <img
-                                  src={attachmentUrl(image.attachment)}
-                                  alt={image.name}
-                                  className="h-full w-full object-cover"
-                                />
+                                <button
+                                  type="button"
+                                  className="h-full w-full cursor-zoom-in"
+                                  aria-label={`Preview ${image.name}`}
+                                  onClick={() => expand(image.attachment)}
+                                >
+                                  <img
+                                    src={attachmentUrl(image.attachment)}
+                                    alt={image.name}
+                                    className="h-full w-full object-cover"
+                                  />
+                                </button>
                               ) : (
                                 <div className="flex h-full w-full items-center justify-center px-1 text-center text-3xs text-secondary-label">
                                   {image.name}
@@ -848,6 +1132,45 @@ export function Composer({
                               </span>
                             </div>
                           ))}
+                        {attachments.map((slot) =>
+                          slot.status === "ready" &&
+                          attachmentMediaKind(slot.attachment) === "video" ? (
+                            <div
+                              key={slot.key}
+                              className="relative h-16 w-16 shrink-0 snap-start overflow-hidden rounded-lg border border-border/80 bg-black"
+                            >
+                              <button
+                                type="button"
+                                className="flex h-full w-full cursor-zoom-in flex-col items-center justify-center gap-1 px-1 text-white"
+                                aria-label={`Play ${slot.name}`}
+                                onClick={() => expand(slot.attachment)}
+                              >
+                                <video
+                                  src={attachmentUrl(slot.attachment)}
+                                  muted
+                                  playsInline
+                                  preload="metadata"
+                                  aria-hidden="true"
+                                  onLoadedMetadata={(event) =>
+                                    prepareVideoFirstFrame(event.currentTarget)
+                                  }
+                                  className="pointer-events-none absolute inset-0 size-full object-cover"
+                                />
+                                <span className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-black/10" />
+                                <PlayIcon className="relative z-10 size-4 fill-current drop-shadow-md" />
+                              </button>
+                              <Button
+                                variant="media-close"
+                                size="icon-xs"
+                                className="absolute right-1 top-1"
+                                onClick={() => onRemoveAttachment(slot.key)}
+                                aria-label={`Remove ${slot.name}`}
+                              >
+                                <XIcon />
+                              </Button>
+                            </div>
+                          ) : null,
+                        )}
                       </div>
                     ) : null}
                     <div className="mb-3 flex flex-col gap-1 empty:hidden">
@@ -856,6 +1179,7 @@ export function Composer({
                           (slot) =>
                             slot.status === "ready" &&
                             slot.attachment.kind === "file" &&
+                            attachmentMediaKind(slot.attachment) === null &&
                             !records.some(
                               (record) =>
                                 record.kind === "file" &&
@@ -890,14 +1214,37 @@ export function Composer({
                           ) : null,
                         )}
                     </div>
-                    <div className="relative">
-                      <div className="relative flow-root font-(family-name:--font-composer,var(--font-sans)) text-(length:--font-size-prompt,var(--text-sm))">
+                    <div
+                      className={cn(
+                        "relative",
+                        resting && "flex min-w-0 items-center gap-1",
+                        resting && (contextUsage ? "pr-28" : "pr-20"),
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "relative flow-root font-(family-name:--font-composer,var(--font-sans)) text-(length:--font-size-prompt,var(--text-sm))",
+                          resting && "min-w-0 flex-1",
+                        )}
+                      >
                         <ComposerPromptEditor
                           ref={editor}
+                          richText={preferences.composerRichTextEnabled}
+                          className={cn(
+                            resting &&
+                              "my-0 max-h-8 min-h-8 overflow-hidden py-0 whitespace-pre! leading-8",
+                          )}
+                          placeholderClassName={cn(
+                            resting &&
+                              "flex items-center overflow-hidden whitespace-nowrap leading-8",
+                          )}
                           value={value}
                           records={records}
                           skills={skills}
-                          onChange={onChange}
+                          onChange={(next, nextRecords) => {
+                            expandForEditorChange();
+                            onChange(next, nextRecords);
+                          }}
                           onSelectionChange={(next) => {
                             setSelection(next);
                             if (
@@ -1006,16 +1353,64 @@ export function Composer({
                           }
                         />
                       </div>
+                      {resting && readyImages.length > 0 ? (
+                        <div
+                          data-chat-composer-resting-images="true"
+                          className="flex shrink-0 items-center gap-1 ps-1"
+                        >
+                          {readyImages
+                            .slice(0, restingImageCounts.visibleCount)
+                            .map((image) => (
+                              <button
+                                key={image.key}
+                                type="button"
+                                className="relative size-7 shrink-0 cursor-zoom-in overflow-hidden rounded-md border border-border/70 bg-muted/60"
+                                aria-label={`Preview ${image.name}`}
+                                onPointerDown={(event) =>
+                                  event.preventDefault()
+                                }
+                                onClick={() => expand(image.attachment)}
+                              >
+                                <img
+                                  src={attachmentUrl(image.attachment)}
+                                  alt=""
+                                  className="size-full object-cover"
+                                />
+                              </button>
+                            ))}
+                          {restingImageCounts.overflowCount > 0 ? (
+                            <button
+                              type="button"
+                              className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-border/70 bg-muted/60 font-medium text-secondary-label text-xs tabular-nums outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                              aria-label={`Show ${String(restingImageCounts.overflowCount)} more image attachments`}
+                              onPointerDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                setScrollCollapsed(false);
+                                editor.current?.focus();
+                              }}
+                            >
+                              +{restingImageCounts.overflowCount}
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                   {
                     <div
                       data-chat-composer-footer="true"
-                      className="flex min-w-0 flex-nowrap items-center justify-between gap-2 overflow-visible px-3 pb-3 sm:px-4 sm:pb-4 sm:gap-0"
+                      className={cn(
+                        "flex min-w-0 flex-nowrap items-center justify-between gap-2 overflow-visible px-3 pb-3 sm:px-4 sm:pb-4 sm:gap-0",
+                        resting &&
+                          "absolute bottom-px right-px z-10 h-12 w-auto gap-0 py-0 sm:gap-0 sm:py-0",
+                      )}
                     >
                       <div
                         data-chat-composer-controls="left"
-                        className="relative -m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                        className={cn(
+                          "relative -m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                          resting && "hidden",
+                        )}
                       >
                         <ModelPicker
                           open={modelPickerOpen}
@@ -1027,12 +1422,14 @@ export function Composer({
                               );
                           }}
                           models={models}
-                          settings={settings}
+                          selection={settings}
                           loading={modelsLoading}
                           error={modelsError}
                           disabled={settingsDisabled}
                           onRetry={onRetryModels}
-                          onChange={onSettingsChange}
+                          onChange={(selection) =>
+                            onSettingsChange({ ...settings, ...selection })
+                          }
                           trigger={(props) => (
                             <button
                               type="button"
@@ -1097,85 +1494,15 @@ export function Composer({
                             </span>
                           </button>
                         ) : null}
-                        <Menu
-                          side="top"
-                          trigger={(props) => (
-                            <button
-                              type="button"
-                              ref={props.ref}
-                              onClick={props.onClick}
-                              aria-haspopup={props["aria-haspopup"]}
-                              aria-expanded={props["aria-expanded"]}
-                              disabled={settingsDisabled || !selectedModel}
-                              aria-label={`Reasoning effort: ${effort ? effortLabel(effort) : "Unavailable"}`}
-                              data-composer-shortcut="composer.effort"
-                              className={composerControl}
-                            >
-                              <span className="capitalize">
-                                {effort ? effortLabel(effort) : "Effort"}
-                              </span>
-                              <ChevronDownIcon className="size-3.5 text-icon-muted" />
-                            </button>
-                          )}
-                        >
-                          <div className="px-2 pt-1.5 pb-1 font-medium text-muted-foreground text-xs">
-                            Reasoning effort
-                          </div>
-                          {selectedModel?.supportedReasoningEfforts.map(
-                            (option) => (
-                              <MenuItem
-                                key={option.reasoningEffort}
-                                disabled={settingsDisabled}
-                                title={option.description}
-                                aria-label={effortLabel(option.reasoningEffort)}
-                                data-checked={
-                                  effort === option.reasoningEffort
-                                    ? ""
-                                    : undefined
-                                }
-                                className="[&_svg]:-mx-0.5 flex min-h-8 in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)] cursor-pointer items-center rounded-sm px-2 py-1 text-base text-foreground outline-none data-checked:bg-foreground/[0.08] data-disabled:pointer-events-none data-disabled:cursor-not-allowed data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0"
-                                role="menuitemradio"
-                                aria-checked={effort === option.reasoningEffort}
-                                onClick={() =>
-                                  onSettingsChange({
-                                    ...settings,
-                                    effort:
-                                      option.reasoningEffort ===
-                                      selectedModel.defaultReasoningEffort
-                                        ? null
-                                        : option.reasoningEffort,
-                                  })
-                                }
-                              >
-                                <span className="flex w-full min-w-0 flex-col">
-                                  <span className="flex w-full min-w-0 items-center justify-between gap-3">
-                                    <span className="min-w-0 truncate">
-                                      {effortLabel(option.reasoningEffort)}
-                                      {option.reasoningEffort ===
-                                      selectedModel.defaultReasoningEffort ? (
-                                        <>
-                                          {" "}
-                                          <span
-                                            className={cn(
-                                              "relative inline-flex shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-sm border border-transparent font-medium outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 [&_svg:not([class*='opacity-'])]:opacity-80 [&_svg:not([class*='size-'])]:size-3.5 sm:[&_svg:not([class*='size-'])]:size-3 [&_svg]:pointer-events-none [&_svg]:shrink-0 [button&,a&]:cursor-pointer [button&,a&]:pointer-coarse:after:absolute [button&,a&]:pointer-coarse:after:size-full [button&,a&]:pointer-coarse:after:min-h-11 [button&,a&]:pointer-coarse:after:min-w-11 h-5 min-w-5 rounded-[.25rem] px-[calc(--spacing(1)-1px)] text-xs leading-none sm:h-4 sm:min-w-4 sm:text-[.625rem] border-input bg-background text-foreground dark:bg-input/32 [button&,a&]:hover:bg-accent/50 dark:[button&,a&]:hover:bg-input/48 min-w-0",
-                                            )}
-                                          >
-                                            Default
-                                          </span>
-                                        </>
-                                      ) : null}
-                                    </span>
-                                  </span>
-                                  {option.description ? (
-                                    <span className="max-w-56 text-pretty text-muted-foreground/80 text-xs">
-                                      {option.description}
-                                    </span>
-                                  ) : null}
-                                </span>
-                              </MenuItem>
-                            ),
-                          )}
-                        </Menu>
+                        <EffortMenu
+                          model={selectedModel}
+                          effort={settings.effort}
+                          disabled={settingsDisabled}
+                          shortcut
+                          onSelect={(effort) =>
+                            onSettingsChange({ ...settings, effort })
+                          }
+                        />
                         <div
                           role="separator"
                           aria-orientation="vertical"
@@ -1231,6 +1558,9 @@ export function Composer({
                         {contextUsage ? (
                           <ContextWindowMeter
                             usage={contextUsage}
+                            onCompact={onCompactContext}
+                            compactDisabled={compactDisabledReason !== null}
+                            compactDisabledReason={compactDisabledReason}
                             modelDisplayName={
                               selectedModel?.displayName ??
                               settings.model ??
@@ -1263,6 +1593,7 @@ export function Composer({
                           <PaperclipIcon />
                         </Button>
                         <ComposerPrimaryActions
+                          compact={resting}
                           running={running}
                           canStop={canStop}
                           stopping={stopping}

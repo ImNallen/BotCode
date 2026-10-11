@@ -104,3 +104,33 @@ it("adds nothing for a folder-only drop", () => {
   assert.deepEqual(active, [false]);
   assert.deepEqual(added, []);
 });
+
+it("adds a drop on the composer once, through the chat column around it", () => {
+  const file = new File(["contents"], "clip.mov", { type: "video/quicktime" });
+  const composer = makeHost();
+  const column = makeHost();
+  const { event } = makeDragEvent({ files: [file] });
+  const composerHandlers = makeWorkspaceFileDropHandlers({
+    setDragActive: composer.host.setDragActive,
+  });
+  const columnHandlers = makeWorkspaceFileDropHandlers(column.host);
+  for (const handlers of [composerHandlers, columnHandlers]) {
+    handlers.onDragOver(event);
+    handlers.onDrop(event);
+  }
+  assert.deepEqual(composer.active, [true, false]);
+  assert.deepEqual(column.active, [true, false]);
+  assert.deepEqual(column.added, [[file]]);
+});
+
+it("ignores drops while the composer is disabled", () => {
+  const file = new File(["contents"], "shot.png", { type: "image/png" });
+  const { host, active, added } = makeHost();
+  const { event, prevented } = makeDragEvent({ files: [file] });
+  const handlers = makeWorkspaceFileDropHandlers({ ...host, disabled: true });
+  handlers.onDragEnter(event);
+  handlers.onDrop(event);
+  assert.equal(prevented(), 2);
+  assert.deepEqual(active, [false, false]);
+  assert.deepEqual(added, []);
+});

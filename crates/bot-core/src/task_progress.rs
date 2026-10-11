@@ -180,6 +180,7 @@ mod tests {
     fn turn() -> Turn {
         Turn {
             id: TurnId::default(),
+            kind: TurnKind::Prompt,
             prompt: String::new(),
             context: None,
             native_turn_id: Some("turn".into()),

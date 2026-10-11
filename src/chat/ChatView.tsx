@@ -12,6 +12,7 @@ import { ErrorView } from "../errors/ErrorView";
 import { RenderErrorBoundary } from "../errors/RenderErrorBoundary";
 import {
   type ComponentProps,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -27,6 +28,7 @@ import {
   Minimize2Icon,
   PanelBottomIcon,
   PanelRightIcon,
+  PaperclipIcon,
 } from "lucide-react";
 import {
   checkoutKey,
@@ -102,11 +104,13 @@ import { GitActionsControl } from "./GitActionsControl";
 import { ApprovalDrawer } from "./ApprovalDrawer";
 import { BranchPicker, startsFromOrigin } from "./BranchPicker";
 import { Composer } from "./Composer";
+import { resolveComposerTimelineInset } from "./composerResting";
 import {
   captureDraftSettings,
   draftSessionSettings,
   finishDraftSettings,
   newDraftSettings,
+  resolveDefaultModel,
   useProviderCapabilities,
   type DraftSessionSettings,
 } from "./permissionModes";
@@ -152,6 +156,7 @@ import {
   buildPlanImplementationPrompt,
 } from "./proposedPlan";
 import { standaloneComposerCommand } from "./composerSlashCommandSearch";
+import { compactDisabledReason, isCompactCommand } from "./contextCompaction";
 import {
   selectedCheckpointTurn,
   type TurnDiffSelection,
@@ -202,6 +207,12 @@ import {
   useThreadLastVisitedAt,
 } from "../lib/threadVisits";
 import { ComposerNotice } from "./ComposerNotice";
+import { ExpandedImageDialog } from "./ExpandedImageDialog";
+import {
+  expandedImageKey,
+  type ExpandedImagePreview,
+} from "./ExpandedImagePreview";
+import { makeWorkspaceFileDropHandlers } from "./workspaceFileDrop";
 
 type DraftCheckout = {
   mode: CheckoutMode;
@@ -374,6 +385,21 @@ export function ChatView({
     scopeKey: string;
     files: File[];
   }>();
+  const [expandedImage, setExpandedImage] =
+    useState<ExpandedImagePreview | null>(null);
+  const closeExpandedImage = useCallback(() => setExpandedImage(null), []);
+  const [isWorkspaceFileDragActive, setIsWorkspaceFileDragActive] =
+    useState(false);
+  useEffect(() => {
+    setIsWorkspaceFileDragActive(false);
+  }, [draftKey]);
+  // A cancelled drag can end without a dragleave on the hovered target.
+  useEffect(() => {
+    if (!isWorkspaceFileDragActive) return;
+    const clearWorkspaceFileDrag = () => setIsWorkspaceFileDragActive(false);
+    window.addEventListener("dragend", clearWorkspaceFileDrag);
+    return () => window.removeEventListener("dragend", clearWorkspaceFileDrag);
+  }, [isWorkspaceFileDragActive]);
   const dropVersion = useSyncExternalStore(
     sidebarPendingFileDrops.subscribe,
     sidebarPendingFileDrops.snapshot,
@@ -512,11 +538,21 @@ export function ChatView({
   }, [composer]);
   const overlay = useRef<HTMLDivElement>(null);
   const [clearance, setClearance] = useState(0);
+  const composerResting = useRef(false);
+  const onComposerRestingChange = useCallback((resting: boolean) => {
+    composerResting.current = resting;
+  }, []);
   useEffect(() => {
     const element = overlay.current;
     if (!element) return;
     const observer = new ResizeObserver(() =>
-      setClearance(element.getBoundingClientRect().height),
+      setClearance((currentInset) =>
+        resolveComposerTimelineInset({
+          currentInset,
+          overlayHeight: element.getBoundingClientRect().height,
+          isResting: composerResting.current,
+        }),
+      ),
     );
     observer.observe(element);
     return () => observer.disconnect();
@@ -626,18 +662,22 @@ export function ChatView({
     base,
     draftCheckout.fromOrigin,
   );
-  const settings =
-    thread?.settings ??
-    draftSessionSettings({
-      draft: draftSettings,
-      preferred: defaultPermissionMode,
-      capabilities: capabilities.data,
-    });
   const models = useQuery({
     queryKey: ["models"],
     queryFn: ipc.models,
     retry: false,
   });
+  const settings =
+    thread?.settings ??
+    draftSessionSettings({
+      draft: draftSettings,
+      preferred: defaultPermissionMode,
+      defaultModel: resolveDefaultModel(
+        projectSetting(preferences, workspaceId, "defaultModelSelection").value,
+        models.data,
+      ),
+      capabilities: capabilities.data,
+    });
   const collaborationModes = useQuery({
     queryKey: ["collaboration-modes"],
     queryFn: ipc.collaborationModes,
@@ -842,6 +882,17 @@ export function ChatView({
     mutationFn: () => ipc.interrupt(threadId ?? ""),
     onSuccess: refresh,
     onError: (e) => setError(e.message),
+  });
+  // Compaction is a standalone command; the draft and its attachments stay local.
+  const compactContext = useMutation({
+    mutationFn: (id: string) =>
+      ipc.submit(id, "/compact", crypto.randomUUID(), []),
+    onSuccess: () => {
+      acknowledgeWoke();
+      setError(undefined);
+      refresh();
+    },
+    onError: (e) => setError(e.message || "Failed to compact context."),
   });
   const resume = useMutation({
     mutationFn: () => ipc.resume(threadId ?? ""),
@@ -1059,13 +1110,16 @@ export function ChatView({
           turn.checkpoint.kind === "before",
       )
     : false;
-  const effectiveFollowUpBehavior =
-    preferences.followUpBehavior === "steer" &&
+  const followUpBehaviorFor = (preferred: "queue" | "steer") =>
+    preferred === "steer" &&
     !queued.length &&
     thread &&
     immediateIntent(thread)?.kind === "steer"
       ? "steer"
       : "queue";
+  const effectiveFollowUpBehavior = followUpBehaviorFor(
+    preferences.followUpBehavior,
+  );
   const pending = thread?.approvals.filter((a) => a.state === "pending") ?? [];
   const approval = pending[0];
   const questionRequest = thread?.userQuestions.find(
@@ -1088,6 +1142,16 @@ export function ChatView({
     !queued.length &&
     !slots.length,
   );
+  const compactReason = compactDisabledReason({
+    thread,
+    working:
+      busy ||
+      reverting ||
+      send.isPending ||
+      saveSettings.isPending ||
+      compactContext.isPending,
+    planFollowUp: showPlanFollowUp,
+  });
   const noticeKey = usageNoticeKey(
     threadId ?? `draft:${workspaceId}`,
     thread?.turns.at(-1)?.id ?? null,
@@ -1460,7 +1524,7 @@ export function ChatView({
       setDropRequest({ id: crypto.randomUUID(), scopeKey: draftKey, files });
   }, [dropVersion, thread?.id, composer.activation, settings]);
   const attachments = readyAttachments(slots);
-  const submit = () => {
+  const submit = (intent: "send" | "alternate" = "send") => {
     if (cloneBlocked) return;
     if (handoffRef.current?.kind === "appending") return;
     if (!settings) return;
@@ -1493,6 +1557,14 @@ export function ChatView({
       setDraft("");
       return;
     }
+    const compactCommand =
+      isCompactCommand(draft) &&
+      attachments?.length === 0 &&
+      referencedContext(composer).records.length === 0;
+    if (compactCommand && !thread) {
+      setError("Context compaction requires an existing conversation.");
+      return;
+    }
     if (
       attachments === null ||
       (!draft.trim() && attachments.length === 0 && !showPlanFollowUp) ||
@@ -1513,7 +1585,13 @@ export function ChatView({
       });
       updateComposer((current) => clearAcceptedInput(current, composer));
       setError(undefined);
-      if (busy && effectiveFollowUpBehavior === "steer")
+      const preferred =
+        intent === "alternate"
+          ? preferences.followUpBehavior === "queue"
+            ? "steer"
+            : "queue"
+          : preferences.followUpBehavior;
+      if (busy && !compactCommand && followUpBehaviorFor(preferred) === "steer")
         sendFollowUpNow(client, thread, id);
       return;
     }
@@ -1615,6 +1693,13 @@ export function ChatView({
           />
         ),
       };
+  const composerDisabled = prHandoff?.kind === "appending";
+  const workspaceFileDropHandlers = makeWorkspaceFileDropHandlers({
+    disabled: composerDisabled || !settings,
+    setDragActive: setIsWorkspaceFileDragActive,
+    addFiles: (files) =>
+      setDropRequest({ id: crypto.randomUUID(), scopeKey: draftKey, files }),
+  });
   const content = (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
       <div
@@ -1789,7 +1874,31 @@ export function ChatView({
           </div>
         </header>
         <div className="flex min-h-0 min-w-0 flex-1">
-          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          <div
+            className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+            data-chat-workspace-drop-target="true"
+            onDragEnter={workspaceFileDropHandlers.onDragEnter}
+            onDragOver={workspaceFileDropHandlers.onDragOver}
+            onDragLeave={workspaceFileDropHandlers.onDragLeave}
+            onDrop={workspaceFileDropHandlers.onDrop}
+          >
+            {isWorkspaceFileDragActive ? (
+              <div
+                className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary/60 bg-primary/[0.035]"
+                data-chat-workspace-drop-overlay="true"
+              >
+                <div
+                  role="status"
+                  className="flex items-center gap-2 rounded-full border border-primary/25 bg-background/95 px-4 py-2.5 text-sm font-medium text-foreground shadow-lg"
+                >
+                  <PaperclipIcon
+                    className="size-4 text-primary"
+                    aria-hidden="true"
+                  />
+                  Drop files to attach
+                </div>
+              </div>
+            ) : null}
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col">
               {error ||
               configQuery.error ||
@@ -1842,6 +1951,7 @@ export function ChatView({
                     }}
                     onRemoveQueued={recoverQueue}
                     onOpenTurnDiff={openTurnDiff}
+                    onExpandImage={setExpandedImage}
                     onFileContextMenu={
                       checkoutOpenable
                         ? (path, event) =>
@@ -2012,6 +2122,7 @@ export function ChatView({
                             };
                           })
                         }
+                        onExpandImage={setExpandedImage}
                         onSubmit={submit}
                         searchCheckout={
                           view && !view.unavailable && !(isScratch && !threadId)
@@ -2032,11 +2143,18 @@ export function ChatView({
                         onUsageLimits={() =>
                           setUsageNotice({ key: noticeKey, now: Date.now() })
                         }
+                        compactDisabledReason={compactReason}
+                        onCompactContext={() => {
+                          if (thread && compactReason === null)
+                            compactContext.mutate(thread.id);
+                        }}
                         onStop={() => {
                           recoverQueue();
                           stop.mutate();
                         }}
                         followUpBehavior={effectiveFollowUpBehavior}
+                        existingThread={Boolean(threadId)}
+                        onRestingChange={onComposerRestingChange}
                         canSend={
                           !cloneBlocked &&
                           prHandoff?.kind !== "appending" &&
@@ -2132,7 +2250,7 @@ export function ChatView({
                             ? (thread?.context ?? null)
                             : null
                         }
-                        disabled={prHandoff?.kind === "appending"}
+                        disabled={composerDisabled}
                         context={context}
                         settings={settings}
                         permissionModes={
@@ -2307,6 +2425,13 @@ export function ChatView({
           onClose={closeEdit}
           onRevert={startRevert}
           checkoutAvailable={Boolean(view && !view.unavailable)}
+        />
+      ) : null}
+      {expandedImage ? (
+        <ExpandedImageDialog
+          key={expandedImageKey(expandedImage)}
+          preview={expandedImage}
+          onClose={closeExpandedImage}
         />
       ) : null}
     </div>

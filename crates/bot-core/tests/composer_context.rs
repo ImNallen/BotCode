@@ -36,6 +36,7 @@ impl Fixture {
             codex_binary: peer,
             gh_binary: gh,
             network_timeout: Duration::from_secs(5),
+            compaction_timeout: Duration::from_secs(600),
             shell: None,
         };
         Self { dir, root, config }

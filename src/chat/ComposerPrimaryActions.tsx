@@ -7,6 +7,7 @@ const messageActionPillClassName =
   "inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-message-action font-medium text-base text-message-action-foreground shadow-xs shadow-message-action/24 outline-none hover:bg-message-action-hover focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 disabled:shadow-none sm:text-sm";
 
 export function ComposerPrimaryActions(props: {
+  compact?: boolean;
   running: boolean;
   canStop: boolean;
   stopping: boolean;
@@ -23,7 +24,11 @@ export function ComposerPrimaryActions(props: {
         <button
           type="submit"
           disabled={!props.canSend}
-          className={cn(messageActionPillClassName, "h-9 sm:h-8", "px-4")}
+          className={cn(
+            messageActionPillClassName,
+            "h-9 sm:h-8",
+            props.compact ? "px-3" : "px-4",
+          )}
         >
           Refine
         </button>

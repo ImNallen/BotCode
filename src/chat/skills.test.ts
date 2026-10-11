@@ -7,7 +7,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import type { Skill } from "../ipc";
 import { detectComposerTrigger } from "./composer-logic";
-import { composerEditorExtensions } from "./ComposerPromptEditor";
+import { composerExtensions } from "./ComposerPromptEditor";
 import {
   buildComposerDocument,
   composerDocumentMap,
@@ -51,7 +51,7 @@ it("opens skills at a token boundary and leaves monetary amounts as prose", () =
   }
   for (const token of ["$5", "$20k", "$100M", "$1e6", "$5.00", "cost$pot"]) {
     assert.equal(detectComposerTrigger(token, token.length), null, token);
-    const doc = getSchema(composerEditorExtensions).nodeFromJSON(
+    const doc = getSchema(composerExtensions(false)).nodeFromJSON(
       buildComposerDocument(`${token} `),
     );
     assert.equal(doc.firstChild?.firstChild?.isText, true, token);
@@ -93,7 +93,7 @@ it("uses T3 name, label, description and scope ranking in both menus", () => {
 
 it("serializes picked skill atoms through draft, clipboard and cursor mapping as $name text", () => {
   const value = `Before $${poteto.name} after\n$repo-proof `;
-  const doc = getSchema(composerEditorExtensions).nodeFromJSON(
+  const doc = getSchema(composerExtensions(false)).nodeFromJSON(
     buildComposerDocument(value),
   );
   assert.equal(doc.firstChild?.child(1).type.name, "composer-context");
