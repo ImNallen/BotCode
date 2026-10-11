@@ -31,8 +31,13 @@ const thread: ThreadSummary = {
   updatedAtMs: 10,
   awaitingApproval: false,
   pinnedAtMs: null,
+  pinOrderKey: null,
+  activeOrderKey: null,
   settledAtMs: null,
   snoozedUntilMs: null,
+  wokeAtMs: null,
+  autoSettleEnabled: true,
+  isRegeneratingTitle: false,
   pullRequests: {
     sequence: 0,
     links: [],
@@ -70,6 +75,7 @@ it("excludes archived threads from search, open rows, shelves, counts and forwar
         settled: [],
         snoozedTotal: 0,
         settledTotal: 0,
+        settledOrder: [],
         hiddenCount: 0,
       });
     }

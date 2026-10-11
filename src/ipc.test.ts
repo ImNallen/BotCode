@@ -129,7 +129,12 @@ it("refreshes the active branch picker after a worktree naming event without ref
     updatedAtMs: 1,
     awaitingApproval: false,
     pinnedAtMs: null,
+    pinOrderKey: null,
+    activeOrderKey: null,
     snoozedUntilMs: null,
+    wokeAtMs: null,
+    autoSettleEnabled: true,
+    isRegeneratingTitle: false,
     settledAtMs: null,
   } satisfies ThreadSummary;
   const view = {

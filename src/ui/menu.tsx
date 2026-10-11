@@ -87,6 +87,7 @@ export function Menu({
           maxWidth: "calc(100vw - 16px)",
           left: Math.max(8, Math.min(point.x, window.innerWidth - width - 8)),
           top: Math.max(8, Math.min(point.y, window.innerHeight - height - 8)),
+          ...availableHeight(window.innerHeight - 16),
         });
         return;
       }
@@ -106,6 +107,7 @@ export function Menu({
             8,
             Math.min(rect.top - 5, window.innerHeight - height - 8),
           ),
+          ...availableHeight(window.innerHeight - 16),
         });
         return;
       }
@@ -129,8 +131,7 @@ export function Menu({
         ...(positionAnchor ? { minWidth: rect.width } : {}),
         maxWidth: "calc(100vw - 16px)",
         left: Math.max(8, Math.min(desiredLeft, window.innerWidth - width - 8)),
-        maxHeight: Math.max(
-          0,
+        ...availableHeight(
           side === "bottom" ? window.innerHeight - edge - 8 : edge - 8,
         ),
         ...(side === "bottom"
@@ -302,7 +303,7 @@ export function Menu({
             >
               <div
                 className={cn(
-                  "min-h-0 max-h-80 w-full overflow-y-auto p-1",
+                  "min-h-0 max-h-(--available-height) w-full overflow-y-auto p-1",
                   contentClassName,
                 )}
               >
@@ -350,6 +351,10 @@ export function MenuGroupLabel({ className, ...props }: ComponentProps<"div">) {
     />
   );
 }
+function availableHeight(px: number) {
+  return { "--available-height": `${Math.max(0, px)}px` } as CSSProperties;
+}
+
 export function MenuSeparator() {
   return <div role="separator" className="mx-2 my-1 h-px bg-border" />;
 }

@@ -9,6 +9,7 @@ import {
   shortcutLabel,
   type ActionContext,
   type KeyEventLike,
+  type SidebarOperation,
 } from "./actions";
 import type { Arrange, OpenTarget, ThreadSummary } from "../ipc";
 import { searchActions, searchThreads } from "../command/commandPaletteSearch";
@@ -33,8 +34,13 @@ function summary(): ThreadSummary {
     updatedAtMs: 1,
     awaitingApproval: false,
     pinnedAtMs: null,
+    pinOrderKey: null,
+    activeOrderKey: null,
     settledAtMs: null,
     snoozedUntilMs: null,
+    wokeAtMs: null,
+    autoSettleEnabled: true,
+    isRegeneratingTitle: false,
   };
 }
 function context(): ActionContext {
@@ -64,10 +70,12 @@ function context(): ActionContext {
       path: "",
     },
     editorLabel: "Cursor",
+    projectScopeId: null,
     newThread: noop,
     newThreadDirect: noop,
     startScratch: noop,
     openSettings: noop,
+    openProjectSettings: noop,
     closePage: noop,
     toggleSidebar: noop,
     openPalette: noop,
@@ -167,6 +175,46 @@ it("does not advertise queued, archived, hidden-page or pending-rename operation
   ctx.thread.archivedAtMs = 12;
   assert.equal(runAction("thread.pin", ctx), false);
 });
+it("the snooze page offers Custom… for a live thread and asks the sidebar to open the dialog", () => {
+  const ctx = context();
+  const requests: [string, SidebarOperation][] = [];
+  ctx.requestSidebar = (threadId, operation) =>
+    requests.push([threadId, operation]);
+  assert.ok(searchActions(ctx, "snooze", "").includes("snooze.custom"));
+  assert.deepEqual(searchActions(ctx, "snooze", "custom"), ["snooze.custom"]);
+  assert.equal(actionLabel("snooze.custom", ctx), "Custom…");
+  assert.equal(runAction("snooze.custom", ctx), true);
+  assert.equal(runAction("snooze.hour", ctx), true);
+  assert.deepEqual(requests, [
+    ["thread", { kind: "snooze", choice: { kind: "custom" } }],
+    ["thread", { kind: "snooze", choice: { kind: "preset", preset: "hour" } }],
+  ]);
+});
+it("hides Custom… wherever snoozing is hidden", () => {
+  const hidden: [string, (ctx: ActionContext) => void][] = [
+    ["approval", (ctx) => ctx.thread && (ctx.thread.awaitingApproval = true)],
+    [
+      "already snoozed",
+      (ctx) => ctx.thread && (ctx.thread.snoozedUntilMs = Date.now() + 60_000),
+    ],
+    ["archived", (ctx) => ctx.thread && (ctx.thread.archivedAtMs = 12)],
+    ["page open", (ctx) => (ctx.pageOpen = true)],
+    ["no thread", (ctx) => (ctx.thread = undefined)],
+  ];
+  for (const [reason, hide] of hidden) {
+    const ctx = context();
+    let requests = 0;
+    ctx.requestSidebar = () => requests++;
+    hide(ctx);
+    assert.deepEqual(searchActions(ctx, "snooze", ""), [], reason);
+    assert.equal(runAction("snooze.custom", ctx), false, reason);
+    assert.equal(requests, 0, reason);
+  }
+  const woken = context();
+  assert.ok(woken.thread);
+  woken.thread.snoozedUntilMs = Date.now() - 60_000;
+  assert.ok(searchActions(woken, "snooze", "").includes("snooze.custom"));
+});
 it("matches exact modifiers, platform primary modifier, physical scratch key and punctuation", () => {
   assert.equal(
     matchesAction(key("k"), "commandPalette.toggle", "MacIntel"),
@@ -238,7 +286,10 @@ it("leaves clear and new-terminal keys to the focused terminal and ignores compo
 it("normal searches find matching actions alongside matching thread titles", () => {
   const ctx = context();
   assert.ok(ctx.thread);
-  assert.deepEqual(searchActions(ctx, "root", "settings"), ["settings.open"]);
+  assert.deepEqual(searchActions(ctx, "root", "settings"), [
+    "settings.open",
+    "project.settings",
+  ]);
   assert.equal(
     searchThreads(
       [
@@ -343,4 +394,133 @@ it("project search has T3 labels, exact platform shortcuts and checkout eligibil
   ctx.projectSearchAvailable = true;
   ctx.pageOpen = true;
   assert.equal(actions["filePicker.toggle"].available(ctx), false);
+});
+it("offers Mark unread, the project filter and Project settings for the open thread", () => {
+  const ctx = context();
+  const requests: [string, SidebarOperation][] = [];
+  const settings: string[] = [];
+  ctx.requestSidebar = (threadId, operation) =>
+    requests.push([threadId, operation]);
+  ctx.openProjectSettings = (workspaceId) => settings.push(workspaceId);
+  const root = searchActions(ctx, "root", "");
+  for (const id of [
+    "thread.markUnread",
+    "thread.filterByProject",
+    "project.settings",
+  ] as const)
+    assert.ok(root.includes(id), id);
+  assert.equal(actionLabel("thread.markUnread", ctx), "Mark unread");
+  assert.equal(actionLabel("thread.filterByProject", ctx), "Filter by Project");
+  assert.equal(actionLabel("project.settings", ctx), "Project settings");
+  assert.equal(actions["project.settings"].description?.(ctx), "Project");
+  assert.deepEqual(searchActions(ctx, "root", "filter by project"), [
+    "thread.filterByProject",
+  ]);
+  assert.ok(searchActions(ctx, "root", "scripts").includes("project.settings"));
+  assert.equal(runAction("thread.markUnread", ctx), true);
+  assert.equal(runAction("thread.filterByProject", ctx), true);
+  assert.equal(runAction("project.settings", ctx), true);
+  assert.deepEqual(requests, [
+    ["thread", { kind: "markUnread" }],
+    ["thread", { kind: "filterByProject" }],
+  ]);
+  assert.deepEqual(settings, ["workspace"]);
+  ctx.projectScopeId = "workspace";
+  assert.equal(actionLabel("thread.filterByProject", ctx), "Show all projects");
+  ctx.projectScopeId = "other";
+  assert.equal(actionLabel("thread.filterByProject", ctx), "Filter by Project");
+});
+it("hides the thread entries without a live open thread and Project settings without a project", () => {
+  const hidden: [string, (ctx: ActionContext) => void][] = [
+    ["archived", (ctx) => ctx.thread && (ctx.thread.archivedAtMs = 12)],
+    ["page open", (ctx) => (ctx.pageOpen = true)],
+    ["no thread", (ctx) => (ctx.thread = undefined)],
+  ];
+  for (const [reason, hide] of hidden) {
+    const ctx = context();
+    let requests = 0;
+    ctx.requestSidebar = () => requests++;
+    hide(ctx);
+    const root = searchActions(ctx, "root", "");
+    assert.ok(!root.includes("thread.markUnread"), reason);
+    assert.ok(!root.includes("thread.filterByProject"), reason);
+    assert.equal(runAction("thread.markUnread", ctx), false, reason);
+    assert.equal(runAction("thread.filterByProject", ctx), false, reason);
+    assert.equal(requests, 0, reason);
+  }
+  const draft = context();
+  draft.thread = undefined;
+  assert.ok(searchActions(draft, "root", "").includes("project.settings"));
+  const settingsPage = context();
+  settingsPage.pageOpen = true;
+  assert.ok(
+    !searchActions(settingsPage, "root", "").includes("project.settings"),
+  );
+  const none = context();
+  let opened = 0;
+  none.workspace = undefined;
+  none.openProjectSettings = () => opened++;
+  assert.ok(!searchActions(none, "root", "").includes("project.settings"));
+  assert.equal(runAction("project.settings", none), false);
+  assert.equal(opened, 0);
+});
+it("offers Auto-settle behavior as one toggle showing the current setting", () => {
+  const ctx = context();
+  assert.ok(ctx.thread);
+  const changes: [string, Arrange][] = [];
+  ctx.arrange = (threadId, action) => changes.push([threadId, action]);
+  assert.ok(searchActions(ctx, "root", "").includes("thread.autoSettle"));
+  assert.deepEqual(searchActions(ctx, "root", "auto-settle"), [
+    "thread.autoSettle",
+  ]);
+  assert.equal(actionLabel("thread.autoSettle", ctx), "Auto-settle behavior");
+  assert.equal(actions["thread.autoSettle"].description?.(ctx), "Enabled");
+  assert.equal(runAction("thread.autoSettle", ctx), true);
+  ctx.thread.autoSettleEnabled = false;
+  assert.equal(actions["thread.autoSettle"].description?.(ctx), "Disabled");
+  assert.equal(runAction("thread.autoSettle", ctx), true);
+  assert.deepEqual(changes, [
+    ["thread", { kind: "set_auto_settle", enabled: false }],
+    ["thread", { kind: "set_auto_settle", enabled: true }],
+  ]);
+});
+it("offers Regenerate title until one is in flight and routes it to the sidebar", () => {
+  const ctx = context();
+  assert.ok(ctx.thread);
+  const requests: [string, SidebarOperation][] = [];
+  ctx.requestSidebar = (threadId, operation) =>
+    requests.push([threadId, operation]);
+  assert.equal(actionLabel("thread.regenerateTitle", ctx), "Regenerate title");
+  assert.deepEqual(searchActions(ctx, "root", "regenerate"), [
+    "thread.regenerateTitle",
+  ]);
+  assert.equal(runAction("thread.regenerateTitle", ctx), true);
+  assert.deepEqual(requests, [["thread", { kind: "regenerateTitle" }]]);
+  ctx.thread.isRegeneratingTitle = true;
+  assert.ok(!searchActions(ctx, "root", "").includes("thread.regenerateTitle"));
+  assert.equal(runAction("thread.regenerateTitle", ctx), false);
+  assert.equal(requests.length, 1);
+});
+it("hides Auto-settle behavior and Regenerate title without a live open thread", () => {
+  const hidden: [string, (ctx: ActionContext) => void][] = [
+    ["archived", (ctx) => ctx.thread && (ctx.thread.archivedAtMs = 12)],
+    ["page open", (ctx) => (ctx.pageOpen = true)],
+    ["no thread", (ctx) => (ctx.thread = undefined)],
+    ["rename pending", (ctx) => (ctx.renamePending = true)],
+  ];
+  for (const [reason, hide] of hidden) {
+    const ctx = context();
+    let calls = 0;
+    ctx.requestSidebar = () => calls++;
+    ctx.arrange = () => calls++;
+    hide(ctx);
+    const root = searchActions(ctx, "root", "");
+    assert.ok(!root.includes("thread.regenerateTitle"), reason);
+    assert.equal(runAction("thread.regenerateTitle", ctx), false, reason);
+    if (reason !== "rename pending") {
+      assert.ok(!root.includes("thread.autoSettle"), reason);
+      assert.equal(runAction("thread.autoSettle", ctx), false, reason);
+    }
+    assert.equal(calls, 0, reason);
+  }
 });

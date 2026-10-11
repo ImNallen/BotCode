@@ -17,6 +17,27 @@ export function isSidebarThreadWorking(thread: ThreadSummary): boolean {
   );
 }
 
+export type SidebarThreadStatus = "approval" | "working" | "ready";
+
+export function resolveSidebarThreadStatus(
+  thread: ThreadSummary,
+): SidebarThreadStatus {
+  if (thread.awaitingApproval) return "approval";
+  if (isSidebarThreadWorking(thread)) return "working";
+  return "ready";
+}
+
+export function shouldRecedeSidebarThread(input: {
+  status: SidebarThreadStatus;
+  isUnread: boolean;
+  isWoke: boolean;
+  isActive: boolean;
+}): boolean {
+  if (input.isActive) return false;
+  if (input.status === "working") return true;
+  return !input.isUnread && !input.isWoke;
+}
+
 export function createInboxReturnObserver() {
   let previous: Set<string> | undefined;
   const returns = new Map<string, number>();

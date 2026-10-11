@@ -34,7 +34,12 @@ function summary(
     archivedAtMs: null,
     updatedAtMs: 0,
     pinnedAtMs: null,
+    pinOrderKey: null,
+    activeOrderKey: null,
     snoozedUntilMs: null,
+    wokeAtMs: null,
+    autoSettleEnabled: true,
+    isRegeneratingTitle: false,
     settledAtMs: null,
     pullRequests: {
       sequence: 0,

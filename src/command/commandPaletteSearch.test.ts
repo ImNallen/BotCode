@@ -34,7 +34,12 @@ function row(
     updatedAtMs,
     awaitingApproval: false,
     pinnedAtMs: null,
+    pinOrderKey: null,
+    activeOrderKey: null,
     snoozedUntilMs: null,
+    wokeAtMs: null,
+    autoSettleEnabled: true,
+    isRegeneratingTitle: false,
     settledAtMs: null,
   };
   return { thread, workspaceId: "workspace", workspaceLabel: "Project" };

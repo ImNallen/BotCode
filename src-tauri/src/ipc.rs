@@ -700,6 +700,10 @@ pub async fn rename_thread(
     app.rename_thread(thread_id, title).await
 }
 #[tauri::command]
+pub async fn regenerate_thread_title(app: State<'_, App>, thread_id: ThreadId) -> Result<()> {
+    app.regenerate_title(thread_id).await
+}
+#[tauri::command]
 pub async fn delete_thread(
     app: State<'_, App>,
     thread_id: ThreadId,

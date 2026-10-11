@@ -22,6 +22,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlarmClockIcon,
   Maximize2Icon,
   Minimize2Icon,
   PanelBottomIcon,
@@ -195,6 +196,12 @@ import {
   scopeForPreview,
 } from "../preview/model";
 import { openProjectScriptPreview } from "../preview/projectScriptPreview";
+import {
+  isOpenThreadWokeVisible,
+  threadVisits,
+  useThreadLastVisitedAt,
+} from "../lib/threadVisits";
+import { ComposerNotice } from "./ComposerNotice";
 
 type DraftCheckout = {
   mode: CheckoutMode;
@@ -524,6 +531,12 @@ export function ChatView({
     enabled: Boolean(threadId),
   });
   const thread = threadId ? query.data : undefined;
+  const visitedThreadId = thread?.id;
+  const latestCompletedAtMs = thread?.turns.at(-1)?.completedAtMs;
+  useEffect(() => {
+    if (!visitedThreadId || latestCompletedAtMs == null) return;
+    threadVisits.markVisited(visitedThreadId, latestCompletedAtMs);
+  }, [visitedThreadId, latestCompletedAtMs]);
   const recovery =
     thread?.lastRevert && thread.turns.length === thread.lastRevert.turnCount
       ? thread.lastRevert
@@ -582,8 +595,20 @@ export function ChatView({
   );
   const gitThread = !isScratch && !view?.unavailable ? thread : undefined;
   const fileContextMenu = useFileContextMenu();
-  const pullRequests =
-    view?.threads.find((row) => row.id === threadId)?.pullRequests.links ?? [];
+  const summary = view?.threads.find((row) => row.id === threadId);
+  const pullRequests = summary?.pullRequests.links ?? [];
+  const wokeAtMs = summary?.wokeAtMs ?? null;
+  const lastVisitedAtMs = useThreadLastVisitedAt(threadId ?? "");
+  const wokeVisible = isOpenThreadWokeVisible({
+    wokeAtMs,
+    lastVisitedAtMs,
+    latestCompletedAtMs,
+    settled: summary?.settledAtMs != null,
+  });
+  const acknowledgeWoke = () => {
+    if (threadId && wokeAtMs !== null)
+      threadVisits.markVisited(threadId, wokeAtMs);
+  };
   const { data: branches } = useQuery({
     queryKey: checkoutKey("branches", checkout),
     queryFn: () => ipc.branches(checkout),
@@ -733,6 +758,7 @@ export function ChatView({
       return target;
     },
     onSuccess: (target, { started, newThreadSource }) => {
+      acknowledgeWoke();
       void client.invalidateQueries({ queryKey: ["thread", target] });
       void client.invalidateQueries({ queryKey: ["workspace"] });
       if (!acceptsCompletion(composerRef.current, started)) return;
@@ -2071,10 +2097,21 @@ export function ChatView({
                           (projectClone &&
                             projectClone.phase !== "done" &&
                             !threadId) ||
+                          wokeVisible ||
                           usageNotice?.key === noticeKey ? (
                             <>
                               {projectClone && !threadId ? (
                                 <ProjectCloneBanner clone={projectClone} />
+                              ) : null}
+                              {wokeVisible ? (
+                                <ComposerNotice
+                                  variant="info"
+                                  icon={<AlarmClockIcon />}
+                                  title="Thread woke from snooze"
+                                  description="Send a message to continue"
+                                  dismissLabel="Dismiss Woke notification"
+                                  onDismiss={acknowledgeWoke}
+                                />
                               ) : null}
                               {usageNotice?.key === noticeKey ? (
                                 <ComposerUsageLimits

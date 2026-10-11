@@ -1,4 +1,4 @@
-// Ports resolveSnoozePresets and snoozeWakeLabel from pingdotgg/t3code v0.0.45 packages/client-runtime/src/state/threadSettled.ts (MIT).
+// Ports resolveSnoozePresets, snoozeWakeLabel and resolveCustomSnooze from pingdotgg/t3code v0.0.45 packages/client-runtime/src/state/threadSettled.ts (MIT).
 const HOUR_MS = 60 * 60 * 1_000;
 const DAY_MS = 24 * HOUR_MS;
 const EVENING_HOUR = 18;
@@ -10,6 +10,10 @@ export type SnoozePreset = {
   whenLabel: string;
   untilMs: number;
 };
+
+export type SnoozeChoice =
+  | { kind: "preset"; preset: SnoozePreset["id"] }
+  | { kind: "custom" };
 
 function timeOfDayLabel(date: Date) {
   return date.toLocaleTimeString(undefined, {
@@ -83,4 +87,74 @@ export function snoozeWakeLabel(untilMs: number, nowMs: number) {
     return `${Math.max(1, Math.ceil(remainingMs / 60_000))}m`;
   if (remainingMs < DAY_MS) return `${Math.ceil(remainingMs / HOUR_MS)}h`;
   return `${Math.ceil(remainingMs / DAY_MS)}d`;
+}
+
+export type CustomSnoozeInput =
+  | { mode: "date"; date: string; time: string }
+  | { mode: "duration"; amount: string; unit: "minutes" | "hours" | "days" };
+
+export type CustomSnoozeResult =
+  | { ok: true; untilMs: number }
+  | { ok: false; error: string };
+
+const UNIT_MS = { minutes: 60_000, hours: HOUR_MS, days: DAY_MS };
+
+export function resolveCustomSnooze(
+  input: CustomSnoozeInput,
+  now: Date,
+): CustomSnoozeResult {
+  const rejected: CustomSnoozeResult = {
+    ok: false,
+    error:
+      input.mode === "date"
+        ? "Choose a valid date and time in the future."
+        : "Enter a positive duration.",
+  };
+  let wake: Date;
+  if (input.mode === "duration") {
+    const amount = Number(input.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return rejected;
+    wake = new Date(now.getTime() + amount * UNIT_MS[input.unit]);
+  } else {
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(input.date) ||
+      !/^\d{2}:\d{2}$/.test(input.time)
+    )
+      return rejected;
+    wake = new Date(`${input.date}T${input.time}:00`);
+    // Reject rolled-over dates and nonexistent local times during DST changes.
+    if (
+      localSnoozeDate(wake) !== input.date ||
+      localSnoozeTime(wake) !== input.time
+    )
+      return rejected;
+  }
+  const untilMs = wake.getTime();
+  return Number.isFinite(untilMs) && untilMs > now.getTime()
+    ? { ok: true, untilMs }
+    : rejected;
+}
+
+export function localSnoozeDate(date: Date) {
+  return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+export function localSnoozeTime(date: Date) {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+export function parseLocalSnoozeDate(value: string) {
+  return new Date(`${value}T00:00:00`);
+}
+
+export function snoozeDateLabel(value: string, locale?: string) {
+  return parseLocalSnoozeDate(value).toLocaleDateString(locale, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+export function snoozeCalendarDisabled(now: Date) {
+  return { before: new Date(new Date(now).setHours(0, 0, 0, 0)) };
 }

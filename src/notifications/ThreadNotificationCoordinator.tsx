@@ -8,11 +8,15 @@ import { z } from "zod";
 import type { WorkspaceView } from "../ipc";
 import { usePreferences } from "../settings/preferences";
 import {
+  closeNotifications,
+  hasDesktopNotifications,
   hasNotificationSound,
   playNotificationSound,
+  setNotificationBadge,
   unlockNotificationAudio,
 } from "../threadNotifications";
 import { Toast, ToastViewport } from "../ui/toast";
+import { notificationTag, PendingNotifications } from "./badge";
 import {
   notificationHistory,
   presentation,
@@ -50,6 +54,9 @@ export function ThreadNotificationCoordinator({
     workspaces,
   });
   const [toasts, setToasts] = useState<ThreadAlert[]>([]);
+  const [pending] = useState(
+    () => new PendingNotifications(preferences.notificationMode),
+  );
   useLayoutEffect(() => {
     current.current = {
       ...current.current,
@@ -59,6 +66,11 @@ export function ThreadNotificationCoordinator({
       workspaces,
     };
     notificationHistory.prune(workspaceIds);
+    const dropped = pending.retainWorkspaces(workspaceIds);
+    if (dropped.length) {
+      closeNotifications(dropped);
+      setNotificationBadge(pending.count);
+    }
     for (const view of workspaces) notificationHistory.seed(view);
   });
   useEffect(() => {
@@ -99,14 +111,14 @@ export function ThreadNotificationCoordinator({
         ]);
       if (effects.desktop)
         void isPermissionGranted()
-          .then((granted) => {
+          .then(async (granted) => {
             if (!active || !granted || !presentation(alert, context()).desktop)
               return;
-            return invoke("plugin:notification|notify", {
+            await invoke("plugin:notification|notify", {
               options: {
                 title: titles[alert.kind],
                 body: alert.threadTitle,
-                group: `${alert.workspaceId}:${alert.threadId}`,
+                group: notificationTag(alert),
                 extra: {
                   botThread: {
                     workspaceId: alert.workspaceId,
@@ -116,6 +128,9 @@ export function ThreadNotificationCoordinator({
                 silent: true,
               },
             });
+            if (!active) return;
+            pending.delivered(alert);
+            setNotificationBadge(pending.count);
           })
           .catch((error: unknown) => {
             if (active)
@@ -152,6 +167,20 @@ export function ThreadNotificationCoordinator({
       void clickOff.then((off) => off());
     };
   }, []);
+  useEffect(() => {
+    const clear = () => {
+      closeNotifications(pending.clear());
+      setNotificationBadge(0);
+    };
+    closeNotifications(pending.setMode(preferences.notificationMode));
+    setNotificationBadge(0);
+    if (!hasDesktopNotifications(preferences.notificationMode)) return;
+    const off = listen("bot:notification-badge-clear", clear);
+    return () => {
+      void off.then((off) => off());
+      clear();
+    };
+  }, [pending, preferences.notificationMode]);
   useEffect(() => {
     if (!hasNotificationSound(preferences.notificationMode)) return;
     document.addEventListener("pointerdown", unlockNotificationAudio);

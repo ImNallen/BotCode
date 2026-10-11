@@ -6,6 +6,8 @@ import {
   createInboxReturnObserver,
   formatWorkingDurationLabel,
   isSidebarThreadWorking,
+  resolveSidebarThreadStatus,
+  shouldRecedeSidebarThread,
 } from "./sidebarWorking";
 import type { ThreadSummary } from "./ipc";
 
@@ -28,7 +30,12 @@ const summary: ThreadSummary = {
   updatedAtMs: 10,
   archivedAtMs: null,
   pinnedAtMs: null,
+  pinOrderKey: null,
+  activeOrderKey: null,
   snoozedUntilMs: null,
+  wokeAtMs: null,
+  autoSettleEnabled: true,
+  isRegeneratingTitle: false,
   settledAtMs: null,
   pullRequests: {
     sequence: 0,
@@ -217,7 +224,7 @@ it("formats elapsed labels like T3 without announcing each tick", () => {
   assert.equal(formatWorkingDurationLabel(3661000), "1h 1m");
 });
 
-it("returns manually un-settled threads to the top only with Working enabled", () => {
+it("returns manually un-settled threads to the top with or without Working", () => {
   const rows = [
     row("recent", {
       session: { kind: "ready" },
@@ -239,6 +246,40 @@ it("returns manually un-settled threads to the top only with Working enabled", (
     partitionSidebarRows({ ...base, rows, workingEnabled: false }).active.map(
       (r) => r.thread.id,
     ),
-    ["recent", "un-settled"],
+    ["un-settled", "recent"],
   );
+});
+
+it("keeps unread and woken cards prominent while working cards recede", () => {
+  const idle: ThreadSummary = {
+    ...summary,
+    session: { kind: "ready" },
+    latestTurn: {
+      id: "turn",
+      execution: { kind: "completed" },
+      startedAtMs: 10,
+      completedAtMs: 20,
+    },
+  };
+  const recede = (
+    thread: ThreadSummary,
+    flags: { isUnread?: boolean; isWoke?: boolean; isActive?: boolean } = {},
+  ) =>
+    shouldRecedeSidebarThread({
+      status: resolveSidebarThreadStatus(thread),
+      isUnread: false,
+      isWoke: false,
+      isActive: false,
+      ...flags,
+    });
+  assert.equal(recede(idle), true);
+  assert.equal(recede(idle, { isUnread: true }), false);
+  assert.equal(recede(idle, { isWoke: true }), false);
+  assert.equal(recede(idle, { isActive: true }), false);
+  assert.equal(recede(summary, { isUnread: true }), true);
+  assert.equal(recede(summary, { isActive: true }), false);
+  const approval = { ...idle, awaitingApproval: true };
+  assert.equal(resolveSidebarThreadStatus(approval), "approval");
+  assert.equal(recede(approval), true);
+  assert.equal(recede(approval, { isUnread: true }), false);
 });

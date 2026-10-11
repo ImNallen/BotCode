@@ -254,13 +254,11 @@ impl Owner {
         })
     }
     pub(super) fn thread_summary(&self, thread: &ThreadSnapshot) -> ThreadSummary {
-        let settled = self.settlement(
-            thread,
-            self.auto_settle.rules(&thread.workspace_id),
-            now_ms(),
-        );
-        let mut summary = thread.summary(settled);
+        let now = now_ms();
+        let settled = self.settlement(thread, self.auto_settle.rules(&thread.workspace_id), now);
+        let mut summary = thread.summary(settled, now);
         summary.pull_requests = self.pr_summary(&thread.id);
+        summary.is_regenerating_title = self.titles.regenerating(&thread.id);
         summary
     }
     pub(super) fn thread_hint(&self, thread: &ThreadSnapshot) -> ChangeHint {

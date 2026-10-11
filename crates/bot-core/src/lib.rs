@@ -73,6 +73,7 @@ pub use usage_history::{UsageHistoryReport, UsageHistoryRequest, UsagePeriod};
 mod usage;
 pub use usage::{ContextUsage, LimitWindow, Slot, UsageLimits, WindowKind};
 mod text_generation;
+mod thread_title;
 mod vcs;
 pub mod workspace_files;
 pub use domain::*;

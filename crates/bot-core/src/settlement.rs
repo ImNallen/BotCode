@@ -21,6 +21,9 @@ pub fn settlement_at(input: SettlementInput<'_>) -> Option<u64> {
         }
         _ => {}
     }
+    if thread.auto_settle_disabled_at_ms.is_some() {
+        return None;
+    }
     if input.blocked
         || thread.input_open()
         || matches!(

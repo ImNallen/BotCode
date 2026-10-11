@@ -12,6 +12,9 @@ import {
   TextSearchIcon,
   GitBranchIcon,
   HashIcon,
+  MailOpenIcon,
+  RefreshCwIcon,
+  TimerIcon,
   MessageSquareDashedIcon,
   PanelLeftIcon,
   PanelRightIcon,
@@ -25,7 +28,11 @@ import {
 } from "lucide-react";
 import type { Arrange, OpenTarget, ThreadSummary, Workspace } from "../ipc";
 import { workingSessions } from "./sessions";
-import { resolveSnoozePresets, type SnoozePreset } from "./snooze";
+import {
+  resolveSnoozePresets,
+  type SnoozeChoice,
+  type SnoozePreset,
+} from "./snooze";
 import { keybindings } from "../keybindings/store";
 import {
   DEFAULT_KEYBINDINGS,
@@ -48,9 +55,12 @@ export type SidebarOperation =
         | "wake"
         | "copyPath"
         | "copyBranch"
-        | "copyId";
+        | "copyId"
+        | "markUnread"
+        | "filterByProject"
+        | "regenerateTitle";
     }
-  | { kind: "snooze"; preset: SnoozePreset["id"] };
+  | { kind: "snooze"; choice: SnoozeChoice };
 export type SidebarRequest = {
   sequence: number;
   threadId: string;
@@ -91,10 +101,12 @@ export type ActionContext = {
   // The open conversation's checkout root, absent for a no-project draft or a removed worktree.
   checkoutTarget: OpenTarget | null;
   editorLabel: string | null;
+  projectScopeId: string | null;
   newThread: () => void;
   newThreadDirect: () => void;
   startScratch: () => void;
   openSettings: () => void;
+  openProjectSettings: (workspaceId: string) => void;
   closePage: () => void;
   toggleSidebar: () => void;
   openPalette: () => void;
@@ -120,6 +132,7 @@ type ActionDefinition = {
   title: string;
   icon?: LucideIcon;
   label?: (context: ActionContext) => string;
+  description?: (context: ActionContext) => string | undefined;
   keywords?: string;
   shortcutDescription?: string;
   group: "Navigation" | "Threads" | "Terminal" | "Composer";
@@ -138,6 +151,8 @@ const liveThread = (context: ActionContext) =>
   context.thread.archivedAtMs === null;
 const canArrange = (context: ActionContext) =>
   liveThread(context) && !context.thread?.awaitingApproval;
+const canSnooze = (context: ActionContext) =>
+  canArrange(context) && (context.thread?.snoozedUntilMs ?? 0) <= Date.now();
 export function canParkThread(thread: ThreadSummary, queued: boolean) {
   return (
     thread.archivedAtMs === null &&
@@ -158,9 +173,9 @@ const snooze = (
   group: "Threads",
   palette: "snooze",
   available: (context) =>
-    canArrange(context) &&
+    canSnooze(context) &&
     resolveSnoozePresets(new Date()).some((item) => item.id === preset),
-  run: sidebar({ kind: "snooze", preset }),
+  run: sidebar({ kind: "snooze", choice: { kind: "preset", preset } }),
 });
 const terminal = (
   title: string,
@@ -398,9 +413,7 @@ const definitions = {
     group: "Threads",
     palette: "root",
     submenu: true,
-    available: (c) =>
-      canArrange(c) &&
-      !(c.thread?.snoozedUntilMs && c.thread.snoozedUntilMs > Date.now()),
+    available: canSnooze,
     run: (c) => c.openSubmenu("snooze"),
   },
   "thread.wake": {
@@ -419,6 +432,52 @@ const definitions = {
     palette: "root",
     available: (c) => liveThread(c) && !c.renamePending,
     run: sidebar({ kind: "rename" }),
+  },
+  "thread.regenerateTitle": {
+    icon: RefreshCwIcon,
+    title: "Regenerate title",
+    keywords: "rename name generate",
+    group: "Threads",
+    palette: "root",
+    available: (c) =>
+      liveThread(c) && !c.renamePending && !c.thread?.isRegeneratingTitle,
+    run: sidebar({ kind: "regenerateTitle" }),
+  },
+  "thread.markUnread": {
+    icon: MailOpenIcon,
+    title: "Mark unread",
+    group: "Threads",
+    palette: "root",
+    available: liveThread,
+    run: sidebar({ kind: "markUnread" }),
+  },
+  "thread.filterByProject": {
+    icon: FolderTreeIcon,
+    title: "Filter by project",
+    label: (c) =>
+      c.workspace && c.projectScopeId === c.workspace.id
+        ? "Show all projects"
+        : `Filter by ${c.workspace?.label ?? "project"}`,
+    group: "Threads",
+    palette: "root",
+    available: (c) => liveThread(c) && c.workspace !== undefined,
+    run: sidebar({ kind: "filterByProject" }),
+  },
+  "thread.autoSettle": {
+    icon: TimerIcon,
+    title: "Auto-settle behavior",
+    description: (c) => (c.thread?.autoSettleEnabled ? "Enabled" : "Disabled"),
+    keywords: "automatic settle enable disable",
+    group: "Threads",
+    palette: "root",
+    available: liveThread,
+    run: (c) => {
+      if (c.thread)
+        c.arrange(c.thread.id, {
+          kind: "set_auto_settle",
+          enabled: !c.thread.autoSettleEnabled,
+        });
+    },
   },
   "thread.copy": {
     icon: CopyIcon,
@@ -454,6 +513,19 @@ const definitions = {
     palette: "copy",
     available: liveThread,
     run: sidebar({ kind: "copyId" }),
+  },
+  "project.settings": {
+    icon: FolderIcon,
+    title: "Project settings",
+    description: (c) => c.workspace?.label,
+    keywords:
+      "project settings name icon scripts model workspace checkout remove",
+    group: "Navigation",
+    palette: "root",
+    available: (c) => !c.pageOpen && c.workspace !== undefined,
+    run: (c) => {
+      if (c.workspace) c.openProjectSettings(c.workspace.id);
+    },
   },
   "thread.archive": {
     icon: ArchiveIcon,
@@ -510,6 +582,15 @@ const definitions = {
   "snooze.evening": snooze("evening", "This evening"),
   "snooze.tomorrow": snooze("tomorrow", "Tomorrow at 9 AM"),
   "snooze.next-week": snooze("next-week", "Next week on Monday at 9 AM"),
+  "snooze.custom": {
+    title: "Custom…",
+    icon: ClockIcon,
+    keywords: "custom date time duration",
+    group: "Threads",
+    palette: "snooze",
+    available: canSnooze,
+    run: sidebar({ kind: "snooze", choice: { kind: "custom" } }),
+  },
   "terminal.split": terminal(
     "Split terminal horizontally",
     "Add a terminal beside the focused one, up to four side by side.",

@@ -436,6 +436,7 @@ export function CommandPalette({
     return {
       id: `command-${id}`,
       title: actionLabel(id, currentContext),
+      description: actions[id].description?.(currentContext),
       icon: <Icon className="size-4 text-icon-muted" />,
       shortcut: shortcutLabel(id),
       submenu: actions[id].submenu,
