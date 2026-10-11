@@ -16,6 +16,7 @@ function render(
   stored: unknown,
   available: string[] | undefined,
   compact: boolean,
+  presentation: "toolbar" | "menu" = "toolbar",
 ) {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   Object.defineProperty(globalThis, "localStorage", {
@@ -43,6 +44,7 @@ function render(
                 path: "src/main.ts",
               },
               compact,
+              presentation,
             }),
           }),
         }),
@@ -72,4 +74,57 @@ it("shows the stored editor on the Open button and disables it with no editor in
       viewer,
     ),
   );
+});
+
+it("shows File Explorer, not Finder, on the Open button on Windows", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { platform: "Win32" },
+  });
+  try {
+    const header = render(
+      { preferredEditor: "file-manager" },
+      ["file-manager"],
+      false,
+    );
+    assert.ok(/#D99A16/.test(header));
+    assert.ok(!/#36A9F5/.test(header));
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "navigator", previous);
+  }
+});
+
+it("the collapsed header menu offers Open in the preferred editor and an Open in… submenu", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { platform: "MacIntel" },
+  });
+  try {
+    const menu = render(
+      { preferredEditor: "zed" },
+      ["cursor", "zed", "file-manager"],
+      false,
+      "menu",
+    );
+    assert.match(
+      menu,
+      /<button[^>]*role="menuitem"[^>]*data-density="touch"[^>]*>.*<span data-slot="menu-item-label"[^>]*>Open in Zed<\/span><kbd[^>]*>⌘O<\/kbd>/,
+    );
+    assert.match(
+      menu,
+      /data-slot="menu-sub-trigger" data-density="touch".*<span data-slot="menu-item-label"[^>]*>Open in…<\/span>/,
+    );
+    assert.ok(!/aria-label="Choose editor"/.test(menu));
+    const toolbar = render(
+      { preferredEditor: "zed" },
+      ["cursor", "zed", "file-manager"],
+      false,
+    );
+    assert.ok(/aria-label="Choose editor"/.test(toolbar));
+    assert.ok(!/Open in…/.test(toolbar));
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "navigator", previous);
+  }
 });

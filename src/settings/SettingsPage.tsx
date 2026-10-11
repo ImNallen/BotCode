@@ -33,6 +33,7 @@ import { cn } from "../lib/cn";
 import { isMacPlatform } from "../lib/utils";
 import { ProjectSettingRow } from "./ProjectSettingRow";
 import { defaults, usePreferences } from "./preferences";
+import type { LinkTarget } from "../preview/linkTarget";
 import { ArchivedThreadsPanel } from "./ArchivedThreadsPanel";
 import { ProjectsSettings } from "./ProjectsSettings";
 import { RetentionControl } from "./RetentionControl";
@@ -350,6 +351,46 @@ function PreferredEditorControl() {
   );
 }
 
+const LINK_TARGET_LABELS: Readonly<Record<LinkTarget, string>> = {
+  system: "Your default browser",
+  app: "Bot Code",
+};
+
+function LinkTargetControl() {
+  const { preferences, update } = usePreferences();
+  const current = preferences.browserLinkTarget;
+  return (
+    <Menu
+      align="end"
+      trigger={(props) => (
+        <button
+          type="button"
+          {...props}
+          className={selectTrigger({ size: "sm", className: "w-full sm:w-40" })}
+          aria-label="Open links in"
+        >
+          <span className="min-w-0 flex-1 truncate text-left">
+            {LINK_TARGET_LABELS[current]}
+          </span>
+          <ChevronDownIcon className="size-3.5" />
+        </button>
+      )}
+    >
+      {(Object.keys(LINK_TARGET_LABELS) as LinkTarget[]).map((target) => (
+        <MenuItem
+          key={target}
+          className={selectItem}
+          role="menuitemradio"
+          aria-checked={current === target}
+          onClick={() => update({ browserLinkTarget: target })}
+        >
+          {LINK_TARGET_LABELS[target]}
+        </MenuItem>
+      ))}
+    </Menu>
+  );
+}
+
 function FontSizeControl({
   value,
   min,
@@ -602,6 +643,7 @@ export function SettingsPage() {
         </Menu>
       );
     if (id === "preferred-editor") return <PreferredEditorControl />;
+    if (id === "browser-link-target") return <LinkTargetControl />;
     if (id === "context-window-indicator")
       return (
         <Switch
@@ -628,6 +670,7 @@ export function SettingsPage() {
       "composerCollapseOnScroll",
     ],
     "send-shortcut": ["send shortcut", "sendShortcut"],
+    "browser-link-target": ["link target", "browserLinkTarget"],
   } as const;
   const resetAction = (id: string) => {
     if (!(id in resettable)) return undefined;

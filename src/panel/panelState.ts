@@ -155,6 +155,7 @@ export function eligibleSurfaces(
 export function surfaceTitle(
   surface: Surface,
   terminals: readonly TerminalPanelSurface[] = [],
+  terminalLabel: (terminalId: string) => string = getTerminalLabel,
 ): string {
   switch (surface.kind) {
     case "files":
@@ -172,7 +173,7 @@ export function surfaceTitle(
     case "file":
       return pathBasename(surface.path);
     case "terminal":
-      return getTerminalLabel(
+      return terminalLabel(
         terminals.find((terminal) => terminal.id === surface.id)
           ?.activeTerminalId ?? surface.id.slice("terminal:".length),
       );

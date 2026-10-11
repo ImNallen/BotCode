@@ -30,6 +30,10 @@ export function readTerminalState(scopeKey: string): ThreadTerminalUiState {
   return selectTerminalState(current(), scopeKey);
 }
 
+export function useTerminalStates(): TerminalStates {
+  return useSyncExternalStore(subscribe, current);
+}
+
 export function useTerminalState(scopeKey: string): ThreadTerminalUiState {
   return useSyncExternalStore(subscribe, () => readTerminalState(scopeKey));
 }

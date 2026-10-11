@@ -282,3 +282,51 @@ it("defaults Working off, saves it on this device, and resets it without a proje
     else Reflect.deleteProperty(globalThis, "localStorage");
   }
 });
+
+it("opens links in the default browser unless Bot Code was chosen, and persists the choice", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  let stored: unknown = {};
+  let state: ReturnType<typeof usePreferences> | undefined;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: () => JSON.stringify(stored),
+      setItem: (_key: string, text: string) => {
+        stored = JSON.parse(text);
+      },
+    },
+  });
+  function Inspect() {
+    state = usePreferences();
+    return null;
+  }
+  const read = (value: unknown) => {
+    stored = value;
+    renderToStaticMarkup(
+      createElement(PreferencesProvider, { children: createElement(Inspect) }),
+    );
+    return state?.preferences.browserLinkTarget;
+  };
+  try {
+    assert.equal(read({ browserLinkTarget: "app" }), "app");
+    assert.equal(read({ browserLinkTarget: "elsewhere" }), "system");
+    assert.equal(read({}), "system");
+    state?.update({ browserLinkTarget: "app" });
+    assert.equal(
+      (stored as { browserLinkTarget?: unknown }).browserLinkTarget,
+      "app",
+    );
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+  const application = categories.general.groups.find(
+    (group) => group.id === "application",
+  );
+  const ids = application?.rows.map((row) => row.id) ?? [];
+  const row = application?.rows[ids.indexOf("preferred-editor") + 1];
+  assert.deepEqual(
+    { id: row?.id, title: row?.title },
+    { id: "browser-link-target", title: "Open links in" },
+  );
+});

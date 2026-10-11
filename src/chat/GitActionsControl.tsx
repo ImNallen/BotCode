@@ -36,7 +36,8 @@ import {
 } from "../ui/dialog";
 import { Group, GroupSeparator } from "../ui/group";
 import { GitHub } from "../ui/icons";
-import { Menu, MenuItem } from "../ui/menu";
+import { Menu, MenuItem, MenuItemLabel, MenuSub } from "../ui/menu";
+import type { HeaderActionsPresentation } from "./ChatHeaderActions";
 import { Textarea } from "../ui/textarea";
 import { Toast, ToastViewport } from "../ui/toast";
 import type {
@@ -73,8 +74,13 @@ function GitActionItemIcon({ icon }: { icon: GitActionIconName }) {
   return <GitHub />;
 }
 
-function GitQuickActionIcon({ quickAction }: { quickAction: GitQuickAction }) {
-  const className = "size-3.5";
+function GitQuickActionIcon({
+  quickAction,
+  className = "size-3.5",
+}: {
+  quickAction: GitQuickAction;
+  className?: string;
+}) {
   if (quickAction.kind === "open_publish")
     return <CloudUploadIcon className={className} />;
   if (quickAction.kind === "open_pr") return <GitHub className={className} />;
@@ -100,12 +106,14 @@ export function GitActionsControl({
   threads,
   onError,
   onOpenPullRequests,
+  presentation = "toolbar",
 }: {
   checkout: CheckoutRef;
   thread: Pick<ThreadSummary, "id" | "checkout" | "session">;
   threads: ThreadSummary[];
   onError: (message: string | undefined) => void;
   onOpenPullRequests: () => void;
+  presentation?: HeaderActionsPresentation;
 }) {
   const client = useQueryClient();
   const currentThread = useRef<string | null>(thread.id);
@@ -196,6 +204,73 @@ export function GitActionsControl({
     else if (quick.kind === "run_pull") start("pull");
     else if (quick.kind === "run_action" && quick.action) start(quick.action);
   };
+  const refreshStatus = (open: boolean) => {
+    if (!open) return;
+    void client.invalidateQueries({ queryKey: checkoutKey("git", checkout) });
+    void client.invalidateQueries({ queryKey: checkoutKey("pr", checkout) });
+  };
+  const density = presentation === "menu" ? "touch" : "default";
+  const gitItems = (
+    <>
+      {model.menu.map((item) => {
+        const content = (
+          <>
+            <GitActionItemIcon icon={item.icon} />
+            <MenuItemLabel>{item.label}</MenuItemLabel>
+          </>
+        );
+        if (item.disabled && item.reason && presentation === "menu") {
+          return (
+            <div key={item.id}>
+              <MenuItem density="touch" disabled>
+                {content}
+              </MenuItem>
+              <p className="max-w-64 px-2 pb-2 text-xs text-muted-foreground">
+                {item.reason}
+              </p>
+            </div>
+          );
+        }
+        if (item.disabled) {
+          return (
+            <span
+              key={item.id}
+              className="block w-max cursor-not-allowed"
+              title={item.reason ?? undefined}
+            >
+              <MenuItem density={density} className="w-full" disabled>
+                {content}
+              </MenuItem>
+            </span>
+          );
+        }
+        return (
+          <MenuItem
+            density={density}
+            key={item.id}
+            onClick={() => {
+              if (item.kind === "open_publish") setPublishThread(thread.id);
+              else if (item.kind === "open_pr") openPr();
+              else if (item.dialogAction) start(item.dialogAction);
+            }}
+          >
+            {content}
+          </MenuItem>
+        );
+      })}
+      {model.notes.map((note) => (
+        <p
+          key={note.text}
+          className={`max-w-64 px-2 py-1.5 text-xs ${noteTone[note.tone]}`}
+        >
+          {note.text}
+        </p>
+      ))}
+    </>
+  );
+  const quickDisabledReason = quick.disabled
+    ? (quick.hint ?? "This action is currently unavailable.")
+    : null;
   const quickLabel = (
     <>
       <GitQuickActionIcon quickAction={quick} />
@@ -207,88 +282,67 @@ export function GitActionsControl({
 
   return (
     <>
-      <Group aria-label="Git actions" className="shrink-0">
-        {quick.disabled ? (
-          <Button
-            aria-disabled="true"
-            size="xs"
-            variant="outline"
-            title={quick.hint ?? "This action is currently unavailable."}
+      {presentation === "menu" ? (
+        <>
+          <MenuItem
+            density="touch"
+            disabled={quick.disabled}
+            onClick={runQuickAction}
           >
-            {quickLabel}
-          </Button>
-        ) : (
-          <Button variant="outline" size="xs" onClick={runQuickAction}>
-            {quickLabel}
-          </Button>
-        )}
-        <GroupSeparator className="hidden @3xl/header-actions:block" />
-        <Menu
-          align="end"
-          onOpenChange={(open) => {
-            if (!open) return;
-            void client.invalidateQueries({
-              queryKey: checkoutKey("git", checkout),
-            });
-            void client.invalidateQueries({
-              queryKey: checkoutKey("pr", checkout),
-            });
-          }}
-          trigger={(props) => (
+            <GitQuickActionIcon className="size-4" quickAction={quick} />
+            <MenuItemLabel>{quick.label}</MenuItemLabel>
+          </MenuItem>
+          {quickDisabledReason ? (
+            <p className="max-w-64 px-2 py-1.5 text-xs text-warning">
+              {quickDisabledReason}
+            </p>
+          ) : null}
+          <MenuSub
+            density="touch"
+            disabled={running}
+            onOpenChange={refreshStatus}
+            icon={<GitHub className="size-4" />}
+            label={<MenuItemLabel>Git actions</MenuItemLabel>}
+          >
+            {gitItems}
+          </MenuSub>
+        </>
+      ) : (
+        <Group aria-label="Git actions" className="shrink-0">
+          {quick.disabled ? (
             <Button
-              {...props}
-              aria-label="Git action options"
-              size="icon-xs"
+              aria-disabled="true"
+              size="xs"
               variant="outline"
-              disabled={running}
+              title={quick.hint ?? "This action is currently unavailable."}
             >
-              <ChevronDownIcon aria-hidden="true" className="size-4" />
+              {quickLabel}
+            </Button>
+          ) : (
+            <Button variant="outline" size="xs" onClick={runQuickAction}>
+              {quickLabel}
             </Button>
           )}
-        >
-          {model.menu.map((item) => {
-            const content = (
-              <>
-                <GitActionItemIcon icon={item.icon} />
-                {item.label}
-              </>
-            );
-            if (item.disabled) {
-              return (
-                <span
-                  key={item.id}
-                  className="block w-max cursor-not-allowed"
-                  title={item.reason ?? undefined}
-                >
-                  <MenuItem className="w-full" disabled>
-                    {content}
-                  </MenuItem>
-                </span>
-              );
-            }
-            return (
-              <MenuItem
-                key={item.id}
-                onClick={() => {
-                  if (item.kind === "open_publish") setPublishThread(thread.id);
-                  else if (item.kind === "open_pr") openPr();
-                  else if (item.dialogAction) start(item.dialogAction);
-                }}
+          <GroupSeparator className="hidden @3xl/header-actions:block" />
+          <Menu
+            align="end"
+            onOpenChange={refreshStatus}
+            trigger={(props) => (
+              <Button
+                {...props}
+                aria-label="Git action options"
+                size="icon-xs"
+                variant="outline"
+                disabled={running}
               >
-                {content}
-              </MenuItem>
-            );
-          })}
-          {model.notes.map((note) => (
-            <p
-              key={note.text}
-              className={`max-w-64 px-2 py-1.5 text-xs ${noteTone[note.tone]}`}
-            >
-              {note.text}
-            </p>
-          ))}
-        </Menu>
-      </Group>
+                <ChevronDownIcon aria-hidden="true" className="size-4" />
+              </Button>
+            )}
+          >
+            {gitItems}
+          </Menu>
+        </Group>
+      )}
       {publishThread === thread.id ? (
         <PublishRepositoryDialog
           key={thread.id}

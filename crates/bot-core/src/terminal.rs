@@ -1,6 +1,9 @@
+mod activity;
 mod history;
+mod persist;
 use crate::{domain::*, process::Kill};
 use history::History;
+use persist::HistoryStore;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -14,6 +17,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use tokio::sync::watch;
 
 /// A client-chosen terminal name such as `term-1`, unique within its thread.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +67,24 @@ pub enum TerminalEvent {
     },
 }
 
+/// A terminal whose shell is running a command, named after that command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalLabel {
+    pub workspace_id: WorkspaceId,
+    pub thread_id: Option<ThreadId>,
+    pub terminal_id: TerminalId,
+    pub label: String,
+}
+
+/// Every labeled terminal. An idle terminal is absent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct TerminalLabels {
+    /// Bumped on every change so a client can drop a snapshot older than the one it holds.
+    pub sequence: u64,
+    pub labels: Vec<TerminalLabel>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TerminalSize {
     cols: u16,
@@ -98,6 +120,27 @@ pub(crate) struct TerminalKey {
     pub terminal: TerminalId,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum CloseScope {
+    Terminal(TerminalKey),
+    Thread {
+        workspace: WorkspaceId,
+        thread: ThreadId,
+    },
+    Workspace(WorkspaceId),
+}
+impl CloseScope {
+    fn matches(&self, key: &TerminalKey) -> bool {
+        match self {
+            Self::Terminal(target) => target == key,
+            Self::Thread { workspace, thread } => {
+                key.workspace == *workspace && key.thread.as_ref() == Some(thread)
+            }
+            Self::Workspace(workspace) => key.workspace == *workspace,
+        }
+    }
+}
+
 pub(crate) type Sink = Arc<dyn Fn(TerminalEvent) + Send + Sync>;
 
 struct Output {
@@ -105,6 +148,7 @@ struct Output {
     unfinished_sequence: String,
     subscribers: Vec<(u64, Sink)>,
     exited: bool,
+    persist: bool,
 }
 
 struct Session {
@@ -125,7 +169,7 @@ impl Session {
         writer.flush()?;
         Ok(())
     }
-    fn publish(&self, data: String) {
+    fn publish(&self, data: String) -> bool {
         let mut output = lock(&self.output);
         let (visible, unfinished) = history::sanitize(&output.unfinished_sequence, &data);
         output.unfinished_sequence = unfinished;
@@ -133,6 +177,11 @@ impl Session {
         for (_, sink) in &output.subscribers {
             sink(TerminalEvent::Output { data: data.clone() });
         }
+        output.persist
+    }
+    fn saved_history(&self) -> Option<String> {
+        let output = lock(&self.output);
+        output.persist.then(|| output.history.value())
     }
     fn running(&self) -> bool {
         matches!(lock(&self.child).try_wait(), Ok(None))
@@ -162,6 +211,19 @@ impl Session {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+}
+
+fn retire(sessions: &[Arc<Session>], store: Option<&HistoryStore>) {
+    for session in sessions {
+        lock(&session.output).subscribers.clear();
+    }
+    if let Some(store) = store {
+        store.flush();
+    }
+    for session in sessions {
+        lock(&session.output).persist = false;
+    }
+    terminate(sessions);
 }
 
 /// Each group gets a hangup and, a second later, a kill.
@@ -197,12 +259,72 @@ struct Registry {
     sessions: Mutex<HashMap<TerminalKey, Arc<Session>>>,
     subscriptions: AtomicU64,
     blocked: Mutex<HashSet<ThreadId>>,
+    labels: Option<watch::Sender<TerminalLabels>>,
+    history: Option<HistoryStore>,
+}
+impl Registry {
+    fn drain(&self) -> Vec<Arc<Session>> {
+        lock(&self.sessions).drain().map(|(_, s)| s).collect()
+    }
+    fn shells(&self) -> Vec<(TerminalKey, u32)> {
+        lock(&self.sessions)
+            .iter()
+            .map(|(key, session)| (key.clone(), session.pid as u32))
+            .collect()
+    }
+    fn publish_labels(&self, found: Vec<(TerminalKey, u32, String)>) {
+        let Some(sender) = &self.labels else { return };
+        let sessions = lock(&self.sessions);
+        let mut labels: Vec<TerminalLabel> = found
+            .into_iter()
+            .filter(|(key, pid, _)| sessions.get(key).is_some_and(|s| s.pid as u32 == *pid))
+            .map(|(key, _, label)| TerminalLabel {
+                workspace_id: key.workspace,
+                thread_id: key.thread,
+                terminal_id: key.terminal,
+                label,
+            })
+            .collect();
+        labels.sort_by(|a, b| {
+            let order = |l: &TerminalLabel| (l.workspace_id.0, l.thread_id.as_ref().map(|t| t.0));
+            order(a)
+                .cmp(&order(b))
+                .then_with(|| a.terminal_id.0.cmp(&b.terminal_id.0))
+        });
+        sender.send_if_modified(|current| {
+            if current.labels == labels {
+                return false;
+            }
+            current.labels = labels;
+            current.sequence += 1;
+            true
+        });
+    }
+    fn forget(&self, keys: &[TerminalKey]) {
+        let Some(sender) = &self.labels else { return };
+        sender.send_if_modified(|current| {
+            let before = current.labels.len();
+            current.labels.retain(|label| {
+                !keys.iter().any(|key| {
+                    key.workspace == label.workspace_id
+                        && key.thread == label.thread_id
+                        && key.terminal == label.terminal_id
+                })
+            });
+            let changed = current.labels.len() != before;
+            if changed {
+                current.sequence += 1;
+            }
+            changed
+        });
+    }
 }
 impl Drop for Registry {
     fn drop(&mut self) {
-        let sessions: Vec<_> = lock(&self.sessions).drain().map(|(_, s)| s).collect();
+        let sessions = self.drain();
         if !sessions.is_empty() {
-            std::thread::spawn(move || terminate(&sessions));
+            let store = self.history.clone();
+            std::thread::spawn(move || retire(&sessions, store.as_ref()));
         }
     }
 }
@@ -210,13 +332,29 @@ impl Drop for Registry {
 #[derive(Clone)]
 pub(crate) struct Terminals(Arc<Registry>);
 impl Terminals {
-    pub(crate) fn new(shell: Option<PathBuf>) -> Self {
-        Self(Arc::new(Registry {
+    pub(crate) fn new(
+        shell: Option<PathBuf>,
+        labels: Option<watch::Sender<TerminalLabels>>,
+        history_dir: Option<PathBuf>,
+    ) -> Self {
+        let polled = labels.is_some();
+        let history = history_dir.and_then(|dir| {
+            HistoryStore::open(dir)
+                .inspect_err(|error| eprintln!("Terminal history is off: {error}"))
+                .ok()
+        });
+        let registry = Arc::new(Registry {
             shell,
             sessions: Mutex::new(HashMap::new()),
             subscriptions: AtomicU64::new(1),
             blocked: Mutex::new(HashSet::new()),
-        }))
+            labels,
+            history,
+        });
+        if polled && let Err(error) = activity::spawn_poller(Arc::downgrade(&registry)) {
+            eprintln!("Terminal labels are off: {error}");
+        }
+        Self(registry)
     }
     fn get(&self, key: &TerminalKey) -> Option<Arc<Session>> {
         lock(&self.0.sessions).get(key).cloned()
@@ -242,12 +380,14 @@ impl Terminals {
                     (Some(session), _) => session.clone(),
                     (None, None) => return Ok(None),
                     (None, Some(cwd)) => {
-                        let (session, reader) = spawn(self.0.shell.as_deref(), cwd, size)?;
+                        let store = self.0.history.clone();
+                        let history = store.as_ref().map(|store| store.restore(&key));
+                        let (session, reader) = spawn(self.0.shell.as_deref(), cwd, size, history)?;
                         let registry = Arc::downgrade(&self.0);
                         let (pumped, pump_key) = (session.clone(), key.clone());
                         if let Err(error) = std::thread::Builder::new()
                             .name("bot-code-terminal".into())
-                            .spawn(move || pump(registry, pump_key, pumped, reader))
+                            .spawn(move || pump(registry, store, pump_key, pumped, reader))
                         {
                             terminate(&[session]);
                             return Err(error.into());
@@ -296,18 +436,35 @@ impl Terminals {
             None => Ok(()),
         }
     }
-    pub(crate) fn close(&self, matches: impl Fn(&TerminalKey) -> bool) {
-        let closed: Vec<Arc<Session>> = {
+    pub(crate) fn close(&self, scope: &CloseScope) {
+        let (keys, closed): (Vec<TerminalKey>, Vec<Arc<Session>>) = {
             let mut sessions = lock(&self.0.sessions);
-            let keys: Vec<TerminalKey> = sessions.keys().filter(|k| matches(k)).cloned().collect();
-            keys.iter().filter_map(|k| sessions.remove(k)).collect()
+            let keys: Vec<TerminalKey> = sessions
+                .keys()
+                .filter(|k| scope.matches(k))
+                .cloned()
+                .collect();
+            let closed: Vec<Arc<Session>> =
+                keys.iter().filter_map(|k| sessions.remove(k)).collect();
+            for session in &closed {
+                lock(&session.output).persist = false;
+            }
+            if let Some(store) = &self.0.history {
+                store.forget(scope);
+            }
+            (keys, closed)
         };
+        self.0.forget(&keys);
         terminate(&closed);
+    }
+    pub(crate) fn shutdown(&self) {
+        retire(&self.0.drain(), self.0.history.as_ref());
     }
 }
 
 fn pump(
     registry: Weak<Registry>,
+    store: Option<HistoryStore>,
     key: TerminalKey,
     session: Arc<Session>,
     mut reader: Box<dyn Read + Send>,
@@ -319,8 +476,11 @@ fn pump(
             Ok(0) => break,
             Ok(n) => {
                 let data = history::decode(&mut carry, &buffer[..n]);
-                if !data.is_empty() {
-                    session.publish(data);
+                if !data.is_empty()
+                    && session.publish(data)
+                    && let Some(store) = &store
+                {
+                    store.save(&key, Arc::downgrade(&session));
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
@@ -330,9 +490,20 @@ fn pump(
     }
     let exit_code = session.reap();
     if let Some(registry) = registry.upgrade() {
-        let mut sessions = lock(&registry.sessions);
-        if sessions.get(&key).is_some_and(|s| Arc::ptr_eq(s, &session)) {
-            sessions.remove(&key);
+        let removed = {
+            let mut sessions = lock(&registry.sessions);
+            let current = sessions.get(&key).is_some_and(|s| Arc::ptr_eq(s, &session));
+            if current {
+                lock(&session.output).persist = false;
+                if let Some(store) = &store {
+                    store.forget(&CloseScope::Terminal(key.clone()));
+                }
+                sessions.remove(&key);
+            }
+            current
+        };
+        if removed {
+            registry.forget(std::slice::from_ref(&key));
         }
     }
     let mut output = lock(&session.output);
@@ -342,10 +513,12 @@ fn pump(
     }
 }
 
+/// A `history` restored from disk makes the session save its own.
 fn spawn(
     pinned: Option<&Path>,
     cwd: &Path,
     size: TerminalSize,
+    history: Option<History>,
 ) -> Result<(Arc<Session>, Box<dyn Read + Send>)> {
     if !cwd.is_dir() {
         return Err(AppError::new(
@@ -378,7 +551,8 @@ fn spawn(
         writer: Mutex::new(writer),
         child: Mutex::new(child),
         output: Mutex::new(Output {
-            history: History::default(),
+            persist: history.is_some(),
+            history: history.unwrap_or_default(),
             unfinished_sequence: String::new(),
             subscribers: Vec::new(),
             exited: false,
@@ -479,7 +653,7 @@ mod tests {
     #[test]
     fn deleted_thread_gate_prevents_stale_checkout_attach() {
         let directory = tempfile::tempdir().unwrap();
-        let terminals = Terminals::new(cfg!(unix).then(|| "/bin/sh".into()));
+        let terminals = Terminals::new(cfg!(unix).then(|| "/bin/sh".into()), None, None);
         let id = ThreadId::default();
         let key = TerminalKey {
             workspace: WorkspaceId::default(),
@@ -495,7 +669,10 @@ mod tests {
                 .is_some()
         );
         terminals.block_thread(&id);
-        terminals.close(|key| key.thread.as_ref() == Some(&id));
+        terminals.close(&CloseScope::Thread {
+            workspace: key.workspace.clone(),
+            thread: id.clone(),
+        });
         assert!(terminals.get(&key).is_none());
         assert!(
             terminals
@@ -510,7 +687,7 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
-        terminals.close(|_| true);
+        terminals.shutdown();
     }
     fn env(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
         pairs

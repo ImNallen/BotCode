@@ -263,6 +263,13 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             keywords: "open in editor ide cursor vs code zed finder",
           },
           {
+            id: "browser-link-target",
+            title: "Open links in",
+            description:
+              "Where links in the chat and terminal open. Hold ⌘ or Ctrl while clicking a link to open it in your default browser either way.",
+            keywords: "links default browser in-app browser external open",
+          },
+          {
             id: "context-window-indicator",
             title: "Context window indicator",
             description:

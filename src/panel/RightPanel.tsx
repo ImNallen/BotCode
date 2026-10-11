@@ -33,6 +33,7 @@ import {
   createPanelTerminal,
   useTerminalState,
 } from "../terminal/terminalStore";
+import { useTerminalLabelFor } from "../terminal/terminalLabels";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { AgentsPanel } from "./AgentsPanel";
@@ -167,6 +168,7 @@ export function RightPanel({
   const threadId = conversationId ?? null;
   const terminalScope = terminalScopeKey(checkout.workspaceId, threadId);
   const terminals = useTerminalState(terminalScope).panelSurfaces;
+  const terminalLabel = useTerminalLabelFor(terminalScope);
   const localAvailable = view !== undefined && view.unavailable === null;
   const open = (surface: Surface) => onChange(openSurface(state, surface));
   const openTerminal = () => {
@@ -299,7 +301,7 @@ export function RightPanel({
               <div className="flex h-full w-max min-w-full items-center gap-1">
                 {state.surfaces.map((surface, index) => {
                   const isActive = index === state.active;
-                  const title = surfaceTitle(surface, terminals);
+                  const title = surfaceTitle(surface, terminals, terminalLabel);
                   return (
                     <div
                       key={surfaceKey(surface)}

@@ -3,7 +3,7 @@ import { FolderTreeIcon, PencilIcon } from "lucide-react";
 import { useState, type MouseEvent } from "react";
 import type { OpenTarget } from "./ipc";
 import { useEditorActions } from "./lib/editorActions";
-import { revealLabel } from "./lib/editors";
+import { revealInFileExplorerLabel } from "./lib/editors";
 import { Menu, MenuItem, MenuSub } from "./ui/menu";
 
 type Point = { x: number; y: number };
@@ -57,7 +57,7 @@ export function useFileContextMenu() {
           </MenuItem>
           <MenuItem onClick={() => editors.reveal(menu.target)}>
             <FolderTreeIcon />
-            {revealLabel}
+            {revealInFileExplorerLabel()}
           </MenuItem>
         </>
       ) : null}

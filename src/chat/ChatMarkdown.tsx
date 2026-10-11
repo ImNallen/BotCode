@@ -20,7 +20,10 @@ import { Menu, MenuItem } from "../ui/menu";
 import type { OpenTarget, Skill } from "../ipc";
 import { contextMenuPoint } from "../fileContextMenu";
 import { notifyEditorResult, useEditorActions } from "../lib/editorActions";
-import { openInEditorMenuLabel, revealLabel } from "../lib/editors";
+import {
+  openInEditorMenuLabel,
+  revealInFileExplorerLabel,
+} from "../lib/editors";
 import type { ChatFileLink } from "./chatFileLinks";
 import { pathBasename } from "./composer-logic";
 import { renderSkillInlineMarkdownChildren } from "./SkillInlineText";
@@ -28,12 +31,16 @@ import type { ComposerContextRecord } from "./composerContext";
 import { ContextRecordChip } from "./ContextRecordChip";
 import { RenderErrorBoundary } from "../errors/RenderErrorBoundary";
 import { findTaskListMarkerOffset } from "./markdownTasks";
+import { isWebUrl, openLink } from "../preview/linkTarget";
+import type { PreviewScope } from "../preview/model";
+import { usePreferences } from "../settings/preferences";
 
 export type FileLinks = {
   resolve: (target: string, source: "code" | "href") => ChatFileLink | null;
   openInPanel: (path: string) => void;
   target: (link: ChatFileLink) => OpenTarget;
   absolutePath: (link: ChatFileLink) => string;
+  previewScope?: PreviewScope;
 };
 
 const FileLinkContext = createContext<FileLinks | null>(null);
@@ -71,6 +78,38 @@ function copyPath(value: string, title: string) {
         `Failed to copy ${title.toLowerCase()}`,
         error instanceof Error ? error.message : "An error occurred.",
       ),
+  );
+}
+
+function WebLink({
+  href,
+  scope,
+  children,
+}: {
+  href: string;
+  scope: PreviewScope | null;
+  children: ReactNode;
+}) {
+  const { preferences } = usePreferences();
+  return (
+    <a
+      href={href}
+      rel="noopener noreferrer"
+      title={href}
+      onClick={(event) => {
+        if (event.defaultPrevented) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void openLink({
+          url: href,
+          event,
+          preference: preferences.browserLinkTarget,
+          scope,
+        }).catch((error: unknown) => console.error(error));
+      }}
+    >
+      {children}
+    </a>
   );
 }
 
@@ -132,7 +171,7 @@ function FileChip({ links, link }: { links: FileLinks; link: ChatFileLink }) {
           ) : null}
           {editors.available.includes("file-manager") ? (
             <MenuItem onClick={() => editors.reveal(links.target(link))}>
-              {revealLabel}
+              {revealInFileExplorerLabel()}
             </MenuItem>
           ) : null}
           <MenuItem onClick={() => copyPath(path, "Relative path")}>
@@ -325,8 +364,8 @@ const components: Components = {
     const link = href && links ? links.resolve(href, "href") : null;
     if (links && link) return <FileChip links={links} link={link} />;
     if (href && /^file:/i.test(href)) return <span>{children}</span>;
-    return (
-      <a href={href} target="_blank" rel="noopener noreferrer" title={href}>
+    const label = (
+      <>
         <span className="whitespace-nowrap">
           <span
             aria-hidden
@@ -336,6 +375,17 @@ const components: Components = {
           </span>
         </span>
         {children}
+      </>
+    );
+    if (links && href && isWebUrl(href))
+      return (
+        <WebLink href={href} scope={links.previewScope ?? null}>
+          {label}
+        </WebLink>
+      );
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" title={href}>
+        {label}
       </a>
     );
   },

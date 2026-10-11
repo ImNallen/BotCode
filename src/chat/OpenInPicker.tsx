@@ -1,5 +1,5 @@
 // Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/chat/OpenInPicker.tsx (MIT).
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, SquareArrowOutUpRightIcon } from "lucide-react";
 import type { OpenTarget } from "../ipc";
 import { cn } from "../lib/cn";
 import { useEditorActions } from "../lib/editorActions";
@@ -7,7 +7,14 @@ import { editorById, type Editor } from "../lib/editors";
 import { useShortcutLabel } from "../lib/shortcuts";
 import { Button } from "../ui/controls";
 import { Group, GroupSeparator } from "../ui/group";
-import { Menu, MenuItem, MenuShortcut } from "../ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuItemLabel,
+  MenuShortcut,
+  MenuSub,
+} from "../ui/menu";
+import type { HeaderActionsPresentation } from "./ChatHeaderActions";
 
 function getOpenInIconClass(kind: Editor["kind"]) {
   return cn(
@@ -18,15 +25,67 @@ function getOpenInIconClass(kind: Editor["kind"]) {
 export function OpenInPicker({
   target,
   compact = false,
+  presentation = "toolbar",
 }: {
   target: OpenTarget;
   compact?: boolean;
+  presentation?: HeaderActionsPresentation;
 }) {
   const editors = useEditorActions();
   const primary = editors.preferred ? editorById(editors.preferred) : null;
   const openFavoriteEditorShortcutLabel = useShortcutLabel(
     "editor.openFavorite",
   );
+  const density = presentation === "menu" ? "touch" : "default";
+  const editorItems = (
+    <>
+      {editors.installed.length === 0 ? (
+        <MenuItem density={density} disabled>
+          No installed editors found
+        </MenuItem>
+      ) : null}
+      {editors.installed.map(({ label, Icon, id, kind }) => (
+        <MenuItem
+          density={density}
+          key={id}
+          onClick={() => {
+            editors.choose(id);
+            editors.open(target, null, id);
+          }}
+        >
+          <Icon aria-hidden="true" className={getOpenInIconClass(kind)} />
+          <MenuItemLabel>{label}</MenuItemLabel>
+          {id === editors.preferred && openFavoriteEditorShortcutLabel ? (
+            <MenuShortcut>{openFavoriteEditorShortcutLabel}</MenuShortcut>
+          ) : null}
+        </MenuItem>
+      ))}
+    </>
+  );
+  if (presentation === "menu") {
+    return (
+      <>
+        {primary ? (
+          <MenuItem density="touch" onClick={() => editors.open(target)}>
+            <primary.Icon
+              className={cn("size-4", getOpenInIconClass(primary.kind))}
+            />
+            <MenuItemLabel>Open in {primary.label}</MenuItemLabel>
+            {openFavoriteEditorShortcutLabel ? (
+              <MenuShortcut>{openFavoriteEditorShortcutLabel}</MenuShortcut>
+            ) : null}
+          </MenuItem>
+        ) : null}
+        <MenuSub
+          density="touch"
+          icon={<SquareArrowOutUpRightIcon className="size-4" />}
+          label={<MenuItemLabel>Open in…</MenuItemLabel>}
+        >
+          {editorItems}
+        </MenuSub>
+      </>
+    );
+  }
   return (
     <Group aria-label="Open in editor" className="shrink-0">
       <Button
@@ -68,24 +127,7 @@ export function OpenInPicker({
           </Button>
         )}
       >
-        {editors.installed.length === 0 ? (
-          <MenuItem disabled>No installed editors found</MenuItem>
-        ) : null}
-        {editors.installed.map(({ label, Icon, id, kind }) => (
-          <MenuItem
-            key={id}
-            onClick={() => {
-              editors.choose(id);
-              editors.open(target, null, id);
-            }}
-          >
-            <Icon aria-hidden="true" className={getOpenInIconClass(kind)} />
-            <span className="min-w-0 truncate">{label}</span>
-            {id === editors.preferred && openFavoriteEditorShortcutLabel ? (
-              <MenuShortcut>{openFavoriteEditorShortcutLabel}</MenuShortcut>
-            ) : null}
-          </MenuItem>
-        ))}
+        {editorItems}
       </Menu>
     </Group>
   );

@@ -9,6 +9,7 @@ import {
 } from "../ui/command";
 import { FileEntryIcon } from "../panel/FileEntryIcon";
 import { useProjectSearch } from "../lib/projectSearch";
+import { getLocalFileManagerName } from "../lib/utils";
 import type { CheckoutRef } from "../ipc";
 import {
   getProjectFilePickerMatches,
@@ -82,7 +83,9 @@ export function ProjectFilePicker({
           disabled={externalPending}
           onClick={onPickExternal ?? search.refresh}
         >
-          {onPickExternal ? "Open in Finder" : "Refresh"}
+          {onPickExternal
+            ? `Open in ${getLocalFileManagerName(navigator.platform)}`
+            : "Refresh"}
         </button>
       }
       inputProps={{

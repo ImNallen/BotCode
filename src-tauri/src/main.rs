@@ -77,6 +77,15 @@ fn main() {
                     }
                 }
             });
+            let mut labels = runtime.watch_terminal_labels();
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while labels.changed().await.is_ok() {
+                    let value = labels.borrow_and_update().clone();
+                    let _ =
+                        handle.emit_to(EventTarget::webview("main"), "bot:terminal-labels", value);
+                }
+            });
             app.manage(runtime);
             Ok(())
         })
@@ -200,6 +209,7 @@ fn main() {
                 ipc::terminal_detach,
                 ipc::terminal_write,
                 ipc::terminal_resize,
+                ipc::terminal_labels,
                 ipc::terminal_close
             ];
             move |invoke| {

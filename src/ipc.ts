@@ -6,6 +6,10 @@ import {
 } from "./chat/publishRepository";
 import { projectCloneSnapshot } from "./project/clones";
 import {
+  applyTerminalLabels,
+  terminalLabelsPayload,
+} from "./terminal/terminalLabels";
+import {
   pullRequestStack,
   prStackChange,
   prStackOperation,
@@ -1445,6 +1449,7 @@ export const ipc = {
       target,
       z.null(),
     ),
+  terminalLabels: () => call("terminal_labels", {}, terminalLabelsPayload),
   openUrl: (url: string) => call("open_url", { url }, z.null()),
   availableEditors: () => call("available_editors", {}, z.array(editorId)),
   openInEditor: (
@@ -1650,6 +1655,13 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
     const limits = usageLimits.safeParse(event.payload);
     if (limits.success) client.setQueryData(["usage-limits"], limits.data);
   });
+  const offTerminalLabels = await listen<unknown>(
+    "bot:terminal-labels",
+    (event) => applyTerminalLabels(event.payload),
+  );
+  void ipc
+    .terminalLabels()
+    .then(applyTerminalLabels, (error: unknown) => console.error(error));
   const offRefresh = await listen("bot:refresh", () => {
     invalidateThreadSearch({ kind: "all" });
     void client.invalidateQueries();
@@ -1666,6 +1678,7 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
   return () => {
     offChanged();
     offLimits();
+    offTerminalLabels();
     offRefresh();
     window.removeEventListener("focus", focus);
     if (timer) clearTimeout(timer);

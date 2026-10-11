@@ -52,7 +52,7 @@ import {
 } from "../keybindings/keyboard";
 import { THREAD_JUMP_KEYBINDING_COMMANDS } from "../keybindings/rules";
 import { currentShortcutContext } from "../lib/shortcutContext";
-import { isMacPlatform } from "../lib/utils";
+import { getLocalFileManagerName, isMacPlatform } from "../lib/utils";
 import {
   browsePath,
   directoryQuery,
@@ -873,7 +873,7 @@ export function CommandPalette({
                 disabled={blocked || pending !== null}
                 onClick={() => void chooseRepository()}
               >
-                Open in Finder
+                {`Open in ${getLocalFileManagerName(navigator.platform)}`}
               </CommandFooterAction>
             ) : undefined
           }

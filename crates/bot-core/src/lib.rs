@@ -71,7 +71,7 @@ mod store;
 mod subagents;
 pub use subagents::{Roster, Subagent, SubagentStatus};
 mod terminal;
-pub use terminal::{TerminalEvent, TerminalId};
+pub use terminal::{TerminalEvent, TerminalId, TerminalLabel, TerminalLabels};
 mod usage_history;
 pub use usage_history::{UsageHistoryReport, UsageHistoryRequest, UsagePeriod};
 mod usage;

@@ -14,6 +14,8 @@ import {
   type UsageLimits,
   type WorkspaceView,
 } from "./ipc.ts";
+import { readTerminalLabel } from "./terminal/terminalLabels.ts";
+import { terminalScopeKey } from "./terminal/terminalState.ts";
 import { usageLimitsQuery } from "./usage/limits.ts";
 
 it("reads old project records as automatic icons and preserves saved icon variants", async () => {
@@ -425,7 +427,7 @@ it("caches pushed usage limits without reading them again", async () => {
     assert.deepEqual(client.getQueryData(usageLimitsQuery.queryKey), pushed);
     window.dispatchEvent(new Event("focus"));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.deepEqual(calls, []);
+    assert.deepEqual(calls, ["terminal_labels"]);
     assert.deepEqual(client.getQueryData(usageLimitsQuery.queryKey), pushed);
   } finally {
     clearTimeout(timeout);
@@ -793,4 +795,49 @@ it("builds path-form workspace file URLs that keep sibling paths relative", asyn
     workspaceFileUrlFrom("x://localhost/", checkout, "100%.png"),
     "x://localhost/ws/th/100%25.png",
   );
+});
+
+it("seeds terminal labels and follows pushed snapshots", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: Object.assign(new EventTarget(), { crypto: globalThis.crypto }),
+  });
+  const vim = {
+    workspaceId: "ws",
+    threadId: "thread",
+    terminalId: "term-1",
+    label: "vim",
+  };
+  mockIPC(
+    (command) =>
+      command === "terminal_labels" ? { sequence: 5, labels: [vim] } : null,
+    { shouldMockEvents: true },
+  );
+  const scope = terminalScopeKey("ws", "thread");
+  const until = async (label: string) => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (readTerminalLabel(scope, "term-1") === label) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(readTerminalLabel(scope, "term-1"), label);
+  };
+  let offEvents: (() => void) | undefined;
+  try {
+    offEvents = await subscribe(new QueryClient());
+    await until("vim");
+    await emit("bot:terminal-labels", { sequence: 6, labels: [] });
+    await until("Terminal 1");
+    await emit("bot:terminal-labels", {
+      sequence: 7,
+      labels: [{ ...vim, label: "node" }],
+    });
+    await until("node");
+  } finally {
+    offEvents?.();
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
 });

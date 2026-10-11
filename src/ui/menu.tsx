@@ -6,6 +6,8 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
+  createContext,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -15,6 +17,10 @@ import { createPortal } from "react-dom";
 import { CheckIcon, ChevronRightIcon } from "lucide-react";
 import { cn } from "../lib/cn";
 import { useLocation } from "@tanstack/react-router";
+
+type MenuDensity = "default" | "touch";
+
+const MenuOpenContext = createContext(true);
 
 export function Menu({
   trigger,
@@ -34,6 +40,8 @@ export function Menu({
   anchor: positionAnchor,
   point,
   returnFocus,
+  keepMounted = false,
+  label,
 }: {
   trigger: (props: {
     ref: (node: HTMLElement | null) => void;
@@ -60,6 +68,8 @@ export function Menu({
   point?: { x: number; y: number };
   // Takes focus back on close when the menu has no trigger of its own.
   returnFocus?: HTMLElement;
+  keepMounted?: boolean;
+  label?: string;
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -235,21 +245,22 @@ export function Menu({
         "aria-expanded": open,
         ...(open ? { "data-popup-open": "" } : {}),
       })}
-      {open
+      {open || keepMounted
         ? createPortal(
             <div
               ref={popup}
               role={popupKind.kind}
-              aria-label={
-                popupKind.kind === "dialog" ? popupKind.label : undefined
-              }
+              aria-label={popupKind.kind === "dialog" ? popupKind.label : label}
+              hidden={!open}
+              inert={!open}
               tabIndex={-1}
               data-slot="menu-popup"
               style={position}
               onPointerDown={() => {
-                pointerInside.current = true;
+                if (open) pointerInside.current = true;
               }}
               onKeyDownCapture={(event) => {
+                if (!open) return;
                 onKeyDownCapture?.(event);
                 if (
                   event.defaultPrevented ||
@@ -289,8 +300,9 @@ export function Menu({
                 event.preventDefault();
                 items[next]?.focus();
               }}
-              onKeyDown={onKeyDown}
+              onKeyDown={open ? onKeyDown : undefined}
               onClick={(event) => {
+                if (!open) return;
                 onClick?.(event);
                 if (!(event.target instanceof Element)) return;
                 const item = event.target.closest(
@@ -314,7 +326,7 @@ export function Menu({
                   contentClassName,
                 )}
               >
-                {children}
+                <MenuOpenContext value={open}>{children}</MenuOpenContext>
               </div>
             </div>,
             anchor.current?.closest("dialog[open]") ?? document.body,
@@ -327,17 +339,37 @@ export function Menu({
 export function MenuItem({
   className,
   variant = "default",
+  density = "default",
   ...props
-}: ComponentProps<"button"> & { variant?: "default" | "destructive" }) {
+}: ComponentProps<"button"> & {
+  variant?: "default" | "destructive";
+  density?: MenuDensity;
+}) {
   return (
     <button
       type="button"
       role="menuitem"
       data-slot="menu-item"
       data-variant={variant}
+      data-density={density}
       className={cn(
         "[&>svg]:-mx-0.5 flex min-h-8 w-full cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1 text-left text-base text-foreground outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-64 sm:min-h-7 sm:text-sm [&>svg:not([class*='opacity-'])]:opacity-80 [&>svg:not([class*='size-'])]:size-4.5 sm:[&>svg:not([class*='size-'])]:size-4 [&>svg:not([class*='text-'])]:text-muted-foreground [&>svg]:pointer-events-none [&>svg]:shrink-0",
         "data-[variant=destructive]:text-destructive-foreground data-[variant=destructive]:[&>svg:not([class*='text-'])]:text-current",
+        density === "touch" && "min-h-10 sm:min-h-10",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+// Symmetric padding keeps accents and descenders inside truncated labels.
+export function MenuItemLabel({ className, ...props }: ComponentProps<"span">) {
+  return (
+    <span
+      data-slot="menu-item-label"
+      className={cn(
+        "min-w-0 truncate in-data-[density=touch]:[text-box:trim-both_cap_alphabetic] supports-[text-box:trim-both_cap_alphabetic]:in-data-[density=touch]:py-[0.5em]",
         className,
       )}
       {...props}
@@ -434,14 +466,25 @@ export function MenuSub({
   label,
   icon,
   disabled,
+  density = "default",
+  onOpenChange,
   children,
 }: {
   label: ReactNode;
   icon?: ReactNode;
   disabled?: boolean;
+  density?: MenuDensity;
+  onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(false);
+  const setOpen = (next: boolean) => {
+    if (next === open) return;
+    setOpenState(next);
+    onOpenChange?.(next);
+  };
+  const parentOpen = useContext(MenuOpenContext);
+  if (!parentOpen && open) setOpenState(false);
   const trigger = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!open) return;
@@ -474,6 +517,7 @@ export function MenuSub({
           type="button"
           role="menuitem"
           data-slot="menu-sub-trigger"
+          data-density={density}
           data-keep-open
           disabled={disabled}
           ref={(node) => {
@@ -487,7 +531,10 @@ export function MenuSub({
             event.preventDefault();
             setOpen(true);
           }}
-          className="[&>svg:not(:last-child)]:-mx-0.5 flex min-h-8 w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-left text-base text-foreground outline-none disabled:cursor-not-allowed disabled:pointer-events-none hover:bg-accent focus-visible:bg-accent data-popup-open:bg-accent hover:text-accent-foreground focus-visible:text-accent-foreground data-popup-open:text-accent-foreground disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground [&>svg:not(:last-child):not([class*='opacity-'])]:opacity-80 [&_svg]:pointer-events-none [&>svg]:shrink-0"
+          className={cn(
+            "[&>svg:not(:last-child)]:-mx-0.5 flex min-h-8 w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-left text-base text-foreground outline-none disabled:cursor-not-allowed disabled:pointer-events-none hover:bg-accent focus-visible:bg-accent data-popup-open:bg-accent hover:text-accent-foreground focus-visible:text-accent-foreground data-popup-open:text-accent-foreground disabled:opacity-64 sm:min-h-7 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-muted-foreground [&>svg:not(:last-child):not([class*='opacity-'])]:opacity-80 [&_svg]:pointer-events-none [&>svg]:shrink-0",
+            density === "touch" && "min-h-10 sm:min-h-10",
+          )}
           {...props}
         >
           {icon}

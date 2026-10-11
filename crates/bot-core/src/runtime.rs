@@ -31,7 +31,8 @@ use crate::{
     repo, settings, skills,
     store::Store,
     terminal::{
-        MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey, TerminalSize, Terminals,
+        CloseScope, MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey, TerminalLabels,
+        TerminalSize, Terminals,
     },
     usage::{self, ContextUsage, UsageLimits},
     vcs, workspace_files,
@@ -352,6 +353,7 @@ pub struct App {
     log: RotatingLog,
     terminals: Terminals,
     setup_terminals: Terminals,
+    terminal_labels: watch::Receiver<TerminalLabels>,
     attachments: Attachments,
     project_search: crate::project_search::ProjectSearch,
 }
@@ -511,8 +513,13 @@ impl App {
             .map_or(crate::project::Dialect::Posix, |(shell, _)| {
                 crate::project::Dialect::of(&shell)
             });
-        let terminals = Terminals::new(config.shell.clone());
-        let setup_terminals = Terminals::new(config.shell.clone());
+        let (labels, terminal_labels) = watch::channel(TerminalLabels::default());
+        let terminals = Terminals::new(
+            config.shell.clone(),
+            Some(labels),
+            Some(config.data_dir.join("logs").join("terminals")),
+        );
+        let setup_terminals = Terminals::new(config.shell.clone(), None, None);
         let settings = config.data_dir.join("settings.json");
         crate::project::fold_saved_scripts(&settings, &workspaces, false)?;
         let keybindings = Arc::new(crate::keybindings::Keybindings::new(
@@ -615,6 +622,7 @@ impl App {
             log,
             terminals,
             setup_terminals,
+            terminal_labels,
             attachments,
             project_search,
         };
@@ -768,13 +776,14 @@ impl App {
     pub async fn native_app_icon(&self, app: NativeAppRef) -> Option<String> {
         self.native_app_icons.data_url(&app).await
     }
-    /// Deletes the project entry and its threads and closes its terminals. Files on disk are left alone.
+    /// Deletes the project entry and its threads, closes its terminals and deletes their saved
+    /// history. Files in the project folder are left alone.
     pub async fn remove_workspace(&self, id: WorkspaceId) -> Result<()> {
         let _guard = self.project_clones.actions.lock().await;
         self.project_clones.discard_locked(&id).await?;
         self.call(|r| Command::RemoveWorkspace(id.clone(), r))
             .await?;
-        self.close_terminals(move |key| key.workspace == id).await
+        self.close_terminals(CloseScope::Workspace(id)).await
     }
     async fn checkout(
         &self,
@@ -1763,11 +1772,13 @@ impl App {
     pub async fn shutdown(&self) -> Result<()> {
         let clones = self.project_clones.shutdown().await;
         self.project_search.invalidate();
-        self.close_terminals(|_| true).await?;
-        let terminals = self.setup_terminals.clone();
-        tokio::task::spawn_blocking(move || terminals.close(|_| true))
-            .await
-            .map_err(|error| AppError::new("terminal", error))?;
+        let (terminals, setup_terminals) = (self.terminals.clone(), self.setup_terminals.clone());
+        tokio::task::spawn_blocking(move || {
+            terminals.shutdown();
+            setup_terminals.shutdown();
+        })
+        .await
+        .map_err(|error| AppError::new("terminal", error))?;
         self.call(Command::Shutdown).await?;
         clones
     }
@@ -1803,7 +1814,7 @@ impl App {
                 .ok_or_else(|| AppError::new("terminal", "The setup terminal did not start."))?;
             terminals.detach(subscription);
             if let Err(error) = terminals.write(&key, typed.as_bytes()) {
-                terminals.close(|candidate| *candidate == key);
+                terminals.close(&CloseScope::Terminal(key));
                 return Err(error);
             }
             Ok(())
@@ -1857,7 +1868,7 @@ impl App {
     pub async fn setup_terminal_close(&self, terminal_id: TerminalId) -> Result<()> {
         let key = Self::setup_terminal_key(terminal_id);
         let terminals = self.setup_terminals.clone();
-        tokio::task::spawn_blocking(move || terminals.close(|candidate| *candidate == key))
+        tokio::task::spawn_blocking(move || terminals.close(&CloseScope::Terminal(key)))
             .await
             .map_err(|error| AppError::new("terminal", error))
     }
@@ -1907,6 +1918,10 @@ impl App {
             .await?
             .ok_or_else(|| AppError::new("terminal", "The terminal did not start."))
     }
+    /// The running command of every terminal outside onboarding setup.
+    pub fn watch_terminal_labels(&self) -> watch::Receiver<TerminalLabels> {
+        self.terminal_labels.clone()
+    }
     /// Stops sending events to a subscription. The shell keeps running.
     pub fn terminal_detach(&self, subscription: u64) {
         self.terminals.detach(subscription);
@@ -1953,7 +1968,8 @@ impl App {
             size,
         )
     }
-    /// Kills the terminal's shell and forgets its history. Closing a missing terminal does nothing.
+    /// Kills the terminal's shell and deletes its history, including the saved file. Closing a
+    /// missing terminal does nothing.
     pub async fn terminal_close(
         &self,
         workspace_id: WorkspaceId,
@@ -1965,14 +1981,11 @@ impl App {
             thread: thread_id,
             terminal: terminal_id,
         };
-        self.close_terminals(move |k| *k == key).await
+        self.close_terminals(CloseScope::Terminal(key)).await
     }
-    async fn close_terminals(
-        &self,
-        matches: impl Fn(&TerminalKey) -> bool + Send + 'static,
-    ) -> Result<()> {
+    async fn close_terminals(&self, scope: CloseScope) -> Result<()> {
         let terminals = self.terminals.clone();
-        tokio::task::spawn_blocking(move || terminals.close(matches))
+        tokio::task::spawn_blocking(move || terminals.close(&scope))
             .await
             .map_err(|e| AppError::new("terminal", e))
     }

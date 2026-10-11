@@ -106,9 +106,14 @@ impl Owner {
                 } else {
                     None
                 };
-            Ok(Some((root, candidate, retention)))
+            Ok(Some((
+                thread.workspace_id.clone(),
+                root,
+                candidate,
+                retention,
+            )))
         })();
-        let (root, candidate, retention) = match plan {
+        let (workspace, root, candidate, retention) = match plan {
             Ok(Some(plan)) => plan,
             Ok(None) => {
                 let _ = reply.send(Ok(DeletedWorktree::NotRequested));
@@ -130,7 +135,10 @@ impl Owner {
         self.deleting.insert(id.clone());
         self.terminals.block_thread(&id);
         let terminals = self.terminals.clone();
-        let worker_id = id.clone();
+        let scope = CloseScope::Thread {
+            workspace,
+            thread: id.clone(),
+        };
         let rules = settings::cleanup_rules(&self.config.data_dir.join("settings.json"));
         let worktrees = self.config.data_dir.join("worktrees");
         let roots = self
@@ -140,7 +148,7 @@ impl Owner {
             .collect::<Vec<_>>();
         self.delete_jobs.spawn(async move {
             let outcome = tokio::task::spawn_blocking(move || {
-                terminals.close(|key| key.thread.as_ref() == Some(&worker_id));
+                terminals.close(&scope);
                 if !delete_worktree && !rules.worktree_on_delete {
                     return DeletedWorktree::NotRequested;
                 }

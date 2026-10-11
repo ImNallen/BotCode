@@ -2,6 +2,7 @@
 #![allow(clippy::disallowed_methods)]
 use bot_core::*;
 use std::{
+    path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
     time::Duration,
@@ -717,5 +718,217 @@ async fn canceled_delete_caller_does_not_release_the_actor_job_or_checkout_hold(
         "missing_thread"
     );
     app.delete_thread(sibling.id).await.unwrap();
+    app.shutdown().await.unwrap();
+}
+
+fn history_file(f: &Fixture, workspace: &WorkspaceId, thread: Option<&ThreadId>) -> PathBuf {
+    f.config
+        .data_dir
+        .join("logs/terminals")
+        .join(workspace.to_string())
+        .join(thread.map_or_else(|| "draft".into(), ToString::to_string))
+        .join("dGVybS0x.log")
+}
+async fn attach(app: &App, workspace: &WorkspaceId, thread: Option<&ThreadId>) -> Events {
+    let events = Events::default();
+    app.terminal_attach(
+        workspace.clone(),
+        thread.cloned(),
+        term("term-1"),
+        80,
+        24,
+        events.sink(),
+    )
+    .await
+    .unwrap();
+    events
+}
+async fn print_marker(
+    app: &App,
+    workspace: &WorkspaceId,
+    thread: Option<&ThreadId>,
+    events: &Events,
+) {
+    write(app, workspace, thread, "echo history-$((6 * 7))\n").await;
+    events.output_containing("history-42\r\n").await;
+}
+async fn after_pumps_finish() {
+    tokio::time::sleep(Duration::from_millis(200)).await;
+}
+async fn saved(path: &Path, needle: &str) {
+    for _ in 0..300 {
+        if std::fs::read_to_string(path).is_ok_and(|text| text.contains(needle)) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{} never saved {needle:?}", path.display());
+}
+
+#[tokio::test]
+async fn history_survives_an_app_restart_as_the_first_snapshot() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let events = attach(&app, &workspace.id, None).await;
+    print_marker(&app, &workspace.id, None, &events).await;
+    app.shutdown().await.unwrap();
+    after_pumps_finish().await;
+    assert!(
+        !events
+            .all()
+            .iter()
+            .any(|event| matches!(event, TerminalEvent::Exited { .. })),
+        "An exit event would make the client close the terminal and delete its history"
+    );
+    let saved = std::fs::read_to_string(history_file(&f, &workspace.id, None)).unwrap();
+    assert!(saved.contains("history-42\r\n"), "{saved:?}");
+
+    let app = App::open(f.config.clone()).await.unwrap();
+    let restored = attach(&app, &workspace.id, None).await;
+    assert_eq!(restored.snapshot(), saved);
+    write(&app, &workspace.id, None, "echo pid=$$\n").await;
+    restored.pid().await;
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn closing_a_terminal_deletes_its_history() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let path = history_file(&f, &workspace.id, None);
+    let events = attach(&app, &workspace.id, None).await;
+    print_marker(&app, &workspace.id, None, &events).await;
+    saved(&path, "history-42").await;
+    app.terminal_close(workspace.id.clone(), None, term("term-1"))
+        .await
+        .unwrap();
+    assert!(!path.exists());
+
+    let fresh = attach(&app, &workspace.id, None).await;
+    assert_eq!(fresh.snapshot(), "");
+    app.shutdown().await.unwrap();
+    assert!(
+        !std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .contains("history-42"),
+        "The closed shell's output never returns"
+    );
+}
+
+#[tokio::test]
+async fn shell_exit_deletes_history() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let path = history_file(&f, &workspace.id, None);
+    let events = attach(&app, &workspace.id, None).await;
+    print_marker(&app, &workspace.id, None, &events).await;
+    saved(&path, "history-42").await;
+    write(&app, &workspace.id, None, "exit\n").await;
+    events
+        .until("exit", |events| {
+            events.last() == Some(&TerminalEvent::Exited { exit_code: Some(0) })
+        })
+        .await;
+    assert!(!path.exists());
+    app.shutdown().await.unwrap();
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn graceful_shutdown_keeps_files_but_close_does_not() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let path = history_file(&f, &workspace.id, None);
+    let events = attach(&app, &workspace.id, None).await;
+    print_marker(&app, &workspace.id, None, &events).await;
+    app.shutdown().await.unwrap();
+    after_pumps_finish().await;
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("history-42")
+    );
+
+    let app = App::open(f.config.clone()).await.unwrap();
+    app.terminal_close(workspace.id.clone(), None, term("term-1"))
+        .await
+        .unwrap();
+    assert!(
+        !path.exists(),
+        "Closing deletes history the terminal has not restored yet"
+    );
+    app.shutdown().await.unwrap();
+
+    let app = App::open(f.config.clone()).await.unwrap();
+    assert_eq!(attach(&app, &workspace.id, None).await.snapshot(), "");
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn deleting_a_thread_removes_history_that_never_reattached() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let mut threads = vec![];
+    for _ in 0..2 {
+        let thread = app
+            .create_thread(workspace.id.clone(), NewCheckout::Local)
+            .await
+            .unwrap();
+        threads.push(thread.id);
+    }
+    let [deleted, kept] = [&threads[0], &threads[1]];
+    for thread in [Some(deleted), Some(kept), None] {
+        let events = attach(&app, &workspace.id, thread).await;
+        print_marker(&app, &workspace.id, thread, &events).await;
+    }
+    app.shutdown().await.unwrap();
+    let paths =
+        [Some(deleted), Some(kept), None].map(|thread| history_file(&f, &workspace.id, thread));
+    assert!(paths.iter().all(|path| path.exists()));
+
+    let app = App::open(f.config.clone()).await.unwrap();
+    app.delete_thread(deleted.clone()).await.unwrap();
+    assert!(!paths[0].parent().unwrap().exists());
+    assert!(paths[1].exists());
+    assert!(paths[2].exists());
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn removing_a_workspace_removes_its_history_directory() {
+    let f = Fixture::new();
+    let other = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let removed = app.open_workspace(f.repository.clone()).await.unwrap();
+    let kept = app.open_workspace(other.repository.clone()).await.unwrap();
+    let thread = app
+        .create_thread(removed.id.clone(), NewCheckout::Local)
+        .await
+        .unwrap();
+    for (workspace, thread) in [
+        (&removed.id, Some(&thread.id)),
+        (&removed.id, None),
+        (&kept.id, None),
+    ] {
+        let events = attach(&app, workspace, thread).await;
+        print_marker(&app, workspace, thread, &events).await;
+    }
+    app.shutdown().await.unwrap();
+    let removed_dir = f
+        .config
+        .data_dir
+        .join("logs/terminals")
+        .join(removed.id.to_string());
+    assert!(history_file(&f, &removed.id, Some(&thread.id)).exists());
+
+    let app = App::open(f.config.clone()).await.unwrap();
+    app.remove_workspace(removed.id.clone()).await.unwrap();
+    assert!(!removed_dir.exists());
+    assert!(history_file(&f, &kept.id, None).exists());
     app.shutdown().await.unwrap();
 }

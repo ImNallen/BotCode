@@ -34,6 +34,9 @@ import { serial } from "../lib/serial";
 import { useShortcutLabel } from "../lib/shortcuts";
 import { PanelTabCloseButton } from "../panel/chrome";
 import { isTerminalUrl } from "../terminal-links";
+import { openLink } from "../preview/linkTarget";
+import { scopeForPreview } from "../preview/model";
+import { usePreferences } from "../settings/preferences";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { type GhosttyColor, type GhosttyTheme } from "./ghostty/core";
@@ -66,14 +69,15 @@ import {
   splitPanelTerminal,
   splitTerminal,
   terminalScopeKey,
-  toggleTerminalOpen,
   type TerminalPanelSurface,
   type TerminalSurfaceId,
   type ThreadTerminalGroup,
   type ThreadTerminalUiState,
 } from "./terminalState";
 import { updateTerminalState, useTerminalState } from "./terminalStore";
+import { readTerminalLabel, useTerminalLabelFor } from "./terminalLabels";
 import { buildTerminalContext } from "./terminalContext";
+import { drawerShouldHandle } from "./mountedDrawers";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -308,6 +312,18 @@ export function TerminalViewport({
     const link = fileLinks?.resolve(text, "code");
     if (link?.kind === "workspace") fileLinks?.openInPanel(link.path);
   });
+  const { preferences } = usePreferences();
+  const openTerminalLink = useEffectEvent((url: string, event: MouseEvent) =>
+    openLink({
+      url,
+      event,
+      preference: preferences.browserLinkTarget,
+      scope:
+        owner === "workspace" && workspaceId
+          ? scopeForPreview(workspaceId, threadId ?? undefined)
+          : null,
+    }),
+  );
   const showMenu = useEffectEvent((next: TerminalMenu | null) => setMenu(next));
   const dismissSelectionMenu = useEffectEvent(() =>
     setMenu((current) => (current?.kind === "selection" ? null : current)),
@@ -389,7 +405,7 @@ export function TerminalViewport({
           ),
         onSelectionChange: () => handleSelectionChange(),
         beforeKey: (event) => handleBeforeKey(event),
-        onLinkActivate: (text) => handleLinkActivate(text),
+        onLinkActivate: (text, event) => handleLinkActivate(text, event),
         onContextMenu: (event) => showContextMenu(event),
       });
       if (cancelled) {
@@ -436,7 +452,12 @@ export function TerminalViewport({
         const context = buildTerminalContext({
           contextId: crypto.randomUUID(),
           terminalId,
-          terminalLabel: getTerminalLabel(terminalId),
+          terminalLabel: workspaceId
+            ? readTerminalLabel(
+                terminalScopeKey(workspaceId, threadId),
+                terminalId,
+              )
+            : getTerminalLabel(terminalId),
           position,
           text: selection,
         });
@@ -529,11 +550,11 @@ export function TerminalViewport({
         );
       }
 
-      function handleLinkActivate(text: string): void {
+      function handleLinkActivate(text: string, event: MouseEvent): void {
         const latestTerminal = terminalRef.current;
         if (!latestTerminal) return;
         if (isTerminalUrl(text)) {
-          void ipc.openUrl(text).catch((error: unknown) => {
+          void openTerminalLink(text, event).catch((error: unknown) => {
             writeSystemMessage(
               latestTerminal,
               errorMessage(error, "Unable to open link"),
@@ -569,7 +590,7 @@ export function TerminalViewport({
 
       const fitTimer = window.setTimeout(() => {
         const activeTerminal = terminalRef.current;
-        if (!activeTerminal) return;
+        if (!activeTerminal || !visibleRef.current) return;
         const wasAtBottom = activeTerminal.isAtBottom();
         activeTerminal.fit();
         if (wasAtBottom) {
@@ -782,6 +803,9 @@ function ThreadTerminalDrawer({
   onCloseTerminal,
   onHeightChange,
 }: ThreadTerminalDrawerProps) {
+  const terminalLabelFor = useTerminalLabelFor(
+    terminalScopeKey(workspaceId, threadId),
+  );
   const terminalSplitShortcut = useShortcutLabel("terminal.split");
   const terminalSplitVerticalShortcut = useShortcutLabel(
     "terminal.splitVertical",
@@ -1201,7 +1225,7 @@ function ThreadTerminalDrawer({
                       <div className="flex flex-col gap-0.5">
                         {terminalGroup.terminalIds.map((terminalId) => {
                           const isActive = terminalId === activeTerminalId;
-                          const terminalLabel = getTerminalLabel(terminalId);
+                          const terminalLabel = terminalLabelFor(terminalId);
                           const closeTerminalLabel = `Close ${terminalLabel}${
                             isActive && terminalCloseShortcut
                               ? ` (${terminalCloseShortcut})`
@@ -1255,19 +1279,19 @@ function ThreadTerminalDrawer({
 export function PersistentThreadTerminalDrawer({
   workspaceId,
   threadId,
+  active,
   fontSize,
   fileLinks,
-  onClosed,
 }: {
   workspaceId: string;
   threadId: string | null;
+  active: boolean;
   fontSize: number;
   fileLinks: FileLinks | undefined;
-  onClosed: () => void;
 }) {
   const scopeKey = terminalScopeKey(workspaceId, threadId);
   const terminalUiState = useTerminalState(scopeKey);
-  const visible = terminalUiState.terminalOpen;
+  const visible = active && terminalUiState.terminalOpen;
   const rootRef = useRef<HTMLDivElement>(null);
   const [localFocusRequestId, setLocalFocusRequestId] = useState(0);
   const update = useCallback(
@@ -1276,19 +1300,6 @@ export function PersistentThreadTerminalDrawer({
     [scopeKey],
   );
   const bumpFocusRequestId = () => setLocalFocusRequestId((value) => value + 1);
-
-  const wasOpen = useRef(false);
-  const handleClosed = useEffectEvent(onClosed);
-  useEffect(() => {
-    const previous = wasOpen.current;
-    wasOpen.current = visible;
-    if (!previous && visible) {
-      setLocalFocusRequestId((value) => value + 1);
-    } else if (previous && !visible) {
-      const frame = window.requestAnimationFrame(() => handleClosed());
-      return () => window.cancelAnimationFrame(frame);
-    }
-  }, [visible]);
 
   const splitTerminalIn = (direction: "horizontal" | "vertical") => {
     update((state) =>
@@ -1310,7 +1321,7 @@ export function PersistentThreadTerminalDrawer({
     bumpFocusRequestId();
   };
   const requestCloseTerminal = (terminalId: string) => {
-    void confirmTerminalClose([getTerminalLabel(terminalId)]).then(
+    void confirmTerminalClose([readTerminalLabel(scopeKey, terminalId)]).then(
       (confirmed) => {
         if (confirmed) removeTerminal(terminalId);
       },
@@ -1333,6 +1344,7 @@ export function PersistentThreadTerminalDrawer({
     if (command === null || rootRef.current?.closest("[inert]")) return;
     // A held or repeated close must not fall through to the window's own Close.
     if (
+      active &&
       command === "terminal.close" &&
       (event.repeat || isTerminalCloseConfirmPending())
     ) {
@@ -1340,15 +1352,16 @@ export function PersistentThreadTerminalDrawer({
       event.stopPropagation();
       return;
     }
-    const focusOwner = getTerminalFocusOwner();
-    if (command !== "terminal.toggle" && focusOwner !== "drawer") return;
-    if (event.defaultPrevented && focusOwner === null) return;
+    if (
+      !drawerShouldHandle(command, {
+        active,
+        focused: rootRef.current?.contains(document.activeElement) === true,
+      })
+    )
+      return;
     event.preventDefault();
     event.stopPropagation();
     switch (command) {
-      case "terminal.toggle":
-        update(toggleTerminalOpen);
-        return;
       case "terminal.split":
         splitTerminalIn("horizontal");
         return;
@@ -1374,12 +1387,15 @@ export function PersistentThreadTerminalDrawer({
       ref={rootRef}
       className={cn(
         "grid shrink-0 overflow-clip",
-        visible ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
-        "[[data-panel-animations=true]_&]:transition-[grid-template-rows] [[data-panel-animations=true]_&]:duration-(--panel-animation-duration) [[data-panel-animations=true]_&]:ease-out",
-        visible && "[[data-panel-animations=true]_&]:starting:grid-rows-[0fr]!",
+        active ? (visible ? "grid-rows-[1fr]" : "grid-rows-[0fr]") : "hidden",
+        active &&
+          "[[data-panel-animations=true]_&]:transition-[grid-template-rows] [[data-panel-animations=true]_&]:duration-(--panel-animation-duration) [[data-panel-animations=true]_&]:ease-out",
+        active &&
+          visible &&
+          "[[data-panel-animations=true]_&]:starting:grid-rows-[0fr]!",
       )}
     >
-      <div className="min-h-0 overflow-clip" inert={!visible}>
+      <div className="min-h-0 overflow-clip">
         <ThreadTerminalDrawer
           workspaceId={workspaceId}
           threadId={threadId}
@@ -1447,7 +1463,7 @@ export function PersistentThreadTerminalPanel({
     update((state) => closePanelTerminal(state, terminalId));
   };
   const requestCloseTerminal = (terminalId: string) => {
-    void confirmTerminalClose([getTerminalLabel(terminalId)]).then(
+    void confirmTerminalClose([readTerminalLabel(scopeKey, terminalId)]).then(
       (confirmed) => {
         if (confirmed) removeTerminal(terminalId);
       },
@@ -1541,10 +1557,11 @@ export function requestClosePanelSurface(
   threadId: string | null,
   surface: TerminalPanelSurface,
 ): void {
+  const scopeKey = terminalScopeKey(workspaceId, threadId);
   const labels = [
     surface.activeTerminalId,
     ...surface.terminalIds.filter((id) => id !== surface.activeTerminalId),
-  ].map(getTerminalLabel);
+  ].map((terminalId) => readTerminalLabel(scopeKey, terminalId));
   const [first, ...rest] = labels;
   if (first === undefined) return;
   void confirmTerminalClose([first, ...rest]).then((confirmed) => {
@@ -1552,7 +1569,7 @@ export function requestClosePanelSurface(
     for (const terminalId of surface.terminalIds) {
       killTerminal({ workspaceId, threadId, terminalId });
     }
-    updateTerminalState(terminalScopeKey(workspaceId, threadId), (state) =>
+    updateTerminalState(scopeKey, (state) =>
       closePanelSurface(state, surface.id),
     );
   });

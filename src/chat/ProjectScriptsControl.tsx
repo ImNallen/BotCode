@@ -8,12 +8,15 @@ import {
 import { useEffect, useState } from "react";
 import type { ProjectScript } from "../ipc";
 import { Button } from "../ui/controls";
+import { cn } from "../lib/cn";
 import {
   Menu,
   MenuItem,
+  MenuItemLabel,
   MenuGroupLabel,
   MenuSeparator,
   MenuShortcut,
+  MenuSub,
 } from "../ui/menu";
 import {
   commandShortcutLabel,
@@ -34,14 +37,19 @@ import {
   type ProjectScriptEditorRequest,
 } from "../settings/projectActions";
 import { useProjectActions } from "../settings/useProjectActions";
+import type { HeaderActionsPresentation } from "./ChatHeaderActions";
 export function ProjectScriptsControl({
   workspaceId,
   scripts,
   onRun,
+  presentation = "toolbar",
+  onRequestMenuClose,
 }: {
   workspaceId: string;
   scripts: readonly ProjectScript[];
   onRun: (script: ProjectScript) => void;
+  presentation?: HeaderActionsPresentation;
+  onRequestMenuClose?: () => void;
 }) {
   const bindings = useKeybindings();
   const { file, saving, submit, persist } = useProjectActions(workspaceId);
@@ -49,6 +57,12 @@ export function ProjectScriptsControl({
     null,
   );
   const [open, setOpen] = useState(false);
+  const [openPresentation, setOpenPresentation] = useState(presentation);
+  if (openPresentation !== presentation) {
+    setOpenPresentation(presentation);
+    setOpen(false);
+  }
+  const density = presentation === "menu" ? "touch" : "default";
   const [error, setError] = useState<string>();
   const primary = primaryProjectScript(scripts);
   const scriptCommands = scripts
@@ -59,6 +73,7 @@ export function ProjectScriptsControl({
     setRequest({ scriptId: null, initial: EMPTY_PROJECT_SCRIPT_INPUT });
   };
   const edit = (script: ProjectScript) => {
+    onRequestMenuClose?.();
     setOpen(false);
     setRequest({
       scriptId: script.id,
@@ -112,151 +127,199 @@ export function ProjectScriptsControl({
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
   }, [scripts, onRun, request]);
-  return (
+  const scriptItems = (
     <>
-      <div className="flex shrink-0 items-center" aria-label="Project scripts">
-        {primary ? (
-          <Button
-            size="xs"
-            variant="outline"
-            className="w-7 sm:w-6 @3xl/header-actions:w-auto!"
-            aria-label={`Run ${primary.name}`}
-            title={`Run ${primary.name}`}
-            onClick={() => onRun(primary)}
+      {scripts.map((script) => (
+        <div key={script.id} className="group relative flex items-center">
+          <MenuItem
+            density={density}
+            className="pr-9"
+            onClick={() => {
+              setOpen(false);
+              onRun(script);
+            }}
           >
-            <ScriptIcon icon={primary.icon} />
-            <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
-              {primary.name}
+            <ScriptIcon icon={script.icon} className="size-4" />
+            <MenuItemLabel>
+              {script.runOnWorktreeCreate
+                ? `${script.name} (setup)`
+                : script.name}
+            </MenuItemLabel>
+            <span className="relative ms-auto flex h-6 min-w-6 items-center justify-end">
+              {presentation === "menu" ? (
+                <MenuShortcut className="ms-0">
+                  {commandShortcutLabel(commandForProjectScript(script.id))}
+                </MenuShortcut>
+              ) : (
+                <span className="transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0">
+                  <MenuShortcut className="ms-0">
+                    {commandShortcutLabel(commandForProjectScript(script.id))}
+                  </MenuShortcut>
+                </span>
+              )}
             </span>
-          </Button>
-        ) : null}
-        {primary || importable.length ? (
-          <Menu
-            open={open}
-            onOpenChange={setOpen}
-            align="end"
-            trigger={(props) => (
-              <Button
-                {...props}
-                size={primary ? "icon-xs" : "xs"}
-                variant="outline"
-                aria-label={primary ? "Script actions" : "Project actions"}
-              >
-                {primary ? (
-                  <ChevronDownIcon className="size-4" />
-                ) : (
-                  <>
-                    <PlusIcon className="size-3.5" />
-                    <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
-                      Add action
-                    </span>
-                    <ChevronDownIcon className="size-3.5" />
-                  </>
-                )}
-              </Button>
+          </MenuItem>
+          <span
+            className={cn(
+              "absolute right-1 top-1/2 flex -translate-y-1/2",
+              presentation !== "menu" &&
+                "opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto",
             )}
           >
-            {scripts.map((script) => (
-              <div key={script.id} className="group relative flex items-center">
-                <MenuItem
-                  className="pr-9"
-                  onClick={() => {
-                    setOpen(false);
-                    onRun(script);
-                  }}
-                >
-                  <ScriptIcon icon={script.icon} className="size-4" />
-                  <span>
-                    {script.runOnWorktreeCreate
-                      ? `${script.name} (setup)`
-                      : script.name}
-                  </span>
-                  <span className="relative ms-auto flex h-6 min-w-6 items-center justify-end">
-                    <span className="transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0">
-                      <MenuShortcut className="ms-0">
-                        {commandShortcutLabel(
-                          commandForProjectScript(script.id),
-                        )}
-                      </MenuShortcut>
-                    </span>
-                  </span>
-                </MenuItem>
-                <span className="absolute right-1 top-1/2 flex -translate-y-1/2 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-visible:opacity-100 group-focus-visible:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    className="size-6"
-                    aria-label={`Edit ${script.name}`}
-                    disabled={saving}
-                    onPointerDown={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                    }}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      edit(script);
-                    }}
-                  >
-                    <SettingsIcon className="size-3.5" />
-                  </Button>
-                </span>
-              </div>
-            ))}
-            {importable.length ? (
-              <>
-                {primary ? <MenuSeparator /> : null}
-                <MenuGroupLabel>From t3.json</MenuGroupLabel>
-                {importable.map((script) => (
-                  <MenuItem
-                    key={script.id}
-                    disabled={saving}
-                    onClick={() => {
-                      setOpen(false);
-                      const initial = scriptEditorInput(script, null);
-                      void submit(null, initial).catch((cause) =>
-                        setRequest({
-                          scriptId: null,
-                          initial,
-                          error:
-                            cause instanceof Error
-                              ? cause.message
-                              : "Failed to import action.",
-                        }),
-                      );
-                    }}
-                  >
-                    <ScriptIcon icon={script.icon} className="size-4" />
-                    <span>{script.name}</span>
-                    <MenuShortcut>
-                      <DownloadIcon className="size-3.5" aria-label="Import" />
-                    </MenuShortcut>
-                  </MenuItem>
-                ))}
-              </>
-            ) : null}
-            <MenuItem disabled={saving} onClick={add}>
-              <PlusIcon className="size-4" />
-              Add action
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="size-6"
+              aria-label={`Edit ${script.name}`}
+              disabled={saving}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                edit(script);
+              }}
+            >
+              <SettingsIcon className="size-3.5" />
+            </Button>
+          </span>
+        </div>
+      ))}
+      {importable.length ? (
+        <>
+          {primary ? <MenuSeparator /> : null}
+          <MenuGroupLabel>From t3.json</MenuGroupLabel>
+          {importable.map((script) => (
+            <MenuItem
+              density={density}
+              key={script.id}
+              disabled={saving}
+              onClick={() => {
+                setOpen(false);
+                const initial = scriptEditorInput(script, null);
+                void submit(null, initial).catch((cause) =>
+                  setRequest({
+                    scriptId: null,
+                    initial,
+                    error:
+                      cause instanceof Error
+                        ? cause.message
+                        : "Failed to import action.",
+                  }),
+                );
+              }}
+            >
+              <ScriptIcon icon={script.icon} className="size-4" />
+              <MenuItemLabel>{script.name}</MenuItemLabel>
+              <MenuShortcut>
+                <DownloadIcon className="size-3.5" aria-label="Import" />
+              </MenuShortcut>
             </MenuItem>
-          </Menu>
-        ) : (
-          <Button
-            size="xs"
-            variant="outline"
-            className="w-7 sm:w-6 @3xl/header-actions:w-auto!"
-            aria-label="Add action"
-            title="Add action"
-            onClick={add}
-          >
-            <PlusIcon className="size-3.5" />
-            <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
-              Add action
-            </span>
-          </Button>
-        )}
-      </div>
+          ))}
+        </>
+      ) : null}
+      <MenuItem density={density} disabled={saving} onClick={add}>
+        <PlusIcon className="size-4" />
+        <MenuItemLabel>Add action</MenuItemLabel>
+      </MenuItem>
+    </>
+  );
+  return (
+    <>
+      {presentation === "menu" ? (
+        <>
+          {primary ? (
+            <MenuItem density="touch" onClick={() => onRun(primary)}>
+              <ScriptIcon icon={primary.icon} className="size-4" />
+              <MenuItemLabel>Run {primary.name}</MenuItemLabel>
+              <MenuShortcut>
+                {commandShortcutLabel(commandForProjectScript(primary.id))}
+              </MenuShortcut>
+            </MenuItem>
+          ) : null}
+          {primary || importable.length ? (
+            <MenuSub
+              density="touch"
+              icon={<ScriptIcon icon="play" className="size-4" />}
+              label={<MenuItemLabel>Project actions</MenuItemLabel>}
+            >
+              {scriptItems}
+            </MenuSub>
+          ) : (
+            <MenuItem density="touch" onClick={add}>
+              <PlusIcon className="size-4" />
+              <MenuItemLabel>Add project action…</MenuItemLabel>
+            </MenuItem>
+          )}
+        </>
+      ) : (
+        <div
+          className="flex shrink-0 items-center"
+          aria-label="Project scripts"
+        >
+          {primary ? (
+            <Button
+              size="xs"
+              variant="outline"
+              className="w-7 sm:w-6 @3xl/header-actions:w-auto!"
+              aria-label={`Run ${primary.name}`}
+              title={`Run ${primary.name}`}
+              onClick={() => onRun(primary)}
+            >
+              <ScriptIcon icon={primary.icon} />
+              <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
+                {primary.name}
+              </span>
+            </Button>
+          ) : null}
+          {primary || importable.length ? (
+            <Menu
+              open={open}
+              onOpenChange={setOpen}
+              align="end"
+              trigger={(props) => (
+                <Button
+                  {...props}
+                  size={primary ? "icon-xs" : "xs"}
+                  variant="outline"
+                  aria-label={primary ? "Script actions" : "Project actions"}
+                >
+                  {primary ? (
+                    <ChevronDownIcon className="size-4" />
+                  ) : (
+                    <>
+                      <PlusIcon className="size-3.5" />
+                      <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
+                        Add action
+                      </span>
+                      <ChevronDownIcon className="size-3.5" />
+                    </>
+                  )}
+                </Button>
+              )}
+            >
+              {scriptItems}
+            </Menu>
+          ) : (
+            <Button
+              size="xs"
+              variant="outline"
+              className="w-7 sm:w-6 @3xl/header-actions:w-auto!"
+              aria-label="Add action"
+              title="Add action"
+              onClick={add}
+            >
+              <PlusIcon className="size-3.5" />
+              <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
+                Add action
+              </span>
+            </Button>
+          )}
+        </div>
+      )}
       {error ? (
         <span role="alert" className="text-xs text-destructive">
           {error}
