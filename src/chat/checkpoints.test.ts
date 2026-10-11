@@ -48,6 +48,7 @@ function fixture(): Thread {
     diagnostic: null,
     pendingRevert: null,
     lastRevert: null,
+    subagents: [],
     turns: ids.map((id, index) => ({
       id,
       kind: "prompt" as const,

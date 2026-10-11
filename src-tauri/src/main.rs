@@ -113,6 +113,7 @@ fn main() {
                 ipc::rename_workspace,
                 ipc::update_project_icon,
                 ipc::project_favicon,
+                ipc::native_app_icon,
                 ipc::remove_workspace,
                 ipc::scratch_available,
                 ipc::ensure_scratch,

@@ -303,6 +303,7 @@ mod tests {
             context: None,
             pending_revert: None,
             last_revert: None,
+            subagents: Default::default(),
         }
     }
 

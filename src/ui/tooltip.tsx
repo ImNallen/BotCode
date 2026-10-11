@@ -14,11 +14,13 @@ import { createPortal } from "react-dom";
 export function Tooltip({
   children,
   content,
+  side = "top",
 }: {
   children: ReactElement<
     ButtonHTMLAttributes<HTMLButtonElement> & { "data-slot"?: string }
   >;
   content: string;
+  side?: "top" | "bottom";
 }) {
   const id = useId();
   const anchor = useRef<HTMLButtonElement>(null);
@@ -40,7 +42,12 @@ export function Tooltip({
           ),
         ),
         top:
-          rect.top - height - 4 >= 8 ? rect.top - height - 4 : rect.bottom + 4,
+          side === "bottom" &&
+          rect.bottom + 4 + height <= window.innerHeight - 8
+            ? rect.bottom + 4
+            : rect.top - height - 4 >= 8
+              ? rect.top - height - 4
+              : rect.bottom + 4,
       });
     };
     place();
@@ -50,7 +57,7 @@ export function Tooltip({
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open]);
+  }, [open, side]);
   return (
     <>
       {cloneElement(children, {

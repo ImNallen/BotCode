@@ -37,6 +37,7 @@ function fixture(): Thread {
     diagnostic: null,
     pendingRevert: null,
     lastRevert: null,
+    subagents: [],
     context: null,
     turns: [
       {

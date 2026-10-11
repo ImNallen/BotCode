@@ -955,8 +955,10 @@ fn legacy_snapshots_default_settings() {
         context: None,
         pending_revert: None,
         last_revert: None,
+        subagents: Default::default(),
     };
     let mut value = serde_json::to_value(thread).unwrap();
+    value.as_object_mut().unwrap().remove("subagents");
     value.as_object_mut().unwrap().remove("placement");
     value.as_object_mut().unwrap().remove("settings");
     value.as_object_mut().unwrap().remove("checkout");
@@ -969,6 +971,7 @@ fn legacy_snapshots_default_settings() {
     assert_eq!(restored.checkout, Checkout::Local);
     assert!(restored.turns[0].settings.is_none());
     assert_eq!(restored.placement, Placement::Auto);
+    assert!(restored.subagents.agents().is_empty());
 }
 #[tokio::test]
 async fn provider_loss_invalidates_catalog_and_reloads_on_request() {
@@ -2326,6 +2329,7 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
         context: None,
         pending_revert: None,
         last_revert: None,
+        subagents: Default::default(),
     }
 }
 #[test]
@@ -5915,6 +5919,8 @@ async fn native_codex_items_stream_into_typed_timeline_items() {
                 result: None,
                 error: None,
                 duration_ms: None,
+                app_context: None,
+                presentation: None,
             },
             Item::Reasoning {
                 id: "rs_0612991cf91e8829016ac65f87221c87d2beaa39e7ea874690".into(),
@@ -5937,7 +5943,7 @@ async fn native_codex_items_stream_into_typed_timeline_items() {
             {"kind": "mcp_tool_call", "id": "exec-0e668882-3b63-455d-8185-6ddafa10e7cd",
              "server": "node_repl", "tool": "js", "title": "Evaluate 6 × 7", "status": "completed",
              "arguments": {"code": "nodeRepl.write(6*7)", "title": "Evaluate 6 × 7"},
-             "result": "42", "error": null, "durationMs": 56},
+             "result": "42", "error": null, "durationMs": 56, "appContext": null, "presentation": null},
             {"kind": "reasoning", "id": "rs_0612991cf91e8829016ac65f87221c87d2beaa39e7ea874690",
              "text": "**Calculating a math expression**\n\nI need to compute floor(999/3).\n\nThen add 333.",
              "complete": true},
@@ -5957,10 +5963,38 @@ async fn native_codex_items_stream_into_typed_timeline_items() {
             {"kind": "function_call_output", "id": "output-1", "name": "shell"},
             {"kind": "mcp_tool_call", "id": "computer-1", "server": "computer-use", "tool": "click",
              "title": "Clicked in Safari", "status": "completed", "arguments": {"app": "  Safari "},
-             "result": "clicked\ndone", "error": null, "durationMs": 9},
+             "result": "clicked\ndone", "error": null, "durationMs": 9,
+             "appContext": {"connectorId": "computer-use", "linkId": null, "resourceUri": null,
+                            "appName": "Safari", "actionName": "click"},
+             "presentation": null},
             {"kind": "mcp_tool_call", "id": "github-1", "server": "github", "tool": "search_issues",
              "title": "github · search_issues", "status": "failed", "arguments": {},
-             "result": null, "error": "rate limited", "durationMs": null}
+             "result": null, "error": "rate limited", "durationMs": null, "appContext": null,
+             "presentation": null},
+            {"kind": "mcp_tool_call", "id": "call_8fe2acb4d20b46c9a6e59dd236c01a8e",
+             "server": "cua_repl", "tool": "js", "title": "Inspect isolated baseline Tauri app",
+             "status": "completed",
+             "arguments": {"code": "var verifyApp = await cua.getApp('dev.bot.code.previewverify');",
+                           "title": "Inspect isolated baseline Tauri app"},
+             "result": "Bot Code window", "error": null, "durationMs": 752, "appContext": null,
+             "presentation": {
+                 "surface": "computer",
+                 "source": {"key": "native-app:dev.bot.code.previewverify", "name": "Computer Use",
+                            "kind": "computer",
+                            "icon": {"kind": "native_app",
+                                     "app": {"kind": "app_id", "appId": "dev.bot.code.previewverify"}}},
+                 "icon": {"kind": "native_app",
+                          "app": {"kind": "app_id", "appId": "dev.bot.code.previewverify"}}}},
+            {"kind": "mcp_tool_call", "id": "call_68e27098b8664ebc84094ce65f81406d",
+             "server": "cua_repl", "tool": "js", "title": "Open shared logo link",
+             "status": "completed", "arguments": {"title": "Open shared logo link"},
+             "result": "Opened tab", "error": null, "durationMs": 7290, "appContext": null,
+             "presentation": {
+                 "surface": "browser",
+                 "source": {"key": "browser-use:browser", "name": "Browser", "kind": "browser",
+                            "icon": null},
+                 "icon": {"kind": "website", "pageUrl": "https://chatgpt.com/", "faviconUrl": null,
+                          "faviconUrlDark": null}}}
         ])
     );
     app.shutdown().await.unwrap();
@@ -5970,6 +6004,50 @@ async fn native_codex_items_stream_into_typed_timeline_items() {
         work_items(&restored.turns[0]),
         work_items(&finished.turns[0])
     );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn image_view_route_serves_only_images_the_thread_viewed() {
+    let f = Fixture::new();
+    let png = b"\x89PNG\r\n\x1a\nviewed";
+    let peer_dir = f.peer.parent().unwrap();
+    std::fs::write(peer_dir.join("viewed.png"), png).unwrap();
+    std::fs::write(peer_dir.join("notes.txt"), "not an image").unwrap();
+    std::fs::write(peer_dir.join("unviewed.png"), png).unwrap();
+    std::fs::write(f.repository.join("shot.png"), b"\x89PNG\r\n\x1a\nshot").unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(
+        thread.id.clone(),
+        "image-view".into(),
+        "image-view".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    wait(&app, &thread.id, |t| {
+        matches!(t.turns[0].execution, Execution::Completed)
+    })
+    .await;
+    let serve = |item: &str| {
+        let app = app.clone();
+        let path = format!("/image-view/{}/{item}", thread.id);
+        async move { app.serve_workspace_file(&path, None, false).await }
+    };
+    let absolute = serve("view-absolute").await;
+    assert_eq!(absolute.status, 200);
+    assert_eq!(absolute.body, png);
+    assert!(
+        absolute
+            .headers
+            .contains(&("Content-Type", "image/png".to_owned()))
+    );
+    let relative = serve("view-relative").await;
+    assert_eq!(relative.status, 200);
+    assert_eq!(relative.body, b"\x89PNG\r\n\x1a\nshot");
+    assert_eq!(serve("view-text").await.status, 404);
+    assert_eq!(serve("unviewed").await.status, 404);
     app.shutdown().await.unwrap();
 }
 
@@ -8616,4 +8694,272 @@ async fn unsettle_return_clock_survives_reopen_without_changing_user_activity() 
         un_settled.latest_user_activity_at_ms
     );
     reopened.shutdown().await.unwrap();
+}
+
+const README_AGENT: &str = "01a12bf5-6c87-7ed2-aaa6-4ac423444cb8";
+const BRANCH_AGENT: &str = "01a12bf5-7881-7cc1-82a6-8daf66d5a04c";
+fn capture_subagents(f: &Fixture, stop_after: Option<usize>) {
+    std::fs::write(
+        peer_file(f, "subagents.jsonl"),
+        include_str!("fixtures/codex_subagents.jsonl"),
+    )
+    .unwrap();
+    if let Some(frames) = stop_after {
+        std::fs::write(peer_file(f, "subagents_frame_limit"), frames.to_string()).unwrap();
+    }
+}
+type AgentRow<'a> = (
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<&'a str>,
+    Option<&'a str>,
+    SubagentStatus,
+    u32,
+    Option<u64>,
+    Option<&'a str>,
+    &'a TurnId,
+);
+fn agent_rows(thread: &ThreadSnapshot) -> Vec<AgentRow<'_>> {
+    thread
+        .subagents
+        .agents()
+        .iter()
+        .map(|a| {
+            (
+                a.id.as_str(),
+                a.title.as_str(),
+                a.role.as_str(),
+                a.model.as_deref(),
+                a.effort.as_deref(),
+                a.status,
+                a.activation_count,
+                a.total_tokens,
+                a.progress.as_deref(),
+                &a.spawn_turn_id,
+            )
+        })
+        .collect()
+}
+fn statuses(thread: &ThreadSnapshot) -> Vec<SubagentStatus> {
+    thread.subagents.agents().iter().map(|a| a.status).collect()
+}
+async fn run_turn(app: &App, id: &ThreadId, prompt: &str) -> ThreadSnapshot {
+    let before = app.thread(id.clone()).await.unwrap().turns.len();
+    app.submit(id.clone(), format!("{id}-{before}"), prompt.into(), vec![])
+        .await
+        .unwrap();
+    wait(app, id, |t| {
+        t.turns.len() == before + 1 && matches!(t.turns[before].execution, Execution::Completed)
+    })
+    .await
+}
+#[tokio::test]
+async fn codex_subagent_capture_folds_into_the_owning_thread_roster() {
+    let f = Fixture::new();
+    capture_subagents(&f, None);
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let done = run_turn(&app, &thread.id, "subagents").await;
+    let spawn = &done.turns[0].id;
+    assert_eq!(
+        agent_rows(&done),
+        vec![
+            (
+                README_AGENT,
+                "readme_lines",
+                "readme_lines",
+                Some("gpt-6.1-sol"),
+                Some("low"),
+                SubagentStatus::Idle,
+                1,
+                Some(41720),
+                Some("assistant message"),
+                spawn,
+            ),
+            (
+                BRANCH_AGENT,
+                "git_branch",
+                "git_branch",
+                Some("gpt-6.1-sol"),
+                Some("low"),
+                SubagentStatus::Idle,
+                1,
+                Some(41703),
+                Some("assistant message"),
+                spawn,
+            ),
+        ]
+    );
+    assert!(
+        done.subagents
+            .agents()
+            .iter()
+            .all(|a| a.completed_at_ms.is_none())
+    );
+    let parent_items = serde_json::to_string(&done.turns[0].items).unwrap();
+    for child_output in ["wc -l README.md", "README.md: 1 line.", "\"main\""] {
+        assert!(
+            !parent_items.contains(child_output),
+            "child item {child_output} leaked into the parent turn"
+        );
+    }
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    let restored = app.thread(thread.id.clone()).await.unwrap();
+    assert_eq!(
+        restored.subagents, done.subagents,
+        "idle children stay idle"
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn threads_saved_before_the_roster_rebuild_it_once_from_their_activity_items() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    let ran = run_turn(&app, &thread.id, "hello").await;
+    app.shutdown().await.unwrap();
+    let turn = &ran.turns[0];
+    let (start, end) = (turn.started_at_ms.unwrap(), turn.completed_at_ms.unwrap());
+    let activity = |id: &str, activity: &str, path: &str, child: &str| {
+        serde_json::json!({"kind": "sub_agent_activity", "id": id, "activity": activity,
+            "agentPath": path, "agentThreadId": child})
+    };
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    let mut legacy = serde_json::to_value(app_snapshot_after_close(&db, &thread.id)).unwrap();
+    legacy.as_object_mut().unwrap().remove("subagents");
+    legacy["turns"][0]["items"] = serde_json::json!([
+        activity("s1", "started", "/root/readme_lines", README_AGENT),
+        activity("s2", "started", "/root/git_branch", BRANCH_AGENT),
+        activity("s3", "started", "/root/lint", "lint-thread"),
+        activity("r1", "interacted", "/root", "root-thread"),
+        activity("c1", "completed", "/root/readme_lines", README_AGENT),
+        activity("i1", "interrupted", "/root/lint", "lint-thread"),
+    ]);
+    db.execute(
+        "UPDATE threads SET data=?1 WHERE id=?2",
+        rusqlite::params![legacy.to_string(), thread.id.to_string()],
+    )
+    .unwrap();
+    let app = reopen(&f.config).await;
+    let loaded = app.thread(thread.id.clone()).await.unwrap();
+    let child = |id: &str, title: &str, status: &str, completed: Option<u64>| {
+        serde_json::json!({"id": id, "spawnTurnId": turn.id, "title": title, "role": title,
+            "model": null, "effort": null, "status": status, "activationCount": 1,
+            "totalTokens": null, "progress": null, "startedAtMs": start,
+            "completedAtMs": completed, "updatedAtMs": end})
+    };
+    assert_eq!(
+        serde_json::to_value(&loaded.subagents).unwrap(),
+        serde_json::json!([
+            child(README_AGENT, "readme_lines", "idle", None),
+            child(BRANCH_AGENT, "git_branch", "interrupted", Some(end)),
+            child("lint-thread", "lint", "interrupted", Some(end)),
+        ])
+    );
+    app.shutdown().await.unwrap();
+    let app = reopen(&f.config).await;
+    let reloaded = app.thread(thread.id.clone()).await.unwrap();
+    assert_eq!(
+        reloaded.subagents, loaded.subagents,
+        "a second load changes nothing"
+    );
+    app.shutdown().await.unwrap();
+
+    let mut saved = serde_json::to_value(app_snapshot_after_close(&db, &thread.id)).unwrap();
+    saved["subagents"][0]["status"] = "failed".into();
+    saved["subagents"][0]["completedAtMs"] = end.into();
+    db.execute(
+        "UPDATE threads SET data=?1 WHERE id=?2",
+        rusqlite::params![saved.to_string(), thread.id.to_string()],
+    )
+    .unwrap();
+    let app = reopen(&f.config).await;
+    let kept = app.thread(thread.id.clone()).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&kept.subagents).unwrap(),
+        saved["subagents"],
+        "a saved roster is never rebuilt from the items"
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn live_subagents_are_interrupted_when_codex_is_lost_or_the_app_restarts() {
+    let f = Fixture::new();
+    capture_subagents(&f, Some(30));
+    let app = App::open(f.config.clone()).await.unwrap();
+    let thread = conversation(&app, &f).await;
+    app.submit(
+        thread.id.clone(),
+        "subagents".into(),
+        "subagents".into(),
+        vec![],
+    )
+    .await
+    .unwrap();
+    wait(&app, &thread.id, |t| {
+        statuses(t) == [SubagentStatus::Idle, SubagentStatus::Running]
+    })
+    .await;
+    unsafe { libc::kill(peer_pid(&f, "pid"), libc::SIGKILL) };
+    let lost = wait(&app, &thread.id, |t| {
+        matches!(t.session, SessionState::Unavailable { .. })
+    })
+    .await;
+    assert_eq!(
+        statuses(&lost),
+        [SubagentStatus::Idle, SubagentStatus::Interrupted]
+    );
+    let [readme, branch] = lost.subagents.agents() else {
+        panic!("two agents")
+    };
+    assert_eq!(readme.completed_at_ms, None);
+    assert_eq!(branch.completed_at_ms, Some(branch.updated_at_ms));
+    app.shutdown().await.unwrap();
+
+    let db = rusqlite::Connection::open(f.config.data_dir.join("z1.sqlite")).unwrap();
+    let mut saved = serde_json::to_value(app_snapshot_after_close(&db, &thread.id)).unwrap();
+    saved["subagents"][1]["status"] = "running".into();
+    saved["subagents"][1]["completedAtMs"] = serde_json::Value::Null;
+    db.execute(
+        "UPDATE threads SET data=?1 WHERE id=?2",
+        rusqlite::params![saved.to_string(), thread.id.to_string()],
+    )
+    .unwrap();
+    let app = reopen(&f.config).await;
+    let restarted = app.thread(thread.id.clone()).await.unwrap();
+    assert_eq!(
+        statuses(&restarted),
+        [SubagentStatus::Idle, SubagentStatus::Interrupted]
+    );
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn reverting_keeps_only_subagents_spawned_in_surviving_turns() {
+    let f = Fixture::new();
+    capture_subagents(&f, None);
+    let app = App::open(f.config.clone()).await.unwrap();
+    for (prompts, survivors) in [(["subagents", "hello"], 2), (["hello", "subagents"], 0)] {
+        let thread = conversation(&app, &f).await;
+        run_turn(&app, &thread.id, prompts[0]).await;
+        let ran = run_turn(&app, &thread.id, prompts[1]).await;
+        assert_eq!(ran.subagents.agents().len(), 2);
+        let reverted = app
+            .revert_thread(
+                thread.id.clone(),
+                format!("rewind-{}", prompts[0]),
+                ran.turns[1].id.clone(),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(reverted.turns.len(), 1);
+        assert_eq!(
+            agent_rows(&reverted),
+            agent_rows(&ran)[..survivors],
+            "{prompts:?}"
+        );
+    }
+    app.shutdown().await.unwrap();
 }

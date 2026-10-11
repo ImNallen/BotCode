@@ -1,6 +1,11 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/chat/MessagesTimeline.tsx, MessageCopyButton.tsx and ChatView.tsx (MIT).
 import {
+  type ComponentType,
+  createContext,
+  type MouseEvent,
   type ReactNode,
+  use,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -16,6 +21,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
   CircleAlertIcon,
   CopyIcon,
   EyeIcon,
@@ -24,21 +30,33 @@ import {
   Minimize2Icon,
   SquarePenIcon,
   TerminalIcon,
+  TriangleAlertIcon,
   WrenchIcon,
   XIcon,
   Undo2Icon,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { followUps, immediateIntent, type FollowUp } from "./followUps";
 import { checkFollowUp, sendFollowUpNow } from "./FollowUpSender";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
-import { ipc, setThreadSnapshot } from "../ipc";
-import type { Thread, Skill, WorktreeSetup } from "../ipc";
+import { imageViewUrl, ipc, setThreadSnapshot } from "../ipc";
+import type {
+  NativeAppRef,
+  Thread,
+  Skill,
+  ToolIcon,
+  WorktreeSetup,
+} from "../ipc";
 import { cn } from "../lib/cn";
+import { toolActivityFaviconUrl } from "../lib/favicon";
+import { PullRequestGlyph } from "../panel/pullRequestPresentation";
+import { useResolvedTheme } from "../panel/useResolvedTheme";
+import { ComputerUseAppIcon } from "../ui/icons";
 import { formatDayAwareTimestamp, formatWorkingTimer } from "../lib/time";
 import { Button } from "../ui/controls";
+import { Tooltip } from "../ui/tooltip";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
 import type { ComposerContextRecord } from "./composerContext";
@@ -61,16 +79,60 @@ import { ProposedPlanCard } from "./ProposedPlanCard";
 import {
   deriveRows,
   liveWorkEntryLabel,
+  resolveTimelineMinimapCurrentIndex,
+  resolveTimelineMinimapHasPersistentGutter,
+  resolveTimelineMinimapHeightStyle,
+  resolveTimelineMinimapHitStripWidth,
+  resolveTimelineMinimapIndexFromPointer,
+  resolveTimelineMinimapInteractiveWidth,
+  resolveTimelineMinimapNavigationInteractive,
+  resolveTimelineMinimapTopPercent,
+  TIMELINE_MINIMAP_MIN_ITEMS,
   workEntryCanExpand,
   workEntryExpandedBody,
+  workEntryFailed,
+  workEntryToolIcon,
+  workEntryViewedImagePath,
   type ActivityEntry,
+  type AgentSpawnMember,
   type ReasoningEntry,
   type TimelineRow,
   type WorkEntry,
   type WorkIcon,
 } from "./timelineRows";
+import {
+  deriveTimelineMinimapItems,
+  resolveTimelineMinimapPreview,
+  type TimelineMinimapItem,
+} from "./timelineMinimapItems";
 
-const workIcons: Record<WorkIcon | "brain", typeof TerminalIcon> = {
+function BrowserAppIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M8.5 19H7.2C4.4 19 3 17.5 3 14.6V7.4C3 4.5 4.5 3 7.4 3h8.2C18.5 3 20 4.5 20 7.4v2.4" />
+      <circle cx="7.4" cy="7.2" r="0.75" fill="currentColor" stroke="none" />
+      <path d="M11.2 7.2h4.3" />
+      <path
+        d="m12.4 11.4 7.5 2.6-3.4 1.6-1.5 3.6z"
+        fill="currentColor"
+        stroke="none"
+      />
+    </svg>
+  );
+}
+
+type IconName = WorkIcon | "brain" | "circle-alert";
+
+const workIcons: Record<IconName, ComponentType<{ className?: string }>> = {
   terminal: TerminalIcon,
   "square-pen": SquarePenIcon,
   eye: EyeIcon,
@@ -79,11 +141,267 @@ const workIcons: Record<WorkIcon | "brain", typeof TerminalIcon> = {
   hammer: HammerIcon,
   bot: BotIcon,
   brain: BrainIcon,
+  browser: BrowserAppIcon,
+  computer: ComputerUseAppIcon,
+  "pull-request": PullRequestGlyph.pullRequest,
+  "circle-alert": CircleAlertIcon,
 };
+
+const TimelineCtx = createContext<{
+  threadId: string;
+  onExpandImage: (preview: ExpandedImagePreview) => void;
+} | null>(null);
+
+const failedToolIconClassName = "text-tool-error-icon/40";
+
+function toolIconAcceptsTint(
+  iconName: IconName,
+  toolIcon: ToolIcon | null,
+): boolean {
+  return toolIcon === null && iconName !== "computer";
+}
+
+function ToolActivityIconView(props: {
+  icon: ToolIcon | null;
+  fallbackName: IconName;
+  className: string;
+  muted: boolean;
+}) {
+  const resolvedTheme = useResolvedTheme();
+  const Fallback = workIcons[props.fallbackName];
+  const fallback = (
+    <Fallback
+      className={cn(
+        props.className,
+        props.muted && "opacity-70 light:brightness-60",
+      )}
+    />
+  );
+  if (!props.icon) return fallback;
+  if (props.icon.kind === "website") {
+    const src = toolActivityFaviconUrl(props.icon, resolvedTheme);
+    return src ? (
+      <ToolActivityImageIcon
+        key={src}
+        cacheKey={src}
+        src={src}
+        fallbackName={props.fallbackName}
+        className={props.className}
+        muted={props.muted}
+      />
+    ) : (
+      fallback
+    );
+  }
+  if (props.icon.kind === "themed_logo") {
+    const src =
+      resolvedTheme === "dark"
+        ? (props.icon.logoUrlDark ?? props.icon.logoUrl)
+        : props.icon.logoUrl;
+    return (
+      <ToolActivityImageIcon
+        key={src}
+        cacheKey={src}
+        src={src}
+        fallbackName={props.fallbackName}
+        className={props.className}
+        muted={props.muted}
+      />
+    );
+  }
+  return (
+    <NativeAppToolActivityIcon
+      app={props.icon.app}
+      fallbackName={props.fallbackName}
+      className={props.className}
+      muted={props.muted}
+    />
+  );
+}
+
+function NativeAppToolActivityIcon(props: {
+  app: NativeAppRef;
+  fallbackName: IconName;
+  className: string;
+  muted: boolean;
+}) {
+  const icon = useQuery({
+    queryKey: ["native-app-icon", props.app],
+    queryFn: () => ipc.nativeAppIcon(props.app),
+    staleTime: Infinity,
+  });
+  const src = icon.data;
+  if (!src) {
+    const Fallback = workIcons[props.fallbackName];
+    return (
+      <Fallback
+        className={cn(
+          props.className,
+          props.muted && "opacity-70 light:brightness-60",
+        )}
+      />
+    );
+  }
+  const cacheKey = JSON.stringify(props.app);
+  return (
+    <ToolActivityImageIcon
+      key={cacheKey}
+      cacheKey={cacheKey}
+      src={src}
+      fallbackName={props.fallbackName}
+      className={props.className}
+      muted={props.muted}
+    />
+  );
+}
+
+const loadedToolActivityIconSrcs = new Map<string, string>();
+
+function ToolActivityImageIcon(props: {
+  cacheKey: string;
+  src: string;
+  fallbackName: IconName;
+  className: string;
+  muted: boolean;
+}) {
+  const [displayedSrc, setDisplayedSrc] = useState<string | null>(
+    () => loadedToolActivityIconSrcs.get(props.cacheKey) ?? null,
+  );
+  const isLoading = displayedSrc !== props.src;
+  const handleLoadError = (failedSrc: string) => {
+    if (loadedToolActivityIconSrcs.get(props.cacheKey) === failedSrc) {
+      loadedToolActivityIconSrcs.delete(props.cacheKey);
+    }
+    setDisplayedSrc((currentSrc) =>
+      currentSrc === failedSrc ? null : currentSrc,
+    );
+  };
+  const Fallback = workIcons[props.fallbackName];
+  return (
+    <>
+      {displayedSrc === null ? (
+        <Fallback
+          className={cn(
+            props.className,
+            props.muted && "opacity-70 light:brightness-60",
+          )}
+        />
+      ) : null}
+      {displayedSrc ? (
+        <span
+          className={cn(
+            props.className,
+            "inline-block overflow-hidden rounded-xs bg-background",
+            props.muted && "opacity-70",
+          )}
+        >
+          <img
+            src={displayedSrc}
+            alt=""
+            aria-hidden
+            decoding="async"
+            referrerPolicy="no-referrer"
+            className={cn(
+              "block size-full object-contain",
+              props.muted && "light:brightness-60",
+            )}
+            onError={() => handleLoadError(displayedSrc)}
+          />
+        </span>
+      ) : null}
+      {isLoading ? (
+        <img
+          src={props.src}
+          alt=""
+          aria-hidden
+          decoding="async"
+          referrerPolicy="no-referrer"
+          className="hidden"
+          onLoad={() => {
+            loadedToolActivityIconSrcs.set(props.cacheKey, props.src);
+            setDisplayedSrc(props.src);
+          }}
+          onError={() => handleLoadError(props.src)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function ToolImagePreview({
+  src,
+  name,
+  onExpand,
+}: {
+  src: string;
+  name: string;
+  onExpand: () => void;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const events = {
+    onLoad: () => setLoaded(true),
+    onError: () => setFailed(true),
+  };
+  if (loaded && !failed)
+    return (
+      <img
+        src={src}
+        alt={name}
+        decoding="async"
+        draggable={false}
+        className="inline-block! h-auto w-auto max-h-[30rem] max-w-[min(100%,30rem)] cursor-zoom-in rounded-lg border border-border/40 object-contain"
+        style={{ maxHeight: "16rem" }}
+        role="button"
+        tabIndex={0}
+        aria-label={`Preview ${name}`}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onExpand();
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          event.stopPropagation();
+          onExpand();
+        }}
+        {...events}
+      />
+    );
+  return (
+    <span
+      className="relative inline-block! aspect-video w-full max-w-[min(100%,30rem)] overflow-hidden rounded-lg border border-border/40 bg-muted/60"
+      style={{ maxHeight: "16rem" }}
+      {...(failed
+        ? { role: "alert" as const }
+        : { role: "status" as const, "aria-label": "Loading image" })}
+    >
+      {failed ? (
+        <span className="flex size-full items-center justify-center p-2 text-center text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <TriangleAlertIcon aria-hidden className="size-3.5 shrink-0" />
+            {`Image unavailable · ${name}`}
+          </span>
+        </span>
+      ) : (
+        <img
+          src={src}
+          alt={name}
+          decoding="async"
+          draggable={false}
+          className="invisible absolute inset-0 size-full"
+          {...events}
+        />
+      )}
+    </span>
+  );
+}
 
 function rowPadding(row: TimelineRow): string {
   switch (row.kind) {
     case "work-group":
+    case "work-live":
       return row.expanded ? "pb-0" : "pb-2";
     case "fold":
     case "working":
@@ -420,11 +738,20 @@ function WorkEntryRow({
   at: number | null;
   inGroup: boolean;
 }) {
+  const ctx = use(TimelineCtx);
   const [expanded, setExpanded] = useState(false);
-  const Icon =
-    entry.failed && entry.action === "edit"
-      ? CircleAlertIcon
-      : workIcons[entry.icon];
+  const failed = workEntryFailed(entry);
+  const destructive = failed && entry.action === "edit";
+  const iconName: IconName = destructive ? "circle-alert" : entry.icon;
+  const toolIcon = destructive ? null : workEntryToolIcon(entry);
+  const viewedImagePath = workEntryViewedImagePath(entry);
+  const viewedImage =
+    viewedImagePath && ctx
+      ? {
+          src: imageViewUrl(ctx.threadId, entry.id),
+          name: viewedImagePath.split(/[\\/]/).at(-1) || "image",
+        }
+      : null;
   const canExpand = workEntryCanExpand(entry, label);
   const body = expanded ? workEntryExpandedBody(entry, label) : null;
   const toggle = () => canExpand && setExpanded((value) => !value);
@@ -433,11 +760,7 @@ function WorkEntryRow({
       role={canExpand ? "button" : undefined}
       tabIndex={canExpand ? 0 : undefined}
       aria-label={
-        canExpand
-          ? entry.failed
-            ? `${label}, tool call failed`
-            : label
-          : undefined
+        canExpand ? (failed ? `${label}, tool call failed` : label) : undefined
       }
       aria-expanded={canExpand ? expanded : undefined}
       onClick={toggle}
@@ -459,12 +782,17 @@ function WorkEntryRow({
         <span
           className={cn(
             "flex size-6 shrink-0 items-center justify-center",
-            entry.failed ? "text-tool-error-icon/40" : "text-icon-muted",
+            failed ? failedToolIconClassName : "text-icon-muted",
           )}
-          role={entry.failed ? "img" : undefined}
-          aria-label={entry.failed ? "Tool call failed" : undefined}
+          role={failed ? "img" : undefined}
+          aria-label={failed ? "Tool call failed" : undefined}
         >
-          <Icon className="block size-4 shrink-0 stroke-2 opacity-70 light:brightness-60" />
+          <ToolActivityIconView
+            icon={toolIcon}
+            fallbackName={iconName}
+            className="block size-4 shrink-0 stroke-2"
+            muted
+          />
         </span>
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <div className="min-w-0 flex-1 overflow-hidden">
@@ -482,10 +810,12 @@ function WorkEntryRow({
               </span>
             </p>
           </div>
-          {entry.failed && entry.action === "command" ? (
+          {failed &&
+          (entry.action === "command" ||
+            (!destructive && !toolIconAcceptsTint(iconName, toolIcon))) ? (
             <XIcon
               aria-hidden
-              className="size-3 shrink-0 text-tool-error-icon/40"
+              className={cn("size-3 shrink-0", failedToolIconClassName)}
             />
           ) : null}
           <Timestamp at={at} />
@@ -505,6 +835,21 @@ function WorkEntryRow({
           </span>
         </div>
       </div>
+      {expanded && viewedImage && ctx ? (
+        <div
+          className="mt-1 ms-7 cursor-default"
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <ToolImagePreview
+            src={viewedImage.src}
+            name={viewedImage.name}
+            onExpand={() =>
+              ctx.onExpandImage({ images: [viewedImage], index: 0 })
+            }
+          />
+        </div>
+      ) : null}
       {body ? (
         <div
           className="mt-1 ms-7 cursor-default rounded-md bg-muted/40 px-3 py-2"
@@ -547,7 +892,6 @@ function WorkGroupRow({
   row: Extract<TimelineRow, { kind: "work-group" }>;
   onToggle: () => void;
 }) {
-  const Icon = workIcons[row.icon];
   return (
     <>
       <button
@@ -557,7 +901,12 @@ function WorkGroupRow({
         className="group/tool-group group/timeline-row relative flex min-h-6 w-full cursor-pointer items-center gap-1.5 rounded-md px-0.5 py-0.5 text-left text-sm leading-relaxed transition-colors duration-150 hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
       >
         <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
-          <Icon className="size-4 shrink-0 stroke-2 opacity-70 light:brightness-60" />
+          <ToolActivityIconView
+            icon={row.toolIcon}
+            fallbackName={row.icon}
+            className="size-4 shrink-0 stroke-2"
+            muted
+          />
         </span>
         <span className="min-w-0 flex-1 truncate text-secondary-label">
           {row.label}
@@ -595,12 +944,14 @@ function ActivityShimmerOverlay({ children }: { children: ReactNode }) {
 function LiveActivityRow({
   label,
   icon,
+  toolIcon = null,
   failed = false,
   active = false,
   shimmer = false,
 }: {
   label: ReactNode;
-  icon: WorkIcon | "brain";
+  icon: IconName;
+  toolIcon?: ToolIcon | null;
   failed?: boolean;
   active?: boolean;
   shimmer?: boolean;
@@ -614,12 +965,18 @@ function LiveActivityRow({
       <LiveActivityContent
         label={label}
         icon={icon}
+        toolIcon={toolIcon}
         failed={failed}
         active={animated && !shimmer}
       />
       {animated && shimmer ? (
         <ActivityShimmerOverlay>
-          <LiveActivityContent label={label} icon={icon} highlighted />
+          <LiveActivityContent
+            label={label}
+            icon={icon}
+            toolIcon={toolIcon}
+            highlighted
+          />
         </ActivityShimmerOverlay>
       ) : null}
     </div>
@@ -629,17 +986,18 @@ function LiveActivityRow({
 function LiveActivityContent({
   label,
   icon,
+  toolIcon = null,
   failed = false,
   active = false,
   highlighted = false,
 }: {
   label: ReactNode;
-  icon: WorkIcon | "brain";
+  icon: IconName;
+  toolIcon?: ToolIcon | null;
   failed?: boolean;
   active?: boolean;
   highlighted?: boolean;
 }) {
-  const Icon = workIcons[icon];
   return (
     <span
       className={cn(
@@ -651,7 +1009,7 @@ function LiveActivityContent({
         className={cn(
           "flex size-6 shrink-0 items-center justify-center",
           failed
-            ? "text-tool-error-icon/40"
+            ? failedToolIconClassName
             : highlighted
               ? "text-foreground"
               : "text-icon-muted",
@@ -659,11 +1017,11 @@ function LiveActivityContent({
         role={failed ? "img" : undefined}
         aria-label={failed ? "Tool call failed" : undefined}
       >
-        <Icon
-          className={cn(
-            "block size-4 shrink-0 stroke-2",
-            !highlighted && "opacity-70 light:brightness-60",
-          )}
+        <ToolActivityIconView
+          icon={toolIcon}
+          fallbackName={icon}
+          className="block size-4 shrink-0 stroke-2"
+          muted={!highlighted}
         />
       </span>
       <span
@@ -671,7 +1029,48 @@ function LiveActivityContent({
       >
         {label}
       </span>
+      {failed && !toolIconAcceptsTint(icon, toolIcon) ? (
+        <XIcon
+          aria-hidden
+          className={cn("size-3 shrink-0", failedToolIconClassName)}
+        />
+      ) : null}
     </span>
+  );
+}
+
+function WorkLiveRow({
+  row,
+  onToggle,
+}: {
+  row: Extract<TimelineRow, { kind: "work-live" }>;
+  onToggle: () => void;
+}) {
+  const label = liveWorkEntryLabel(row.entry, row.active);
+  const failed = workEntryFailed(row.entry);
+  return (
+    <>
+      <button
+        type="button"
+        className="group/live-work flex min-h-6 w-full max-w-full cursor-pointer items-center rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        aria-label={failed ? `${label}, tool call failed` : undefined}
+        aria-expanded={row.expanded}
+        onClick={onToggle}
+      >
+        <LiveActivityRow
+          label={label}
+          icon={row.entry.icon}
+          toolIcon={workEntryToolIcon(row.entry)}
+          failed={failed}
+          active={row.active}
+        />
+      </button>
+      {row.expanded ? (
+        <div className="pb-1">
+          <WorkGroupEntries entries={row.entries} />
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -701,10 +1100,116 @@ function ThinkingRow({
   );
 }
 
-function AgentsRow({ row }: { row: Extract<TimelineRow, { kind: "agents" }> }) {
+export function AgentSpawnRow({
+  row,
+  onToggle,
+  onOpenAgents,
+}: {
+  row: Extract<TimelineRow, { kind: "agents" }>;
+  onToggle: () => void;
+  onOpenAgents?: (() => void) | undefined;
+}) {
   return (
     <div className="flex flex-col">
-      <LiveActivityRow label={row.label} icon="bot" active={row.live} />
+      <button
+        type="button"
+        aria-expanded={row.expanded}
+        onClick={onToggle}
+        className="flex cursor-pointer select-none rounded-md text-left transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+      >
+        <LiveActivityRow
+          label={row.label}
+          icon="bot"
+          active={row.live}
+          failed={row.failed}
+        />
+      </button>
+      {row.expanded ? (
+        <div className="ms-7 mt-0.5 flex flex-col">
+          {row.members.map((member) => (
+            <AgentSpawnMemberRow key={member.id} member={member} />
+          ))}
+          {onOpenAgents ? (
+            <button
+              type="button"
+              onClick={onOpenAgents}
+              className="mt-1 self-start rounded-sm px-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Open Agents panel ›
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const stopRowToggle = (event: { stopPropagation: () => void }) =>
+  event.stopPropagation();
+
+function AgentSpawnMemberRow({ member }: { member: AgentSpawnMember }) {
+  const [open, setOpen] = useState(false);
+  const canExpand = member.body.length > 0;
+  const toggleOpen = () => setOpen((value) => !value);
+  return (
+    <div
+      role={canExpand ? "button" : undefined}
+      tabIndex={canExpand ? 0 : undefined}
+      aria-label={
+        canExpand ? `${member.title}, ${member.statusLabel}` : undefined
+      }
+      aria-expanded={canExpand ? open : undefined}
+      onClick={canExpand ? toggleOpen : undefined}
+      onKeyDown={
+        canExpand
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                toggleOpen();
+              }
+            }
+          : undefined
+      }
+      className={cn(
+        "flex flex-col rounded-md px-1 py-0.5 transition-colors",
+        canExpand &&
+          "cursor-pointer hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+      )}
+    >
+      <div className="flex select-none items-center gap-1.5">
+        <p className="flex min-w-0 flex-1 items-baseline gap-1.5 text-sm leading-relaxed">
+          <span
+            className={cn(
+              "min-w-0 truncate",
+              member.failed ? "text-tool-error-icon/40" : "text-foreground/80",
+            )}
+          >
+            {member.title}
+          </span>
+          {member.role ? (
+            <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-3xs text-muted-foreground">
+              {member.role}
+            </span>
+          ) : null}
+        </p>
+        <span className="shrink-0 font-mono text-2xs tabular-nums text-muted-foreground">
+          {member.statusLabel}
+        </span>
+      </div>
+      {!open && member.firstLine ? (
+        <p className="truncate text-xs text-muted-foreground">
+          {member.firstLine}
+        </p>
+      ) : null}
+      {open ? (
+        <div
+          className="mt-1 cursor-default rounded-md bg-muted/40 px-3 py-2"
+          onClick={stopRowToggle}
+          onPointerDown={stopRowToggle}
+        >
+          <pre className={toolCallExpandedBodyClassName}>{member.body}</pre>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -888,6 +1393,7 @@ function ActivityGroupRow({
         <LiveActivityRow
           label={row.label}
           icon={row.icon}
+          toolIcon={row.toolIcon}
           failed={row.failed}
           active={row.active}
           shimmer={row.shimmer}
@@ -938,6 +1444,302 @@ function ErrorRow({ text }: { text: string }) {
   );
 }
 
+function timelineMinimapEventTargetsPreview(target: EventTarget): boolean {
+  return (
+    target instanceof Element &&
+    target.closest("[data-minimap-preview]") !== null
+  );
+}
+
+function TimelineMinimap({
+  hasPersistentGutter,
+  hitStripWidth,
+  currentIndex,
+  items,
+  stripMap,
+  onSelect,
+}: {
+  hasPersistentGutter: boolean;
+  hitStripWidth: number;
+  currentIndex: number | null;
+  items: ReadonlyArray<TimelineMinimapItem>;
+  stripMap: Map<string, HTMLSpanElement>;
+  onSelect: (item: TimelineMinimapItem) => void;
+}) {
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+
+  const resolvedActiveIndex =
+    activeIndex !== null && activeIndex < items.length ? activeIndex : null;
+  const activeItem = useMemo(
+    () =>
+      resolveTimelineMinimapPreview(
+        resolvedActiveIndex === null
+          ? null
+          : (items[resolvedActiveIndex] ?? null),
+      ),
+    [items, resolvedActiveIndex],
+  );
+  const navigationInteractive =
+    resolveTimelineMinimapNavigationInteractive(hitStripWidth);
+  const activeTopPercent =
+    resolvedActiveIndex === null
+      ? 0
+      : resolveTimelineMinimapTopPercent(resolvedActiveIndex, items.length);
+  const activeTooltipTranslate =
+    resolvedActiveIndex === null
+      ? "-50%"
+      : resolvedActiveIndex === 0
+        ? "0%"
+        : resolvedActiveIndex === items.length - 1
+          ? "-100%"
+          : "-50%";
+  const resolvedCurrentIndex =
+    currentIndex !== null && currentIndex >= 0 && currentIndex < items.length
+      ? currentIndex
+      : null;
+  const previousItem =
+    resolvedCurrentIndex === null
+      ? null
+      : (items[resolvedCurrentIndex - 1] ?? null);
+  const nextItem =
+    resolvedCurrentIndex === null
+      ? null
+      : (items[resolvedCurrentIndex + 1] ?? null);
+
+  const resolveActiveIndexFromPointer = useCallback(
+    (event: MouseEvent<HTMLElement>) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      return resolveTimelineMinimapIndexFromPointer({
+        itemCount: items.length,
+        railTop: rect.top,
+        railHeight: rect.height,
+        pointerY: event.clientY,
+      });
+    },
+    [items.length],
+  );
+
+  const updateActiveIndexFromPointer = useCallback(
+    (event: MouseEvent<HTMLElement>) => {
+      const nextIndex = resolveActiveIndexFromPointer(event);
+      setActiveIndex(nextIndex);
+    },
+    [resolveActiveIndexFromPointer],
+  );
+
+  const moveActiveIndex = useCallback(
+    (delta: number) => {
+      setActiveIndex((current) => {
+        const base = current ?? 0;
+        return Math.max(0, Math.min(items.length - 1, base + delta));
+      });
+    },
+    [items.length],
+  );
+
+  if (items.length < TIMELINE_MINIMAP_MIN_ITEMS) {
+    return null;
+  }
+
+  return (
+    <div
+      className={cn(
+        "group/minimap pointer-events-none absolute inset-y-0 left-0 z-40 hidden w-18 [@media(pointer:fine)]:block",
+        hasPersistentGutter
+          ? "opacity-100"
+          : "opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
+      )}
+      data-testid="timeline-minimap"
+      data-persistent-gutter={hasPersistentGutter ? "true" : "false"}
+    >
+      <div className="relative h-full w-full select-none">
+        <div
+          className={cn(
+            "absolute top-1/2 left-3 -translate-y-1/2",
+            hitStripWidth > 0 ? "pointer-events-auto" : "pointer-events-none",
+          )}
+          style={{
+            height: resolveTimelineMinimapHeightStyle(items.length),
+            width: resolveTimelineMinimapInteractiveWidth(
+              hitStripWidth,
+              activeItem !== null,
+            ),
+          }}
+        >
+          <TimelineMinimapNavigationButton
+            direction="previous"
+            disabled={previousItem === null}
+            interactive={navigationInteractive}
+            onClick={() => {
+              if (previousItem) onSelect(previousItem);
+            }}
+          />
+          <button
+            aria-label={`Jump to message: ${activeItem?.userText ?? "User message"}`}
+            className="absolute inset-y-0 left-0 w-full cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+            onBlur={() => setActiveIndex(null)}
+            onClick={(event) => {
+              if (timelineMinimapEventTargetsPreview(event.target)) {
+                return;
+              }
+              const nextIndex = resolveActiveIndexFromPointer(event);
+              const selectedItem =
+                nextIndex === null ? null : (items[nextIndex] ?? null);
+              if (selectedItem) {
+                onSelect(selectedItem);
+              }
+              event.currentTarget.blur();
+            }}
+            onFocus={() =>
+              setActiveIndex((current) => current ?? resolvedCurrentIndex ?? 0)
+            }
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                moveActiveIndex(1);
+              } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                moveActiveIndex(-1);
+              } else if (event.key === "Home") {
+                event.preventDefault();
+                setActiveIndex(0);
+              } else if (event.key === "End") {
+                event.preventDefault();
+                setActiveIndex(items.length - 1);
+              } else if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                if (activeItem) {
+                  onSelect(activeItem);
+                }
+              }
+            }}
+            onMouseLeave={() => setActiveIndex(null)}
+            onMouseMove={updateActiveIndexFromPointer}
+            onMouseDown={(event) => {
+              if (timelineMinimapEventTargetsPreview(event.target)) {
+                return;
+              }
+              event.preventDefault();
+            }}
+            type="button"
+          >
+            <div className="absolute top-0 left-3 h-full w-px bg-border/15" />
+            {items.map((item, index) => {
+              const top = `${resolveTimelineMinimapTopPercent(index, items.length)}%`;
+              const activeDistance =
+                resolvedActiveIndex === null
+                  ? null
+                  : Math.abs(index - resolvedActiveIndex);
+              return (
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "pointer-events-none absolute left-0 h-0.5 -translate-y-1/2 rounded-full bg-muted-foreground/35 transition-[width,background-color] duration-150 data-[in-view=true]:bg-foreground/90",
+                    activeDistance === 0
+                      ? "w-6 bg-muted-foreground/75"
+                      : activeDistance === 1
+                        ? "w-4"
+                        : activeDistance === 2
+                          ? "w-2.5"
+                          : "w-2",
+                  )}
+                  data-in-view="false"
+                  data-minimap-strip
+                  key={item.id}
+                  ref={(node) => {
+                    if (node) {
+                      stripMap.set(item.id, node);
+                    } else {
+                      stripMap.delete(item.id);
+                    }
+                  }}
+                  style={{ top }}
+                />
+              );
+            })}
+            {activeItem ? (
+              <span
+                className="pointer-events-auto absolute left-8 w-80 cursor-text select-text"
+                data-minimap-preview
+                onMouseMove={(event) => event.stopPropagation()}
+                style={{
+                  top: `${activeTopPercent}%`,
+                  transform: `translateY(${activeTooltipTranslate})`,
+                }}
+              >
+                <span className="dropdown-glass block rounded-xl p-3 text-left text-popover-foreground shadow-xl shadow-black/25">
+                  <span className="block max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium leading-5">
+                    {activeItem.userText ?? "User message"}
+                  </span>
+                  {activeItem.assistantText ? (
+                    <span
+                      className="mt-1 max-h-[3.75rem] overflow-hidden text-muted-foreground text-sm leading-5"
+                      style={{
+                        display: "-webkit-box",
+                        WebkitBoxOrient: "vertical",
+                        WebkitLineClamp: 3,
+                      }}
+                    >
+                      {activeItem.assistantText}
+                    </span>
+                  ) : null}
+                </span>
+              </span>
+            ) : null}
+          </button>
+          <TimelineMinimapNavigationButton
+            direction="next"
+            disabled={nextItem === null}
+            interactive={navigationInteractive}
+            onClick={() => {
+              if (nextItem) onSelect(nextItem);
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TimelineMinimapNavigationButton({
+  direction,
+  disabled,
+  interactive,
+  onClick,
+}: {
+  direction: "previous" | "next";
+  disabled: boolean;
+  interactive: boolean;
+  onClick: () => void;
+}) {
+  const previous = direction === "previous";
+  const label = previous ? "Previous turn" : "Next turn";
+  const Icon = previous ? ChevronUpIcon : ChevronDownIcon;
+
+  return (
+    <span
+      className={cn(
+        "absolute left-1 z-10 inline-flex -translate-x-1/2 opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
+        interactive ? "pointer-events-auto" : "pointer-events-none",
+        previous ? "bottom-[calc(100%+2px)]" : "top-[calc(100%+2px)]",
+      )}
+    >
+      <Tooltip content={label} side={previous ? "top" : "bottom"}>
+        <Button
+          aria-label={label}
+          disabled={disabled}
+          onClick={onClick}
+          size="icon-micro"
+          type="button"
+          variant="ghost-muted"
+        >
+          <Icon className="size-4 text-foreground/90" />
+        </Button>
+      </Tooltip>
+    </span>
+  );
+}
+
 function WholePixelRow({ children }: { children: ReactNode }) {
   const outer = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
@@ -975,6 +1777,7 @@ export function Timeline({
   onFileContextMenu,
   onRemoveQueued,
   onExpandImage,
+  onOpenAgents,
 }: {
   thread: Thread;
   skills: readonly Skill[];
@@ -986,6 +1789,7 @@ export function Timeline({
   onOpenTurnDiff: (turnId: string, filePath?: string) => void;
   onFileContextMenu?: FileContextMenuHandler;
   onExpandImage: (preview: ExpandedImagePreview) => void;
+  onOpenAgents?: () => void;
 }) {
   useSyncExternalStore(
     followUps.subscribe,
@@ -1002,8 +1806,96 @@ export function Timeline({
     [thread, unfolded, expandedGroups],
   );
   const scroller = useRef<HTMLDivElement>(null);
+  const viewport = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
   const [showScroll, setShowScroll] = useState(false);
+  const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
+  const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
+  const [minimapRowMap] = useState(() => new Map<string, HTMLElement>());
+  const [minimapHasPersistentGutter, setMinimapHasPersistentGutter] =
+    useState(false);
+  const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
+  const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(
+    null,
+  );
+  const updateMinimap = useCallback(() => {
+    const element = scroller.current;
+    if (!element || minimapItems.length === 0) return;
+    const scrollTop = element.scrollTop;
+    const scrollBottom = scrollTop + element.clientHeight;
+    const contentTop = element.getBoundingClientRect().top - scrollTop;
+    const itemBounds = minimapItems.map((item) => {
+      const rect = minimapRowMap.get(item.id)?.getBoundingClientRect();
+      return rect
+        ? { top: rect.top - contentTop, height: rect.height }
+        : { top: null, height: null };
+    });
+    for (const [index, item] of minimapItems.entries()) {
+      const strip = minimapStripMap.get(item.id);
+      const bounds = itemBounds[index];
+      const rowTop = bounds?.top ?? null;
+      const rowHeight = bounds?.height ?? null;
+      const inView =
+        rowTop !== null &&
+        rowTop < scrollBottom &&
+        rowTop + Math.max(1, rowHeight ?? 1) > scrollTop;
+      if (strip) {
+        strip.dataset.inView = inView ? "true" : "false";
+      }
+    }
+    const nextCurrentIndex = resolveTimelineMinimapCurrentIndex({
+      scrollTop,
+      scrollBottom,
+      itemBounds,
+    });
+    setMinimapCurrentIndex((current) =>
+      current === nextCurrentIndex ? current : nextCurrentIndex,
+    );
+  }, [minimapItems, minimapRowMap, minimapStripMap]);
+  useEffect(() => {
+    const frame = requestAnimationFrame(updateMinimap);
+    return () => cancelAnimationFrame(frame);
+  }, [updateMinimap]);
+  useEffect(() => {
+    const element = viewport.current;
+    if (!element) return;
+    const measure = () => {
+      const viewportWidth = element.getBoundingClientRect().width;
+      const contentWidth =
+        element
+          .querySelector<HTMLElement>("[data-timeline-root]")
+          ?.getBoundingClientRect().width ?? viewportWidth;
+      const nextHasPersistentGutter = resolveTimelineMinimapHasPersistentGutter(
+        viewportWidth,
+        contentWidth,
+      );
+      setMinimapHasPersistentGutter((current) =>
+        current === nextHasPersistentGutter ? current : nextHasPersistentGutter,
+      );
+      setMinimapHitStripWidth(
+        resolveTimelineMinimapHitStripWidth(viewportWidth, contentWidth),
+      );
+    };
+    const frame = requestAnimationFrame(measure);
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [rows.length]);
+  const selectMinimapItem = (item: TimelineMinimapItem) => {
+    const element = scroller.current;
+    const row = minimapRowMap.get(item.id);
+    if (!element || !row) return;
+    const top =
+      row.getBoundingClientRect().top -
+      element.getBoundingClientRect().top +
+      element.scrollTop -
+      24;
+    atEnd.current = top >= element.scrollHeight - element.clientHeight - 2;
+    element.scrollTo({ top, behavior: "smooth" });
+  };
   const toggle = (set: ReadonlySet<string>, id: string) => {
     const next = new Set(set);
     if (!next.delete(id)) next.add(id);
@@ -1022,9 +1914,13 @@ export function Timeline({
     observer.observe(content.current);
     return () => observer.disconnect();
   }, []);
+  const ctx = useMemo(
+    () => ({ threadId: thread.id, onExpandImage }),
+    [thread.id, onExpandImage],
+  );
   return (
-    <>
-      <div className="relative h-full min-h-0">
+    <TimelineCtx value={ctx}>
+      <div ref={viewport} className="relative h-full min-h-0">
         <div
           ref={scroller}
           data-assistant-citation-viewport
@@ -1036,6 +1932,7 @@ export function Timeline({
               2;
             atEnd.current = end;
             setShowScroll(!end);
+            updateMinimap();
           }}
           className="scrollbar-gutter-both h-full min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5 topbar-scroll-fade"
         >
@@ -1052,6 +1949,17 @@ export function Timeline({
               <WholePixelRow key={row.id}>
                 <div
                   data-timeline-row-kind={row.kind}
+                  ref={
+                    row.kind === "user"
+                      ? (node) => {
+                          if (node) {
+                            minimapRowMap.set(row.id, node);
+                          } else {
+                            minimapRowMap.delete(row.id);
+                          }
+                        }
+                      : undefined
+                  }
                   className={cn(
                     rowPadding(row),
                     row.kind === "assistant" && "group/assistant",
@@ -1111,12 +2019,25 @@ export function Timeline({
                         setExpandedGroups((set) => toggle(set, row.groupId))
                       }
                     />
+                  ) : row.kind === "work-live" ? (
+                    <WorkLiveRow
+                      row={row}
+                      onToggle={() =>
+                        setExpandedGroups((set) => toggle(set, row.groupId))
+                      }
+                    />
                   ) : row.kind === "live" ? (
                     <LiveRow entry={row.entry} />
                   ) : row.kind === "thinking" ? (
                     <ThinkingRow row={row} />
                   ) : row.kind === "agents" ? (
-                    <AgentsRow row={row} />
+                    <AgentSpawnRow
+                      row={row}
+                      onToggle={() =>
+                        setExpandedGroups((set) => toggle(set, row.id))
+                      }
+                      onOpenAgents={onOpenAgents}
+                    />
                   ) : row.kind === "context-compaction" ? (
                     <ContextCompactionRow row={row} />
                   ) : row.kind === "checkpoint" ? (
@@ -1152,6 +2073,14 @@ export function Timeline({
             </div>
           </div>
         </div>
+        <TimelineMinimap
+          items={minimapItems}
+          hasPersistentGutter={minimapHasPersistentGutter}
+          hitStripWidth={minimapHitStripWidth}
+          currentIndex={minimapCurrentIndex}
+          stripMap={minimapStripMap}
+          onSelect={selectMinimapItem}
+        />
       </div>
       {showScroll ? (
         <div
@@ -1182,7 +2111,7 @@ export function Timeline({
         environmentId={thread.workspaceId}
         threadId={thread.id}
       />
-    </>
+    </TimelineCtx>
   );
 }
 
