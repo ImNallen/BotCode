@@ -134,6 +134,7 @@ export function eligibleSurfaces(
         );
       case "terminal":
       case "preview":
+      case "agents":
         return true;
       default:
         return (
@@ -164,6 +165,8 @@ export function surfaceTitle(
       return "Preview";
     case "pull_requests":
       return "Pull requests";
+    case "agents":
+      return "Agents";
     case "pull_request":
       return `#${surface.key.split("/").at(-1)}`;
     case "file":

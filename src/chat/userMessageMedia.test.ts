@@ -62,6 +62,7 @@ const thread: Thread = {
   diagnostic: null,
   pendingRevert: null,
   lastRevert: null,
+  subagents: [],
   turns: [
     {
       id: "018ba719-19f4-4fdb-bd79-aa4a676ea056",

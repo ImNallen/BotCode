@@ -139,6 +139,44 @@ export const attachmentSchema = z.union([fileAttachment, imageAttachment]);
 export type ImageAttachment = z.infer<typeof imageAttachment>;
 export type AttachmentSource = z.infer<typeof attachmentSource>;
 const toolStatus = z.enum(["inProgress", "completed", "failed", "declined"]);
+const nativeAppRef = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("app_id"), appId: z.string() }),
+  z.object({ kind: z.literal("display_name"), displayName: z.string() }),
+]);
+export type NativeAppRef = z.infer<typeof nativeAppRef>;
+const toolIcon = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("website"),
+    pageUrl: z.string(),
+    faviconUrl: z.string().nullable(),
+    faviconUrlDark: z.string().nullable(),
+  }),
+  z.object({ kind: z.literal("native_app"), app: nativeAppRef }),
+  z.object({
+    kind: z.literal("themed_logo"),
+    logoUrl: z.string(),
+    logoUrlDark: z.string().nullable(),
+  }),
+]);
+export type ToolIcon = z.infer<typeof toolIcon>;
+const toolPresentation = z.object({
+  surface: z.enum(["browser", "computer"]),
+  source: z.object({
+    key: z.string(),
+    name: z.string(),
+    kind: z.enum(["browser", "computer", "integration"]),
+    icon: toolIcon.nullable(),
+  }),
+  icon: toolIcon.nullable(),
+});
+export type ToolPresentation = z.infer<typeof toolPresentation>;
+const mcpAppContext = z.object({
+  connectorId: z.string(),
+  linkId: z.string().nullable(),
+  resourceUri: z.string().nullable(),
+  appName: z.string().nullable(),
+  actionName: z.string().nullable(),
+});
 const item = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("user_input"),
@@ -191,6 +229,8 @@ const item = z.discriminatedUnion("kind", [
     result: z.string().nullable(),
     error: z.string().nullable(),
     durationMs: z.number().nullable(),
+    appContext: mcpAppContext.nullable(),
+    presentation: toolPresentation.nullable(),
   }),
   z.object({
     kind: z.literal("dynamic_tool_call"),
@@ -528,6 +568,22 @@ export const taskProgressSchema = z.object({
   ),
 });
 export type TaskProgress = z.infer<typeof taskProgressSchema>;
+const subagent = z.object({
+  id: z.string(),
+  spawnTurnId: id,
+  title: z.string(),
+  role: z.string(),
+  model: z.string().nullable(),
+  effort: z.string().nullable(),
+  status: z.enum(["running", "waiting", "idle", "failed", "interrupted"]),
+  activationCount: z.number().int(),
+  totalTokens: z.number().nullable(),
+  progress: z.string().nullable(),
+  startedAtMs: z.number(),
+  completedAtMs: z.number().nullable(),
+  updatedAtMs: z.number(),
+});
+export type Subagent = z.infer<typeof subagent>;
 const thread = z.object({
   worktreeSetup: worktreeSetup.nullable().default(null),
   placement: z
@@ -582,6 +638,7 @@ const thread = z.object({
     .nullable()
     .default(null),
   context: contextUsage.nullable().default(null),
+  subagents: z.array(subagent).default([]),
 });
 const threadSummary = z.object({
   unsettledAtMs: z.number().nullable().optional(),
@@ -895,6 +952,8 @@ export const workspaceFileUrl = (
     path,
     revision,
   );
+export const imageViewUrl = (threadId: string, itemId: string) =>
+  `${convertFileSrc("", WORKSPACE_FILE_SCHEME).replace(/\/?$/, "/")}image-view/${encodeURIComponent(threadId)}/${encodeURIComponent(itemId)}`;
 // The core resolves every target and validates its path.
 export type OpenTarget =
   | {
@@ -1093,6 +1152,12 @@ export const ipc = {
           dataUrl: z.string().startsWith("data:image/"),
         })
         .nullable(),
+    ),
+  nativeAppIcon: (nativeApp: NativeAppRef) =>
+    call(
+      "native_app_icon",
+      { nativeApp },
+      z.string().startsWith("data:image/png;base64,").nullable(),
     ),
   removeWorkspace: (workspaceId: string) =>
     call("remove_workspace", { workspaceId }, z.null()),

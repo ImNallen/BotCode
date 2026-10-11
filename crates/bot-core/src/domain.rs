@@ -135,6 +135,73 @@ pub enum ToolStatus {
     Failed,
     Declined,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpAppContext {
+    pub connector_id: String,
+    pub link_id: Option<String>,
+    pub resource_uri: Option<String>,
+    pub app_name: Option<String>,
+    pub action_name: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPresentation {
+    pub surface: ToolSurface,
+    pub source: ToolSource,
+    pub icon: Option<ToolIcon>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSurface {
+    Browser,
+    Computer,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolSource {
+    pub key: String,
+    pub name: String,
+    pub kind: ToolSourceKind,
+    pub icon: Option<ToolIcon>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSourceKind {
+    Browser,
+    Computer,
+    Integration,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ToolIcon {
+    Website {
+        page_url: String,
+        favicon_url: Option<String>,
+        favicon_url_dark: Option<String>,
+    },
+    NativeApp {
+        app: NativeAppRef,
+    },
+    ThemedLogo {
+        logo_url: String,
+        logo_url_dark: Option<String>,
+    },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum NativeAppRef {
+    AppId { app_id: String },
+    DisplayName { display_name: String },
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SubAgentActivity {
@@ -196,6 +263,10 @@ pub enum Item {
         result: Option<String>,
         error: Option<String>,
         duration_ms: Option<u64>,
+        #[serde(default)]
+        app_context: Option<McpAppContext>,
+        #[serde(default)]
+        presentation: Option<Box<ToolPresentation>>,
     },
     DynamicToolCall {
         id: String,
@@ -1070,6 +1141,8 @@ pub struct ThreadSnapshot {
     pub pending_revert: Option<RevertIntent>,
     #[serde(default)]
     pub last_revert: Option<RevertResult>,
+    #[serde(default)]
+    pub subagents: crate::Roster,
 }
 impl ThreadSnapshot {
     pub fn archived(&self) -> bool {

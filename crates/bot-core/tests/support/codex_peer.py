@@ -360,12 +360,28 @@ for line in sys.stdin:
                 {'type': 'enteredReviewMode', 'id': 'review-1', 'review': 'current changes'},
                 {'type': 'hookPrompt', 'id': 'hook-1', 'fragments': [{'text': 'Run the linter.', 'hookRunId': 'h1'}, {'text': 'Then the tests.', 'hookRunId': 'h2'}]},
                 {'type': 'functionCallOutput', 'id': 'output-1', 'name': 'shell', 'namespace': None, 'output': 'ok'},
-                {**mcp, 'id': 'computer-1', 'server': 'computer-use', 'tool': 'click', 'status': 'completed', 'arguments': {'app': '  Safari '}, 'result': {'content': [{'type': 'image', 'data': ''}, {'type': 'text', 'text': 'clicked'}, {'type': 'text', 'text': 'done'}], 'structuredContent': None, '_meta': None}, 'durationMs': 9},
+                {**mcp, 'id': 'computer-1', 'server': 'computer-use', 'tool': 'click', 'status': 'completed', 'arguments': {'app': '  Safari '}, 'appContext': {'connectorId': 'computer-use', 'linkId': None, 'resourceUri': None, 'appName': 'Safari', 'actionName': 'click'}, 'result': {'content': [{'type': 'image', 'data': ''}, {'type': 'text', 'text': 'clicked'}, {'type': 'text', 'text': 'done'}], 'structuredContent': None, '_meta': None}, 'durationMs': 9},
                 {**mcp, 'id': 'github-1', 'server': 'github', 'tool': 'search_issues', 'status': 'failed', 'arguments': {}, 'error': {'message': 'rate limited'}},
+                {**mcp, 'id': 'call_8fe2acb4d20b46c9a6e59dd236c01a8e', 'server': 'cua_repl', 'tool': 'js', 'status': 'completed', 'arguments': {'code': "var verifyApp = await cua.getApp('dev.bot.code.previewverify');", 'title': 'Inspect isolated baseline Tauri app'}, 'pluginId': 'unified-computer-use@openai-bundled', 'result': {'content': [{'type': 'text', 'text': 'Bot Code window'}], 'structuredContent': None, '_meta': {'codex/nodeReplExecutionDurationMs': 748, 'codex/toolSurface': {'app': {'appId': 'dev.bot.code.previewverify', 'kind': 'appId'}, 'kind': 'computerUse'}}}, 'durationMs': 752},
+                {**mcp, 'id': 'call_68e27098b8664ebc84094ce65f81406d', 'server': 'cua_repl', 'tool': 'js', 'status': 'completed', 'arguments': {'title': 'Open shared logo link'}, 'pluginId': 'unified-computer-use@openai-bundled', 'result': {'content': [{'type': 'text', 'text': 'Opened tab'}], 'structuredContent': None, '_meta': {'browser_use': {'url': 'https://chatgpt.com/s/m_6ac904b5dc5481918fa0cfa7cdb84e4c'}, 'codex/browserUse': True, 'codex/nodeReplExecutionDurationMs': 7049, 'codex/toolSurface': {'backend': 'iab', 'browserId': '2', 'kind': 'browserUse', 'openTabIds': ['1'], 'screenshot': {'pageUrl': 'https://chatgpt.com', 'tabId': '1', 'url': 'data:image/jpeg;base64,/9j/4AAQ'}}}}, 'durationMs': 7290},
                 {'type': 'futureThing', 'id': 'future-1'},
             ]:
                 item('item/completed', value)
             finish()
+        elif prompt == 'image-view':
+            for value in [
+                {'type': 'imageView', 'id': 'view-absolute', 'path': str(root / 'viewed.png')},
+                {'type': 'imageView', 'id': 'view-relative', 'path': 'shot.png'},
+                {'type': 'imageView', 'id': 'view-text', 'path': str(root / 'notes.txt')},
+            ]:
+                event('item/completed', {'threadId': current_thread, 'turnId': active, 'item': value})
+            finish()
+        elif prompt == 'subagents':
+            frames = (root / 'subagents.jsonl').read_text().splitlines()
+            started = json.loads(frames[0])['params']
+            stop = root / 'subagents_frame_limit'
+            for line in frames[1:1 + int(stop.read_text())] if stop.exists() else frames[1:]:
+                emit(json.loads(line.replace(started['threadId'], current_thread).replace(started['turn']['id'], active)))
         elif prompt in ('ask-plan', 'ask-plan-empty-options'):
             callbacks = {'question-route'}
             emit({'id': 'question-route', 'method': 'item/tool/requestUserInput', 'params': {'threadId': current_thread, 'turnId': active, 'itemId': 'question-item', 'isBlocking': True, 'autoResolutionMs': None, 'questions': [{'id': 'scope', 'header': 'Scope', 'question': 'Which workflow should be implemented?', 'isOther': True, 'isSecret': False, 'options': [{'label': 'Composer', 'description': 'Implement the composer'}]}, {'id': 'notes', 'header': 'Notes', 'question': 'Any constraints?', 'isOther': False, 'isSecret': False, 'options': [] if prompt == 'ask-plan-empty-options' else None}]}})

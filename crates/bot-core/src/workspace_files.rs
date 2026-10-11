@@ -108,6 +108,50 @@ pub(crate) fn parse(uri_path: &str) -> Option<Request> {
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ImageViewRequest {
+    pub thread: ThreadId,
+    pub item: String,
+}
+
+pub(crate) fn parse_image_view(uri_path: &str) -> Option<ImageViewRequest> {
+    let mut segments = uri_path.strip_prefix("/image-view/")?.split('/');
+    let thread = segments.next()?.parse().ok()?;
+    let item = decode_path_segment(segments.next()?)?;
+    segments
+        .next()
+        .is_none()
+        .then_some(ImageViewRequest { thread, item })
+}
+
+pub(crate) fn respond_image(root: Option<&Path>, path: &str) -> FileResponse {
+    let file = if Path::new(path).is_absolute() {
+        dunce::canonicalize(path).ok()
+    } else {
+        root.and_then(|root| repo::contained(root, path).ok())
+    };
+    file.and_then(|file| {
+        let (Class::Image, mime) = served(&file)? else {
+            return None;
+        };
+        let handle = std::fs::File::open(&file).ok()?;
+        let meta = handle.metadata().ok()?;
+        if !meta.is_file() {
+            return None;
+        }
+        let mut headers = vec![
+            ("Content-Type", mime.to_owned()),
+            ("X-Content-Type-Options", "nosniff".to_owned()),
+            ("Cache-Control", "no-cache".to_owned()),
+        ];
+        if mime == "image/svg+xml" {
+            headers.push(("Content-Security-Policy", SVG_CSP.to_owned()));
+        }
+        file_response(handle, meta.len(), None, headers)
+    })
+    .unwrap_or_else(FileResponse::not_found)
+}
+
 fn decode_path_segment(segment: &str) -> Option<String> {
     let decoded = percent_decode_str(segment).decode_utf8().ok()?;
     let refused = decoded.is_empty()
