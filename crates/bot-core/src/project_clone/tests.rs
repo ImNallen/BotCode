@@ -20,6 +20,7 @@ impl Fixture {
             codex_binary: self.path("no-codex"),
             gh_binary: self.path("no-gh"),
             network_timeout: Duration::from_secs(1),
+            compaction_timeout: Duration::from_secs(600),
             shell: None,
         })
         .await

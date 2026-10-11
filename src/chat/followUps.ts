@@ -56,6 +56,9 @@ function checkpointsClosed(thread: Thread): boolean {
 export function immediateIntent(thread: Thread): DispatchIntent | null {
   if (sendingBlocked(thread)) return null;
   const turn = thread.turns.at(-1);
+  // A compaction cannot take input; follow-ups wait for it to finish.
+  if (turn?.kind === "compaction" && thread.session.kind === "running")
+    return null;
   if (
     thread.session.kind === "running" &&
     turn?.execution.kind === "running" &&

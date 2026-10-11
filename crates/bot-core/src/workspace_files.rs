@@ -198,7 +198,7 @@ fn serve(root: &Path, path: &str, range: Option<&str>, if_range: bool) -> Option
     {
         return None;
     }
-    let mut handle = std::fs::File::open(&file).ok()?;
+    let handle = std::fs::File::open(&file).ok()?;
     let meta = handle.metadata().ok()?;
     if !meta.is_file() {
         return None;
@@ -213,14 +213,26 @@ fn serve(root: &Path, path: &str, range: Option<&str>, if_range: bool) -> Option
     } else if mime == "image/svg+xml" {
         headers.push(("Content-Security-Policy", SVG_CSP.to_owned()));
     }
-    let (mut status, mut start, mut count) = (200, 0, len);
-    if class == Class::Audio {
+    let range = if class == Class::Audio {
         headers.push(("Cache-Control", AUDIO_NEVER_CACHED.to_owned()));
         headers.push(("Accept-Ranges", "bytes".to_owned()));
-        let requested = range
-            .filter(|_| !if_range)
-            .map_or(ByteRange::Full, |header| byte_range(header, len));
-        match requested {
+        range.filter(|_| !if_range)
+    } else {
+        headers.push(("Cache-Control", "no-cache".to_owned()));
+        None
+    };
+    file_response(handle, len, range, headers)
+}
+
+/// Responds with the whole file, or with the single byte range a media element requested.
+pub(crate) fn file_response(
+    mut handle: std::fs::File,
+    len: u64,
+    range: Option<&str>,
+    mut headers: Vec<(&'static str, String)>,
+) -> Option<FileResponse> {
+    let (status, start, count) =
+        match range.map_or(ByteRange::Full, |header| byte_range(header, len)) {
             ByteRange::Unsatisfiable => {
                 headers.push(("Content-Range", format!("bytes */{len}")));
                 return Some(FileResponse {
@@ -229,15 +241,12 @@ fn serve(root: &Path, path: &str, range: Option<&str>, if_range: bool) -> Option
                     body: Vec::new(),
                 });
             }
-            ByteRange::Partial { start: first, end } => {
-                headers.push(("Content-Range", format!("bytes {first}-{end}/{len}")));
-                (status, start, count) = (206, first, end - first + 1);
+            ByteRange::Partial { start, end } => {
+                headers.push(("Content-Range", format!("bytes {start}-{end}/{len}")));
+                (206, start, end - start + 1)
             }
-            ByteRange::Full => {}
-        }
-    } else {
-        headers.push(("Cache-Control", "no-cache".to_owned()));
-    }
+            ByteRange::Full => (200, 0, len),
+        };
     handle.seek(SeekFrom::Start(start)).ok()?;
     let mut body = Vec::new();
     handle.take(count).read_to_end(&mut body).ok()?;

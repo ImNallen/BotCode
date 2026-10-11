@@ -279,6 +279,7 @@ mod tests {
             checkout: Checkout::Local,
             turns: vec![Turn {
                 id: TurnId::default(),
+                kind: TurnKind::Prompt,
                 prompt: "Accepted work".into(),
                 context: None,
                 native_turn_id: None,
@@ -494,6 +495,7 @@ mod persisted_tests {
             codex_binary: dir.path().join("no-codex"),
             gh_binary: dir.path().join("no-gh"),
             network_timeout: Duration::from_secs(1),
+            compaction_timeout: Duration::from_secs(600),
             shell: None,
         };
         let app = App::open(config()).await.unwrap();

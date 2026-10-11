@@ -34,6 +34,17 @@ export const sourceControlWritingStyleSchema = z.object({
 export type SourceControlWritingStyle = z.infer<
   typeof sourceControlWritingStyleSchema
 >;
+// A null effort uses the model's default reasoning effort.
+export const modelSelectionSchema = z.object({
+  model: z.string().min(1),
+  effort: z.string().min(1).nullable(),
+});
+export type ModelSelection = z.infer<typeof modelSelectionSchema>;
+// T3 Code v0.0.45 packages/contracts/src/model.ts DEFAULT_TEXT_GENERATION_MODEL and DEFAULT_TEXT_GENERATION_REASONING_EFFORT.
+export const defaultTextGenerationModelSelection: ModelSelection = {
+  model: "gpt-6-luna",
+  effort: "low",
+};
 
 const projectSchema = z.object({
   sourceControlWritingStyle: sourceControlWritingStyleSchema,
@@ -44,6 +55,9 @@ const projectSchema = z.object({
   newThreadCheckout: z.enum(["local", "worktree"]),
   newWorktreesStartFromOrigin: z.boolean(),
   sidebarAutoSettleAfterDays: z.number().min(1).max(90).nullable(),
+  // Null starts new threads on the provider's default model.
+  defaultModelSelection: modelSelectionSchema.nullable(),
+  textGenerationModelSelection: modelSelectionSchema,
 });
 export type ProjectValues = z.infer<typeof projectSchema>;
 export type ProjectSetting = keyof ProjectValues;
@@ -61,6 +75,8 @@ export const builtInProject: ProjectValues = {
   newThreadCheckout: "local",
   newWorktreesStartFromOrigin: true,
   sidebarAutoSettleAfterDays: autoSettleDefaultDays,
+  defaultModelSelection: null,
+  textGenerationModelSelection: defaultTextGenerationModelSelection,
 };
 
 const storageCleanupSchema = z.object({
@@ -77,6 +93,13 @@ export const notificationModeSchema = z.enum([
   "notifications-and-sound",
 ]);
 export type NotificationMode = z.infer<typeof notificationModeSchema>;
+
+export const sendShortcutSchema = z.enum([
+  "enter",
+  "mod-enter-multiline",
+  "mod-enter",
+]);
+export type SendShortcut = z.infer<typeof sendShortcutSchema>;
 
 const scriptSettingsOverrides = z.record(
   z.uuid(),
@@ -99,6 +122,9 @@ const schema = z.object({
   promptFontSize: z.number().int().min(12).max(20),
   codeFontSize: z.number().int().min(11).max(20),
   followUpBehavior: z.enum(["queue", "steer"]),
+  composerRichTextEnabled: z.boolean(),
+  composerCollapseOnScroll: z.boolean(),
+  sendShortcut: sendShortcutSchema,
   // Null picks the first installed editor.
   preferredEditor: editorId.nullable(),
   contextWindowMeter: z.boolean(),
@@ -127,6 +153,9 @@ export const defaults: Preferences = {
   promptFontSize: 14,
   codeFontSize: 13,
   followUpBehavior: "queue",
+  composerRichTextEnabled: true,
+  composerCollapseOnScroll: true,
+  sendShortcut: "enter",
   preferredEditor: null,
   contextWindowMeter: true,
   sidebarWorkingShelfEnabled: false,
@@ -198,6 +227,9 @@ export function readPreferences(): PreferenceState {
         promptFontSize: z.unknown().optional(),
         codeFontSize: z.unknown().optional(),
         followUpBehavior: z.unknown().optional(),
+        composerRichTextEnabled: z.unknown().optional(),
+        composerCollapseOnScroll: z.unknown().optional(),
+        sendShortcut: z.unknown().optional(),
         preferredEditor: z.unknown().optional(),
         contextWindowMeter: z.unknown().optional(),
         sidebarWorkingShelfEnabled: z.unknown().optional(),
@@ -208,6 +240,8 @@ export function readPreferences(): PreferenceState {
         newThreadCheckoutConfigured: z.unknown().optional(),
         newWorktreesStartFromOrigin: z.unknown().optional(),
         sidebarAutoSettleAfterDays: z.unknown().optional(),
+        defaultModelSelection: z.unknown().optional(),
+        textGenerationModelSelection: z.unknown().optional(),
         projectOverrides: z.unknown().optional(),
         storageCleanup: z.unknown().optional(),
       })
@@ -319,6 +353,17 @@ export function readPreferences(): PreferenceState {
         followUpBehavior: schema.shape.followUpBehavior
           .catch("queue")
           .parse(object.followUpBehavior),
+        composerRichTextEnabled: z
+          .boolean()
+          .catch(defaults.composerRichTextEnabled)
+          .parse(object.composerRichTextEnabled),
+        composerCollapseOnScroll: z
+          .boolean()
+          .catch(defaults.composerCollapseOnScroll)
+          .parse(object.composerCollapseOnScroll),
+        sendShortcut: sendShortcutSchema
+          .catch(defaults.sendShortcut)
+          .parse(object.sendShortcut),
         preferredEditor: editorId
           .nullable()
           .catch(null)
@@ -354,6 +399,13 @@ export function readPreferences(): PreferenceState {
         sidebarAutoSettleAfterDays: sidebarAutoSettleAfterDays.success
           ? sidebarAutoSettleAfterDays.data
           : defaults.sidebarAutoSettleAfterDays,
+        defaultModelSelection: modelSelectionSchema
+          .nullable()
+          .catch(defaults.defaultModelSelection)
+          .parse(object.defaultModelSelection ?? null),
+        textGenerationModelSelection: modelSelectionSchema
+          .catch(defaults.textGenerationModelSelection)
+          .parse(object.textGenerationModelSelection),
         projectOverrides,
         storageCleanup: {
           worktreeOnDelete: storageCleanup.worktreeOnDelete === true,

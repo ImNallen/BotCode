@@ -14,7 +14,7 @@ import {
   createMemoryHistory,
   RouterContextProvider,
 } from "@tanstack/react-router";
-import { Menu } from "./menu";
+import { Menu, menuPlacement } from "./menu";
 
 it("shared menu arrows enter at either edge, wrap and retain Home/End navigation", () => {
   const previousDocument = Object.getOwnPropertyDescriptor(
@@ -115,4 +115,13 @@ it("shared menu arrows enter at either edge, wrap and retain Home/End navigation
       Object.defineProperty(globalThis, "document", previousDocument);
     else Reflect.deleteProperty(globalThis, "document");
   }
+});
+
+it("flips a popup to the side that has room for it", () => {
+  const settingsRow = { top: 238, bottom: 262 };
+  assert.equal(menuPlacement("top", 346, settingsRow, 780, 4), "bottom");
+  assert.equal(menuPlacement("top", 200, settingsRow, 780, 4), "top");
+  const composerControl = { top: 680, bottom: 710 };
+  assert.equal(menuPlacement("top", 346, composerControl, 780, 4), "top");
+  assert.equal(menuPlacement("bottom", 346, composerControl, 780, 4), "top");
 });

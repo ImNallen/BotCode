@@ -31,6 +31,7 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
         codex_binary: "/no/codex".into(),
         gh_binary: "/no/gh".into(),
         network_timeout: Duration::from_secs(1),
+        compaction_timeout: Duration::from_secs(600),
         shell: None,
     };
     let mut store = Store::open(directory.path()).unwrap();

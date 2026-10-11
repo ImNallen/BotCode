@@ -18,8 +18,11 @@ export interface WorkspaceFileDragEvent {
 }
 
 export interface WorkspaceFileDropHost {
+  /** Still claims file drags, so the webview never navigates to the file, but neither highlights nor adds. */
+  disabled?: boolean;
   setDragActive(active: boolean): void;
-  addFiles(files: File[]): void;
+  /** Omitted by a target nested in another that adds the same drop, so the drop is added once. */
+  addFiles?(files: File[]): void;
 }
 
 function isFileDrag(event: WorkspaceFileDragEvent): boolean {
@@ -55,13 +58,13 @@ export function makeWorkspaceFileDropHandlers(host: WorkspaceFileDropHost) {
       if (!isFileDrag(event)) return;
       event.preventDefault();
       if (movedWithinDropTarget(event)) return;
-      host.setDragActive(true);
+      host.setDragActive(!host.disabled);
     },
     onDragOver(event: WorkspaceFileDragEvent) {
       if (!isFileDrag(event)) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
-      host.setDragActive(true);
+      host.setDragActive(!host.disabled);
     },
     onDragLeave(event: WorkspaceFileDragEvent) {
       if (!isFileDrag(event)) return;
@@ -73,6 +76,7 @@ export function makeWorkspaceFileDropHandlers(host: WorkspaceFileDropHost) {
       if (!isFileDrag(event)) return;
       event.preventDefault();
       host.setDragActive(false);
+      if (host.disabled || !host.addFiles) return;
       const files = droppedFiles(event.dataTransfer);
       if (files.length > 0) host.addFiles(files);
     },

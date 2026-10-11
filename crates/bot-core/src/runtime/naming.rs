@@ -95,7 +95,8 @@ impl Owner {
             generation: self.checkout_generation(path),
         };
         let prompt = first.prompt.clone();
-        let model = self.resolve_model(&t.settings).map(str::to_owned);
+        let model =
+            settings::text_generation(&self.config.data_dir.join("settings.json"), &t.workspace_id);
         let binary = self.config.codex_binary.clone();
         let (cancel, receiver) = watch::channel(false);
         self.naming.pending.insert(
@@ -107,14 +108,7 @@ impl Owner {
         );
         self.naming.active.spawn(async move {
             let result = tokio::spawn(async move {
-                generate(
-                    &binary,
-                    model.as_deref(),
-                    &prompt,
-                    receiver,
-                    GENERATION_LIMIT,
-                )
-                .await
+                generate(&binary, &model, &prompt, receiver, GENERATION_LIMIT).await
             })
             .await
             .map_err(|_| AppError::new("naming_worker", "Branch generation worker stopped."))
@@ -268,7 +262,7 @@ fn normalize(output: &str) -> Result<String> {
 }
 async fn generate(
     binary: &Path,
-    model: Option<&str>,
+    model: &crate::settings::ModelSelection,
     request: &str,
     mut cancel: watch::Receiver<bool>,
     limit: Duration,
@@ -416,7 +410,8 @@ mod tests {
         std::fs::write(dir.path().join("naming_stall"), "").unwrap();
         std::fs::write(dir.path().join("naming_descendant"), "").unwrap();
         let (send, cancel) = watch::channel(false);
-        let generation = generate(&binary, None, "work request", cancel, GENERATION_LIMIT);
+        let model = crate::settings::ModelSelection::text_generation_default();
+        let generation = generate(&binary, &model, "work request", cancel, GENERATION_LIMIT);
         tokio::pin!(generation);
         let files = ["naming.pid", "naming_child.pid"];
         let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(30);

@@ -104,6 +104,21 @@ export const projectSettingRows = {
     resetLabel: "auto-settle on merge",
     keywords: "pull request PR merge merged automatic settlement",
   },
+  defaultModelSelection: {
+    title: "Model",
+    all: "Default model for new threads. Projects can override it.",
+    project: "Model for new threads in this project.",
+    resetLabel: "default model",
+    keywords: "default model new thread project provider reasoning effort",
+  },
+  textGenerationModelSelection: {
+    title: "Text generation model",
+    all: "Used for thread titles and other generated text on connected devices with this provider.",
+    project:
+      "Used for thread titles and other generated text on connected devices with this provider.",
+    resetLabel: "text generation model",
+    keywords: "generated thread titles source control content default provider",
+  },
   sidebarAutoSettleAfterDays: {
     title: "Auto-settle inactive threads",
     all: "Sidebar threads with no activity for this long settle automatically. Projects can override it.",
@@ -133,6 +148,12 @@ const worktreeCleanupKeywords =
   "worktree cleanup disk storage delete threads old inactive unchanged worktrees retention days off";
 
 export const projectRows = {
+  model: {
+    id: "project-model",
+    title: projectSettingRows.defaultModelSelection.title,
+    description: projectSettingRows.defaultModelSelection.project,
+    keywords: projectSettingRows.defaultModelSelection.keywords,
+  },
   icon: {
     id: "project-icon",
     title: "Project icon",
@@ -176,7 +197,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
       {
         id: "project-new-threads",
         title: "New threads",
-        rows: [projectRows.workspace],
+        rows: [projectRows.model, projectRows.workspace],
       },
       {
         id: "project-actions",
@@ -235,12 +256,6 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
               "Choose the permissions supported by your provider in each conversation composer.",
           },
           {
-            id: "follow-up-behavior",
-            title: "Follow-up behavior",
-            description:
-              "Queue follow-ups while the agent runs or steer the current run.",
-          },
-          {
             id: "preferred-editor",
             title: "Preferred editor",
             description:
@@ -260,6 +275,13 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         title: "New threads",
         when: "available",
         rows: [
+          {
+            id: "default-model",
+            title: projectSettingRows.defaultModelSelection.title,
+            description: projectSettingRows.defaultModelSelection.all,
+            keywords: projectSettingRows.defaultModelSelection.keywords,
+            setting: "defaultModelSelection",
+          },
           {
             id: "default-permissions",
             title: projectSettingRows.defaultPermissionMode.title,
@@ -332,6 +354,50 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             keywords:
               "notification toast popup completion input approval failure",
           },
+          {
+            id: "composer-rich-text",
+            title: "Rich text composer",
+            description: "Show formatted Markdown as you type.",
+            keywords:
+              "composer rich text tiptap bold italic markdown styled wysiwyg",
+          },
+          {
+            id: "composer-collapse",
+            title: "Collapse composer on scroll",
+            description:
+              "Rest the composer of an existing thread into a single line when you scroll the conversation. Focus the composer or start typing to expand it again.",
+            keywords:
+              "composer rest resting scroll wheel conversation timeline shrink minimize",
+          },
+          {
+            id: "send-shortcut",
+            title: "Send shortcut",
+            description:
+              "Choose when Enter sends a prompt or inserts a new line",
+            keywords:
+              "enter return command ctrl multiline prompt new line composer",
+          },
+          {
+            id: "follow-up-behavior",
+            title: "Follow-up behavior",
+            description:
+              "Queue follow-ups while the agent runs or steer the current run.",
+            keywords: "queue steer running turn send default behavior composer",
+          },
+        ],
+      },
+      {
+        id: "text-generation",
+        title: "Text generation",
+        when: "available",
+        rows: [
+          {
+            id: "text-generation-model",
+            title: projectSettingRows.textGenerationModelSelection.title,
+            description: projectSettingRows.textGenerationModelSelection.all,
+            keywords: projectSettingRows.textGenerationModelSelection.keywords,
+            setting: "textGenerationModelSelection",
+          },
         ],
       },
       {
@@ -343,7 +409,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "restore",
             title: "Restore defaults",
             description:
-              "Reset appearance, font sizes, follow-up behavior, the context window indicator, notifications, storage cleanup, new thread defaults, source control and auto-settle, including project overrides, on this device.",
+              "Reset appearance, font sizes, follow-up behavior, the composer, the context window indicator, notifications, storage cleanup, new thread defaults, the text generation model, source control and auto-settle, including project overrides, on this device.",
           },
         ],
       },

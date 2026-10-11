@@ -40,7 +40,8 @@ impl Owner {
             .for_project(&t.workspace_id)
             .writing_style
             .clone();
-        let model = self.resolve_model(&t.settings).map(str::to_owned);
+        let model =
+            settings::text_generation(&self.config.data_dir.join("settings.json"), &t.workspace_id);
         self.cancel_commit_previews(Some(&root));
         if self.writing.active.len() >= 4 || self.writing.pending.len() >= 4 {
             return Err(AppError::new(
@@ -67,7 +68,7 @@ impl Owner {
             let result = tokio::spawn(async move {
                 crate::text_generation::preview_commit(
                     &binary,
-                    model.as_deref(),
+                    &model,
                     &root,
                     &selection,
                     &writing_style,

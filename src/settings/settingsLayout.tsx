@@ -55,6 +55,7 @@ export function SettingsRow({
   control,
   inheritance,
   resetAction,
+  status,
   disabled = false,
   onContextMenu,
   children,
@@ -68,6 +69,7 @@ export function SettingsRow({
   control?: ReactNode;
   inheritance?: ReactNode;
   resetAction?: ReactNode;
+  status?: ReactNode;
   disabled?: boolean;
   onContextMenu?: React.MouseEventHandler<HTMLDivElement>;
 }) {
@@ -99,6 +101,9 @@ export function SettingsRow({
           <p className="max-w-xl text-xs leading-normal text-muted-foreground/80">
             {description}
           </p>
+          {status ? (
+            <div className="pt-0.5 text-xs text-muted-foreground">{status}</div>
+          ) : null}
         </div>
         {control ? (
           <div className="flex w-full min-w-0 shrink-0 items-center gap-2 @min-[32rem]/settings-row:w-auto @min-[32rem]/settings-row:justify-end">

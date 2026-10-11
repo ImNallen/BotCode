@@ -376,6 +376,7 @@ for line in sys.stdin:
                 codex_binary: peer.binary.clone(),
                 gh_binary: peer.dir.path().join("missing-gh"),
                 network_timeout: Duration::from_secs(180),
+                compaction_timeout: Duration::from_secs(600),
                 shell: None,
             })
             .await

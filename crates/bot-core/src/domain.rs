@@ -367,10 +367,20 @@ pub struct ModelOption {
     pub default_reasoning_effort: String,
     pub supported_reasoning_efforts: Vec<ReasoningEffortOption>,
 }
+/// A prompt turn runs `turn/start`; a compaction turn runs `thread/compact/start` for the prompt `/compact`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnKind {
+    #[default]
+    Prompt,
+    Compaction,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Turn {
     pub id: TurnId,
+    #[serde(default)]
+    pub kind: TurnKind,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<MessageContext>,

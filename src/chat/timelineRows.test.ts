@@ -65,6 +65,7 @@ function thread(items: Item[], running = false): Thread {
     turns: [
       {
         id: turnId,
+        kind: "prompt" as const,
         prompt: "Check the latest Rust release and compute 6 × 7",
         attachments: [],
         tasks: null,
@@ -263,6 +264,7 @@ it("shows a running turn's incomplete reasoning as the live Thinking activity ro
       reverting: false,
       busy: false,
       onEdit() {},
+      onExpandImage() {},
       onRemoveQueued() {},
       onOpenTurnDiff() {},
     }),

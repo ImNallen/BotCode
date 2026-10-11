@@ -50,6 +50,7 @@ impl Fixture {
             codex_binary: "/no/codex".into(),
             gh_binary: gh,
             network_timeout: Duration::from_secs(30),
+            compaction_timeout: Duration::from_secs(600),
             shell: None,
         };
         let fixture = Self { dir, root, config };

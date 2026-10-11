@@ -35,6 +35,7 @@ impl Fixture {
                 codex_binary: peer.clone(),
                 gh_binary: dir.path().join("no-gh"),
                 network_timeout: Duration::from_secs(180),
+                compaction_timeout: Duration::from_secs(600),
                 shell: None,
             },
             _dir: dir,

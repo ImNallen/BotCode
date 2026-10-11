@@ -318,7 +318,7 @@ pub(crate) fn sanitize(raw: &str) -> Option<String> {
 
 pub(crate) async fn regenerate(
     binary: &Path,
-    model: Option<&str>,
+    model: &crate::settings::ModelSelection,
     prompt: &str,
     mut cancel: watch::Receiver<bool>,
     limit: Duration,

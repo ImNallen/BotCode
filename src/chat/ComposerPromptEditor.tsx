@@ -1,5 +1,6 @@
 // Ported from T3 Code v0.0.45 apps/web/src/components/ComposerPromptEditorTiptap.tsx, ContextChip.tsx and chat/FileTagChip.tsx (MIT).
-import { Node } from "@tiptap/core";
+import { Extension, getSchema, Node, wrappingInputRule } from "@tiptap/core";
+import { TaskList } from "@tiptap/extension-task-list";
 import {
   EditorContent,
   NodeViewWrapper,
@@ -8,21 +9,27 @@ import {
   type NodeViewProps,
 } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { Slice } from "@tiptap/pm/model";
-import type { EditorView } from "@tiptap/pm/view";
+import { Slice, type Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { splitBlockKeepMarks } from "@tiptap/pm/commands";
+import { liftListItem, splitListItem } from "@tiptap/pm/schema-list";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import {
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type Ref,
   createContext,
   useContext,
 } from "react";
 import { cn } from "../lib/cn";
 import {
-  buildComposerDocument,
+  ComposerCodeExtension,
+  composerContent,
   composerDocumentMap,
+  ComposerTaskItemExtension,
   editorCursor,
   promptCursor,
   replaceComposerText,
@@ -97,28 +104,217 @@ const ComposerContext = Node.create({
   addNodeView: () => ReactNodeViewRenderer(ContextNodeView),
 });
 
-export const composerEditorExtensions = [
-  StarterKit.configure({
-    blockquote: false,
-    bulletList: false,
-    codeBlock: false,
-    heading: false,
-    horizontalRule: false,
-    listItem: false,
-    link: false,
-    orderedList: false,
-    underline: false,
-    dropcursor: false,
-    gapcursor: false,
-    trailingNode: false,
-    code: false,
-    bold: false,
-    italic: false,
-    strike: false,
-    undoRedo: { newGroupDelay: 500 },
-  }),
-  ComposerContext,
-];
+type StyledRange = {
+  from: number;
+  to: number;
+  markers: { at: number; side: number; text: string }[];
+};
+
+function collectStyledRanges(doc: ProseMirrorNode): StyledRange[] {
+  const ranges: StyledRange[] = [];
+  const map = composerDocumentMap(doc);
+  let range: StyledRange | null = null;
+  let openLength = 0;
+  for (const run of map.runs) {
+    if (run.openLen > 0) {
+      range ??= { from: run.pmPos, to: run.pmPos, markers: [] };
+      range.markers.push({
+        at: run.pmPos,
+        side: -1,
+        text: map.text.slice(run.promptStart, run.promptStart + run.openLen),
+      });
+    }
+    if (range === null) continue;
+    range.to = run.pmPos + run.docLen;
+    if (run.closeLen > 0) {
+      const end = run.promptStart + run.promptLen;
+      range.markers.push({
+        at: range.to,
+        side: -2,
+        text: map.text.slice(end - run.closeLen, end),
+      });
+    }
+    openLength += run.openLen - run.closeLen;
+    if (openLength === 0) {
+      ranges.push(range);
+      range = null;
+    }
+  }
+  return ranges;
+}
+
+function decorationsForSelection(
+  doc: ProseMirrorNode,
+  selection: { from: number; to: number; empty: boolean },
+): DecorationSet {
+  const decorations: Decoration[] = [];
+  if (!selection.empty) {
+    doc.nodesBetween(selection.from, selection.to, (node, pos) => {
+      if (node.type.name.startsWith("composer-")) {
+        decorations.push(
+          Decoration.node(pos, pos + node.nodeSize, {
+            class: "composer-chip-range-selected",
+          }),
+        );
+        return false;
+      }
+      return true;
+    });
+  }
+  for (const range of collectStyledRanges(doc)) {
+    const active = selection.empty
+      ? selection.from >= range.from && selection.from <= range.to
+      : selection.from < range.to && selection.to > range.from;
+    if (!active) continue;
+    for (const { at, side, text } of range.markers)
+      decorations.push(
+        Decoration.widget(
+          at,
+          () => {
+            const marker = document.createElement("span");
+            marker.className = "composer-rich-marker";
+            marker.textContent = text;
+            marker.setAttribute("aria-hidden", "true");
+            return marker;
+          },
+          { side, key: `marker-${at}-${side}-${text}` },
+        ),
+      );
+  }
+  return DecorationSet.create(doc, decorations);
+}
+
+const markerPluginKey = new PluginKey<DecorationSet>("composer-rich-markers");
+const ComposerMarkersExtension = Extension.create({
+  name: "composer-rich-markers",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: markerPluginKey,
+        state: {
+          init: (_, state) =>
+            decorationsForSelection(state.doc, state.selection),
+          apply: (tr, old) =>
+            tr.docChanged || tr.selectionSet
+              ? decorationsForSelection(tr.doc, tr.selection)
+              : old,
+        },
+        props: {
+          decorations: (state) => markerPluginKey.getState(state),
+        },
+      }),
+    ];
+  },
+});
+
+// T3's input rules convert typed Markdown into marks. A conversion the
+// serializer would not turn back into the typed text is refused, so the
+// characters stay literal and the prompt matches plain mode.
+const ComposerLosslessInputRules = Extension.create({
+  name: "composer-lossless-input-rules",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        filterTransaction: (tr, state) =>
+          !tr.getMeta("inputRule") ||
+          composerDocumentMap(tr.doc).text ===
+            composerDocumentMap(state.doc).text,
+        appendTransaction: (transactions, _old, state) =>
+          transactions.some((tr) => tr.getMeta("inputRule"))
+            ? state.tr.setStoredMarks([])
+            : null,
+      }),
+    ];
+  },
+});
+
+// The setting toggles styling, not the engine: both modes are Tiptap. Plain
+// mode leaves out the marks, so typed markers stay literal characters.
+export function composerExtensions(richText: boolean) {
+  return [
+    StarterKit.configure({
+      blockquote: false,
+      bulletList: false,
+      codeBlock: false,
+      heading: false,
+      horizontalRule: false,
+      listItem: false,
+      link: false,
+      orderedList: false,
+      underline: false,
+      dropcursor: false,
+      gapcursor: false,
+      trailingNode: false,
+      code: false,
+      undoRedo: { newGroupDelay: 500 },
+      ...(richText ? {} : { bold: false, italic: false, strike: false }),
+    }),
+    ComposerContext,
+    ComposerMarkersExtension,
+    ...(richText
+      ? [
+          ComposerLosslessInputRules,
+          ComposerCodeExtension,
+          TaskList,
+          ComposerTaskItemExtension.extend({
+            addInputRules() {
+              return [
+                wrappingInputRule({
+                  find: /^- \[([ xX])\] $/,
+                  type: this.type,
+                  getAttributes: (match) => ({
+                    checked: match[1]?.toLowerCase() === "x",
+                    contentSpace: " ",
+                  }),
+                }),
+              ];
+            },
+          }),
+        ]
+      : []),
+  ];
+}
+
+function inTaskItem(view: EditorView) {
+  const { $from } = view.state.selection;
+  for (let depth = $from.depth; depth > 0; depth -= 1)
+    if ($from.node(depth).type.name === "taskItem") return true;
+  return false;
+}
+
+// Enter that neither sends nor picks a suggestion: a task item splits, an
+// empty one lifts out of its list, anything else splits the paragraph.
+export function composerEnter(view: EditorView): boolean {
+  const taskItem = view.state.schema.nodes.taskItem;
+  if (
+    taskItem &&
+    inTaskItem(view) &&
+    (splitListItem(taskItem, { checked: false })(view.state, view.dispatch) ||
+      (view.state.selection.$from.parent.content.size === 0 &&
+        liftListItem(taskItem)(view.state, view.dispatch)))
+  )
+    return true;
+  return splitBlockKeepMarks(view.state, (tr) =>
+    view.dispatch(tr.scrollIntoView()),
+  );
+}
+
+function insertParsed(
+  view: EditorView,
+  text: string,
+  records: readonly ComposerContextRecord[],
+) {
+  const content = composerContent(view.state.schema, text, records).content;
+  const open = (node: ProseMirrorNode | null) =>
+    node?.type.name === "paragraph" ? 1 : 0;
+  view.dispatch(
+    view.state.tr
+      .replaceSelection(
+        new Slice(content, open(content.firstChild), open(content.lastChild)),
+      )
+      .scrollIntoView(),
+  );
+}
 
 export type ComposerSnapshot = {
   value: string;
@@ -141,8 +337,11 @@ export type ComposerEditorHandle = {
   }) => boolean;
 };
 
-export function ComposerPromptEditor(props: {
+type ComposerPromptEditorProps = {
   ref: Ref<ComposerEditorHandle>;
+  richText: boolean;
+  className?: string;
+  placeholderClassName?: string;
   value: string;
   skills: readonly Skill[];
   records: ComposerContextRecord[];
@@ -157,7 +356,23 @@ export function ComposerPromptEditor(props: {
   autoFocus?: boolean;
   suggestionListId?: string;
   activeSuggestionId?: string;
-}) {
+};
+
+export function ComposerPromptEditor(props: ComposerPromptEditorProps) {
+  // Extensions are creation-time: flipping the setting remounts the editor.
+  // Both halves initialize from the controlled Markdown value, so the draft
+  // survives the flip.
+  return (
+    <ComposerPromptEditorInner
+      key={props.richText ? "rich" : "plain"}
+      {...props}
+    />
+  );
+}
+
+function ComposerPromptEditorInner(props: ComposerPromptEditorProps) {
+  const richText = props.richText;
+  const [extensions] = useState(() => composerExtensions(richText));
   const latest = useRef(props);
   latest.current = props;
   const composing = useRef(false);
@@ -166,12 +381,13 @@ export function ComposerPromptEditor(props: {
       class: cn(
         "composer-tiptap -m-1 block max-h-52 min-h-19.5 overflow-y-auto p-1 whitespace-pre-wrap wrap-break-word bg-transparent leading-relaxed text-foreground focus:outline-none",
         props.approvalState && "min-h-10",
+        props.className,
       ),
       role: "textbox",
       "aria-label": "Message",
       "aria-multiline": "true",
       "data-testid": "composer-editor",
-      "data-composer-rich-text": "false",
+      "data-composer-rich-text": richText ? "true" : "false",
       "aria-placeholder": props.placeholder,
       "data-placeholder": props.placeholder,
       ...(props.disabled ? { "aria-readonly": "true" } : {}),
@@ -189,22 +405,36 @@ export function ComposerPromptEditor(props: {
     [
       props.disabled,
       props.approvalState,
+      props.className,
       props.placeholder,
       props.suggestionListId,
       props.activeSuggestionId,
     ],
   );
   const editor = useEditor({
-    extensions: composerEditorExtensions,
-    content: buildComposerDocument(props.value, props.records),
+    extensions,
+    content: composerContent(
+      getSchema(extensions),
+      props.value,
+      props.records,
+    ).toJSON(),
     editable: !props.disabled,
     autofocus: props.autoFocus ? "end" : false,
     editorProps: {
       attributes: editorAttributes,
-      handleKeyDown: (_view, event) => {
+      handleKeyDown: (view, event) => {
         if (event.isComposing || event.keyCode === 229 || composing.current)
           return false;
-        return latest.current.onKeyDown(event);
+        // Enter on a focused task checkbox must not send the prompt (or
+        // split anything): Space toggles it, Enter does nothing.
+        if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
+          event.preventDefault();
+          return true;
+        }
+        if (latest.current.onKeyDown(event)) return true;
+        if (event.key !== "Enter") return false;
+        event.preventDefault();
+        return composerEnter(view);
       },
       handlePaste: (view, event) => {
         const fragment = event.clipboardData
@@ -214,21 +444,19 @@ export function ComposerPromptEditor(props: {
           latest.current.onPasteFiles(event, Boolean(fragment?.records.length))
         )
           return true;
-        if (!fragment) return false;
+        if (!fragment) {
+          const text = event.clipboardData?.getData("text/plain");
+          if (!richText || !text) return false;
+          insertParsed(view, text, []);
+          return true;
+        }
         const existing = composerDocumentMap(view.state.doc).records;
         if (
           new Set([...existing, ...fragment.records].map((r) => r.contextId))
             .size > 200
         )
           return true;
-        const content = view.state.schema.nodeFromJSON(
-          buildComposerDocument(fragment.text, fragment.records),
-        ).content;
-        view.dispatch(
-          view.state.tr
-            .replaceSelection(new Slice(content, 1, 1))
-            .scrollIntoView(),
-        );
+        insertParsed(view, fragment.text, fragment.records);
         return true;
       },
       clipboardTextSerializer: (slice) =>
@@ -381,7 +609,7 @@ export function ComposerPromptEditor(props: {
     )
       return;
     editor.commands.setContent(
-      buildComposerDocument(props.value, props.records),
+      composerContent(editor.schema, props.value, props.records).toJSON(),
       {
         emitUpdate: false,
       },
@@ -405,7 +633,10 @@ export function ComposerPromptEditor(props: {
       {!props.value && props.placeholder ? (
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 leading-relaxed text-placeholder/75"
+          className={cn(
+            "pointer-events-none absolute inset-0 leading-relaxed text-placeholder/75",
+            props.placeholderClassName,
+          )}
         >
           {props.placeholder}
         </div>

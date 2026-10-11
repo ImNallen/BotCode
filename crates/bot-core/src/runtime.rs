@@ -2,6 +2,7 @@ mod project;
 use crate::project::ProjectConfig;
 mod checkpoints;
 mod collaboration;
+mod compaction;
 mod naming;
 mod restarts;
 mod thread_actions;
@@ -52,6 +53,8 @@ pub struct RuntimeConfig {
     pub codex_binary: PathBuf,
     pub gh_binary: PathBuf,
     pub network_timeout: Duration,
+    /// How long a context compaction may run before it is reported lost.
+    pub compaction_timeout: Duration,
     /// The terminal shell. `None` tries `$SHELL`, then zsh, bash, and sh.
     pub shell: Option<PathBuf>,
 }
@@ -72,6 +75,7 @@ impl RuntimeConfig {
                 .unwrap_or_else(|| "codex".into()),
             gh_binary: vcs::installed_binary("gh", "BOT_CODE_GH_BIN"),
             network_timeout: Duration::from_secs(180),
+            compaction_timeout: Duration::from_secs(600),
             shell: std::env::var_os("BOT_CODE_SHELL").map(PathBuf::from),
         })
     }
@@ -1565,8 +1569,13 @@ impl App {
             .await
             .map_err(|e| AppError::new("attachment", e))?
     }
-    pub fn read_attachment(&self, file: &str) -> Result<(Vec<u8>, String)> {
-        self.attachments.read(file)
+    pub fn serve_attachment(
+        &self,
+        file: &str,
+        range: Option<&str>,
+        if_range: bool,
+    ) -> workspace_files::FileResponse {
+        self.attachments.serve(file, range, if_range)
     }
     pub async fn submit(
         &self,
@@ -2095,6 +2104,11 @@ enum Completion {
         turn: TurnId,
         result: Result<Value>,
     },
+    CompactionExpired {
+        epoch: u64,
+        thread: ThreadId,
+        turn: TurnId,
+    },
     Steered {
         epoch: u64,
         thread: ThreadId,
@@ -2121,7 +2135,7 @@ enum Completion {
 impl Completion {
     fn process_died(&self) -> bool {
         let error = match self {
-            Self::StackProgress { .. } => None,
+            Self::StackProgress { .. } | Self::CompactionExpired { .. } => None,
             Self::Models { result, .. } => result.as_ref().err(),
             Self::Limits { result, .. } => result.as_ref().err(),
             Self::Launched { result, .. } => result.as_ref().err(),
@@ -2808,11 +2822,10 @@ impl Owner {
                         let _ = reply.send(Err(error));
                     }
                     Ok(root) => {
-                        let model = thread
-                            .as_ref()
-                            .and_then(|id| self.threads.get(id))
-                            .and_then(|t| self.resolve_model(&t.settings))
-                            .map(str::to_owned);
+                        let model = settings::text_generation(
+                            &self.config.data_dir.join("settings.json"),
+                            &id,
+                        );
                         let origin = thread.map(|id| {
                             let generation = self.pr_generation(&id);
                             (id, generation)
@@ -3543,6 +3556,12 @@ impl Owner {
         for attachment in &attachments {
             self.attachments.validate(attachment)?;
         }
+        let kind = if compaction::is_command(text, &attachments, context.as_ref()) {
+            compaction::admit(thread, expected.is_some())?;
+            TurnKind::Compaction
+        } else {
+            TurnKind::Prompt
+        };
         if let Some(expected) = expected {
             return self.accept_steer(
                 id,
@@ -3566,7 +3585,7 @@ impl Owner {
             ));
         }
         // Without a provider the catalogs are unknown; turn start checks them after the relaunch.
-        if self.provider.is_some() {
+        if self.provider.is_some() && kind == TurnKind::Prompt {
             self.startable(
                 &thread.settings,
                 thread.native_thread_id.is_some(),
@@ -3587,7 +3606,12 @@ impl Owner {
         t.latest_user_activity_at_ms = Some(now_ms());
         let turn = Turn {
             id: TurnId::default(),
-            prompt: text.into(),
+            kind,
+            prompt: if kind == TurnKind::Compaction {
+                compaction::COMPACT_COMMAND.into()
+            } else {
+                text.into()
+            },
             context,
             native_turn_id: None,
             delivery: Delivery::Preparing,
@@ -3670,6 +3694,12 @@ impl Owner {
             return Err(AppError::new(
                 "stale_turn",
                 "The targeted turn is no longer running. This message was not sent.",
+            ));
+        }
+        if turn.kind == TurnKind::Compaction {
+            return Err(AppError::new(
+                "busy",
+                "Wait for context compaction to finish before sending.",
             ));
         }
         if thread.pending_revert.is_some() || thread.input_open() {
@@ -4138,6 +4168,11 @@ impl Owner {
                                 .find(|v| v.id == turn_id)
                                 .ok_or_else(|| AppError::new("missing_turn", "Turn not found."))?;
                             turn.delivery = Delivery::Sending;
+                            if turn.kind == TurnKind::Compaction {
+                                self.commit(&id)?;
+                                self.dispatch_compaction(id, turn_id, native);
+                                return Ok(());
+                            }
                             let input = crate::codex::turn_input(
                                 &turn.prompt,
                                 turn.context.as_ref(),
@@ -4226,6 +4261,17 @@ impl Owner {
                 let t = self.threads.get_mut(&thread).unwrap();
                 let row = t.turns.iter_mut().find(|r| r.id == turn).unwrap();
                 match result {
+                    Ok(_) if row.kind == TurnKind::Compaction => {
+                        // turn/started names the compaction's native turn; the ack carries none.
+                        if row.delivery == Delivery::Accepted {
+                            return Ok(());
+                        }
+                        row.delivery = Delivery::Accepted;
+                        if row.execution.active() {
+                            row.execution = Execution::Running;
+                            t.session = SessionState::Running;
+                        }
+                    }
                     Ok(value) => {
                         let native_turn = value
                             .pointer("/turn/id")
@@ -4257,7 +4303,7 @@ impl Owner {
                                 | "invalid_model"
                                 | "invalid_effort"
                                 | "invalid_settings"
-                        ) =>
+                        ) || (row.kind == TurnKind::Compaction && e.code == "provider") =>
                     {
                         row.delivery = Delivery::NotSent {
                             reason: e.message.clone(),
@@ -4290,6 +4336,11 @@ impl Owner {
                 }
                 self.commit(&thread)?;
             }
+            Completion::CompactionExpired {
+                epoch,
+                thread,
+                turn,
+            } if epoch == self.epoch => self.compaction_expired(&thread, &turn)?,
             Completion::Steered {
                 epoch,
                 thread,
@@ -4810,8 +4861,16 @@ impl Owner {
                                 }
                             }
                         }
+                        let restore = (method == "item/completed"
+                            && matches!(item, Item::ContextCompaction { .. }))
+                        .then(|| t.native_thread_id.clone())
+                        .flatten()
+                        .filter(|native| p.get("threadId").and_then(Value::as_str) == Some(native));
                         let end = turn.items.len();
                         upsert(&mut turn.items, item, end);
+                        if let Some(native) = restore {
+                            self.restore_context(&native);
+                        }
                     }
                 }
             }

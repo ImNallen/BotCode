@@ -699,7 +699,9 @@ export function deriveRows(
       const lastCompaction = list.findLast(
         (entry) => entry.kind === "compaction",
       );
-      const compacting = lastCompaction?.complete === false;
+      const compacting = lastCompaction
+        ? !lastCompaction.complete
+        : turn.kind === "compaction";
       rows.push({
         kind: "working",
         id: `working:${turn.id}`,

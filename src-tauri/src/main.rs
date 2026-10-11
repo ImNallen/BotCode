@@ -28,31 +28,7 @@ fn main() {
         .manage(notifications::NotificationActions::default())
         .register_asynchronous_uri_scheme_protocol(
             "botcode-attachment",
-            |ctx, request, responder| {
-                if ctx.webview_label() != "main" {
-                    responder.respond(
-                        tauri::http::Response::builder()
-                            .status(404)
-                            .body(Vec::new())
-                            .expect("static response parts are valid"),
-                    );
-                    return;
-                }
-                let app = ctx.app_handle().state::<App>().inner().clone();
-                let file = request.uri().path().trim_start_matches('/').to_owned();
-                tauri::async_runtime::spawn_blocking(move || {
-                    let response = match app.read_attachment(&file) {
-                        Ok((bytes, mime)) => tauri::http::Response::builder()
-                            .header("Content-Type", mime.as_str())
-                            .header("Cache-Control", "private, max-age=31536000, immutable")
-                            .body(bytes),
-                        Err(_) => tauri::http::Response::builder()
-                            .status(404)
-                            .body(Vec::new()),
-                    };
-                    responder.respond(response.expect("static response parts are valid"));
-                });
-            },
+            workspace_files::handle_attachment,
         )
         .register_asynchronous_uri_scheme_protocol(
             bot_core::workspace_files::SCHEME,

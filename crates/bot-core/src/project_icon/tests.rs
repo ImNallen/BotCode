@@ -257,6 +257,7 @@ async fn open(state: &Path) -> App {
         codex_binary: "/usr/bin/false".into(),
         gh_binary: "/usr/bin/false".into(),
         network_timeout: Duration::from_secs(1),
+        compaction_timeout: Duration::from_secs(600),
         shell: None,
     })
     .await

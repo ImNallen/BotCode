@@ -919,7 +919,7 @@ pub(crate) struct Context {
     pub gh: PathBuf,
     pub network: Duration,
     pub codex: PathBuf,
-    pub model: Option<String>,
+    pub model: crate::settings::ModelSelection,
     pub writing_style: crate::settings::WritingStyle,
     pub progress: Box<dyn Fn(GitProgress) + Send + Sync>,
 }
@@ -1061,7 +1061,7 @@ async fn prepare_commit(cx: &Context, request: CommitRequest) -> Result<Prepared
             let (_send, mut cancel) = tokio::sync::watch::channel(false);
             crate::text_generation::commit_message(
                 &cx.codex,
-                cx.model.as_deref(),
+                &cx.model,
                 root,
                 None,
                 &cx.writing_style,
@@ -1184,7 +1184,7 @@ async fn open_pr(cx: &Context, step: PrStep, warnings: &mut Vec<String>) -> Resu
     let (_send, mut cancel) = tokio::sync::watch::channel(false);
     let content = crate::text_generation::pr_content(
         &cx.codex,
-        cx.model.as_deref(),
+        &cx.model,
         &cx.root,
         &base,
         &head,

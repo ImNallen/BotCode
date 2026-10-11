@@ -43,7 +43,16 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
 import type { ComposerContextRecord } from "./composerContext";
 import { copyContextContent } from "./composerContextClipboard";
-import { attachmentUrl } from "./composerAttachments";
+import {
+  attachmentIdentity,
+  attachmentMediaKind,
+  attachmentUrl,
+} from "./composerAttachments";
+import {
+  buildExpandedImagePreview,
+  type ExpandedImagePreview,
+} from "./ExpandedImagePreview";
+import { MediaVideoPlayer } from "./MediaVideoPlayer";
 import {
   ChangedFilesCard,
   type FileContextMenuHandler,
@@ -156,38 +165,78 @@ function UserRow({
   skills,
   disabled,
   onEdit,
+  onExpandImage,
 }: {
   row: Extract<TimelineRow, { kind: "user" }>;
   skills: readonly Skill[];
   disabled: boolean;
   onEdit: () => void;
+  onExpandImage: (preview: ExpandedImagePreview) => void;
 }) {
+  const images = row.attachments.filter(
+    (attachment) => attachment.kind === "image",
+  );
+  const videos = row.attachments.filter(
+    (attachment) => attachmentMediaKind(attachment) === "video",
+  );
+  const expand = (attachment: (typeof row.attachments)[number]) => {
+    const preview = buildExpandedImagePreview(
+      row.attachments,
+      attachmentIdentity(attachment),
+    );
+    if (preview) onExpandImage(preview);
+  };
   return (
     <div className="group flex flex-col items-end gap-1">
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
         <h3 className="sr-only select-none">You</h3>
-        {row.attachments.length > 0 ? (
+        {images.length > 0 || videos.length > 0 ? (
           <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">
-            {row.attachments
-              .filter((attachment) => attachment.kind === "image")
-              .map((image) => (
-                <div
-                  key={image.id}
-                  className="bg-background/70 aspect-[4/3] overflow-hidden rounded-lg border border-border/80"
+            {images.map((image) => (
+              <div
+                key={image.id}
+                className="bg-background/70 aspect-[4/3] overflow-hidden rounded-lg border border-border/80"
+              >
+                <button
+                  type="button"
+                  className="block h-full w-full cursor-zoom-in"
+                  aria-label={`Preview ${image.name}`}
+                  onClick={() => expand(image)}
                 >
                   <img
                     src={attachmentUrl(image)}
                     alt={image.name}
                     className="block size-full object-cover"
                   />
-                </div>
-              ))}
+                </button>
+              </div>
+            ))}
+            {videos.map((video) => (
+              <MediaVideoPlayer
+                key={attachmentIdentity(video)}
+                src={attachmentUrl(video)}
+                label={video.name}
+                preload="visible"
+                onOpen={() => expand(video)}
+                className="block aspect-[4/3] w-full"
+                videoClassName="aspect-auto size-full rounded-lg border border-border/80"
+                stateClassName="aspect-auto min-h-full rounded-lg border border-border/80 bg-black text-white"
+              />
+            ))}
           </div>
         ) : null}
-        {row.attachments.some((attachment) => attachment.kind === "file") ? (
+        {row.attachments.some(
+          (attachment) =>
+            attachment.kind === "file" &&
+            attachmentMediaKind(attachment) === null,
+        ) ? (
           <div className="mb-2 flex flex-col gap-1">
             {row.attachments
-              .filter((attachment) => attachment.kind === "file")
+              .filter(
+                (attachment) =>
+                  attachment.kind === "file" &&
+                  attachmentMediaKind(attachment) === null,
+              )
               .map((file) => (
                 <div
                   key={JSON.stringify([file.id, file.name])}
@@ -925,6 +974,7 @@ export function Timeline({
   onOpenTurnDiff,
   onFileContextMenu,
   onRemoveQueued,
+  onExpandImage,
 }: {
   thread: Thread;
   skills: readonly Skill[];
@@ -935,6 +985,7 @@ export function Timeline({
   onRemoveQueued: (id: string) => void;
   onOpenTurnDiff: (turnId: string, filePath?: string) => void;
   onFileContextMenu?: FileContextMenuHandler;
+  onExpandImage: (preview: ExpandedImagePreview) => void;
 }) {
   useSyncExternalStore(
     followUps.subscribe,
@@ -977,6 +1028,7 @@ export function Timeline({
         <div
           ref={scroller}
           data-assistant-citation-viewport
+          data-chat-timeline-scroller="true"
           onScroll={(event) => {
             const element = event.currentTarget;
             const end =
@@ -1013,6 +1065,7 @@ export function Timeline({
                         reverting || busy || Boolean(thread.pendingRevert)
                       }
                       onEdit={() => onEdit(row.turnId)}
+                      onExpandImage={onExpandImage}
                     />
                   ) : row.kind === "assistant" ? (
                     <AssistantRow row={row} thread={thread} />

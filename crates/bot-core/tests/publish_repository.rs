@@ -101,6 +101,7 @@ raise SystemExit('Unexpected gh command ' + repr(args))
             gh_binary: gh,
             codex_binary: codex,
             network_timeout: Duration::from_secs(3),
+            compaction_timeout: Duration::from_secs(600),
             shell: None,
         };
         Self {

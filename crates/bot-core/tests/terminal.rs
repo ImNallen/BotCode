@@ -45,6 +45,7 @@ impl Fixture {
                 codex_binary: dir.path().join("no-codex"),
                 gh_binary: dir.path().join("no-gh"),
                 network_timeout: Duration::from_secs(5),
+                compaction_timeout: Duration::from_secs(600),
                 shell: Some("/bin/sh".into()),
             },
             _dir: dir,

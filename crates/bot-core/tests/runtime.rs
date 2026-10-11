@@ -33,6 +33,7 @@ impl Fixture {
                 codex_binary: peer.clone(),
                 gh_binary: dir.path().join("no-gh"),
                 network_timeout: Duration::from_secs(180),
+                compaction_timeout: Duration::from_secs(600),
                 shell: None,
             },
             _dir: dir,
@@ -931,6 +932,7 @@ fn legacy_snapshots_default_settings() {
         turns: vec![Turn {
             tasks: None,
             id: TurnId::default(),
+            kind: TurnKind::Prompt,
             prompt: "hello".into(),
             context: None,
             native_turn_id: None,
@@ -2301,6 +2303,7 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
         turns: vec![Turn {
             tasks: None,
             id: TurnId::default(),
+            kind: TurnKind::Prompt,
             prompt: "hello".into(),
             context: None,
             native_turn_id: None,

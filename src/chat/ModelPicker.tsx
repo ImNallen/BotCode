@@ -8,7 +8,7 @@ import {
   type ComponentProps,
 } from "react";
 import { SearchIcon, StarIcon } from "lucide-react";
-import type { ModelOption, SessionSettings } from "../ipc";
+import type { ModelOption } from "../ipc";
 import { Menu, MenuItem } from "../ui/menu";
 import { Button } from "../ui/controls";
 import { cn } from "../lib/cn";
@@ -21,10 +21,16 @@ const codexProvider = { id: "codex", label: "Codex", Icon: OpenAI } satisfies {
   Icon: typeof OpenAI;
 };
 
+// A null model is the provider's default. A null effort is the model's default.
+export type ModelPickerSelection = {
+  model: string | null;
+  effort: string | null;
+};
+
 export function ModelPicker({
   trigger,
   models,
-  settings,
+  selection,
   loading,
   error,
   disabled,
@@ -35,12 +41,12 @@ export function ModelPicker({
 }: {
   trigger: ComponentProps<typeof Menu>["trigger"];
   models: ModelOption[];
-  settings: SessionSettings;
+  selection: ModelPickerSelection;
   loading: boolean;
   error?: string;
   disabled: boolean;
   onRetry: () => void;
-  onChange: (settings: SessionSettings) => void;
+  onChange: (selection: ModelPickerSelection) => void;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
@@ -81,8 +87,8 @@ export function ModelPicker({
         ];
   const selected = models.find(
     (model) =>
-      settings.model === model.model ||
-      (settings.model === null && model.isDefault),
+      selection.model === model.model ||
+      (selection.model === null && model.isDefault),
   );
   const active =
     filtered.find((model) => model.model === highlighted) ??
@@ -139,14 +145,13 @@ export function ModelPicker({
   const select = (model: ModelOption) => {
     if (disabled) return;
     onChange({
-      ...settings,
-      model: model.isDefault ? null : model.model,
+      model: model.model,
       effort:
-        settings.effort &&
+        selection.effort &&
         model.supportedReasoningEfforts.some(
-          (option) => option.reasoningEffort === settings.effort,
+          (option) => option.reasoningEffort === selection.effort,
         )
-          ? settings.effort
+          ? selection.effort
           : null,
     });
     setOpen(false);
@@ -346,7 +351,7 @@ export function ModelPicker({
                   Loading models…
                 </div>
               ) : null}
-              {settings.model && !selected && !loading && !error ? (
+              {selection.model && !selected && !loading && !error ? (
                 <div
                   role="status"
                   className="px-2 py-1.5 text-sm text-error-foreground"

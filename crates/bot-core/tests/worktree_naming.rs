@@ -45,6 +45,7 @@ impl Fixture {
             codex_binary: peer.clone(),
             gh_binary: dir.path().join("no-gh"),
             network_timeout: Duration::from_secs(180),
+            compaction_timeout: Duration::from_secs(600),
             shell: None,
         };
         Self {
@@ -213,7 +214,12 @@ async fn first_message_generates_once_keeps_folder_and_base_and_survives_restart
     let args = calls[0]["args"].as_array().unwrap();
     assert!(
         args.windows(2)
-            .any(|a| a[0] == "--model" && a[1] == "model-two")
+            .any(|a| a[0] == "--model" && a[1] == "gpt-6-luna"),
+        "branch naming uses T3's default text generation model, not the thread's: {args:?}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|a| a[0] == "-c" && a[1] == "model_reasoning_effort=\"low\"")
     );
     assert!(args.windows(2).any(|a| a[0] == "-s" && a[1] == "read-only"));
     assert!(args.iter().any(|a| a == "--ephemeral"));

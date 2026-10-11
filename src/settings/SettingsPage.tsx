@@ -11,7 +11,7 @@ import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowLeftIcon, SearchIcon, XIcon } from "lucide-react";
 import { SidebarMenuButton } from "../SidebarFooter";
 import { Menu, MenuItem } from "../ui/menu";
-import { ChevronDownIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import {
   Button,
   Switch,
@@ -30,8 +30,9 @@ import { KeybindingsSettings, revealKeybinding } from "./KeybindingsSettings";
 import { useKeybindings } from "../keybindings/store";
 
 import { cn } from "../lib/cn";
+import { isMacPlatform } from "../lib/utils";
 import { ProjectSettingRow } from "./ProjectSettingRow";
-import { usePreferences } from "./preferences";
+import { defaults, usePreferences } from "./preferences";
 import { ArchivedThreadsPanel } from "./ArchivedThreadsPanel";
 import { ProjectsSettings } from "./ProjectsSettings";
 import { RetentionControl } from "./RetentionControl";
@@ -294,6 +295,16 @@ export function SettingsSidebar() {
   );
 }
 
+const modifierLabel = isMacPlatform(navigator.platform) ? "⌘" : "Ctrl";
+const sendShortcutOptions = [
+  { value: "enter", label: "Enter" },
+  {
+    value: "mod-enter-multiline",
+    label: `${modifierLabel} + Enter for multiline prompts`,
+  },
+  { value: "mod-enter", label: `${modifierLabel} + Enter always` },
+] as const;
+
 function PreferredEditorControl() {
   const { preferences, update } = usePreferences();
   const editors = useEditorActions();
@@ -529,6 +540,67 @@ export function SettingsPage() {
           ))}
         </Menu>
       );
+    if (id === "composer-rich-text")
+      return (
+        <Switch
+          aria-label="Rich text composer"
+          checked={preferences.composerRichTextEnabled}
+          onCheckedChange={(composerRichTextEnabled) =>
+            update({ composerRichTextEnabled })
+          }
+        />
+      );
+    if (id === "composer-collapse")
+      return (
+        <Switch
+          aria-label="Collapse composer on scroll"
+          checked={preferences.composerCollapseOnScroll}
+          onCheckedChange={(composerCollapseOnScroll) =>
+            update({ composerCollapseOnScroll })
+          }
+        />
+      );
+    if (id === "send-shortcut")
+      return (
+        <Menu
+          align="end"
+          trigger={(props) => (
+            <button
+              type="button"
+              {...props}
+              className={selectTrigger({
+                size: "sm",
+                className: "w-auto min-w-0 max-w-full",
+              })}
+              aria-label="Send shortcut"
+            >
+              {
+                sendShortcutOptions.find(
+                  (option) => option.value === preferences.sendShortcut,
+                )?.label
+              }
+              <ChevronDownIcon className="size-3.5" />
+            </button>
+          )}
+        >
+          {sendShortcutOptions.map((option) => (
+            <MenuItem
+              key={option.value}
+              className={selectItem}
+              role="menuitemradio"
+              aria-checked={preferences.sendShortcut === option.value}
+              onClick={() => update({ sendShortcut: option.value })}
+            >
+              <span className="flex items-center justify-between gap-4">
+                {option.label}
+                {preferences.sendShortcut === option.value && (
+                  <CheckIcon aria-hidden="true" />
+                )}
+              </span>
+            </MenuItem>
+          ))}
+        </Menu>
+      );
     if (id === "preferred-editor") return <PreferredEditorControl />;
     if (id === "context-window-indicator")
       return (
@@ -547,6 +619,25 @@ export function SettingsPage() {
         </Button>
       );
     return null;
+  };
+  const resettable = {
+    "working-shelf": ["working section", "sidebarWorkingShelfEnabled"],
+    "composer-rich-text": ["rich text composer", "composerRichTextEnabled"],
+    "composer-collapse": [
+      "collapse composer on scroll",
+      "composerCollapseOnScroll",
+    ],
+    "send-shortcut": ["send shortcut", "sendShortcut"],
+  } as const;
+  const resetAction = (id: string) => {
+    if (!(id in resettable)) return undefined;
+    const [label, key] = resettable[id as keyof typeof resettable];
+    return preferences[key] !== defaults[key] ? (
+      <SettingResetButton
+        label={label}
+        onClick={() => update({ [key]: defaults[key] })}
+      />
+    ) : undefined;
   };
   const row = (info: SettingsRowInfo) =>
     info.id === "source-control-writing-style" ||
@@ -571,16 +662,17 @@ export function SettingsPage() {
       <SettingsRow
         key={info.id}
         {...info}
-        control={control(info.id)}
-        resetAction={
-          info.id === "working-shelf" &&
-          preferences.sidebarWorkingShelfEnabled ? (
-            <SettingResetButton
-              label="working section"
-              onClick={() => update({ sidebarWorkingShelfEnabled: false })}
-            />
-          ) : undefined
+        description={
+          info.id === "follow-up-behavior"
+            ? `${info.description} ${
+                preferences.sendShortcut === "mod-enter-multiline"
+                  ? `Press ${modifierLabel} + Enter for single-line prompts or ${modifierLabel} + Shift + Enter for multiline prompts to do the opposite for one message.`
+                  : `Press ${modifierLabel}${preferences.sendShortcut === "mod-enter" ? " + Shift" : ""} + Enter to do the opposite for one message.`
+              }`
+            : info.description
         }
+        control={control(info.id)}
+        resetAction={resetAction(info.id)}
       />
     );
   return (
