@@ -125,6 +125,7 @@ impl Owner {
         }
         self.invalidate_names(&root);
         self.cancel_name(&id);
+        self.supersede_title(&id);
         self.held.insert(root.clone(), Hold::Delete);
         self.deleting.insert(id.clone());
         self.terminals.block_thread(&id);

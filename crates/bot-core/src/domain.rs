@@ -890,7 +890,7 @@ pub const AUTO_SETTLE_AFTER_MS: u64 = 3 * 24 * 60 * 60 * 1000;
 // Ports T3 v0.0.45 pinnedAt and settledOverride (orchestration/projector.ts,
 // ThreadSettlementPolicy.ts). Pin and settle exclude each other, so one value holds both.
 // `kept` on a pin is T3's settledOverride "active" alongside pinnedAt.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -908,12 +908,14 @@ pub enum Placement {
         at_ms: u64,
         #[serde(default)]
         kept: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        order_key: Option<OrderKey>,
     },
     Settled {
         at_ms: u64,
     },
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -926,6 +928,8 @@ pub enum LivePlacement {
         at_ms: u64,
         #[serde(default)]
         kept: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        order_key: Option<OrderKey>,
     },
     Settled {
         at_ms: u64,
@@ -936,9 +940,39 @@ impl From<LivePlacement> for Placement {
         match value {
             LivePlacement::Auto => Self::Auto,
             LivePlacement::Kept => Self::Kept,
-            LivePlacement::Pinned { at_ms, kept } => Self::Pinned { at_ms, kept },
+            LivePlacement::Pinned {
+                at_ms,
+                kept,
+                order_key,
+            } => Self::Pinned {
+                at_ms,
+                kept,
+                order_key,
+            },
             LivePlacement::Settled { at_ms } => Self::Settled { at_ms },
         }
+    }
+}
+// Ports T3 v0.0.45 pinOrderKey and activeOrderKey, decoded as TrimmedNonEmptyString.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct OrderKey(String);
+impl TryFrom<String> for OrderKey {
+    type Error = AppError;
+    fn try_from(value: String) -> Result<Self> {
+        let key = value.trim();
+        if key.is_empty() {
+            return Err(AppError::new(
+                "invalid_order_key",
+                "Order key cannot be empty.",
+            ));
+        }
+        Ok(Self(key.into()))
+    }
+}
+impl From<OrderKey> for String {
+    fn from(value: OrderKey) -> Self {
+        value.0
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -955,21 +989,35 @@ pub struct Snooze {
     pub until_ms: u64,
     pub at_ms: u64,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
     rename_all_fields = "camelCase"
 )]
 pub enum Arrange {
-    Pin,
+    Pin {
+        #[serde(default)]
+        order_key: Option<OrderKey>,
+    },
     Unpin,
+    ReorderPin {
+        order_key: OrderKey,
+    },
+    ReorderActive {
+        order_key: OrderKey,
+    },
     Settle,
     Unsettle,
-    Snooze { until_ms: u64 },
+    Snooze {
+        until_ms: u64,
+    },
     Wake,
     Archive,
     Unarchive,
+    SetAutoSettle {
+        enabled: bool,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -999,8 +1047,13 @@ pub struct ThreadSnapshot {
     pub diagnostic: Option<String>,
     #[serde(default, alias = "settlement")]
     pub placement: Placement,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_order_key: Option<OrderKey>,
     #[serde(default)]
     pub snooze: Option<Snooze>,
+    // Ports T3 v0.0.45 autoSettleDisabledAt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_settle_disabled_at_ms: Option<u64>,
     #[serde(default)]
     pub context: Option<ContextUsage>,
     #[serde(default)]
@@ -1070,13 +1123,27 @@ impl ThreadSnapshot {
     }
     // Ports threadRaisedHandWhileSnoozed (client-runtime state/threadSettled.ts).
     fn raised_hand(&self, snooze: &Snooze) -> bool {
-        self.input_open()
-            || self.turns.last().is_some_and(|turn| {
+        self.input_open() || self.result_after(snooze).is_some()
+    }
+    fn result_after(&self, snooze: &Snooze) -> Option<u64> {
+        self.turns
+            .last()
+            .filter(|turn| {
                 matches!(
                     turn.execution,
                     Execution::Completed | Execution::Failed { .. }
-                ) && turn.completed_at_ms.is_some_and(|at| at > snooze.at_ms)
+                )
             })
+            .and_then(|turn| turn.completed_at_ms)
+            .filter(|at| *at > snooze.at_ms)
+    }
+    // Ports threadWokeAt (client-runtime state/threadSettled.ts).
+    pub fn woke_at(&self, now: u64) -> Option<u64> {
+        let snooze = self.snooze?;
+        if self.raised_hand(&snooze) {
+            return Some(self.result_after(&snooze).unwrap_or(snooze.at_ms));
+        }
+        (snooze.until_ms <= now).then_some(snooze.until_ms)
     }
     // The wake time while the snooze still holds. It stays set after that time passes, so
     // callers compare it with their own clock.
@@ -1089,12 +1156,16 @@ impl ThreadSnapshot {
     // activity, with the pin and the snooze cleared.
     pub fn materialize_settlement(&mut self, settled_at: Option<u64>) {
         if let (Placement::Auto | Placement::Pinned { .. }, Some(at_ms)) =
-            (self.placement, settled_at)
+            (&self.placement, settled_at)
         {
-            self.placement = Placement::Settled { at_ms };
-            self.unsettled_at_ms = None;
-            self.snooze = None;
+            self.settle(at_ms);
         }
+    }
+    fn settle(&mut self, at_ms: u64) {
+        self.placement = Placement::Settled { at_ms };
+        self.unsettled_at_ms = None;
+        self.active_order_key = None;
+        self.snooze = None;
     }
     // Ports the activity reset of decider.ts: it wakes a settled thread and clears a keep.
     pub fn record_activity(&mut self, settled_at: Option<u64>) {
@@ -1102,18 +1173,17 @@ impl ThreadSnapshot {
             return;
         }
         self.materialize_settlement(settled_at);
-        self.placement = match self.placement {
-            Placement::Settled { .. } | Placement::Kept => Placement::Auto,
-            Placement::Pinned { at_ms, .. } => Placement::Pinned { at_ms, kept: false },
-            Placement::Auto => Placement::Auto,
-            Placement::Archived { .. } => self.placement,
-        };
+        match &mut self.placement {
+            Placement::Settled { .. } | Placement::Kept => self.placement = Placement::Auto,
+            Placement::Pinned { kept, .. } => *kept = false,
+            Placement::Auto | Placement::Archived { .. } => {}
+        }
     }
     // Ports the pin, settle and snooze rules of orchestration/decider.ts.
     pub fn arrange(&mut self, action: Arrange, now: u64, settled_at: Option<u64>) -> Result<()> {
         if matches!(action, Arrange::Unarchive) {
-            if let Placement::Archived { restore, .. } = self.placement {
-                self.placement = restore.into();
+            if let Placement::Archived { restore, .. } = &self.placement {
+                self.placement = restore.clone().into();
             }
             return Ok(());
         }
@@ -1135,10 +1205,18 @@ impl ThreadSnapshot {
                     "Stop this thread before archiving it.",
                 ));
             }
-            let restore = match self.placement {
+            let restore = match std::mem::take(&mut self.placement) {
                 Placement::Auto => LivePlacement::Auto,
                 Placement::Kept => LivePlacement::Kept,
-                Placement::Pinned { at_ms, kept } => LivePlacement::Pinned { at_ms, kept },
+                Placement::Pinned {
+                    at_ms,
+                    kept,
+                    order_key,
+                } => LivePlacement::Pinned {
+                    at_ms,
+                    kept,
+                    order_key,
+                },
                 Placement::Settled { at_ms } => LivePlacement::Settled { at_ms },
                 Placement::Archived { .. } => unreachable!(),
             };
@@ -1151,18 +1229,16 @@ impl ThreadSnapshot {
         }
         self.materialize_settlement(settled_at);
         match action {
-            Arrange::Pin => {
-                self.placement = match self.placement {
-                    Placement::Archived { .. } | Placement::Pinned { .. } => self.placement,
-                    Placement::Settled { .. } | Placement::Kept => Placement::Pinned {
+            Arrange::Pin { order_key } => {
+                if let Placement::Auto | Placement::Kept | Placement::Settled { .. } =
+                    self.placement
+                {
+                    self.placement = Placement::Pinned {
                         at_ms: now,
-                        kept: true,
-                    },
-                    Placement::Auto => Placement::Pinned {
-                        at_ms: now,
-                        kept: false,
-                    },
-                };
+                        kept: self.placement != Placement::Auto,
+                        order_key,
+                    };
+                }
                 self.snooze = None;
             }
             Arrange::Unpin => {
@@ -1174,18 +1250,36 @@ impl ThreadSnapshot {
                     };
                 }
             }
+            Arrange::ReorderPin { order_key } => {
+                let Placement::Pinned { order_key: key, .. } = &mut self.placement else {
+                    return Err(AppError::new(
+                        "not_pinned",
+                        "This thread is not pinned and cannot be reordered.",
+                    ));
+                };
+                *key = Some(order_key);
+            }
+            Arrange::ReorderActive { order_key } => {
+                if let Placement::Pinned { .. } | Placement::Settled { .. } = self.placement {
+                    return Err(AppError::new(
+                        "not_active",
+                        "This thread is not active and cannot be reordered.",
+                    ));
+                }
+                self.active_order_key = Some(order_key);
+            }
             Arrange::Settle => {
-                if !matches!(self.placement, Placement::Settled { .. }) {
-                    if self.input_open() {
+                let at_ms = match self.placement {
+                    Placement::Settled { at_ms } => at_ms,
+                    _ if self.input_open() => {
                         return Err(AppError::new(
                             "settle_blocked",
                             "Answer the pending approval before settling this thread.",
                         ));
                     }
-                    self.placement = Placement::Settled { at_ms: now };
-                }
-                self.unsettled_at_ms = None;
-                self.snooze = None;
+                    _ => now,
+                };
+                self.settle(at_ms);
             }
             Arrange::Unsettle => {
                 if matches!(self.placement, Placement::Settled { .. }) {
@@ -1217,11 +1311,18 @@ impl ThreadSnapshot {
                 self.snooze = Some(Snooze { until_ms, at_ms });
             }
             Arrange::Wake => self.snooze = None,
+            Arrange::SetAutoSettle { enabled } => {
+                self.auto_settle_disabled_at_ms = if enabled {
+                    None
+                } else {
+                    self.auto_settle_disabled_at_ms.or(Some(now))
+                };
+            }
             Arrange::Archive | Arrange::Unarchive => unreachable!(),
         }
         Ok(())
     }
-    pub fn summary(&self, settled_at_ms: Option<u64>) -> ThreadSummary {
+    pub fn summary(&self, settled_at_ms: Option<u64>, now: u64) -> ThreadSummary {
         ThreadSummary {
             id: self.id.clone(),
             revision: self.revision,
@@ -1265,8 +1366,19 @@ impl ThreadSnapshot {
                 Placement::Pinned { at_ms, .. } if settled_at_ms.is_none() => Some(at_ms),
                 _ => None,
             },
+            pin_order_key: match &self.placement {
+                Placement::Pinned { order_key, .. } if settled_at_ms.is_none() => order_key.clone(),
+                _ => None,
+            },
+            active_order_key: self
+                .active_order_key
+                .clone()
+                .filter(|_| settled_at_ms.is_none()),
             snoozed_until_ms: self.snoozed_until(),
+            woke_at_ms: self.woke_at(now),
             settled_at_ms,
+            auto_settle_enabled: self.auto_settle_disabled_at_ms.is_none(),
+            is_regenerating_title: false,
             pull_requests: Default::default(),
         }
     }
@@ -1300,8 +1412,21 @@ pub struct ThreadSummary {
     pub updated_at_ms: Option<u64>,
     pub awaiting_approval: bool,
     pub pinned_at_ms: Option<u64>,
+    #[serde(default)]
+    pub pin_order_key: Option<OrderKey>,
+    #[serde(default)]
+    pub active_order_key: Option<OrderKey>,
     pub snoozed_until_ms: Option<u64>,
+    #[serde(default)]
+    pub woke_at_ms: Option<u64>,
     pub settled_at_ms: Option<u64>,
+    #[serde(default = "enabled")]
+    pub auto_settle_enabled: bool,
+    #[serde(default)]
+    pub is_regenerating_title: bool,
+}
+fn enabled() -> bool {
+    true
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

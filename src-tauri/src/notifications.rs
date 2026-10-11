@@ -1,7 +1,7 @@
 use bot_core::{App, ThreadId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, EventTarget, Manager, State};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -31,9 +31,64 @@ pub async fn notification_actions(
     Ok(targets)
 }
 
+// Ported from pingdotgg/t3code v0.0.45 apps/desktop/src/ipc/methods/notificationBadge.ts (MIT).
+fn focused(app: &AppHandle) -> bool {
+    app.windows()
+        .values()
+        .any(|window| window.is_focused().unwrap_or(false))
+}
+
+fn apply_badge(app: &AppHandle, count: u32, image: Option<Vec<u8>>) {
+    let count = if focused(app) { 0 } else { count };
+    #[cfg(windows)]
+    {
+        let overlay = image
+            .filter(|rgba| count > 0 && rgba.len() == 64 * 64 * 4)
+            .map(|rgba| tauri::image::Image::new_owned(rgba, 64, 64));
+        for window in app.windows().values() {
+            let _ = window.set_overlay_icon(overlay.clone());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = image;
+        if let Some(window) = app.get_window("main") {
+            let _ = window.set_badge_count((count > 0).then_some(count.into()));
+        }
+    }
+}
+
+pub fn clear_badge(app: &AppHandle) {
+    apply_badge(app, 0, None);
+    let _ = app.emit_to(
+        EventTarget::webview("main"),
+        "bot:notification-badge-clear",
+        (),
+    );
+}
+
+#[tauri::command]
+pub fn set_notification_badge(app: AppHandle, count: u32, image: Option<Vec<u8>>) {
+    if count > 0 && focused(&app) {
+        clear_badge(&app);
+    } else {
+        apply_badge(&app, count, image);
+    }
+}
+
+#[tauri::command]
+pub fn close_notifications(app: AppHandle, tags: Vec<String>) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        app.notification().remove_delivered(&tags);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, tags);
+}
+
 #[cfg(target_os = "macos")]
 pub fn install(app: &AppHandle) {
-    use tauri::{Emitter, EventTarget, Manager};
     use tauri_plugin_notification::NotificationExt;
     let handle = app.clone();
     app.notification().on_action(move |notification| {

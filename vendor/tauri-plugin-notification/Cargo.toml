@@ -132,7 +132,7 @@ version = "=0.6.4"
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
 version = "=0.3.2"
-features = ["NSError", "NSDictionary", "NSString", "NSBundle", "NSObject"]
+features = ["NSArray", "NSError", "NSDictionary", "NSString", "NSBundle", "NSObject"]
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-user-notifications]
 version = "=0.3.2"

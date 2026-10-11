@@ -9,7 +9,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'exec':
     prompt = sys.stdin.read()
     schema = json.loads(pathlib.Path(sys.argv[sys.argv.index('--output-schema') + 1]).read_text())
     fields = schema['properties']
-    kind = 'commit' if 'subject' in fields else 'pr' if 'title' in fields else 'naming'
+    kind = 'commit' if 'subject' in fields else 'title' if 'needsRefinement' in fields else 'pr' if 'title' in fields else 'naming'
     with (root / f'{kind}.jsonl').open('a') as log:
         log.write(json.dumps({'args': sys.argv[1:], 'prompt': prompt, 'cwd': os.getcwd()}) + '\n')
     publish(root / f'{kind}.pid', str(os.getpid()))
@@ -27,9 +27,13 @@ if len(sys.argv) > 1 and sys.argv[1] == 'exec':
     if (root / f'{kind}_delay').exists():
         time.sleep(float((root / f'{kind}_delay').read_text()))
     output = root / f'{kind}_output'
-    if not output.exists():
+    if output.exists():
+        text = output.read_text()
+    elif kind == 'title' and not (root / 'title_fail').exists():
+        text = json.dumps({'title': 'Regenerated Fixture Title', 'needsRefinement': False})
+    else:
         sys.exit(1)
-    pathlib.Path(sys.argv[sys.argv.index('--output-last-message') + 1]).write_text(output.read_text())
+    pathlib.Path(sys.argv[sys.argv.index('--output-last-message') + 1]).write_text(text)
     sys.exit(0)
 log = root / 'calls.jsonl'
 publish(root / 'pid', str(os.getpid()))

@@ -5,6 +5,7 @@ mod collaboration;
 mod naming;
 mod restarts;
 mod thread_actions;
+mod titles;
 use thread_actions::DeleteCompletion;
 mod pr_checkout;
 mod pr_review;
@@ -306,6 +307,7 @@ enum Command {
     Interrupt(ThreadId, Reply<()>),
     Arrange(ThreadId, Arrange, Reply<()>),
     Rename(ThreadId, String, Reply<ThreadSnapshot>),
+    RegenerateTitle(ThreadId, Reply<()>),
     Delete(ThreadId, bool, Reply<DeletedWorktree>),
     AutoSettle(
         settings::AutoSettle,
@@ -538,6 +540,7 @@ impl App {
                     work
                 },
                 naming: naming::Naming::default(),
+                titles: titles::Titles::default(),
                 writing: writing::Writing::default(),
                 checkpoint_work: checkpoints::CheckpointWork::new(),
                 closing: false,
@@ -1653,6 +1656,9 @@ impl App {
     pub async fn rename_thread(&self, id: ThreadId, title: String) -> Result<ThreadSnapshot> {
         self.call(|r| Command::Rename(id, title, r)).await
     }
+    pub async fn regenerate_title(&self, id: ThreadId) -> Result<()> {
+        self.call(|r| Command::RegenerateTitle(id, r)).await
+    }
     pub async fn delete_thread(&self, id: ThreadId) -> Result<DeletedWorktree> {
         self.delete_thread_with_worktree(id, false).await
     }
@@ -2170,6 +2176,7 @@ struct Owner {
     closing: bool,
     checkpoint_work: checkpoints::CheckpointWork,
     naming: naming::Naming,
+    titles: titles::Titles,
     writing: writing::Writing,
     prs: PrWork,
     review_work: ReviewWork,
@@ -2236,7 +2243,9 @@ impl Owner {
             user_questions: vec![],
             diagnostic: None,
             placement: Placement::Auto,
+            active_order_key: None,
             snooze: None,
+            auto_settle_disabled_at_ms: None,
             context: None,
             pending_revert: None,
             last_revert: None,
@@ -2421,6 +2430,7 @@ impl Owner {
         self.cancel_thread_commit_previews(&removed);
         for id in &removed {
             self.cancel_name(id);
+            self.supersede_title(id);
         }
         self.forget_pr_threads(&removed);
         self.threads.retain(|id, _| !removed.contains(id));
@@ -2644,6 +2654,9 @@ impl Owner {
                 Some(done)=self.naming.active.join_next(), if !self.naming.active.is_empty()=>{
                     self.finish_name(done);
                 }
+                Some(done)=self.titles.active.join_next(), if !self.titles.active.is_empty()=>{
+                    self.finish_title(done);
+                }
                 Some(Ok(done))=self.delete_jobs.join_next(), if !self.delete_jobs.is_empty()=>{
                     self.finish_delete(done);
                 }
@@ -2710,6 +2723,7 @@ impl Owner {
         }
         self.stop_commit_previews().await;
         self.stop_names().await;
+        self.stop_titles().await;
         while let Some(completion) = self.checkpoint_work.active.join_next().await {
             if let Err(error) = self.finish_checkpoint_job(completion) {
                 git_shutdown = Err(error);
@@ -3395,11 +3409,13 @@ impl Owner {
                 let result = (|| {
                     let mut thread = self.thread(&id)?.clone();
                     thread.rename(&title)?;
+                    self.supersede_title(&id);
                     self.install(thread)?;
                     self.thread(&id).cloned()
                 })();
                 let _ = reply.send(result);
             }
+            Command::RegenerateTitle(id, reply) => self.regenerate_title(id, reply),
             Command::Arrange(id, action, reply) => {
                 let result = (|| -> Result<()> {
                     let mut thread = self.thread(&id)?.clone();
@@ -3416,7 +3432,11 @@ impl Owner {
                         self.auto_settle.rules(&thread.workspace_id),
                         now_ms(),
                     );
+                    let archive = matches!(action, Arrange::Archive);
                     thread.arrange(action, now_ms(), settled)?;
+                    if archive {
+                        self.supersede_title(&id);
+                    }
                     self.install(thread)
                 })();
                 let _ = reply.send(result);

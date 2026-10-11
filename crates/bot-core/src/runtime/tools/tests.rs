@@ -60,6 +60,7 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
         closing: false,
         checkpoint_work: checkpoints::CheckpointWork::new(),
         naming: naming::Naming::default(),
+        titles: Default::default(),
         writing: writing::Writing::default(),
         prs: PrWork::load(&mut store).unwrap(),
         review_work: ReviewWork::new(),

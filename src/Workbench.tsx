@@ -56,6 +56,8 @@ import { ChatView } from "./chat/ChatView";
 import type { Surface } from "./panel/RightPanel";
 import { Button } from "./ui/controls";
 import { storage } from "./lib/storage";
+import { useProjectScopeId } from "./lib/projectScope";
+import { topOfPinnedRunOrderKey } from "./lib/threadSort";
 import {
   actions,
   runAction,
@@ -259,16 +261,29 @@ export function Workbench() {
       (thread) =>
         thread.id === selection.thread && thread.archivedAtMs === null,
     );
-  const arrange = useCallback(async (threadId: string, action: Arrange) => {
-    try {
-      await ipc.arrange(threadId, action);
-      setError(undefined);
-      return true;
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-      return false;
-    }
-  }, []);
+  const arrange = useCallback(
+    async (threadId: string, action: Arrange) => {
+      try {
+        await ipc.arrange(
+          threadId,
+          action.kind === "pin" && action.orderKey === undefined
+            ? {
+                kind: "pin",
+                orderKey: topOfPinnedRunOrderKey(
+                  views.flatMap((query) => query.data?.threads ?? []),
+                ),
+              }
+            : action,
+        );
+        setError(undefined);
+        return true;
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+        return false;
+      }
+    },
+    [views],
+  );
   const repositories = list.filter((w) => w.kind === "repository");
   const scratch = list.find((w) => w.kind === "scratch");
   const workspaceId = selection.workspace ?? repositories[0]?.id ?? scratch?.id;
@@ -387,6 +402,7 @@ export function Workbench() {
     (view) => view.data?.workspace.id === workspaceId,
   )?.data;
   const editors = useEditorActions();
+  const projectScopeId = useProjectScopeId();
   const selectedWorkspace = list.find(
     (workspace) => workspace.id === workspaceId,
   );
@@ -426,10 +442,12 @@ export function Workbench() {
     archiveTarget: undefined,
     checkoutTarget,
     editorLabel: editors.preferred ? editorById(editors.preferred).label : null,
+    projectScopeId,
     newThread: () => createThread(),
     newThreadDirect: () => createThread(undefined, true),
     startScratch: () => void startScratch(),
     openSettings,
+    openProjectSettings: (id) => openSettingsAt("projects", id),
     closePage,
     toggleSidebar: () => setSidebarOpen((value) => !value),
     openPalette,

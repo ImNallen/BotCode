@@ -947,7 +947,9 @@ fn legacy_snapshots_default_settings() {
         user_questions: vec![],
         diagnostic: None,
         placement: Placement::Kept,
+        active_order_key: None,
         snooze: None,
+        auto_settle_disabled_at_ms: None,
         context: None,
         pending_revert: None,
         last_revert: None,
@@ -2272,7 +2274,8 @@ impl SettlementFixture for ThreadSnapshot {
         })
     }
     fn summary_for_test(&self, after_ms: Option<u64>) -> ThreadSummary {
-        self.summary(self.settlement_for_test(now_ms(), after_ms))
+        let now = now_ms();
+        self.summary(self.settlement_for_test(now, after_ms), now)
     }
     fn arrange_for_test(&mut self, action: Arrange, now: u64, after_ms: Option<u64>) -> Result<()> {
         self.arrange(action, now, self.settlement_for_test(now, after_ms))
@@ -2314,7 +2317,9 @@ fn idle_thread(started_at_ms: Option<u64>, completed_at_ms: Option<u64>) -> Thre
         user_questions: vec![],
         diagnostic: None,
         placement: Placement::Auto,
+        active_order_key: None,
         snooze: None,
+        auto_settle_disabled_at_ms: None,
         context: None,
         pending_revert: None,
         last_revert: None,
@@ -2699,21 +2704,39 @@ fn pinning_clears_settle_and_snooze_and_keeps_the_first_pin_time() {
         thread.placement = placement;
         thread.snooze = Some(SNOOZE);
         thread
-            .arrange_for_test(Arrange::Pin, 5_000, DEFAULT_LIMIT)
+            .arrange_for_test(Arrange::Pin { order_key: None }, 5_000, DEFAULT_LIMIT)
             .unwrap();
-        assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000, kept });
+        assert_eq!(
+            thread.placement,
+            Placement::Pinned {
+                at_ms: 5_000,
+                kept,
+                order_key: None
+            }
+        );
         assert_eq!(thread.snooze, None);
         thread
-            .arrange_for_test(Arrange::Pin, 6_000, DEFAULT_LIMIT)
+            .arrange_for_test(Arrange::Pin { order_key: None }, 6_000, DEFAULT_LIMIT)
             .unwrap();
-        assert_eq!(thread.placement, Placement::Pinned { at_ms: 5_000, kept });
+        assert_eq!(
+            thread.placement,
+            Placement::Pinned {
+                at_ms: 5_000,
+                kept,
+                order_key: None
+            }
+        );
     }
 }
 #[test]
 fn unpinning_returns_a_pinned_thread_to_its_keep_and_leaves_others_alone() {
     for (kept, unpinned) in [(false, Placement::Auto), (true, Placement::Kept)] {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
-        thread.placement = Placement::Pinned { at_ms: 5_000, kept };
+        thread.placement = Placement::Pinned {
+            at_ms: 5_000,
+            kept,
+            order_key: None,
+        };
         thread.snooze = Some(SNOOZE);
         thread
             .arrange_for_test(Arrange::Unpin, 6_000, DEFAULT_LIMIT)
@@ -2734,6 +2757,7 @@ fn settling_clears_pin_and_snooze_and_is_refused_while_an_approval_waits() {
     thread.placement = Placement::Pinned {
         at_ms: 5_000,
         kept: false,
+        order_key: None,
     };
     thread.snooze = Some(SNOOZE);
     thread
@@ -2751,6 +2775,7 @@ fn settling_clears_pin_and_snooze_and_is_refused_while_an_approval_waits() {
     waiting.placement = Placement::Pinned {
         at_ms: 5_000,
         kept: false,
+        order_key: None,
     };
     waiting.approvals.push(pending_approval(&waiting));
     let refused = waiting
@@ -2762,6 +2787,7 @@ fn settling_clears_pin_and_snooze_and_is_refused_while_an_approval_waits() {
         Placement::Pinned {
             at_ms: 5_000,
             kept: false,
+            order_key: None,
         }
     );
 }
@@ -2782,6 +2808,7 @@ fn unsettling_keeps_settled_threads_active_and_leaves_pins_alone() {
     pinned.placement = Placement::Pinned {
         at_ms: 5_000,
         kept: false,
+        order_key: None,
     };
     pinned
         .arrange_for_test(Arrange::Unsettle, 8_000, DEFAULT_LIMIT)
@@ -2791,6 +2818,7 @@ fn unsettling_keeps_settled_threads_active_and_leaves_pins_alone() {
         Placement::Pinned {
             at_ms: 5_000,
             kept: false,
+            order_key: None,
         }
     );
 }
@@ -2801,11 +2829,12 @@ fn snoozing_keeps_the_placement_and_the_first_snooze_time_for_the_same_wake() {
         Placement::Pinned {
             at_ms: 5_000,
             kept: false,
+            order_key: None,
         },
         Placement::Settled { at_ms: 5_000 },
     ] {
         let mut thread = idle_thread(Some(1_000), Some(2_000));
-        thread.placement = placement;
+        thread.placement = placement.clone();
         thread
             .arrange_for_test(Arrange::Snooze { until_ms: 10_000 }, 6_000, DEFAULT_LIMIT)
             .unwrap();
@@ -2866,6 +2895,7 @@ fn waking_clears_only_the_snooze() {
     thread.placement = Placement::Pinned {
         at_ms: 5_000,
         kept: false,
+        order_key: None,
     };
     thread.snooze = Some(SNOOZE);
     thread
@@ -2877,6 +2907,7 @@ fn waking_clears_only_the_snooze() {
         Placement::Pinned {
             at_ms: 5_000,
             kept: false,
+            order_key: None,
         }
     );
 }
@@ -2886,6 +2917,7 @@ fn a_snoozed_pinned_thread_keeps_its_pin_and_reports_its_wake_time() {
     thread.placement = Placement::Pinned {
         at_ms: 2_500,
         kept: false,
+        order_key: None,
     };
     let until_ms = now_ms() + HOUR_MS;
     thread.snooze = Some(Snooze {
@@ -2896,6 +2928,242 @@ fn a_snoozed_pinned_thread_keeps_its_pin_and_reports_its_wake_time() {
     assert_eq!(summary.pinned_at_ms, Some(2_500));
     assert_eq!(summary.snoozed_until_ms, Some(until_ms));
     assert_eq!(summary.settled_at_ms, None);
+}
+fn order_key(key: &str) -> OrderKey {
+    OrderKey::try_from(key.to_string()).unwrap()
+}
+fn pinned_with_key(kept: bool, key: Option<&str>) -> Placement {
+    Placement::Pinned {
+        at_ms: 5_000,
+        kept,
+        order_key: key.map(order_key),
+    }
+}
+#[test]
+fn reordering_a_pin_is_refused_unless_the_thread_is_pinned() {
+    for placement in [
+        Placement::Auto,
+        Placement::Kept,
+        Placement::Settled { at_ms: 5_000 },
+    ] {
+        let mut thread = idle_thread(Some(1_000), Some(2_000));
+        thread.placement = placement.clone();
+        let refused = thread
+            .arrange_for_test(
+                Arrange::ReorderPin {
+                    order_key: order_key("m"),
+                },
+                6_000,
+                DEFAULT_LIMIT,
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, "not_pinned");
+        assert_eq!(thread.placement, placement);
+    }
+    let mut auto_settled = idle_thread(Some(1_000), Some(2_000));
+    auto_settled.placement = pinned_with_key(false, Some("c"));
+    let refused = auto_settled
+        .arrange_for_test(
+            Arrange::ReorderPin {
+                order_key: order_key("m"),
+            },
+            2_000 + 4 * DAY_MS,
+            DEFAULT_LIMIT,
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, "not_pinned");
+}
+#[test]
+fn reordering_writes_only_the_key_and_is_not_activity() {
+    let summary_without_keys = |thread: &ThreadSnapshot| {
+        let mut summary = serde_json::to_value(thread.summary_for_test(DEFAULT_LIMIT)).unwrap();
+        let keys = (
+            summary["pinOrderKey"].take(),
+            summary["activeOrderKey"].take(),
+        );
+        (summary, keys)
+    };
+    let mut pinned = idle_thread(Some(1_000), Some(now_ms()));
+    pinned.placement = pinned_with_key(true, Some("c"));
+    let (before, _) = summary_without_keys(&pinned);
+    pinned
+        .arrange_for_test(
+            Arrange::ReorderPin {
+                order_key: order_key("m"),
+            },
+            now_ms(),
+            DEFAULT_LIMIT,
+        )
+        .unwrap();
+    let (after, keys) = summary_without_keys(&pinned);
+    assert_eq!(after, before);
+    assert_eq!(keys, (serde_json::json!("m"), serde_json::Value::Null));
+    assert_eq!(pinned.placement, pinned_with_key(true, Some("m")));
+
+    let mut active = idle_thread(Some(1_000), Some(now_ms()));
+    active.placement = Placement::Kept;
+    active.unsettled_at_ms = Some(3_000);
+    let (before, _) = summary_without_keys(&active);
+    active
+        .arrange_for_test(
+            Arrange::ReorderActive {
+                order_key: order_key("m"),
+            },
+            now_ms(),
+            DEFAULT_LIMIT,
+        )
+        .unwrap();
+    let (after, keys) = summary_without_keys(&active);
+    assert_eq!(after, before);
+    assert_eq!(keys, (serde_json::Value::Null, serde_json::json!("m")));
+    assert_eq!(active.placement, Placement::Kept);
+}
+#[test]
+fn a_fresh_pin_takes_its_key_a_repin_keeps_it_and_unpinning_drops_it() {
+    let mut thread = idle_thread(Some(1_000), Some(2_000));
+    thread
+        .arrange_for_test(
+            Arrange::Pin {
+                order_key: Some(order_key("m")),
+            },
+            5_000,
+            DEFAULT_LIMIT,
+        )
+        .unwrap();
+    assert_eq!(thread.placement, pinned_with_key(false, Some("m")));
+    thread
+        .arrange_for_test(
+            Arrange::Pin {
+                order_key: Some(order_key("c")),
+            },
+            6_000,
+            DEFAULT_LIMIT,
+        )
+        .unwrap();
+    assert_eq!(thread.placement, pinned_with_key(false, Some("m")));
+    thread
+        .arrange_for_test(Arrange::Unpin, 7_000, DEFAULT_LIMIT)
+        .unwrap();
+    thread
+        .arrange_for_test(Arrange::Pin { order_key: None }, 8_000, DEFAULT_LIMIT)
+        .unwrap();
+    assert_eq!(
+        thread.placement,
+        Placement::Pinned {
+            at_ms: 8_000,
+            kept: false,
+            order_key: None,
+        }
+    );
+}
+#[test]
+fn settling_clears_the_active_key_and_unsettling_does_not_restore_it() {
+    let mut manual = idle_thread(Some(1_000), Some(2_000));
+    manual.active_order_key = Some(order_key("m"));
+    manual
+        .arrange_for_test(Arrange::Settle, 7_000, DEFAULT_LIMIT)
+        .unwrap();
+    manual
+        .arrange_for_test(Arrange::Unsettle, 8_000, DEFAULT_LIMIT)
+        .unwrap();
+    assert_eq!(manual.active_order_key, None);
+
+    let mut automatic = idle_thread(Some(1_000), Some(2_000));
+    automatic.active_order_key = Some(order_key("m"));
+    assert_eq!(
+        automatic.summary_for_test(DEFAULT_LIMIT).active_order_key,
+        None
+    );
+    automatic.activity_for_test(2_000 + 4 * DAY_MS, DEFAULT_LIMIT);
+    assert_eq!(automatic.placement, Placement::Auto);
+    assert_eq!(automatic.active_order_key, None);
+}
+#[test]
+fn unpinning_and_archiving_keep_the_keys_they_do_not_own() {
+    let mut thread = idle_thread(Some(1_000), Some(now_ms()));
+    thread.placement = pinned_with_key(false, Some("p"));
+    thread.active_order_key = Some(order_key("a"));
+    thread
+        .arrange_for_test(Arrange::Archive, now_ms(), DEFAULT_LIMIT)
+        .unwrap();
+    thread
+        .arrange_for_test(Arrange::Unarchive, now_ms(), DEFAULT_LIMIT)
+        .unwrap();
+    assert_eq!(thread.placement, pinned_with_key(false, Some("p")));
+    thread
+        .arrange_for_test(Arrange::Unpin, now_ms(), DEFAULT_LIMIT)
+        .unwrap();
+    let summary = thread.summary_for_test(DEFAULT_LIMIT);
+    assert_eq!(summary.pin_order_key, None);
+    assert_eq!(summary.active_order_key, Some(order_key("a")));
+}
+#[test]
+fn active_reordering_is_refused_for_pinned_or_settled_threads_and_allowed_while_snoozed() {
+    for placement in [
+        pinned_with_key(false, None),
+        Placement::Settled { at_ms: 5_000 },
+    ] {
+        let mut thread = idle_thread(Some(1_000), Some(2_000));
+        thread.placement = placement.clone();
+        let refused = thread
+            .arrange_for_test(
+                Arrange::ReorderActive {
+                    order_key: order_key("m"),
+                },
+                6_000,
+                DEFAULT_LIMIT,
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, "not_active");
+        assert_eq!(thread.active_order_key, None);
+        assert_eq!(thread.placement, placement);
+    }
+    let mut snoozed = idle_thread(Some(1_000), Some(2_000));
+    snoozed.snooze = Some(SNOOZE);
+    snoozed
+        .arrange_for_test(
+            Arrange::ReorderActive {
+                order_key: order_key("m"),
+            },
+            6_000,
+            DEFAULT_LIMIT,
+        )
+        .unwrap();
+    assert_eq!(snoozed.active_order_key, Some(order_key("m")));
+    assert_eq!(snoozed.snooze, Some(SNOOZE));
+}
+#[test]
+fn order_keys_decode_from_old_snapshots_and_trimmed_ipc_input() {
+    let mut json = serde_json::to_value(idle_thread(Some(1_000), Some(2_000))).unwrap();
+    json.as_object_mut().unwrap().remove("activeOrderKey");
+    json["placement"] = serde_json::json!({ "kind": "pinned", "atMs": 17, "kept": true });
+    let old: ThreadSnapshot = serde_json::from_value(json).unwrap();
+    assert_eq!(old.active_order_key, None);
+    assert_eq!(
+        old.placement,
+        Placement::Pinned {
+            at_ms: 17,
+            kept: true,
+            order_key: None,
+        }
+    );
+    assert_eq!(
+        serde_json::from_str::<Arrange>(r#"{"kind":"pin"}"#).unwrap(),
+        Arrange::Pin { order_key: None }
+    );
+    assert_eq!(
+        serde_json::from_str::<Arrange>(r#"{"kind":"reorder_active","orderKey":" m "}"#).unwrap(),
+        Arrange::ReorderActive {
+            order_key: order_key("m")
+        }
+    );
+    for json in [
+        r#"{"kind":"reorder_pin","orderKey":"  "}"#,
+        r#"{"kind":"reorder_pin"}"#,
+        r#"{"kind":"pin","orderKey":""}"#,
+    ] {
+        assert!(serde_json::from_str::<Arrange>(json).is_err(), "{json}");
+    }
 }
 #[test]
 fn a_snoozed_thread_raises_its_hand_for_a_newer_result_or_an_approval() {
@@ -2928,11 +3196,35 @@ fn a_snoozed_thread_raises_its_hand_for_a_newer_result_or_an_approval() {
     );
 }
 #[test]
+fn woke_at_reports_when_a_snooze_ended() {
+    let never = idle_thread(Some(1_000), Some(2_000));
+    assert_eq!(never.woke_at(20_000), None);
+    let mut timer = idle_thread(Some(1_000), Some(2_000));
+    timer.snooze = Some(SNOOZE);
+    assert_eq!(timer.woke_at(9_999), None);
+    assert_eq!(timer.woke_at(10_000), Some(10_000));
+    assert_eq!(timer.summary(None, 9_999).woke_at_ms, None);
+    assert_eq!(timer.summary(None, 10_001).woke_at_ms, Some(10_000));
+    let mut finished = idle_thread(Some(1_000), Some(4_000));
+    finished.snooze = Some(SNOOZE);
+    assert_eq!(finished.woke_at(5_000), Some(4_000));
+    assert_eq!(finished.woke_at(20_000), Some(4_000));
+    let mut waiting = idle_thread(Some(1_000), Some(2_000));
+    waiting.snooze = Some(SNOOZE);
+    waiting.approvals.push(pending_approval(&waiting));
+    assert_eq!(waiting.woke_at(5_000), Some(3_000));
+    timer
+        .arrange_for_test(Arrange::Wake, 11_000, DEFAULT_LIMIT)
+        .unwrap();
+    assert_eq!(timer.woke_at(20_000), None);
+}
+#[test]
 fn an_idle_pinned_thread_reads_as_settled_and_not_pinned() {
     let mut thread = idle_thread(Some(1_000), Some(2_000));
     thread.placement = Placement::Pinned {
         at_ms: 2_500,
         kept: false,
+        order_key: None,
     };
     assert_eq!(
         thread.settlement_for_test(2_000 + 3 * DAY_MS - 1, DEFAULT_LIMIT),
@@ -2952,6 +3244,7 @@ fn unsettling_an_auto_settled_pinned_thread_stores_kept_without_the_pin() {
     thread.placement = Placement::Pinned {
         at_ms: 2_500,
         kept: false,
+        order_key: None,
     };
     thread.snooze = Some(SNOOZE);
     thread
@@ -2967,13 +3260,14 @@ fn pinning_a_settled_thread_keeps_it_from_auto_settling() {
     let now = 2_000 + 4 * DAY_MS;
     assert_eq!(thread.settlement_for_test(now, DEFAULT_LIMIT), Some(2_000));
     thread
-        .arrange_for_test(Arrange::Pin, now, DEFAULT_LIMIT)
+        .arrange_for_test(Arrange::Pin { order_key: None }, now, DEFAULT_LIMIT)
         .unwrap();
     assert_eq!(
         thread.placement,
         Placement::Pinned {
             at_ms: now,
-            kept: true
+            kept: true,
+            order_key: None,
         }
     );
     assert_eq!(thread.settlement_for_test(u64::MAX, DEFAULT_LIMIT), None);
@@ -2987,13 +3281,15 @@ fn activity_drops_the_keep_from_a_pinned_thread() {
     thread.placement = Placement::Pinned {
         at_ms: 2_500,
         kept: true,
+        order_key: None,
     };
     thread.activity_for_test(2_000 + 4 * DAY_MS, DEFAULT_LIMIT);
     assert_eq!(
         thread.placement,
         Placement::Pinned {
             at_ms: 2_500,
-            kept: false
+            kept: false,
+            order_key: None,
         }
     );
 }
@@ -3006,7 +3302,8 @@ fn pins_saved_without_kept_load_as_pins_that_can_auto_settle() {
         restored.placement,
         Placement::Pinned {
             at_ms: 2_500,
-            kept: false
+            kept: false,
+            order_key: None,
         }
     );
     assert_eq!(
@@ -3036,13 +3333,20 @@ async fn pins_and_snoozes_persist_across_reopen_and_reach_the_summary() {
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
     let before = now_ms();
-    app.arrange(thread.id.clone(), Arrange::Pin).await.unwrap();
+    app.arrange(thread.id.clone(), Arrange::Pin { order_key: None })
+        .await
+        .unwrap();
     let until_ms = now_ms() + HOUR_MS;
     app.arrange(thread.id.clone(), Arrange::Snooze { until_ms })
         .await
         .unwrap();
     let stored = app.thread(thread.id.clone()).await.unwrap();
-    let Placement::Pinned { at_ms, kept: false } = stored.placement else {
+    let Placement::Pinned {
+        at_ms,
+        kept: false,
+        order_key: None,
+    } = stored.placement
+    else {
         panic!("pinning stores the pinned placement")
     };
     assert!(at_ms >= before && at_ms <= now_ms());
@@ -3051,7 +3355,14 @@ async fn pins_and_snoozes_persist_across_reopen_and_reach_the_summary() {
     app.shutdown().await.unwrap();
     let app = reopen(&f.config).await;
     let reopened = app.thread(thread.id.clone()).await.unwrap();
-    assert_eq!(reopened.placement, Placement::Pinned { at_ms, kept: false });
+    assert_eq!(
+        reopened.placement,
+        Placement::Pinned {
+            at_ms,
+            kept: false,
+            order_key: None
+        }
+    );
     assert_eq!(
         reopened.snooze,
         Some(Snooze {
@@ -3080,7 +3391,9 @@ async fn sending_a_prompt_clears_the_snooze_and_keeps_the_pin() {
     let f = Fixture::new();
     let app = App::open(f.config.clone()).await.unwrap();
     let thread = conversation(&app, &f).await;
-    app.arrange(thread.id.clone(), Arrange::Pin).await.unwrap();
+    app.arrange(thread.id.clone(), Arrange::Pin { order_key: None })
+        .await
+        .unwrap();
     app.arrange(
         thread.id.clone(),
         Arrange::Snooze {
@@ -3114,7 +3427,9 @@ async fn a_new_prompt_returns_an_auto_settled_pinned_thread_to_active_without_it
         matches!(t.turns[0].execution, Execution::Completed)
     })
     .await;
-    app.arrange(thread.id.clone(), Arrange::Pin).await.unwrap();
+    app.arrange(thread.id.clone(), Arrange::Pin { order_key: None })
+        .await
+        .unwrap();
     app.shutdown().await.unwrap();
     age_turns(&f, &thread.id, 4 * DAY_MS);
     let app = reopen(&f.config).await;
@@ -3146,11 +3461,16 @@ async fn pinning_a_settled_thread_persists_the_keep_until_the_next_prompt() {
     app.arrange(thread.id.clone(), Arrange::Settle)
         .await
         .unwrap();
-    app.arrange(thread.id.clone(), Arrange::Pin).await.unwrap();
+    app.arrange(thread.id.clone(), Arrange::Pin { order_key: None })
+        .await
+        .unwrap();
     app.shutdown().await.unwrap();
     let app = reopen(&f.config).await;
-    let Placement::Pinned { at_ms, kept: true } =
-        app.thread(thread.id.clone()).await.unwrap().placement
+    let Placement::Pinned {
+        at_ms,
+        kept: true,
+        order_key: None,
+    } = app.thread(thread.id.clone()).await.unwrap().placement
     else {
         panic!("pinning a settled thread keeps it")
     };
@@ -3161,7 +3481,14 @@ async fn pinning_a_settled_thread_persists_the_keep_until_the_next_prompt() {
         matches!(t.turns[0].execution, Execution::Completed)
     })
     .await;
-    assert_eq!(done.placement, Placement::Pinned { at_ms, kept: false });
+    assert_eq!(
+        done.placement,
+        Placement::Pinned {
+            at_ms,
+            kept: false,
+            order_key: None
+        }
+    );
     app.shutdown().await.unwrap();
 }
 #[tokio::test]
@@ -3183,7 +3510,9 @@ async fn a_new_approval_returns_kept_threads_to_auto_keeps_pins_and_raises_a_sno
         })
         .await;
         if pinned {
-            app.arrange(thread.id.clone(), Arrange::Pin).await.unwrap();
+            app.arrange(thread.id.clone(), Arrange::Pin { order_key: None })
+                .await
+                .unwrap();
         } else {
             app.arrange(thread.id.clone(), Arrange::Settle)
                 .await
@@ -3768,7 +4097,7 @@ async fn archived_placements_and_rename_survive_restart_and_reject_live_actions(
     let mut expected = vec![];
     for actions in [
         vec![],
-        vec![Arrange::Pin],
+        vec![Arrange::Pin { order_key: None }],
         vec![Arrange::Settle],
         vec![Arrange::Settle, Arrange::Unsettle],
     ] {
@@ -3799,7 +4128,7 @@ async fn archived_placements_and_rename_survive_restart_and_reject_live_actions(
         assert!(archived.snooze.is_none());
         assert_eq!(archived.title, "My saved title");
         assert_eq!(
-            app.arrange(thread.id.clone(), Arrange::Pin)
+            app.arrange(thread.id.clone(), Arrange::Pin { order_key: None })
                 .await
                 .unwrap_err()
                 .code,
@@ -4283,7 +4612,7 @@ fn legacy_placement_json_remains_live_and_archive_cannot_nest() {
     ] {
         let placement: Placement = serde_json::from_str(json).unwrap();
         let mut thread = idle_thread(None, None);
-        thread.placement = placement;
+        thread.placement = placement.clone();
         thread.arrange(Arrange::Archive, 30, None).unwrap();
         let serialized = serde_json::to_string(&thread.placement).unwrap();
         thread.placement = serde_json::from_str(&serialized).unwrap();

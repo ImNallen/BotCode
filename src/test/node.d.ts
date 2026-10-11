@@ -14,6 +14,7 @@ declare module "node:test" {
 }
 
 declare function setImmediate(callback: () => void): unknown;
+declare const process: { env: Record<string, string | undefined> };
 
 declare module "node:assert/strict" {
   const assert: {

@@ -610,8 +610,13 @@ const threadSummary = z.object({
   updatedAtMs: z.number().nullable(),
   awaitingApproval: z.boolean(),
   pinnedAtMs: z.number().nullable(),
+  pinOrderKey: z.string().nullable().default(null),
+  activeOrderKey: z.string().nullable().default(null),
   snoozedUntilMs: z.number().nullable(),
+  wokeAtMs: z.number().nullable().default(null),
   settledAtMs: z.number().nullable(),
+  autoSettleEnabled: z.boolean().default(true),
+  isRegeneratingTitle: z.boolean().default(false),
 });
 const searchCoverage = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("complete") }),
@@ -833,16 +838,12 @@ export type TurnDiffFile = z.infer<typeof turnDiffFile>;
 export type ApprovalDecision = z.infer<typeof approvalDecision>;
 export type Arrange =
   | {
-      kind:
-        | "pin"
-        | "unpin"
-        | "settle"
-        | "unsettle"
-        | "wake"
-        | "archive"
-        | "unarchive";
+      kind: "unpin" | "settle" | "unsettle" | "wake" | "archive" | "unarchive";
     }
-  | { kind: "snooze"; untilMs: number };
+  | { kind: "pin"; orderKey?: string }
+  | { kind: "reorder_pin" | "reorder_active"; orderKey: string }
+  | { kind: "snooze"; untilMs: number }
+  | { kind: "set_auto_settle"; enabled: boolean };
 export type Checkout = z.infer<typeof checkout>;
 export type NewCheckout =
   | { kind: "existing"; threadId: string }
@@ -1470,6 +1471,8 @@ export const ipc = {
     call("list_thread_summaries", { workspaceId }, z.array(threadSummary)),
   renameThread: (threadId: string, title: string) =>
     call("rename_thread", { threadId, title }, thread),
+  regenerateThreadTitle: (threadId: string) =>
+    call("regenerate_thread_title", { threadId }, z.null()),
   deleteThread: (threadId: string, deleteWorktree = false) =>
     call(
       "delete_thread",

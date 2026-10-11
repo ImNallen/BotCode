@@ -33,7 +33,9 @@ fn thread() -> ThreadSnapshot {
         user_questions: vec![],
         diagnostic: None,
         placement: Placement::Auto,
+        active_order_key: None,
         snooze: None,
+        auto_settle_disabled_at_ms: None,
         context: None,
         pending_revert: None,
         last_revert: None,
@@ -204,6 +206,7 @@ fn explicit_placement_snooze_approval_and_runtime_busy_rules_remain_authoritativ
         Placement::Pinned {
             at_ms: 4000,
             kept: true,
+            order_key: None,
         },
     ] {
         t.placement = placement;
@@ -212,6 +215,7 @@ fn explicit_placement_snooze_approval_and_runtime_busy_rules_remain_authoritativ
     t.placement = Placement::Pinned {
         at_ms: 4000,
         kept: false,
+        order_key: None,
     };
     assert_eq!(settled(&t, &links, None, true, false), Some(3000));
     t.snooze = Some(Snooze {
@@ -263,7 +267,7 @@ fn unsettle_return_clock_stamps_only_actual_transitions_and_defaults_for_old_sna
     assert_eq!(manual.latest_user_activity_at_ms, Some(2000));
     manual.arrange(Arrange::Unsettle, 6000, None).unwrap();
     assert_eq!(manual.unsettled_at_ms, Some(5000));
-    assert_eq!(manual.summary(None).unsettled_at_ms, Some(5000));
+    assert_eq!(manual.summary(None, 6000).unsettled_at_ms, Some(5000));
     let serialized = serde_json::to_value(&manual).unwrap();
     let restored: ThreadSnapshot = serde_json::from_value(serialized.clone()).unwrap();
     assert_eq!(restored.unsettled_at_ms, Some(5000));
@@ -288,4 +292,70 @@ fn unsettle_return_clock_stamps_only_actual_transitions_and_defaults_for_old_sna
     automatic.materialize_settlement(Some(3000));
     assert_eq!(automatic.unsettled_at_ms, None);
     assert_eq!(automatic.latest_user_activity_at_ms, Some(2000));
+}
+
+#[test]
+fn auto_settle_opt_out_blocks_every_automatic_path_but_never_a_manual_settle() {
+    let mut t = thread();
+    let merge = [merged("1970-01-01T00:00:04Z")];
+    assert_eq!(settled(&t, &[], Some(1), true, false), Some(3000));
+    assert_eq!(settled(&t, &merge, None, true, false), Some(3000));
+
+    t.arrange(Arrange::SetAutoSettle { enabled: false }, 5000, None)
+        .unwrap();
+    assert_eq!(t.auto_settle_disabled_at_ms, Some(5000));
+    assert_eq!(settled(&t, &[], Some(1), true, false), None);
+    assert_eq!(settled(&t, &merge, None, true, false), None);
+    assert!(!t.summary(None, 10000).auto_settle_enabled);
+
+    t.arrange(Arrange::SetAutoSettle { enabled: false }, 6000, None)
+        .unwrap();
+    assert_eq!(t.auto_settle_disabled_at_ms, Some(5000));
+
+    let mut manual = t.clone();
+    manual.arrange(Arrange::Settle, 7000, None).unwrap();
+    assert_eq!(manual.placement, Placement::Settled { at_ms: 7000 });
+    assert_eq!(settled(&manual, &[], Some(1), true, false), Some(7000));
+    assert_eq!(manual.auto_settle_disabled_at_ms, Some(5000));
+
+    t.record_activity(None);
+    assert_eq!(t.auto_settle_disabled_at_ms, Some(5000));
+
+    t.arrange(Arrange::SetAutoSettle { enabled: true }, 8000, None)
+        .unwrap();
+    assert_eq!(t.auto_settle_disabled_at_ms, None);
+    assert!(t.summary(None, 10000).auto_settle_enabled);
+    assert_eq!(settled(&t, &[], Some(1), true, false), Some(3000));
+    assert_eq!(settled(&t, &merge, None, true, false), Some(3000));
+}
+
+#[test]
+fn auto_settle_opt_out_persists_and_old_snapshots_and_summaries_default_to_enabled() {
+    let mut t = thread();
+    let old = serde_json::to_value(&t).unwrap();
+    assert!(old.get("autoSettleDisabledAtMs").is_none());
+    let restored: ThreadSnapshot = serde_json::from_value(old).unwrap();
+    assert_eq!(restored.auto_settle_disabled_at_ms, None);
+
+    t.arrange(Arrange::SetAutoSettle { enabled: false }, 5000, None)
+        .unwrap();
+    let saved = serde_json::to_value(&t).unwrap();
+    assert_eq!(saved["autoSettleDisabledAtMs"], 5000);
+    let restored: ThreadSnapshot = serde_json::from_value(saved).unwrap();
+    assert_eq!(restored.auto_settle_disabled_at_ms, Some(5000));
+
+    let mut summary = serde_json::to_value(t.summary(None, 10000)).unwrap();
+    assert_eq!(summary["autoSettleEnabled"], false);
+    assert_eq!(summary["isRegeneratingTitle"], false);
+    let fields = summary.as_object_mut().unwrap();
+    fields.remove("autoSettleEnabled");
+    fields.remove("isRegeneratingTitle");
+    let legacy: ThreadSummary = serde_json::from_value(summary).unwrap();
+    assert!(legacy.auto_settle_enabled);
+    assert!(!legacy.is_regenerating_title);
+
+    let action: Arrange =
+        serde_json::from_value(serde_json::json!({"kind": "set_auto_settle", "enabled": false}))
+            .unwrap();
+    assert_eq!(action, Arrange::SetAutoSettle { enabled: false });
 }

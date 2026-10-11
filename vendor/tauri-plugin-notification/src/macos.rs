@@ -9,7 +9,7 @@ use objc2::{
     AnyThread, DefinedClass,
 };
 use objc2_foundation::{
-    ns_string, NSBundle, NSDictionary, NSError, NSObject, NSObjectProtocol, NSString,
+    ns_string, NSArray, NSBundle, NSDictionary, NSError, NSObject, NSObjectProtocol, NSString,
 };
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
@@ -144,6 +144,17 @@ impl<R: Runtime> Notification<R> {
                 .expect("notification action lock") = Some(Box::new(handler));
         }
     }
+    pub fn remove_delivered(&self, identifiers: &[String]) {
+        if let Ok(center) = center() {
+            let identifiers: Vec<_> = identifiers
+                .iter()
+                .map(|id| NSString::from_str(id))
+                .collect();
+            center.removeDeliveredNotificationsWithIdentifiers(&NSArray::from_retained_slice(
+                &identifiers,
+            ));
+        }
+    }
     pub async fn permission_state_async(&self) -> Result<PermissionState> {
         let receiver = begin_permission_state()?;
         receiver
@@ -202,7 +213,10 @@ fn begin_request_permission() -> Result<oneshot::Receiver<Result<PermissionState
             let _ = sender.send(result);
         }
     });
-    center.requestAuthorizationWithOptions_completionHandler(UNAuthorizationOptions::Alert, &block);
+    center.requestAuthorizationWithOptions_completionHandler(
+        UNAuthorizationOptions::Alert | UNAuthorizationOptions::Badge,
+        &block,
+    );
     Ok(receiver)
 }
 impl<R: Runtime> NotificationBuilder<R> {

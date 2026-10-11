@@ -119,6 +119,8 @@ fn main() {
                 preview::preview_discover,
                 preview::preview_application_shortcuts,
                 notifications::notification_actions,
+                notifications::set_notification_badge,
+                notifications::close_notifications,
                 ipc::project_config,
                 ipc::project_file_config,
                 ipc::retry_worktree_setup,
@@ -200,6 +202,7 @@ fn main() {
                 ipc::interrupt,
                 ipc::arrange_thread,
                 ipc::rename_thread,
+                ipc::regenerate_thread_title,
                 ipc::delete_thread,
                 ipc::list_thread_summaries,
                 ipc::ui_state,
@@ -239,6 +242,16 @@ fn main() {
             || matches!(&event, tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } if label == "main")
         {
             preview::shutdown_keyboard();
+        }
+        if matches!(
+            &event,
+            tauri::RunEvent::Exit
+                | tauri::RunEvent::WindowEvent {
+                    event: tauri::WindowEvent::Focused(true),
+                    ..
+                }
+        ) {
+            notifications::clear_badge(handle);
         }
         if matches!(event, tauri::RunEvent::Exit) {
             let runtime = handle.state::<App>();
