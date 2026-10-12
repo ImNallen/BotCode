@@ -73,6 +73,10 @@ import {
   type Surface,
 } from "../panel/RightPanel";
 import {
+  usePanelAnimationSettings,
+  usePanelPresence,
+} from "../panelAnimations";
+import {
   closeFiles,
   openFile,
   openSurface,
@@ -271,6 +275,14 @@ export function ChatView({
   const navigate = useNavigate({ from: "/" });
   const [panelOpen, setPanelOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
+  const panelAnimation = usePanelAnimationSettings();
+  const panelPresent = usePanelPresence(
+    panelOpen,
+    true,
+    panelAnimation.active,
+    threadId ?? null,
+    panelAnimation.durationMs,
+  ).present;
   const [panel, setPanel] = useState<PanelState>(emptyPanel);
   const previewScope = scopeForPreview(workspaceId, threadId);
   const previewScopeRef = useRef(previewScope);
@@ -2384,7 +2396,7 @@ export function ChatView({
           />
         ) : null}
       </div>
-      {panelOpen ? (
+      {panelPresent ? (
         <RenderErrorBoundary
           resetKeys={[checkout.workspaceId, checkout.threadId, threadId]}
           fallback={({ error, reset }) => (
@@ -2410,6 +2422,7 @@ export function ChatView({
             view={view}
             state={panel}
             onChange={setPanel}
+            open={panelOpen}
             maximized={maximized}
             conversationId={threadId}
             pullRequests={pullRequests}

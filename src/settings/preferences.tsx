@@ -1,7 +1,6 @@
 import {
   createContext,
   useContext,
-  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -19,6 +18,14 @@ import { mergeMethod } from "../panel/prIdentity";
 import { serial } from "../lib/serial";
 import { DEFAULT_LINK_TARGET, linkTargetSchema } from "../preview/linkTarget";
 import { readUsagePrices } from "../usage/prices";
+import {
+  appearanceSchema,
+  defaultAppearance,
+  LEGACY_WORD_WRAP_KEY,
+  readAppearance,
+  type AppearanceSettings,
+} from "../appearance/settings";
+import { storage } from "../lib/storage";
 
 const favoriteModelSchema = z.object({
   provider: z.string().min(1),
@@ -144,9 +151,7 @@ const schema = z.object({
   newThreadCheckoutConfigured: z.boolean().default(false),
   notificationMode: notificationModeSchema,
   inAppNotificationsEnabled: z.boolean(),
-  appearance: z.enum(["system", "light", "dark"]),
-  promptFontSize: z.number().int().min(12).max(20),
-  codeFontSize: z.number().int().min(11).max(20),
+  appearance: appearanceSchema,
   followUpBehavior: z.enum(["queue", "steer"]),
   composerRichTextEnabled: z.boolean(),
   composerCollapseOnScroll: z.boolean(),
@@ -178,9 +183,7 @@ export const defaults: Preferences = {
   newThreadCheckoutConfigured: false,
   notificationMode: "off",
   inAppNotificationsEnabled: false,
-  appearance: "system",
-  promptFontSize: 14,
-  codeFontSize: 13,
+  appearance: defaultAppearance,
   followUpBehavior: "queue",
   composerRichTextEnabled: true,
   composerCollapseOnScroll: true,
@@ -228,6 +231,9 @@ type PreferenceState = {
 const Context = createContext<
   | (PreferenceState & {
       update: (patch: Partial<Preferences>) => void;
+      updateAppearance: (
+        change: (current: AppearanceSettings) => Partial<AppearanceSettings>,
+      ) => Promise<boolean>;
       save: (patch: Partial<Preferences>) => Promise<void>;
       saveActions: (
         workspaceId: string | undefined,
@@ -290,13 +296,6 @@ export function readPreferences(): PreferenceState {
     );
     const autoSettleOnMerge = schema.shape.autoSettleOnMerge.safeParse(
       object.autoSettleOnMerge,
-    );
-    const appearance = schema.shape.appearance.safeParse(object.appearance);
-    const promptFontSize = schema.shape.promptFontSize.safeParse(
-      object.promptFontSize,
-    );
-    const codeFontSize = schema.shape.codeFontSize.safeParse(
-      object.codeFontSize,
     );
     const contextWindowMeter = schema.shape.contextWindowMeter.safeParse(
       object.contextWindowMeter,
@@ -412,13 +411,10 @@ export function readPreferences(): PreferenceState {
           .boolean()
           .catch(false)
           .parse(object.inAppNotificationsEnabled),
-        appearance: appearance.success ? appearance.data : defaults.appearance,
-        promptFontSize: promptFontSize.success
-          ? promptFontSize.data
-          : defaults.promptFontSize,
-        codeFontSize: codeFontSize.success
-          ? codeFontSize.data
-          : defaults.codeFontSize,
+        appearance: readAppearance(object.appearance, {
+          ...object,
+          wordWrap: storage.getItem(LEGACY_WORD_WRAP_KEY),
+        }),
         contextWindowMeter: contextWindowMeter.success
           ? contextWindowMeter.data
           : defaults.contextWindowMeter,
@@ -502,36 +498,20 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   const update = (patch: Partial<Preferences>) => {
     void persist(patch).catch(() => {});
   };
-  useLayoutEffect(() => {
-    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => {
-      document.documentElement.classList.toggle(
-        "dark",
-        state.preferences.appearance === "dark" ||
-          (state.preferences.appearance === "system" && scheme.matches),
-      );
-      document.documentElement.style.setProperty(
-        "--font-size-prompt",
-        `${state.preferences.promptFontSize}px`,
-      );
-      document.documentElement.style.setProperty(
-        "--font-size-code",
-        `${state.preferences.codeFontSize}px`,
-      );
-      document.documentElement.style.setProperty(
-        "--diffs-font-size",
-        `${state.preferences.codeFontSize}px`,
-      );
-    };
-    apply();
-    scheme.addEventListener("change", apply);
-    return () => scheme.removeEventListener("change", apply);
-  }, [state.preferences]);
   return (
     <Context.Provider
       value={{
         ...state,
         update,
+        updateAppearance: (change) => {
+          const appearance = current.current.appearance;
+          return persist({
+            appearance: { ...appearance, ...change(appearance) },
+          }).then(
+            () => true,
+            () => false,
+          );
+        },
         save: persist,
         saveActions: (workspaceId, scripts) => {
           if (!workspaceId)

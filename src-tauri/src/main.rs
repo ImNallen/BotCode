@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod appearance;
 #[cfg(target_os = "macos")]
 mod edit_history;
 mod filesystem;
@@ -109,6 +110,9 @@ fn main() {
         })
         .invoke_handler({
             let commands: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                appearance::installed_font_families,
+                appearance::export_theme_file,
+                appearance::pick_theme_files,
                 mac_permissions::mac_permission_status,
                 mac_permissions::mac_permission_open,
                 ipc::search_thread_messages,

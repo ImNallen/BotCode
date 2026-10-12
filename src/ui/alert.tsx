@@ -4,6 +4,8 @@ import { cn } from "../lib/cn";
 
 const variants = {
   default: "bg-transparent dark:bg-input/32 [&_svg]:text-muted-foreground",
+  error:
+    "border-error/32 bg-error-surface text-error-foreground [&_[data-slot=alert-description]]:text-error-foreground/80 [&_svg]:text-error",
   info: "border-info/32 bg-info/4 [&_svg]:text-info",
 } as const;
 

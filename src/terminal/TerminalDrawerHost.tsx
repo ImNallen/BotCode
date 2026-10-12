@@ -19,7 +19,6 @@ import {
 } from "../chat/ComposerContextProvider";
 import { ErrorView } from "../errors/ErrorView";
 import { RenderErrorBoundary } from "../errors/RenderErrorBoundary";
-import { usePreferences } from "../settings/preferences";
 import { PersistentThreadTerminalDrawer } from "./ThreadTerminalDrawer";
 import {
   ownerScope,
@@ -50,7 +49,6 @@ export function TerminalDrawerHost({
   const [active, setActive] = useState<ActiveDrawer | null>(null);
   const [mounted, setMounted] = useState<readonly TerminalOwner[]>([]);
   const states = useTerminalStates();
-  const { preferences } = usePreferences();
   const parking = useRef<HTMLDivElement>(null);
   const hosts = useRef(new Map<string, HTMLDivElement>());
   const show = useCallback((next: ActiveDrawer) => {
@@ -126,7 +124,6 @@ export function TerminalDrawerHost({
             active={isActive}
             fileLinks={isActive ? active?.fileLinks : undefined}
             composer={isActive ? (active?.composer ?? null) : null}
-            fontSize={preferences.codeFontSize}
           />,
           hostFor(scope),
           scope,
@@ -141,13 +138,11 @@ const MountedDrawer = memo(function MountedDrawer({
   active,
   fileLinks,
   composer,
-  fontSize,
 }: {
   owner: TerminalOwner;
   active: boolean;
   fileLinks: FileLinks | undefined;
   composer: ComposerContextChannel | null;
-  fontSize: number;
 }) {
   return (
     <RenderErrorBoundary
@@ -175,7 +170,6 @@ const MountedDrawer = memo(function MountedDrawer({
           workspaceId={owner.workspaceId}
           threadId={owner.threadId}
           active={active}
-          fontSize={fontSize}
           fileLinks={fileLinks}
         />
       </ComposerContextProvider>

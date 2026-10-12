@@ -34,6 +34,7 @@ import { findTaskListMarkerOffset } from "./markdownTasks";
 import { isWebUrl, openLink } from "../preview/linkTarget";
 import type { PreviewScope } from "../preview/model";
 import { usePreferences } from "../settings/preferences";
+import { useAppearance } from "../appearance/AppearanceRoot";
 
 export type FileLinks = {
   resolve: (target: string, source: "code" | "href") => ChatFileLink | null;
@@ -197,7 +198,8 @@ function CodeBlock({
   code: string;
   children: ReactNode;
 }) {
-  const [wrapped, setWrapped] = useState(false);
+  const { appearance } = useAppearance();
+  const [wrapped, setWrapped] = useState(appearance.wordWrap);
   const [copied, setCopied] = useState(false);
   const wrapLabel = wrapped ? "Disable line wrap" : "Wrap lines";
   const copyLabel = copied ? "Copied" : "Copy code";

@@ -16,6 +16,7 @@ import {
   RefreshCwIcon,
   TimerIcon,
   MessageSquareDashedIcon,
+  PaletteIcon,
   PanelLeftIcon,
   PanelRightIcon,
   PinIcon,
@@ -107,6 +108,7 @@ export type ActionContext = {
   newThreadDirect: () => void;
   startScratch: () => void;
   openSettings: () => void;
+  toggleThemeEditor: () => void;
   openProjectSettings: (workspaceId: string) => void;
   closePage: () => void;
   toggleSidebar: () => void;
@@ -282,6 +284,18 @@ const definitions = {
     allowTerminal: true,
     available: () => true,
     run: (c) => c.openSettings(),
+  },
+  "themeEditor.toggle": {
+    icon: PaletteIcon,
+    title: "Toggle theme editor",
+    keywords: "theme appearance colors palette customize",
+    shortcutDescription:
+      "Open the theme editor seeded from the theme on screen, or close it.",
+    group: "Navigation",
+    palette: "root",
+    allowTerminal: true,
+    available: () => true,
+    run: (c) => c.toggleThemeEditor(),
   },
   "page.close": {
     defaultBindings: [{ key: "esc" }],

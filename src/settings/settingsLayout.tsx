@@ -10,6 +10,7 @@ export function SettingsGroup({
   hideTitle = false,
   icon,
   headerAction,
+  variant = "grouped",
   children,
 }: {
   id: string;
@@ -17,6 +18,7 @@ export function SettingsGroup({
   hideTitle?: boolean;
   icon?: ReactNode;
   headerAction?: ReactNode;
+  variant?: "grouped" | "plain";
   children: ReactNode;
 }) {
   return (
@@ -44,7 +46,14 @@ export function SettingsGroup({
           {headerAction}
         </div>
       )}
-      <div className="relative overflow-visible text-foreground rounded-xl border border-border/60 bg-card/40 shadow-xs/5 [&>*+*]:border-t [&>*+*]:border-border/50 [&>[data-slot=settings-row]]:rounded-none">
+      <div
+        className={cn(
+          "relative overflow-visible text-foreground",
+          variant === "grouped"
+            ? "rounded-xl border border-border/60 bg-card/40 shadow-xs/5 [&>*+*]:border-t [&>*+*]:border-border/50 [&>[data-slot=settings-row]]:rounded-none"
+            : "space-y-1",
+        )}
+      >
         {children}
       </div>
     </section>
@@ -84,7 +93,8 @@ export function SettingsRow({
       aria-disabled={disabled || undefined}
       data-slot="settings-row"
       className={cn(
-        "@container/settings-row rounded-xl px-3 sm:px-4 aria-disabled:opacity-64 aria-disabled:[&_*]:text-muted-foreground py-3 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+        "@container/settings-row rounded-xl px-3 sm:px-4 aria-disabled:opacity-64 aria-disabled:[&_*]:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+        children ? "pt-3 pb-1" : "py-3",
         className,
       )}
     >

@@ -12,13 +12,7 @@ import { ArrowLeftIcon, SearchIcon, XIcon } from "lucide-react";
 import { SidebarMenuButton } from "../SidebarFooter";
 import { Menu, MenuItem } from "../ui/menu";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
-import {
-  Button,
-  Switch,
-  Toggle,
-  selectTrigger,
-  selectItem,
-} from "../ui/controls";
+import { Button, Switch, selectTrigger, selectItem } from "../ui/controls";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -44,6 +38,12 @@ import { DiagnosticsSettings } from "./DiagnosticsSettings";
 import { OpenSourceLicensesPanel } from "./OpenSourceLicenses";
 import { ProjectsSettings } from "./ProjectsSettings";
 import { StorageSettingsRow } from "./StorageSettings";
+import { ThemeLibrary } from "./ThemeSettings";
+import {
+  AppearanceSettingsRow,
+  TypographyAdvancedSwitch,
+} from "./AppearanceSettings";
+import { useAppearance } from "../appearance/AppearanceRoot";
 import {
   categories,
   settingsSection,
@@ -78,6 +78,7 @@ export function SettingsSidebar() {
   const selection = useSearch({ from: "__root__" });
   const { scope } = useSettingsScope();
   const { preferences } = usePreferences();
+  const { appearance, update: updateAppearance } = useAppearance();
   const visible = visibleSections(scope).map((section) => ({
     section,
     ...categories[section],
@@ -133,6 +134,11 @@ export function SettingsSidebar() {
     .filter((result) => result.text.toLowerCase().includes(needle));
   const active = results[activeIndex];
   const go = (section: SettingsSection, hash = "") => {
+    const advanced = categories[section].groups.some((group) =>
+      group.rows.some((row) => row.id === hash && row.advanced),
+    );
+    if (advanced && !appearance.typographyAdvanced)
+      updateAppearance({ typographyAdvanced: true });
     setQuery("");
     setActiveIndex(0);
     if (section === "keybindings" && category.section === "keybindings")
@@ -443,48 +449,6 @@ function LinkTargetControl() {
   );
 }
 
-function FontSizeControl({
-  value,
-  min,
-  label,
-  onChange,
-}: {
-  value: number;
-  min: number;
-  label: string;
-  onChange: (value: number) => void;
-}) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
-  return (
-    <div
-      data-size="sm"
-      data-slot="number-field"
-      className="flex w-28 flex-col items-start gap-2"
-    >
-      <div
-        data-slot="number-field-group"
-        className="relative flex w-full justify-between rounded-lg border border-input bg-background not-dark:bg-clip-padding text-base text-foreground shadow-xs/5 ring-ring/24 transition-shadow before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] not-data-disabled:not-focus-within:not-aria-invalid:before:shadow-[0_1px_--theme(--color-black/4%)] focus-within:border-ring focus-within:ring-[3px] has-aria-invalid:border-destructive/36 has-autofill:bg-foreground/4 focus-within:has-aria-invalid:border-destructive/64 focus-within:has-aria-invalid:ring-destructive/48 data-disabled:pointer-events-none data-disabled:opacity-64 sm:text-sm dark:bg-input/32 dark:has-autofill:bg-foreground/8 dark:has-aria-invalid:ring-destructive/24 dark:not-data-disabled:not-focus-within:not-aria-invalid:before:shadow-[0_-1px_--theme(--color-white/6%)] [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0 [[data-disabled],:focus-within,[aria-invalid]]:shadow-none"
-      >
-        <input
-          type="number"
-          min={min}
-          max={20}
-          step={1}
-          aria-label={label}
-          value={draft}
-          onChange={(event) => {
-            setDraft(event.currentTarget.value);
-            onChange(event.currentTarget.valueAsNumber);
-          }}
-          onBlur={() => setDraft(String(value))}
-          className="h-8.5 in-data-[size=lg]:h-9.5 in-data-[size=sm]:h-7.5 w-full min-w-0 grow bg-transparent in-data-[size=sm]:px-[calc(--spacing(2.5)-1px)] px-[calc(--spacing(3)-1px)] text-center tabular-nums in-data-[size=lg]:leading-9.5 in-data-[size=sm]:leading-7.5 leading-8.5 outline-none [transition:background-color_5000000s_ease-in-out_0s] sm:h-7.5 sm:in-data-[size=lg]:h-8.5 sm:in-data-[size=sm]:h-6.5 sm:in-data-[size=lg]:leading-8.5 sm:in-data-[size=sm]:leading-8.5 sm:leading-7.5"
-        />
-      </div>
-    </div>
-  );
-}
-
 export function SettingsPage() {
   const category = useCategory();
   const hash = useLocation({ select: (location) => location.hash });
@@ -502,43 +466,6 @@ export function SettingsPage() {
     target?.focus({ preventScroll: true });
   }, [category.section, category.licenses, hash]);
   const control = (id: string) => {
-    if (id === "theme")
-      return (
-        <div
-          className="flex items-center gap-1"
-          role="group"
-          aria-label="Appearance"
-        >
-          {(["system", "light", "dark"] as const).map((appearance) => (
-            <Toggle
-              key={appearance}
-              variant="outline"
-              size="sm"
-              pressed={preferences.appearance === appearance}
-              onClick={() => update({ appearance })}
-            >
-              {appearance === "system"
-                ? "System"
-                : appearance === "light"
-                  ? "Light"
-                  : "Dark"}
-            </Toggle>
-          ))}
-        </div>
-      );
-    if (id === "prompt-font" || id === "code-font") {
-      const prompt = id === "prompt-font";
-      return (
-        <FontSizeControl
-          value={prompt ? preferences.promptFontSize : preferences.codeFontSize}
-          min={prompt ? 12 : 11}
-          label={prompt ? "Prompt font size" : "Code font size"}
-          onChange={(value) =>
-            update(prompt ? { promptFontSize: value } : { codeFontSize: value })
-          }
-        />
-      );
-    }
     if (id === "working-shelf")
       return (
         <Switch
@@ -733,6 +660,8 @@ export function SettingsPage() {
   const row = (info: SettingsRowInfo) =>
     category.section === "storage" ? (
       <StorageSettingsRow key={info.id} info={info} scope={scope} />
+    ) : category.section === "appearance" ? (
+      <AppearanceSettingsRow key={info.id} info={info} />
     ) : info.id === "source-control-writing-style" ||
       info.id === "follow-change-request-templates" ? (
       <SourceControlWritingRow
@@ -863,10 +792,36 @@ export function SettingsPage() {
                 ) : null;
               if (group.id === "source-control-providers")
                 return <GitHubProviderSettings key={group.id} />;
-              const rows = visibleRows(group, scope, preferences);
+              if (group.id === "appearance")
+                return (
+                  <SettingsGroup
+                    key={group.id}
+                    id={group.id}
+                    title={group.title}
+                    hideTitle
+                    variant="plain"
+                  >
+                    <div id="theme" tabIndex={-1} className="outline-none">
+                      <ThemeLibrary />
+                    </div>
+                  </SettingsGroup>
+                );
+              const rows = visibleRows(group, scope, preferences)?.filter(
+                (row) =>
+                  !row.advanced || preferences.appearance.typographyAdvanced,
+              );
               if (rows === undefined) return null;
               return (
-                <SettingsGroup key={group.id} id={group.id} title={group.title}>
+                <SettingsGroup
+                  key={group.id}
+                  id={group.id}
+                  title={group.title}
+                  headerAction={
+                    group.id === "typography" ? (
+                      <TypographyAdvancedSwitch />
+                    ) : undefined
+                  }
+                >
                   {rows.length > 0 ? (
                     rows.map(row)
                   ) : (

@@ -169,7 +169,7 @@ it("validates saved permissions independently and keeps defaults eligible for No
         workspace: { ...scope.workspace, kind: "scratch" },
       });
       assert.equal(api.preferences.defaultPermissionMode, null);
-      assert.equal(api.preferences.appearance, "dark");
+      assert.equal(api.preferences.appearance.themeAppearanceMode, "dark");
       assert.equal(
         projectSetting(api.preferences, project, "newThreadCheckout").value,
         "worktree",

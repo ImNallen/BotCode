@@ -15,11 +15,10 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "../lib/cn";
-import { storage } from "../lib/storage";
+import { useAppearance } from "../appearance/AppearanceRoot";
 import { Button, Toggle } from "../ui/controls";
 import { SegmentedGroup, storedFlag, useStoredState } from "./chrome";
 import type { DiffFileTreeEntry } from "./DiffFileTree";
-import { WORD_WRAP_KEY } from "./FilesSurface";
 import { DIFF_VIEW_UNSAFE_CSS } from "./surfaceCss";
 
 export function hash(input: string): number {
@@ -64,9 +63,8 @@ function collapseIconClass(fileDiff: FileDiffMetadata): string {
 
 export function useDiffViewPreferences() {
   const [split, setSplit] = useStoredState("z1.diffSplit", storedFlag(false));
-  const [wordWrap, setWordWrap] = useState(() =>
-    storedFlag(true)(storage.getItem(WORD_WRAP_KEY)),
-  );
+  const { appearance } = useAppearance();
+  const [wordWrap, setWordWrap] = useState(appearance.wordWrap);
   const [ignoreWhitespace, setIgnoreWhitespace] = useStoredState(
     "z1.diffIgnoreWhitespace",
     storedFlag(true),

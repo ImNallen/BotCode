@@ -45,6 +45,12 @@ export class FakeNode {
   get textContent(): string {
     return this.text + this.childNodes.map((n) => n.textContent).join("");
   }
+  set nodeValue(text: string) {
+    this.text = text;
+  }
+  get nodeValue(): string {
+    return this.text;
+  }
   listeners: FakeListener[] = [];
   addEventListener(
     type: string,

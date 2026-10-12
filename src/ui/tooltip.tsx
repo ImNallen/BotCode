@@ -8,6 +8,7 @@ import {
   type CSSProperties,
   type ReactElement,
   type ButtonHTMLAttributes,
+  type Ref,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -17,7 +18,10 @@ export function Tooltip({
   side = "top",
 }: {
   children: ReactElement<
-    ButtonHTMLAttributes<HTMLButtonElement> & { "data-slot"?: string }
+    ButtonHTMLAttributes<HTMLButtonElement> & {
+      "data-slot"?: string;
+      ref?: Ref<HTMLButtonElement>;
+    }
   >;
   content: string;
   side?: "top" | "bottom";
@@ -61,7 +65,12 @@ export function Tooltip({
   return (
     <>
       {cloneElement(children, {
-        ...{ ref: anchor },
+        ref: (node: HTMLButtonElement | null) => {
+          anchor.current = node;
+          const ref = children.props.ref;
+          if (typeof ref === "function") ref(node);
+          else if (ref) ref.current = node;
+        },
         "aria-describedby": open ? id : undefined,
         "data-slot": "tooltip-trigger",
         onPointerEnter: (event) => {

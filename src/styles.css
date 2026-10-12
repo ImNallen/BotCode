@@ -1,13 +1,5 @@
 @import "./t3-theme.css";
 
-:root {
-  font-size: 16px;
-  -webkit-font-smoothing: antialiased;
-  --font-size-prompt: 14px;
-  --font-size-code: 13px;
-  --diffs-font-size: 13px;
-}
-
 :root.macos-desktop {
   --workspace-controls-left: var(--desktop-window-controls-inset, 90px);
 }
