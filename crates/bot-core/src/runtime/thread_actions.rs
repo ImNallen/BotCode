@@ -134,12 +134,13 @@ impl Owner {
         self.held.insert(root.clone(), Hold::Delete);
         self.deleting.insert(id.clone());
         self.terminals.block_thread(&id);
+        let policy = settings::storage_policy(&self.config.data_dir.join("settings.json"));
+        let on_delete = policy.rules(&workspace).worktree_on_delete;
         let terminals = self.terminals.clone();
         let scope = CloseScope::Thread {
             workspace,
             thread: id.clone(),
         };
-        let rules = settings::cleanup_rules(&self.config.data_dir.join("settings.json"));
         let worktrees = self.config.data_dir.join("worktrees");
         let roots = self
             .workspaces
@@ -149,7 +150,7 @@ impl Owner {
         self.delete_jobs.spawn(async move {
             let outcome = tokio::task::spawn_blocking(move || {
                 terminals.close(&scope);
-                if !delete_worktree && !rules.worktree_on_delete {
+                if !delete_worktree && !on_delete {
                     return DeletedWorktree::NotRequested;
                 }
                 if let Some(reason) = retention {
@@ -167,7 +168,7 @@ impl Owner {
                 match (cleanup::Sweep {
                     worktrees: &worktrees,
                     roots: &roots,
-                    rules,
+                    policy,
                     now: now_ms(),
                 })
                 .remove_deleted(&candidate)

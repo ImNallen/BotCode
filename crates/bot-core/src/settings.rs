@@ -2,7 +2,7 @@ use crate::SettlementRules;
 use crate::domain::{AUTO_SETTLE_AFTER_MS, Result, WorkspaceId};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -144,26 +144,82 @@ pub fn write(path: &Path, text: &str) -> Result<()> {
 pub struct CleanupRules {
     pub worktree_on_delete: bool,
     pub worktree_after_days: Option<u64>,
+    pub worktree_on_merge: bool,
     pub worktree_unchanged: bool,
 }
 impl CleanupRules {
-    pub fn enabled(self) -> bool {
-        self.worktree_after_days.is_some() || self.worktree_unchanged
+    pub fn has_sweep_rule(self) -> bool {
+        self.worktree_after_days.is_some() || self.worktree_on_merge || self.worktree_unchanged
+    }
+    fn lenient(rules: &Value) -> Self {
+        Self {
+            worktree_on_delete: rules["worktreeOnDelete"].as_bool() == Some(true),
+            worktree_after_days: retention_days(&rules["worktreeAfterDays"]).flatten(),
+            worktree_on_merge: rules["worktreeOnMerge"].as_bool() == Some(true),
+            worktree_unchanged: rules["worktreeUnchanged"].as_bool() == Some(true),
+        }
+    }
+    fn strict(rules: &Value) -> Option<Self> {
+        Some(Self {
+            worktree_on_delete: rules["worktreeOnDelete"].as_bool()?,
+            worktree_after_days: retention_days(&rules["worktreeAfterDays"])?,
+            worktree_on_merge: rules["worktreeOnMerge"].as_bool()?,
+            worktree_unchanged: rules["worktreeUnchanged"].as_bool()?,
+        })
     }
 }
-/// Every malformed key, or a missing or unparseable file, reads as that rule being off.
-pub fn cleanup_rules(path: &Path) -> CleanupRules {
-    let settings: serde_json::Value = fs::read(path)
+fn retention_days(value: &Value) -> Option<Option<u64>> {
+    match value {
+        Value::Null => Some(None),
+        _ => value
+            .as_u64()
+            .filter(|days| (1..=3650).contains(days))
+            .map(Some),
+    }
+}
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StoragePolicy {
+    default: CleanupRules,
+    projects: HashMap<WorkspaceId, CleanupRules>,
+    pub browser_artifacts_after_days: Option<u64>,
+    pub logs_after_days: Option<u64>,
+}
+impl StoragePolicy {
+    pub fn rules(&self, workspace: &WorkspaceId) -> CleanupRules {
+        self.projects
+            .get(workspace)
+            .copied()
+            .unwrap_or(self.default)
+    }
+    pub fn worktrees_enabled(&self) -> bool {
+        self.default.has_sweep_rule() || self.projects.values().any(|rules| rules.has_sweep_rule())
+    }
+}
+pub fn storage_policy(path: &Path) -> StoragePolicy {
+    let settings: Value = fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
-    let rules = &settings["storageCleanup"];
-    CleanupRules {
-        worktree_after_days: rules["worktreeAfterDays"]
-            .as_u64()
-            .filter(|days| (1..=3650).contains(days)),
-        worktree_on_delete: rules["worktreeOnDelete"].as_bool() == Some(true),
-        worktree_unchanged: rules["worktreeUnchanged"].as_bool() == Some(true),
+    let storage = &settings["storageCleanup"];
+    StoragePolicy {
+        default: CleanupRules::lenient(storage),
+        projects: settings["projectOverrides"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(id, project)| {
+                let cleanup = &project["worktreeCleanup"];
+                let rules = match cleanup["mode"].as_str()? {
+                    "off" => CleanupRules::default(),
+                    "custom" => CleanupRules::strict(&cleanup["rules"])?,
+                    _ => return None,
+                };
+                Some((id.parse().ok()?, rules))
+            })
+            .collect(),
+        browser_artifacts_after_days: retention_days(&storage["browserArtifactsAfterDays"])
+            .flatten(),
+        logs_after_days: retention_days(&storage["logsAfterDays"]).flatten(),
     }
 }
 
@@ -252,6 +308,92 @@ pub(crate) fn source_control(path: &Path) -> SourceControlSettings {
             .collect(),
         default,
         interval: (interval > 0).then(|| std::time::Duration::from_millis(interval)),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ModelPrice {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+pub(crate) fn usage_price_overrides(path: &Path) -> BTreeMap<String, ModelPrice> {
+    let settings: Value = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let rate = |value: &Value| value.as_f64().filter(|v| v.is_finite() && *v >= 0.0);
+    let optional = |entry: &Value, key: &str, input: f64| match entry.get(key) {
+        None => Some(input),
+        Some(value) => rate(value),
+    };
+    settings["usagePriceOverrides"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(model, entry)| {
+            let model = model.trim();
+            let input = rate(&entry["inputCostPerMillionTokens"])?;
+            let price = ModelPrice {
+                input,
+                output: rate(&entry["outputCostPerMillionTokens"])?,
+                cache_read: optional(entry, "cacheReadCostPerMillionTokens", input)?,
+                cache_write: optional(entry, "cacheWriteCostPerMillionTokens", input)?,
+            };
+            (!model.is_empty()).then(|| (model.to_owned(), price))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod usage_price_tests {
+    use super::*;
+    #[test]
+    fn price_overrides_keep_exact_ids_and_skip_only_malformed_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert!(usage_price_overrides(&path).is_empty());
+        fs::write(
+            &path,
+            serde_json::json!({"usagePriceOverrides": {
+                " Vendor/Model-A ": {"inputCostPerMillionTokens": 2, "outputCostPerMillionTokens": 8},
+                "free-cache": {"inputCostPerMillionTokens": 2, "outputCostPerMillionTokens": 8, "cacheReadCostPerMillionTokens": 0, "cacheWriteCostPerMillionTokens": 3.5},
+                "negative": {"inputCostPerMillionTokens": -1, "outputCostPerMillionTokens": 8},
+                "missing-output": {"inputCostPerMillionTokens": 2},
+                "text": {"inputCostPerMillionTokens": "2", "outputCostPerMillionTokens": 8},
+                "bad-cache": {"inputCostPerMillionTokens": 2, "outputCostPerMillionTokens": 8, "cacheReadCostPerMillionTokens": null},
+                "  ": {"inputCostPerMillionTokens": 2, "outputCostPerMillionTokens": 8},
+                "not-an-object": 4
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            usage_price_overrides(&path),
+            BTreeMap::from([
+                (
+                    "Vendor/Model-A".to_owned(),
+                    ModelPrice {
+                        input: 2.0,
+                        output: 8.0,
+                        cache_read: 2.0,
+                        cache_write: 2.0,
+                    }
+                ),
+                (
+                    "free-cache".to_owned(),
+                    ModelPrice {
+                        input: 2.0,
+                        output: 8.0,
+                        cache_read: 0.0,
+                        cache_write: 3.5,
+                    }
+                ),
+            ])
+        );
+        fs::write(&path, r#"{"usagePriceOverrides":[]}"#).unwrap();
+        assert!(usage_price_overrides(&path).is_empty());
     }
 }
 

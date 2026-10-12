@@ -150,6 +150,7 @@ impl Codex {
         epoch: u64,
         events: mpsc::Sender<Signal>,
         log: RotatingLog,
+        providers: crate::diagnostics::ProviderPids,
     ) -> Result<Self> {
         let mut command = Command::from(crate::process::grouped(
             crate::onboarding::resolve_binary(&binary),
@@ -180,7 +181,9 @@ impl Codex {
         log.line(LIFECYCLE, &format!("started pid {pid}"));
         let (published, status) = watch::channel(None);
         let (alive, dropped) = oneshot::channel::<()>();
+        let registration = providers.register(pid);
         tokio::spawn(async move {
+            let _registration = registration;
             let exited = tokio::select! {
                 exited = child.wait() => exited,
                 _ = dropped => {
@@ -565,7 +568,9 @@ mod tests {
         );
         let log = RotatingLog::open(dir.path().join("codex.log"));
         let (events, mut signals) = mpsc::channel(4);
-        let _codex = Codex::launch(binary, 7, events, log).await.unwrap();
+        let _codex = Codex::launch(binary, 7, events, log, Default::default())
+            .await
+            .unwrap();
         let Some(Signal::Exited { epoch, exit }) = signals.recv().await else {
             panic!("expected an exit signal");
         };
@@ -610,6 +615,7 @@ mod tests {
             1,
             events,
             RotatingLog::open(dir.path().join("codex.log")),
+            Default::default(),
         )
         .await
         .unwrap();

@@ -60,7 +60,7 @@ import {
 } from "lucide-react";
 import { ipc, type Arrange, type Workspace, type WorkspaceView } from "./ipc";
 import { cn } from "./lib/cn";
-import { usePreferences } from "./settings/preferences";
+import { resolveWorktreeCleanup, usePreferences } from "./settings/preferences";
 import {
   compareInboxReturns,
   formatWorkingDurationLabel,
@@ -622,7 +622,8 @@ export function Sidebar({
         const outcome = await confirmAndDeleteThread(
           row.thread,
           client,
-          preferences.storageCleanup.worktreeOnDelete,
+          resolveWorktreeCleanup(preferences, row.workspace.id)
+            .worktreeOnDelete,
         );
         if (!outcome) return false;
         setActionError(undefined);

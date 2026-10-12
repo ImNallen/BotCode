@@ -559,6 +559,10 @@ pub async fn usage_limits(app: State<'_, App>, refresh: bool) -> Result<UsageLim
     app.usage_limits(refresh).await
 }
 #[tauri::command]
+pub async fn consume_reset_credit(app: State<'_, App>) -> Result<ResetOutcome> {
+    app.consume_reset_credit().await
+}
+#[tauri::command]
 pub async fn update_thread_settings(
     app: State<'_, App>,
     thread_id: ThreadId,
@@ -686,6 +690,36 @@ pub fn terminal_resize(
     rows: u16,
 ) -> Result<()> {
     app.terminal_resize(workspace_id, thread_id, terminal_id, cols, rows)
+}
+#[tauri::command]
+pub async fn resource_snapshot(app: State<'_, App>) -> Result<ResourceSnapshot> {
+    app.resource_snapshot().await
+}
+#[tauri::command]
+pub fn resource_subscribe(app: State<'_, App>) -> u64 {
+    app.resource_subscribe()
+}
+#[tauri::command]
+pub fn resource_unsubscribe(app: State<'_, App>, subscription: u64) {
+    app.resource_unsubscribe(subscription)
+}
+#[tauri::command]
+pub async fn resource_history(
+    app: State<'_, App>,
+    window_ms: u64,
+    bucket_ms: u64,
+) -> Result<ResourceHistory> {
+    app.resource_history(window_ms, bucket_ms).await
+}
+#[tauri::command]
+pub async fn signal_process(
+    app: State<'_, App>,
+    pid: u32,
+    start_time_ms: u64,
+    signal: ProcessSignal,
+) -> Result<SignalOutcome> {
+    app.signal_process(ProcessIdentity { pid, start_time_ms }, signal)
+        .await
 }
 #[tauri::command]
 pub fn terminal_labels(app: State<'_, App>) -> TerminalLabels {

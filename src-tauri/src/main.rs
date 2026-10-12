@@ -6,6 +6,8 @@ mod ipc;
 mod mac_permissions;
 mod notifications;
 mod preview;
+#[cfg(any(target_os = "macos", test))]
+mod quit_hold;
 mod workspace_files;
 use bot_core::{AgentTools, App, Registration, RuntimeConfig};
 use tauri::{Emitter, EventTarget, Manager};
@@ -37,6 +39,8 @@ fn main() {
         .setup(|app| {
             notifications::install(app.handle());
             let config = RuntimeConfig::from_environment()?;
+            #[cfg(target_os = "macos")]
+            quit_hold::install(app.handle(), config.data_dir.join("settings.json"));
             let preview = preview::PreviewManager::new(app.handle().clone());
             let backend =
                 preview::tools::PreviewTools::new(preview.clone(), config.data_dir.clone());
@@ -84,6 +88,20 @@ fn main() {
                     let value = labels.borrow_and_update().clone();
                     let _ =
                         handle.emit_to(EventTarget::webview("main"), "bot:terminal-labels", value);
+                }
+            });
+            let mut resources = runtime.watch_resource_telemetry();
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while resources.changed().await.is_ok() {
+                    let value = resources.borrow_and_update().clone();
+                    if let Some(value) = value {
+                        let _ = handle.emit_to(
+                            EventTarget::webview("main"),
+                            "bot:resource-telemetry",
+                            value,
+                        );
+                    }
                 }
             });
             app.manage(runtime);
@@ -182,6 +200,7 @@ fn main() {
                 ipc::collaboration_modes,
                 ipc::answer_user_questions,
                 ipc::usage_limits,
+                ipc::consume_reset_credit,
                 ipc::usage_history,
                 ipc::update_thread_settings,
                 ipc::answer_approval,
@@ -210,6 +229,11 @@ fn main() {
                 ipc::terminal_write,
                 ipc::terminal_resize,
                 ipc::terminal_labels,
+                ipc::resource_snapshot,
+                ipc::resource_subscribe,
+                ipc::resource_unsubscribe,
+                ipc::resource_history,
+                ipc::signal_process,
                 ipc::terminal_close
             ];
             move |invoke| {

@@ -1,4 +1,4 @@
-import { usePreferences } from "./settings/preferences";
+import { resolveWorktreeCleanup, usePreferences } from "./settings/preferences";
 import { readPrInboxPreferences } from "./panel/prInboxSearch";
 // Shell geometry follows pingdotgg/t3code v0.0.45 components/AppSidebarLayout.tsx and components/ui/sidebar.tsx, and components/NoProjectsHero.tsx at 6b286ae8a (MIT).
 import { usePreviewApplicationShortcuts } from "./preview/applicationShortcuts";
@@ -503,7 +503,8 @@ export function Workbench() {
       void confirmAndDeleteThread(
         thread,
         client,
-        preferences.storageCleanup.worktreeOnDelete,
+        resolveWorktreeCleanup(preferences, thread.workspaceId)
+          .worktreeOnDelete,
       )
         .then((outcome) => {
           if (!outcome) return;

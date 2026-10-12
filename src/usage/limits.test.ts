@@ -8,6 +8,7 @@ import {
   limitsNotice,
   paceOf,
   remainingPercent,
+  resetCreditsSummary,
   usageNoticeKey,
 } from "./limits";
 
@@ -40,6 +41,28 @@ it("phrases the reset countdown", () => {
   assert.equal(formatResetsIn({ ...weekly, resetsAtMs: null }, now), null);
 });
 
+it("summarizes banked reset credits with the soonest expiry", () => {
+  const expiresAtMs = now + (27 * 24 + 23) * 3_600_000;
+  assert.equal(
+    resetCreditsSummary(
+      { availableCount: 2, nextExpiresAtMs: expiresAtMs },
+      now,
+    ),
+    "2 reset credits banked · next expires in 27d 23h",
+  );
+  assert.equal(
+    resetCreditsSummary({ availableCount: 1, nextExpiresAtMs: null }, now),
+    "1 reset credit banked",
+  );
+  assert.equal(
+    resetCreditsSummary(
+      { availableCount: 0, nextExpiresAtMs: expiresAtMs },
+      now,
+    ),
+    "No reset credits banked",
+  );
+});
+
 it("explains limits that have no bars to draw", () => {
   assert.equal(
     limitsNotice({ kind: "unsupported" }),
@@ -50,11 +73,21 @@ it("explains limits that have no bars to draw", () => {
     "Codex is not signed in.",
   );
   assert.equal(
-    limitsNotice({ kind: "reported", plan: null, windows: [] }),
+    limitsNotice({
+      kind: "reported",
+      plan: null,
+      windows: [],
+      resetCredits: null,
+    }),
     "No limits reported.",
   );
   assert.equal(
-    limitsNotice({ kind: "reported", plan: null, windows: [weekly] }),
+    limitsNotice({
+      kind: "reported",
+      plan: null,
+      windows: [weekly],
+      resetCredits: null,
+    }),
     null,
   );
 });

@@ -216,6 +216,16 @@ impl Owner {
             discovery_error: self.prs.errors.get(id).cloned(),
         }
     }
+    pub(super) fn merged_pr(&self, id: &ThreadId, branch: &str) -> bool {
+        self.prs
+            .memberships
+            .get(id)
+            .into_iter()
+            .flat_map(|rows| rows.values())
+            .filter(|row| row.source.is_some())
+            .filter_map(|row| self.prs.records.get(&row.key)?.snapshot.as_ref())
+            .any(|pr| matches!(pr.lifecycle, PrLifecycle::Merged { .. }) && pr.head == branch)
+    }
     pub(super) fn settlement(
         &self,
         thread: &ThreadSnapshot,

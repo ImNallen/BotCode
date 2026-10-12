@@ -51,6 +51,8 @@ pub enum OpenTarget {
     },
     /// An absolute path that a message in this thread names.
     ChatLink { thread_id: ThreadId, path: String },
+    /// The app's log folder in its data directory.
+    Logs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

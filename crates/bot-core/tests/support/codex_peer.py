@@ -171,7 +171,26 @@ for line in sys.stdin:
         if (root / 'limits_error').exists():
             emit({'id': request['id'], 'error': {'message': 'Usage service unavailable'}})
         else:
-            result(request, {'rateLimits': codex_limits, 'rateLimitsByLimitId': {'codex': codex_limits, 'base_model_inference': other_limits}})
+            credits = root / 'reset_credits'
+            result(request, {'rateLimits': codex_limits, 'rateLimitsByLimitId': {'codex': codex_limits, 'base_model_inference': other_limits},
+                'rateLimitResetCredits': json.loads(credits.read_text()) if credits.exists() else None})
+    elif method == 'account/rateLimitResetCredit/consume':
+        if (root / 'consume_error').exists():
+            emit({'id': request['id'], 'error': {'message': 'Reset service unavailable'}})
+        else:
+            queue = root / 'consume_outcomes'
+            outcomes = json.loads(queue.read_text()) if queue.exists() else ['reset']
+            if len(outcomes) > 1:
+                publish(queue, json.dumps(outcomes[1:]))
+            credits = root / 'reset_credits'
+            if outcomes[0] == 'reset' and credits.exists():
+                summary = json.loads(credits.read_text())
+                summary['availableCount'] = max(0, summary['availableCount'] - 1)
+                spent = next((c for c in summary.get('credits') or [] if c['status'] == 'available'), None)
+                if spent:
+                    spent['status'] = 'redeemed'
+                publish(credits, json.dumps(summary))
+            result(request, {'outcome': outcomes[0]})
     elif method == 'thread/fork':
         starts = [json.loads(line) for line in log.read_text().splitlines()]
         turns = [{'id': 'native-' + call['params']['clientUserMessageId'], 'status': 'completed', 'items': []} for call in starts if call.get('method') == 'turn/start' and call['params']['threadId'] == params['threadId']]

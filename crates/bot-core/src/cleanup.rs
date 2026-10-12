@@ -4,7 +4,7 @@
 use crate::{
     domain::*,
     repo::{default_branch, git},
-    settings::CleanupRules,
+    settings::StoragePolicy,
 };
 use std::{
     collections::HashMap,
@@ -19,10 +19,12 @@ type Checked<T> = std::result::Result<T, String>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Candidate {
     pub thread: ThreadId,
+    pub workspace: WorkspaceId,
     pub workspace_root: PathBuf,
     pub path: PathBuf,
     pub branch: String,
     pub activity: Option<u64>,
+    pub linked_pr_merged: bool,
 }
 pub(crate) struct Eligible {
     pub candidate: Candidate,
@@ -32,7 +34,7 @@ pub(crate) struct Eligible {
 pub(crate) struct Sweep<'a> {
     pub worktrees: &'a Path,
     pub roots: &'a [PathBuf],
-    pub rules: CleanupRules,
+    pub policy: StoragePolicy,
     pub now: u64,
 }
 impl Sweep<'_> {
@@ -49,7 +51,8 @@ impl Sweep<'_> {
                     continue;
                 }
             };
-            let default_ref = if self.rules.worktree_unchanged {
+            let rules = self.policy.rules(&candidate.workspace);
+            let default_ref = if rules.worktree_unchanged || rules.worktree_on_merge {
                 defaults
                     .entry(candidate.workspace_root.clone())
                     .or_insert_with(|| match default_ref(&candidate.workspace_root) {
@@ -113,14 +116,15 @@ impl Sweep<'_> {
         head: &str,
         default_ref: Option<&str>,
     ) -> Checked<bool> {
-        let inactive = match (self.rules.worktree_after_days, candidate.activity) {
+        let rules = self.policy.rules(&candidate.workspace);
+        let inactive = match (rules.worktree_after_days, candidate.activity) {
             (Some(days), Some(activity)) => activity < self.now.saturating_sub(days * DAY_MS),
             _ => false,
         };
         if inactive {
             return Ok(true);
         }
-        if !self.rules.worktree_unchanged {
+        if !(rules.worktree_unchanged || (rules.worktree_on_merge && candidate.linked_pr_merged)) {
             return Ok(false);
         }
         let Some(default_ref) = default_ref else {
@@ -279,6 +283,97 @@ fn default_ref(root: &Path) -> Checked<String> {
     }
     Ok(format!("refs/remotes/origin/{default}"))
 }
+/// Where preview screenshots save, relative to the data directory.
+pub const PREVIEW_SCREENSHOTS: [&str; 2] = ["preview", "screenshots"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Retained {
+    BrowserArtifacts,
+    RotatedLogs,
+}
+impl Retained {
+    fn root(self, data_dir: &Path) -> PathBuf {
+        match self {
+            Self::BrowserArtifacts => {
+                data_dir.join(PREVIEW_SCREENSHOTS.iter().collect::<PathBuf>())
+            }
+            Self::RotatedLogs => data_dir.join("logs"),
+        }
+    }
+    fn days(self, policy: &StoragePolicy) -> Option<u64> {
+        match self {
+            Self::BrowserArtifacts => policy.browser_artifacts_after_days,
+            Self::RotatedLogs => policy.logs_after_days,
+        }
+    }
+    fn covers(self, name: &str) -> bool {
+        match self {
+            Self::BrowserArtifacts => true,
+            Self::RotatedLogs => name.rsplit_once('.').is_some_and(|(stem, index)| {
+                !index.is_empty()
+                    && index.bytes().all(|b| b.is_ascii_digit())
+                    && (stem.ends_with(".log") || stem.ends_with(".ndjson"))
+            }),
+        }
+    }
+}
+
+// Ports T3 Code v0.0.45 apps/server/src/storageCleanup.ts cleanFiles (MIT).
+pub(crate) fn clean_files(
+    data_dir: &Path,
+    kind: Retained,
+    policy: &StoragePolicy,
+    now: u64,
+    reread_policy: &dyn Fn() -> StoragePolicy,
+) {
+    let Some(days) = kind.days(policy) else {
+        return;
+    };
+    let Ok(data_dir) = dunce::canonicalize(data_dir) else {
+        return;
+    };
+    let root = kind.root(&data_dir);
+    if dunce::canonicalize(&root).ok().as_ref() != Some(&root) {
+        return;
+    }
+    let cutoff = now.saturating_sub(days * DAY_MS);
+    let mut pending = vec![root];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.is_dir() {
+                if kind == Retained::RotatedLogs {
+                    pending.push(path);
+                }
+                continue;
+            }
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|age| age.as_millis() as u64);
+            if !metadata.is_file()
+                || !kind.covers(&entry.file_name().to_string_lossy())
+                || modified.is_none_or(|modified| modified >= cutoff)
+            {
+                continue;
+            }
+            if kind.days(&reread_policy()) != Some(days) {
+                return;
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => eprintln!("bot-code storage cleanup: deleted {}", path.display()),
+                Err(e) => eprintln!("bot-code storage cleanup: kept {} ({e})", path.display()),
+            }
+        }
+    }
+}
 /// Recreates a removed worktree on its branch. Succeeds when the path already
 /// holds that branch's worktree.
 pub(crate) fn restore(root: &Path, path: &Path, branch: &str) -> Result<()> {
@@ -346,15 +441,17 @@ mod tests {
         .unwrap();
         let candidate = Candidate {
             thread: ThreadId::default(),
+            workspace: WorkspaceId::default(),
             workspace_root: repository.clone(),
             path: path.clone(),
             branch: "botcode/test".into(),
             activity: Some(0),
+            linked_pr_merged: false,
         };
         let sweep = Sweep {
             worktrees: &worktrees,
             roots: &[repository],
-            rules: CleanupRules::default(),
+            policy: StoragePolicy::default(),
             now: 0,
         };
         assert!(sweep.inspect(&candidate).is_ok(), "a clean worktree passes");

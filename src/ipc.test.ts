@@ -366,6 +366,42 @@ it("attaches a terminal, parses its events and chunks large writes", async () =>
   }
 });
 
+it("reads banked reset credits, rejects a negative count, and redeems with no arguments", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { crypto: globalThis.crypto },
+  });
+  const reported = {
+    kind: "reported",
+    plan: null,
+    windows: [],
+    resetCredits: { availableCount: 2, nextExpiresAtMs: 1_784_000_000_000 },
+  };
+  const calls: [string, unknown][] = [];
+  try {
+    mockIPC((command, args) => {
+      calls.push([command, args]);
+      return command === "consume_reset_credit" ? "noCredit" : reported;
+    });
+    assert.deepEqual(await ipc.usageLimits(), reported);
+    assert.equal(await ipc.consumeResetCredit(), "noCredit");
+    assert.deepEqual(calls[1], ["consume_reset_credit", {}]);
+    mockIPC(() => ({
+      ...reported,
+      resetCredits: { availableCount: -1, nextExpiresAtMs: null },
+    }));
+    await assert.rejects(ipc.usageLimits(), /./);
+    mockIPC(() => "spent");
+    await assert.rejects(ipc.consumeResetCredit(), /./);
+  } finally {
+    clearMocks();
+    if (previousWindow)
+      Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
 it("caches pushed usage limits without reading them again", async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", {
@@ -399,6 +435,7 @@ it("caches pushed usage limits without reading them again", async () => {
         resetsAtMs: 1_791_580_401_000,
       },
     ],
+    resetCredits: null,
   };
   let resolvePushed = () => {};
   const received = new Promise<void>((resolve) => {

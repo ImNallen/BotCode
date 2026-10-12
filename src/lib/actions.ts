@@ -87,6 +87,7 @@ export type PalettePage =
   | "project-new"
   | "project-clone"
   | "archive-actions";
+export type ArchivedThread = ThreadSummary & { workspaceId: string };
 export type ActionContext = {
   pageOpen: boolean;
   thread: ThreadSummary | undefined;
@@ -97,7 +98,7 @@ export type ActionContext = {
   projectSearchAvailable: boolean;
   renamePending: boolean;
   queued: boolean;
-  archiveTarget: ThreadSummary | undefined;
+  archiveTarget: ArchivedThread | undefined;
   // The open conversation's checkout root, absent for a no-project draft or a removed worktree.
   checkoutTarget: OpenTarget | null;
   editorLabel: string | null;
@@ -114,8 +115,8 @@ export type ActionContext = {
   arrange: (threadId: string, action: Arrange) => void;
   requestSidebar: (threadId: string, operation: SidebarOperation) => void;
   requestChat: (kind: ChatRequest["kind"]) => void;
-  restoreArchived: (thread: ThreadSummary) => void;
-  deleteArchived: (thread: ThreadSummary) => void;
+  restoreArchived: (thread: ArchivedThread) => void;
+  deleteArchived: (thread: ArchivedThread) => void;
   openInEditor: (target: OpenTarget) => void;
   revealInFinder: (target: OpenTarget) => void;
 };

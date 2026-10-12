@@ -1000,7 +1000,7 @@ fn limits_json(limits: UsageLimits) -> serde_json::Value {
     serde_json::to_value(limits).unwrap()
 }
 fn weekly_44() -> serde_json::Value {
-    serde_json::json!({"kind":"reported","plan":"ChatGPT Pro 20x Subscription","windows":[{"slot":"primary","kind":"weekly","usedPercent":44,"durationMins":10080,"resetsAtMs":1791580401000u64}]})
+    serde_json::json!({"kind":"reported","plan":"ChatGPT Pro 20x Subscription","windows":[{"slot":"primary","kind":"weekly","usedPercent":44,"durationMins":10080,"resetsAtMs":1791580401000u64}],"resetCredits":null})
 }
 fn method_count(f: &Fixture, method: &str) -> usize {
     f.calls()
@@ -1060,7 +1060,7 @@ async fn usage_turn_records_context_and_merges_limits() {
     assert_eq!(done.context, context);
     let merged = serde_json::json!({"kind":"reported","plan":"ChatGPT Pro 20x Subscription","windows":[
         {"slot":"secondary","kind":"session","usedPercent":3,"durationMins":300,"resetsAtMs":1791470000000u64},
-        {"slot":"primary","kind":"weekly","usedPercent":47,"durationMins":10080,"resetsAtMs":1791580401000u64}]});
+        {"slot":"primary","kind":"weekly","usedPercent":47,"durationMins":10080,"resetsAtMs":1791580401000u64}],"resetCredits":null});
     assert!(watch.has_changed().unwrap());
     assert_eq!(
         limits_json(watch.borrow_and_update().clone().unwrap()),
@@ -1088,6 +1088,68 @@ async fn usage_turn_records_context_and_merges_limits() {
     app.shutdown().await.unwrap();
     let app = reopen(&f.config).await;
     assert_eq!(app.thread(thread.id).await.unwrap().context, context);
+    app.shutdown().await.unwrap();
+}
+#[tokio::test]
+async fn reset_credit_redemption_reuses_its_key_until_an_outcome_and_rereads_limits() {
+    let f = Fixture::new();
+    let marker = |name: &str| f.peer.parent().unwrap().join(name);
+    std::fs::write(
+        marker("reset_credits"),
+        r#"{"availableCount":2,"credits":[{"id":"a","status":"available","expiresAt":1784000000,"grantedAt":1780000000,"resetType":"codex"}]}"#,
+    )
+    .unwrap();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let credits = |app: &App| {
+        let app = app.clone();
+        async move { limits_json(app.usage_limits(false).await.unwrap())["resetCredits"].clone() }
+    };
+    assert_eq!(
+        credits(&app).await,
+        serde_json::json!({"availableCount":2,"nextExpiresAtMs":1784000000000u64})
+    );
+    std::fs::write(marker("consume_error"), "").unwrap();
+    assert_eq!(
+        app.consume_reset_credit().await.unwrap_err().message,
+        "Codex could not redeem the reset credit."
+    );
+    assert_eq!(method_count(&f, "account/rateLimits/read"), 1);
+    std::fs::remove_file(marker("consume_error")).unwrap();
+    assert_eq!(app.consume_reset_credit().await, Ok(ResetOutcome::Reset));
+    assert_eq!(
+        credits(&app).await,
+        serde_json::json!({"availableCount":1,"nextExpiresAtMs":null}),
+        "a redemption rereads the limits"
+    );
+    std::fs::write(marker("consume_outcomes"), r#"["noCredit"]"#).unwrap();
+    assert_eq!(app.consume_reset_credit().await, Ok(ResetOutcome::NoCredit));
+    let sent: Vec<_> = f
+        .calls()
+        .into_iter()
+        .filter(|call| call["method"] == "account/rateLimitResetCredit/consume")
+        .map(|call| call["params"].clone())
+        .collect();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[0], sent[1], "a retry repeats the failed attempt");
+    assert_ne!(sent[1], sent[2], "an outcome ends the attempt");
+    assert_eq!(
+        sent[2].as_object().unwrap().keys().collect::<Vec<_>>(),
+        vec!["idempotencyKey"],
+        "Codex picks the credit"
+    );
+    assert_eq!(method_count(&f, "account/rateLimits/read"), 3);
+    std::fs::write(marker("limits_error"), "").unwrap();
+    assert_eq!(app.consume_reset_credit().await, Ok(ResetOutcome::NoCredit));
+    std::fs::write(marker("consume_outcomes"), r#"["reset"]"#).unwrap();
+    assert_eq!(
+        app.consume_reset_credit().await.unwrap_err().message,
+        "The reset was applied, but Codex could not confirm the new limits. Refresh to check."
+    );
+    assert_eq!(
+        credits(&app).await,
+        serde_json::json!({"availableCount":1,"nextExpiresAtMs":null}),
+        "a failed reread keeps the last report"
+    );
     app.shutdown().await.unwrap();
 }
 #[tokio::test]

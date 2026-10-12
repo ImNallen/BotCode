@@ -10,10 +10,10 @@
     "typecheck": "tsc --noEmit",
     "tauri": "node scripts/tauri.mjs",
     "test:core": "cargo test -p bot-core",
-    "test:ui": "node --import ./src/test/tsx.mjs --test \"src/**/*.test.ts\"",
+    "test:ui": "node --import ./src/test/tsx.mjs --test \"src/**/*.test.ts\" \"scripts/**/*.test.ts\"",
     "smoke": "cargo run -p bot-core --bin smoke",
-    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{json,ts,yaml}\" \"src-tauri/*.json\" \"src-tauri/capabilities/*.json\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{json,ts,yaml}\" \"src-tauri/*.json\" \"src-tauri/capabilities/*.json\""
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.ts\" \"*.{json,ts,yaml}\" \"src-tauri/*.json\" \"src-tauri/capabilities/*.json\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.ts\" \"*.{json,ts,yaml}\" \"src-tauri/*.json\" \"src-tauri/capabilities/*.json\""
   },
   "dependencies": {
     "@daypicker/react": "10.0.1",
@@ -23,7 +23,6 @@
     "@dnd-kit/utilities": "3.2.2",
     "@pierre/diffs": "1.5.1",
     "@pierre/trees": "1.0.0-beta.6",
-    "@tailwindcss/vite": "4.3.3",
     "@tanstack/react-query": "5.104.1",
     "@tanstack/react-router": "1.170.41",
     "@tauri-apps/api": "^2.10.1",
@@ -45,15 +44,16 @@
     "remark-breaks": "4.0.0",
     "remark-gfm": "4.0.1",
     "tailwind-merge": "3.6.0",
-    "tailwindcss": "4.3.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
     "@tauri-apps/cli": "2.12.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.0",
     "prettier": "3.8.3",
+    "tailwindcss": "4.3.3",
     "typescript": "^5.9.3",
     "vite": "8.3.2"
   }

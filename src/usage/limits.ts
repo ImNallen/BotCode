@@ -1,6 +1,12 @@
 // Pace and reset maths copied from pingdotgg/t3code v0.0.45 packages/shared/src/usageLimits.ts (MIT).
 import { queryOptions } from "@tanstack/react-query";
-import { ipc, type LimitWindow, type UsageLimits } from "../ipc";
+import {
+  ipc,
+  type LimitWindow,
+  type ResetCredits,
+  type ResetOutcome,
+  type UsageLimits,
+} from "../ipc";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -87,6 +93,28 @@ export function formatResetsIn(
   return window.resetsAtMs <= now
     ? "resets now"
     : `resets in ${formatDuration(window.resetsAtMs - now)}`;
+}
+
+// Ports T3 Code v0.0.45 components/usage/UsageLimits.tsx OUTCOME_TEXT and resetCreditsSummary (MIT).
+export const OUTCOME_TEXT: Record<ResetOutcome, string> = {
+  reset: "Reset applied. Your windows have cleared.",
+  nothingToReset: "Nothing to reset right now.",
+  noCredit: "No reset credit left.",
+  alreadyRedeemed: "That credit was already redeemed.",
+};
+
+export function resetCreditsSummary(
+  credits: ResetCredits,
+  now: number,
+): string {
+  const expiresIn =
+    credits.nextExpiresAtMs === null
+      ? null
+      : formatDuration(credits.nextExpiresAtMs - now);
+  if (credits.availableCount === 0) return "No reset credits banked";
+  return `${credits.availableCount} ${credits.availableCount === 1 ? "reset credit" : "reset credits"} banked${
+    expiresIn ? ` · next expires in ${expiresIn}` : ""
+  }`;
 }
 
 export function usageNoticeKey(

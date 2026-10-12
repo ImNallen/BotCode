@@ -104,7 +104,8 @@ async fn list_with_timeout(
     log: RotatingLog,
 ) -> Vec<Skill> {
     let (events, mut signals) = mpsc::channel(16);
-    let provider = match Codex::launch(binary.to_owned(), 0, events, log).await {
+    let provider = match Codex::launch(binary.to_owned(), 0, events, log, Default::default()).await
+    {
         Ok(provider) => provider,
         Err(_) => return vec![],
     };

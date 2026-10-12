@@ -11,6 +11,7 @@ pub use project_icon::{ProjectFavicon, ProjectIconColor, ProjectIconOverride};
 mod attachments;
 mod checkpoints;
 mod cleanup;
+pub use cleanup::PREVIEW_SCREENSHOTS;
 mod codex;
 mod onboarding;
 pub use onboarding::{CodexReadiness, CodexSetupAction};
@@ -30,6 +31,12 @@ pub use composer_context::{
 };
 mod task_progress;
 pub use task_progress::{TaskProgress, TaskStatus, TaskStep};
+mod diagnostics;
+pub use diagnostics::{
+    Aggregate, CollectionHealth, CollectionStatus, Groups, HistoryBucket, IoSemantics,
+    ProcessCategory, ProcessIdentity, ProcessSample, ProcessSignal, ProcessSummary,
+    ResourceHistory, ResourceSnapshot, SignalOutcome,
+};
 mod domain;
 mod editors;
 pub use editors::{EditorId, OpenTarget, Position, available_editors};
@@ -75,7 +82,9 @@ pub use terminal::{TerminalEvent, TerminalId, TerminalLabel, TerminalLabels};
 mod usage_history;
 pub use usage_history::{UsageHistoryReport, UsageHistoryRequest, UsagePeriod};
 mod usage;
-pub use usage::{ContextUsage, LimitWindow, Slot, UsageLimits, WindowKind};
+pub use usage::{
+    ContextUsage, LimitWindow, ResetCredits, ResetOutcome, Slot, UsageLimits, WindowKind,
+};
 mod text_generation;
 mod thread_title;
 mod vcs;

@@ -63,7 +63,7 @@ fn report(
         Window::new(period, zone, now).unwrap(),
         zone,
         now,
-        rates(),
+        &pricing::Prices::new(rates(), BTreeMap::new()),
         coverage,
     )
 }
@@ -446,4 +446,98 @@ async fn invalid_zone_is_rejected_at_the_reader_boundary() {
         .await
         .unwrap_err();
     assert_eq!(error.code, "invalid_usage_zone");
+}
+// Ports T3 Code v0.0.45 apps/server/src/usage/UsageService.test.ts "reprices unchanged
+// transcripts when custom prices are added, edited, or removed" (MIT).
+#[tokio::test]
+async fn reprices_unchanged_transcripts_when_custom_prices_are_added_edited_or_removed() {
+    let home = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join("sessions")).unwrap();
+    let now = DateTime::<Utc>::from_timestamp_millis(now_ms()).unwrap();
+    let at = (now - Duration::hours(1)).to_rfc3339();
+    fs::write(
+        home.path().join("sessions/session.jsonl"),
+        meta("session", &at)
+            + &context("model-a")
+            + &usage(&at, 1000, 200, 0, 100, 0)
+            + &context("example-model")
+            + &usage(
+                &(now - Duration::minutes(30)).to_rfc3339(),
+                2000,
+                500,
+                0,
+                200,
+                0,
+            ),
+    )
+    .unwrap();
+    fs::write(
+        data.path().join("usage-model-rates.json"),
+        json!({"version":1,"source":pricing::SOURCE,"fetchedAtMs":now.timestamp_millis(),"document":{"model-a":{"input_cost_per_token":0.000001,"output_cost_per_token":0.000004}}}).to_string(),
+    )
+    .unwrap();
+    let reader = UsageHistory::new(home.path().into(), data.path().into());
+    let read = || async {
+        reader
+            .read(UsageHistoryRequest {
+                period: UsagePeriod::Past24Hours,
+                time_zone: "UTC".into(),
+                refresh: false,
+            })
+            .await
+            .unwrap()
+    };
+    let model_a_cost = (800.0 + 200.0 + 100.0 * 4.0) / 1e6;
+    let settings = data.path().join("settings.json");
+    let prices = |value: Value| {
+        crate::settings::write(
+            &settings,
+            &json!({ "usagePriceOverrides": value }).to_string(),
+        )
+        .unwrap()
+    };
+    let original = read().await;
+    close(original.totals.estimated_cost_usd, model_a_cost);
+    assert_eq!(original.totals.unpriced_records, 1);
+    assert_eq!(original.totals.unpriced_tokens, 2200);
+
+    prices(
+        json!({"example-model": {"inputCostPerMillionTokens": 2, "outputCostPerMillionTokens": 8}}),
+    );
+    let overridden = read().await;
+    assert_eq!(overridden.coverage.scanned_files, 0);
+    assert_eq!(overridden.coverage.reused_files, 1);
+    close(
+        overridden.totals.estimated_cost_usd,
+        model_a_cost + (1500.0 * 2.0 + 500.0 * 2.0 + 200.0 * 8.0) / 1e6,
+    );
+    assert_eq!(overridden.totals.unpriced_records, 0);
+    assert_eq!(overridden.totals.unpriced_tokens, 0);
+    assert_eq!(overridden.totals.tokens, original.totals.tokens);
+
+    prices(
+        json!({"example-model": {"inputCostPerMillionTokens": 4, "outputCostPerMillionTokens": 16, "cacheReadCostPerMillionTokens": 0}}),
+    );
+    let edited = read().await;
+    let example = edited
+        .models
+        .iter()
+        .find(|m| m.model == "example-model")
+        .unwrap();
+    close(
+        example.totals.estimated_cost_usd,
+        (1500.0 * 4.0 + 200.0 * 16.0) / 1e6,
+    );
+
+    prices(json!({}));
+    let restored = read().await;
+    assert_eq!(
+        serde_json::to_value(&restored.totals).unwrap(),
+        serde_json::to_value(&original.totals).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&restored.models).unwrap(),
+        serde_json::to_value(&original.models).unwrap()
+    );
 }

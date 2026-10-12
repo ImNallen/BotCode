@@ -10,4 +10,4 @@ This maintained backend patch supports Bot Code's immediate title/body/group/ext
 
 Native dependency license metadata was read from the locked crate manifests. `objc2` 0.6.4, `objc2-foundation` 0.3.2 and `block2` 0.6.2 are MIT. `objc2-user-notifications` 0.3.2 is Zlib OR Apache-2.0 OR MIT. `futures-channel` 0.3.34 is MIT OR Apache-2.0.
 
-T3 notification components and MP3 assets in `src` come from `pingdotgg/t3code` v0.0.45, commit `6c8fed35d`, under MIT. The source components have one-line source headers. Binary MP3 assets cannot carry source headers; their origin and license are recorded here.
+T3 notification components in `src` come from `pingdotgg/t3code` v0.0.45, commit `6c8fed35d`, under MIT. The source components have one-line source headers. The MP3 assets `src/assets/notification-completion.mp3` and `notification-input.mp3` are byte-identical to T3's copies (SHA-256 `910311c1…` and `57089914…`). T3 records them as derivatives of deadrobotmusic's freesound sounds 750607 and 750609, dedicated to the public domain under CC0-1.0, not MIT. `third-party-licenses.config.json` carries their notices.

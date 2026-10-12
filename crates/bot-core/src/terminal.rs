@@ -332,6 +332,9 @@ impl Drop for Registry {
 #[derive(Clone)]
 pub(crate) struct Terminals(Arc<Registry>);
 impl Terminals {
+    pub(crate) fn shells(&self) -> Vec<(TerminalKey, u32)> {
+        self.0.shells()
+    }
     pub(crate) fn new(
         shell: Option<PathBuf>,
         labels: Option<watch::Sender<TerminalLabels>>,

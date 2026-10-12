@@ -308,10 +308,14 @@ export function CommandPalette({
     .sort(
       (a, b) => (b.thread.archivedAtMs ?? 0) - (a.thread.archivedAtMs ?? 0),
     );
-  const archiveTarget =
+  const archiveEntry =
     location.kind === "archive-actions"
-      ? archived.find(({ thread }) => thread.id === location.threadId)?.thread
+      ? archived.find(({ thread }) => thread.id === location.threadId)
       : undefined;
+  const archiveTarget = archiveEntry?.workspace && {
+    ...archiveEntry.thread,
+    workspaceId: archiveEntry.workspace.id,
+  };
   const changeLocation = (next: Location) => {
     if (pending === "creating") return;
     invalidateView();

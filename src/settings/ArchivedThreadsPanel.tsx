@@ -2,14 +2,15 @@
 import { useState } from "react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { ArchiveIcon, ArchiveXIcon, Trash2Icon } from "lucide-react";
-import { ipc, type ThreadSummary } from "../ipc";
+import { ipc } from "../ipc";
+import type { ArchivedThread } from "../lib/actions";
 import { formatRelativeTimeLabel } from "../lib/time";
 import { WorkspaceBadge } from "../ProjectBadge";
 import { confirmAndDeleteThread, restoreThread } from "../threadActions";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { SettingsGroup, SettingsRow } from "./settingsLayout";
-import { usePreferences } from "./preferences";
+import { resolveWorktreeCleanup, usePreferences } from "./preferences";
 import { useSettingsScope } from "./settingsScope";
 
 export function ArchivedThreadsPanel() {
@@ -19,7 +20,7 @@ export function ArchivedThreadsPanel() {
   const [error, setError] = useState<string>();
   const [status, setStatus] = useState<string>();
   const [menu, setMenu] = useState<{
-    thread: ThreadSummary;
+    thread: ArchivedThread;
     point: { x: number; y: number };
     element: HTMLElement;
   }>();
@@ -43,16 +44,21 @@ export function ArchivedThreadsPanel() {
         (a, b) =>
           (b.archivedAtMs ?? b.createdAtMs ?? 0) -
             (a.archivedAtMs ?? a.createdAtMs ?? 0) || b.id.localeCompare(a.id),
-      );
+      )
+      .map((thread) => ({ ...thread, workspaceId: workspace.id }));
     return threads.length ? [{ workspace, threads }] : [];
   });
-  const act = async (thread: ThreadSummary, action: "unarchive" | "delete") => {
+  const act = async (
+    thread: ArchivedThread,
+    action: "unarchive" | "delete",
+  ) => {
     try {
       if (action === "delete") {
         const outcome = await confirmAndDeleteThread(
           thread,
           client,
-          preferences.storageCleanup.worktreeOnDelete,
+          resolveWorktreeCleanup(preferences, thread.workspaceId)
+            .worktreeOnDelete,
         );
         if (!outcome) return;
         setError(undefined);

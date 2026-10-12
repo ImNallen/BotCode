@@ -25,6 +25,7 @@ ignore = "0.4"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 grep-matcher = "0.1"
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }

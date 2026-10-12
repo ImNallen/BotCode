@@ -12,6 +12,7 @@ import { FirstRunGate } from "./onboarding/FirstRunGate";
 import { FollowUpSender } from "./chat/FollowUpSender";
 import { ErrorView } from "./errors/ErrorView";
 import { RenderErrorBoundary } from "./errors/RenderErrorBoundary";
+import { QuitHoldOverlay } from "./QuitHoldOverlay";
 import { loadKeybindings, useKeybindingsSync } from "./keybindings/store";
 import { migrateLegacyScriptShortcuts } from "./keybindings/legacyScripts";
 const client = new QueryClient({
@@ -120,5 +121,6 @@ createRoot(root).render(
     >
       <Startup />
     </RenderErrorBoundary>
+    <QuitHoldOverlay />
   </StrictMode>,
 );
