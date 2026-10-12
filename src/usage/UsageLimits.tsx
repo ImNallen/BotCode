@@ -1,11 +1,26 @@
-// Rows, bars and pace glyphs copied from pingdotgg/t3code v0.0.45 components/usage/UsageLimits.tsx,
+// Rows, bars, pace glyphs and reset credits copied from pingdotgg/t3code v0.0.45 components/usage/UsageLimits.tsx,
 // usage/UsageLimitsPooled.tsx and usage/usageProviders.ts (MIT).
 import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
-import { Fragment } from "react";
-import type { LimitWindow, UsageLimits } from "../ipc";
+import { Fragment, useState } from "react";
+import {
+  ipc,
+  type LimitWindow,
+  type ResetCredits as ResetCreditsSummary,
+  type UsageLimits,
+} from "../ipc";
 import { formatUpcomingTimestamp } from "../lib/time";
+import { Button } from "../ui/controls";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
 import { OpenAI } from "../ui/icons";
 import {
+  OUTCOME_TEXT,
+  resetCreditsSummary,
   accountLabel,
   timeLeftPercent,
   formatResetsIn,
@@ -128,6 +143,91 @@ export function LimitWindows({
   );
 }
 
+export function useResetCredit() {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const redeem = async () => {
+    setConfirming(false);
+    setBusy(true);
+    setStatus(null);
+    try {
+      setStatus(OUTCOME_TEXT[await ipc.consumeResetCredit()]);
+    } catch (error: unknown) {
+      setStatus(
+        error instanceof Error
+          ? error.message
+          : "Could not use the reset credit.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return { confirming, setConfirming, busy, status, redeem };
+}
+
+export function ResetCreditDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogHeader>
+        <DialogTitle>Use a reset credit?</DialogTitle>
+        <DialogDescription>
+          This redeems one credit on your account and clears the current
+          rate-limit windows. It cannot be undone.
+        </DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button variant="outline" onClick={() => onOpenChange(false)}>
+          Cancel
+        </Button>
+        <Button onClick={onConfirm}>Use credit</Button>
+      </DialogFooter>
+    </Dialog>
+  );
+}
+
+export function ResetCredits({
+  credits,
+  now,
+}: {
+  readonly credits: ResetCreditsSummary;
+  readonly now: number;
+}) {
+  const { confirming, setConfirming, busy, status, redeem } = useResetCredit();
+  if (credits.availableCount === 0 && status === null) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      <span className="tabular-nums">{resetCreditsSummary(credits, now)}</span>
+      {credits.availableCount > 0 ? (
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy}
+          onClick={() => setConfirming(true)}
+        >
+          {busy ? "Using…" : "Use reset"}
+        </Button>
+      ) : null}
+      {status ? <span className="text-foreground">{status}</span> : null}
+      <ResetCreditDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        onConfirm={() => void redeem()}
+      />
+    </div>
+  );
+}
+
 export function UsageLimitsSection({
   limits,
   error,
@@ -146,12 +246,15 @@ export function UsageLimitsSection({
         <OpenAI className="size-4 text-foreground/80" aria-hidden />
         {accountLabel(limits)}
       </h2>
-      <div className="rounded-lg border border-border/60 p-4">
+      <div className="flex flex-col gap-3 rounded-lg border border-border/60 p-4">
         {limits?.kind === "reported" && notice === null ? (
           <LimitWindows windows={limits.windows} now={now} />
         ) : (
           <p className="text-sm text-muted-foreground">{notice}</p>
         )}
+        {limits?.kind === "reported" && limits.resetCredits ? (
+          <ResetCredits credits={limits.resetCredits} now={now} />
+        ) : null}
       </div>
     </section>
   );

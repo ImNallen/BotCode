@@ -464,11 +464,16 @@ const limitWindow = z.object({
   durationMins: z.number(),
   resetsAtMs: z.number().nullable(),
 });
+const resetCredits = z.object({
+  availableCount: z.number().int().nonnegative(),
+  nextExpiresAtMs: z.number().nullable(),
+});
 const usageLimits = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("reported"),
     plan: z.string().nullable(),
     windows: z.array(limitWindow),
+    resetCredits: resetCredits.nullable(),
   }),
   z.object({ kind: z.literal("unsupported") }),
   z.object({ kind: z.literal("failed"), message: z.string() }),
@@ -891,6 +896,14 @@ export type ModelOption = z.infer<typeof modelOption>;
 export type ContextUsage = z.infer<typeof contextUsage>;
 export type LimitWindow = z.infer<typeof limitWindow>;
 export type UsageLimits = z.infer<typeof usageLimits>;
+export type ResetCredits = z.infer<typeof resetCredits>;
+const resetOutcome = z.enum([
+  "reset",
+  "nothingToReset",
+  "noCredit",
+  "alreadyRedeemed",
+]);
+export type ResetOutcome = z.infer<typeof resetOutcome>;
 export type Approval = z.infer<typeof approval>;
 export type UserQuestionRequest = z.infer<typeof userQuestions>;
 export type UserQuestionAnswers = Record<string, { answers: string[] }>;
@@ -966,7 +979,8 @@ export type OpenTarget =
       thread_id: string | null;
       path: string;
     }
-  | { kind: "chat_link"; thread_id: string; path: string };
+  | { kind: "chat_link"; thread_id: string; path: string }
+  | { kind: "logs" };
 export type EditorPosition = { line: number; column: number | null };
 export const workspaceTarget = (
   { workspaceId, threadId }: CheckoutRef,
@@ -977,6 +991,98 @@ export const workspaceTarget = (
   thread_id: threadId ?? null,
   path,
 });
+export const processCategory = z.enum([
+  "app",
+  "provider",
+  "terminal",
+  "webview",
+  "backend-child",
+]);
+export type ProcessCategory = z.infer<typeof processCategory>;
+const processIdentity = z.object({ pid: z.number(), startTimeMs: z.number() });
+export const processSample = z.object({
+  identity: processIdentity,
+  ppid: z.number(),
+  depth: z.number(),
+  name: z.string(),
+  command: z.string(),
+  category: processCategory,
+  threadId: z.string().nullable(),
+  cpuPercent: z.number(),
+  cpuTimeMs: z.number(),
+  residentBytes: z.number(),
+  ioReadBytes: z.number(),
+  ioWriteBytes: z.number(),
+  ioReadBytesPerSecond: z.number(),
+  ioWriteBytesPerSecond: z.number(),
+  childPids: z.array(z.number()),
+});
+export type ProcessSample = z.infer<typeof processSample>;
+const resourceAggregate = z.object({
+  processCount: z.number(),
+  currentCpuPercent: z.number(),
+  cpuTimeMs: z.number(),
+  currentRssBytes: z.number(),
+  peakRssBytes: z.number(),
+  ioReadBytes: z.number(),
+  ioWriteBytes: z.number(),
+  ioReadBytesPerSecond: z.number(),
+  ioWriteBytesPerSecond: z.number(),
+  processStarts: z.number(),
+  processExits: z.number(),
+});
+export type ResourceAggregate = z.infer<typeof resourceAggregate>;
+export const resourceSnapshot = z.object({
+  readAtMs: z.number(),
+  sampleIntervalMs: z.number(),
+  ioSemantics: z.enum(["storage", "all-io"]),
+  processes: z.array(processSample),
+  groups: z.object({
+    all: resourceAggregate,
+    backend: resourceAggregate,
+    webview: resourceAggregate,
+  }),
+  health: z.object({
+    status: z.enum(["healthy", "degraded"]),
+    lastError: z.string().nullable(),
+    collectionMicros: z.number(),
+    scannedProcessCount: z.number(),
+    retainedProcessCount: z.number(),
+    inaccessibleProcessCount: z.number(),
+  }),
+});
+export type ResourceSnapshot = z.infer<typeof resourceSnapshot>;
+export const resourceHistory = z.object({
+  readAtMs: z.number(),
+  windowMs: z.number(),
+  bucketMs: z.number(),
+  buckets: z.array(
+    z.object({
+      startedAtMs: z.number(),
+      avgCpuPercent: z.number(),
+      maxCpuPercent: z.number(),
+      maxRssBytes: z.number(),
+      ioReadBytes: z.number(),
+      ioWriteBytes: z.number(),
+    }),
+  ),
+  topProcesses: z.array(
+    z.object({
+      identity: processIdentity,
+      name: z.string(),
+      command: z.string(),
+      category: processCategory,
+      cpuTimeMs: z.number(),
+      maxCpuPercent: z.number(),
+      peakRssBytes: z.number(),
+      ioReadBytes: z.number(),
+      ioWriteBytes: z.number(),
+      sampleCount: z.number(),
+    }),
+  ),
+});
+export type ResourceHistory = z.infer<typeof resourceHistory>;
+export type ProcessSignal = "interrupt" | "kill";
 export const codexReadiness = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("missing") }),
   z.object({ kind: z.literal("unauthenticated"), version: z.string() }),
@@ -1450,6 +1556,18 @@ export const ipc = {
       z.null(),
     ),
   terminalLabels: () => call("terminal_labels", {}, terminalLabelsPayload),
+  resourceSnapshot: () => call("resource_snapshot", {}, resourceSnapshot),
+  resourceSubscribe: () => call("resource_subscribe", {}, z.number()),
+  resourceUnsubscribe: (subscription: number) =>
+    call("resource_unsubscribe", { subscription }, z.null()),
+  resourceHistory: (windowMs: number, bucketMs: number) =>
+    call("resource_history", { windowMs, bucketMs }, resourceHistory),
+  signalProcess: (identity: ProcessSample["identity"], signal: ProcessSignal) =>
+    call(
+      "signal_process",
+      { ...identity, signal },
+      z.object({ signaled: z.boolean(), message: z.string().nullable() }),
+    ),
   openUrl: (url: string) => call("open_url", { url }, z.null()),
   availableEditors: () => call("available_editors", {}, z.array(editorId)),
   openInEditor: (
@@ -1481,6 +1599,7 @@ export const ipc = {
     ),
   usageLimits: (refresh = false) =>
     call("usage_limits", { refresh }, usageLimits),
+  consumeResetCredit: () => call("consume_reset_credit", {}, resetOutcome),
   settings: (threadId: string, value: SessionSettings) =>
     call("update_thread_settings", { threadId, settings: value }, thread),
   stageAttachment: async (

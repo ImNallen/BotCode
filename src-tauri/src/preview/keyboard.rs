@@ -110,7 +110,7 @@ mod macos {
         let Some(mtm) = MainThreadMarker::new() else {
             return false;
         };
-        if event.isARepeat() {
+        if event.isARepeat() || crate::quit_hold::is_quit_chord(event) {
             return false;
         }
         let Some((label, scope)) = manager.visible_label() else {

@@ -18,6 +18,7 @@ import { editorId } from "../lib/editors";
 import { mergeMethod } from "../panel/prIdentity";
 import { serial } from "../lib/serial";
 import { DEFAULT_LINK_TARGET, linkTargetSchema } from "../preview/linkTarget";
+import { readUsagePrices } from "../usage/prices";
 
 const favoriteModelSchema = z.object({
   provider: z.string().min(1),
@@ -62,7 +63,6 @@ const projectSchema = z.object({
 });
 export type ProjectValues = z.infer<typeof projectSchema>;
 export type ProjectSetting = keyof ProjectValues;
-export type ProjectOverride = Partial<ProjectValues>;
 export const builtInProject: ProjectValues = {
   sourceControlWritingStyle: {
     mode: "repo_conventions",
@@ -80,12 +80,34 @@ export const builtInProject: ProjectValues = {
   textGenerationModelSelection: defaultTextGenerationModelSelection,
 };
 
+const retentionDays = z.number().int().min(1).max(3650).nullable();
 const storageCleanupSchema = z.object({
-  worktreeAfterDays: z.number().int().min(1).max(3650).nullable(),
+  worktreeAfterDays: retentionDays,
+  worktreeOnMerge: z.boolean(),
   worktreeUnchanged: z.boolean(),
   worktreeOnDelete: z.boolean(),
+  browserArtifactsAfterDays: retentionDays,
+  logsAfterDays: retentionDays,
 });
 export type StorageCleanup = z.infer<typeof storageCleanupSchema>;
+const worktreeCleanupRulesSchema = storageCleanupSchema.pick({
+  worktreeAfterDays: true,
+  worktreeOnMerge: true,
+  worktreeOnDelete: true,
+  worktreeUnchanged: true,
+});
+export type WorktreeCleanupRules = z.infer<typeof worktreeCleanupRulesSchema>;
+const worktreeCleanupSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("off") }),
+  z.object({ mode: z.literal("custom"), rules: worktreeCleanupRulesSchema }),
+]);
+export type WorktreeCleanup = z.infer<typeof worktreeCleanupSchema>;
+const projectOverrideShape = {
+  ...projectSchema.shape,
+  worktreeCleanup: worktreeCleanupSchema,
+};
+const projectOverrideSchema = z.object(projectOverrideShape).partial();
+export type ProjectOverride = z.infer<typeof projectOverrideSchema>;
 
 export const notificationModeSchema = z.enum([
   "off",
@@ -101,6 +123,9 @@ export const sendShortcutSchema = z.enum([
   "mod-enter",
 ]);
 export type SendShortcut = z.infer<typeof sendShortcutSchema>;
+
+export const quitShortcutSchema = z.enum(["direct", "hold", "double-click"]);
+export type QuitShortcut = z.infer<typeof quitShortcutSchema>;
 
 const scriptSettingsOverrides = z.record(
   z.uuid(),
@@ -126,6 +151,7 @@ const schema = z.object({
   composerRichTextEnabled: z.boolean(),
   composerCollapseOnScroll: z.boolean(),
   sendShortcut: sendShortcutSchema,
+  confirmQuit: quitShortcutSchema,
   // Null picks the first installed editor.
   preferredEditor: editorId.nullable(),
   browserLinkTarget: linkTargetSchema,
@@ -133,10 +159,11 @@ const schema = z.object({
   sidebarWorkingShelfEnabled: z.boolean(),
   favoriteModels: z.array(favoriteModelSchema),
   ...projectSchema.shape,
-  projectOverrides: z.record(z.uuid(), projectSchema.partial()),
+  projectOverrides: z.record(z.uuid(), projectOverrideSchema),
   storageCleanup: storageCleanupSchema,
+  usagePriceOverrides: z.unknown().transform(readUsagePrices),
 });
-type Preferences = Readonly<z.infer<typeof schema>>;
+export type Preferences = Readonly<z.infer<typeof schema>>;
 export const checkoutModeLabels = {
   local: "Current checkout",
   worktree: "New worktree",
@@ -158,6 +185,7 @@ export const defaults: Preferences = {
   composerRichTextEnabled: true,
   composerCollapseOnScroll: true,
   sendShortcut: "enter",
+  confirmQuit: "hold",
   preferredEditor: null,
   browserLinkTarget: DEFAULT_LINK_TARGET,
   contextWindowMeter: true,
@@ -167,9 +195,13 @@ export const defaults: Preferences = {
   projectOverrides: {},
   storageCleanup: {
     worktreeAfterDays: null,
+    worktreeOnMerge: false,
     worktreeUnchanged: false,
     worktreeOnDelete: false,
+    browserArtifactsAfterDays: null,
+    logsAfterDays: null,
   },
+  usagePriceOverrides: {},
 };
 const storageKey = "z1:preferences:v1";
 let fileText: string | null | Error = null;
@@ -196,6 +228,7 @@ type PreferenceState = {
 const Context = createContext<
   | (PreferenceState & {
       update: (patch: Partial<Preferences>) => void;
+      save: (patch: Partial<Preferences>) => Promise<void>;
       saveActions: (
         workspaceId: string | undefined,
         scripts: readonly ProjectScript[] | null,
@@ -233,6 +266,7 @@ export function readPreferences(): PreferenceState {
         composerRichTextEnabled: z.unknown().optional(),
         composerCollapseOnScroll: z.unknown().optional(),
         sendShortcut: z.unknown().optional(),
+        confirmQuit: z.unknown().optional(),
         preferredEditor: z.unknown().optional(),
         browserLinkTarget: z.unknown().optional(),
         contextWindowMeter: z.unknown().optional(),
@@ -248,6 +282,7 @@ export function readPreferences(): PreferenceState {
         textGenerationModelSelection: z.unknown().optional(),
         projectOverrides: z.unknown().optional(),
         storageCleanup: z.unknown().optional(),
+        usagePriceOverrides: z.unknown().optional(),
       })
       .parse(JSON.parse(stored));
     const defaultPermissionMode = schema.shape.defaultPermissionMode.safeParse(
@@ -289,13 +324,13 @@ export function readPreferences(): PreferenceState {
       ).flatMap(([id, value]) => {
         const parsed = z.record(z.string(), z.unknown()).safeParse(value);
         if (!z.uuid().safeParse(id).success || !parsed.success) return [];
-        const override = projectSchema.partial().parse(
+        const override = projectOverrideSchema.parse(
           Object.fromEntries(
-            projectSchema
+            projectOverrideSchema
               .keyof()
               .options.filter(
                 (key) =>
-                  projectSchema.shape[key].safeParse(parsed.data[key]).success,
+                  projectOverrideShape[key].safeParse(parsed.data[key]).success,
               )
               .map((key) => [key, parsed.data[key]]),
           ),
@@ -307,14 +342,6 @@ export function readPreferences(): PreferenceState {
       .record(z.string(), z.unknown())
       .catch({})
       .parse(object.storageCleanup);
-    const worktreeAfterDays =
-      storageCleanupSchema.shape.worktreeAfterDays.safeParse(
-        storageCleanup.worktreeAfterDays,
-      );
-    const worktreeUnchanged =
-      storageCleanupSchema.shape.worktreeUnchanged.safeParse(
-        storageCleanup.worktreeUnchanged,
-      );
     const favoriteModels = favorites.success
       ? favorites.data.filter(
           (pair, index, pairs) =>
@@ -368,6 +395,9 @@ export function readPreferences(): PreferenceState {
         sendShortcut: sendShortcutSchema
           .catch(defaults.sendShortcut)
           .parse(object.sendShortcut),
+        confirmQuit: quitShortcutSchema
+          .catch(defaults.confirmQuit)
+          .parse(object.confirmQuit),
         preferredEditor: editorId
           .nullable()
           .catch(null)
@@ -414,15 +444,18 @@ export function readPreferences(): PreferenceState {
           .catch(defaults.textGenerationModelSelection)
           .parse(object.textGenerationModelSelection),
         projectOverrides,
-        storageCleanup: {
-          worktreeOnDelete: storageCleanup.worktreeOnDelete === true,
-          worktreeAfterDays: worktreeAfterDays.success
-            ? worktreeAfterDays.data
-            : defaults.storageCleanup.worktreeAfterDays,
-          worktreeUnchanged: worktreeUnchanged.success
-            ? worktreeUnchanged.data
-            : defaults.storageCleanup.worktreeUnchanged,
-        },
+        storageCleanup: Object.fromEntries(
+          storageCleanupSchema.keyof().options.map((key) => {
+            const value = storageCleanupSchema.shape[key].safeParse(
+              storageCleanup[key],
+            );
+            return [
+              key,
+              value.success ? value.data : defaults.storageCleanup[key],
+            ];
+          }),
+        ) as StorageCleanup,
+        usagePriceOverrides: readUsagePrices(object.usagePriceOverrides),
       },
       persistenceError:
         object.favoriteModels !== undefined && !favorites.success
@@ -499,6 +532,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       value={{
         ...state,
         update,
+        save: persist,
         saveActions: (workspaceId, scripts) => {
           if (!workspaceId)
             return persist({ defaultProjectScripts: [...(scripts ?? [])] });
@@ -542,6 +576,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
           update({
             ...defaults,
             favoriteModels: current.current.favoriteModels,
+            usagePriceOverrides: current.current.usagePriceOverrides,
           }),
         setFavorite: (pair, wanted) => {
           const remaining = current.current.favoriteModels.filter(
@@ -569,6 +604,63 @@ export function projectSetting<K extends ProjectSetting>(
   return override === undefined
     ? { value: preferences[key], overridden: false }
     : { value: override as ProjectValues[K], overridden: true };
+}
+
+// Ports T3 Code v0.0.45 packages/shared/src/projectSettings.ts resolveWorktreeCleanup (MIT).
+export function resolveWorktreeCleanup(
+  preferences: Preferences,
+  workspaceId: string | undefined,
+): WorktreeCleanupRules {
+  const policy =
+    workspaceId === undefined
+      ? undefined
+      : preferences.projectOverrides[workspaceId]?.worktreeCleanup;
+  if (policy?.mode === "custom") return policy.rules;
+  if (policy?.mode === "off")
+    return {
+      worktreeAfterDays: null,
+      worktreeOnMerge: false,
+      worktreeOnDelete: false,
+      worktreeUnchanged: false,
+    };
+  const {
+    worktreeAfterDays,
+    worktreeOnMerge,
+    worktreeOnDelete,
+    worktreeUnchanged,
+  } = preferences.storageCleanup;
+  return {
+    worktreeAfterDays,
+    worktreeOnMerge,
+    worktreeOnDelete,
+    worktreeUnchanged,
+  };
+}
+
+// Ports T3 Code v0.0.45 packages/shared/src/serverSettings.ts custom seeding (MIT).
+export function customWorktreeCleanup(
+  preferences: Preferences,
+  workspaceId: string,
+  patch: Partial<WorktreeCleanupRules>,
+): Extract<WorktreeCleanup, { mode: "custom" }> {
+  const current = preferences.projectOverrides[workspaceId]?.worktreeCleanup;
+  const {
+    worktreeAfterDays,
+    worktreeOnMerge,
+    worktreeOnDelete,
+    worktreeUnchanged,
+  } = preferences.storageCleanup;
+  return {
+    mode: "custom",
+    rules: {
+      worktreeAfterDays,
+      worktreeOnMerge,
+      worktreeOnDelete,
+      worktreeUnchanged,
+      ...(current?.mode === "custom" ? current.rules : {}),
+      ...patch,
+    },
+  };
 }
 
 export function usePreferences() {

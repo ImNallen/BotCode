@@ -190,7 +190,10 @@ impl UsageHistory {
                 &reader.last_rate_attempt,
             );
             coverage.pricing = status;
-            Ok(aggregate(records, window, zone, now, rates, coverage))
+            let overrides =
+                crate::settings::usage_price_overrides(&reader.data_dir.join("settings.json"));
+            let prices = pricing::Prices::new(rates, overrides);
+            Ok(aggregate(records, window, zone, now, &prices, coverage))
         })
         .await
         .map_err(|e| AppError::new("usage_history", e))?
@@ -279,13 +282,13 @@ fn accumulate(
     totals: &mut UsageTotals,
     sessions: &mut HashSet<String>,
     record: &UsageRecord,
-    rates: &pricing::RateTable,
+    prices: &pricing::Prices,
 ) {
     totals.tokens.add(&record.tokens);
     totals.records += 1;
     sessions.insert(record.session_id.clone());
     totals.sessions = sessions.len() as u64;
-    match pricing::price(rates, record) {
+    match prices.price(record) {
         Some(cost) => totals.estimated_cost_usd += cost,
         None => {
             totals.unpriced_records += 1;
@@ -298,7 +301,7 @@ fn aggregate(
     mut window: Window,
     zone: Tz,
     now: i64,
-    rates: pricing::RateTable,
+    prices: &pricing::Prices,
     mut coverage: UsageCoverage,
 ) -> UsageHistoryReport {
     let mut totals = UsageTotals::default();
@@ -319,16 +322,16 @@ fn aggregate(
                 .latest_included_ms
                 .map_or(record.timestamp_ms, |v| v.max(record.timestamp_ms)),
         );
-        accumulate(&mut totals, &mut sessions, &record, &rates);
+        accumulate(&mut totals, &mut sessions, &record, prices);
         let (model_totals, model_sessions) = models.entry(record.model.clone()).or_default();
-        accumulate(model_totals, model_sessions, &record, &rates);
+        accumulate(model_totals, model_sessions, &record, prices);
         if let Some((i, bucket)) = window
             .buckets
             .iter_mut()
             .enumerate()
             .find(|(_, b)| record.timestamp_ms >= b.start_ms && record.timestamp_ms < b.end_ms)
         {
-            accumulate(&mut bucket.totals, &mut bucket_sessions[i], &record, &rates);
+            accumulate(&mut bucket.totals, &mut bucket_sessions[i], &record, prices);
         }
     }
     UsageHistoryReport {

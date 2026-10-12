@@ -1,15 +1,22 @@
 // Header and frame follow T3 Code v0.0.45 components/usage/UsagePage.tsx (MIT).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { ArrowLeftIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ChevronDownIcon,
+  SlidersHorizontalIcon,
+} from "lucide-react";
 import { useRef, useState } from "react";
 import { ipc } from "../ipc";
 import { RefreshIcon } from "../panel/chrome";
-import { Button, Toggle, selectTrigger } from "../ui/controls";
+import { Button, Toggle, inlineButton, selectTrigger } from "../ui/controls";
+import { Menu, MenuItem } from "../ui/menu";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
+  WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
+import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsageHistorySection } from "./UsageHistory";
 import {
@@ -47,6 +54,7 @@ export function UsagePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [limitsRefreshError, setLimitsRefreshError] = useState<string>();
   const [historyRefreshError, setHistoryRefreshError] = useState<string>();
+  const [modelPricesOpen, setModelPricesOpen] = useState(false);
   const preferenceRevision = useRef(0);
   const updatePreferences = (next: UsagePreferences) => {
     setPreferences(next);
@@ -93,7 +101,43 @@ export function UsagePage() {
           <WorkspaceBreadcrumbItem>
             <h1>Usage</h1>
           </WorkspaceBreadcrumbItem>
+          <WorkspaceBreadcrumbSeparator />
+          <WorkspaceBreadcrumbItem current className="min-w-10">
+            <Menu
+              align="start"
+              trigger={(props) => (
+                <button
+                  type="button"
+                  {...props}
+                  data-slot="inline-button"
+                  className={inlineButton(
+                    {},
+                    "group/usage-environment min-w-0 max-w-full text-foreground",
+                  )}
+                >
+                  <span className="min-w-0 truncate">Local</span>
+                  <span className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">
+                    <ChevronDownIcon
+                      className="size-3.5 opacity-0 transition-opacity group-hover/usage-environment:opacity-100 group-focus-visible/usage-environment:opacity-100 group-data-popup-open/usage-environment:opacity-100"
+                      aria-hidden
+                    />
+                  </span>
+                </button>
+              )}
+            >
+              <MenuItem onClick={() => setModelPricesOpen(true)}>
+                <SlidersHorizontalIcon aria-hidden />
+                Model prices
+              </MenuItem>
+            </Menu>
+          </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
+        {modelPricesOpen ? (
+          <UsagePriceOverrides
+            usageModels={history.data?.models.map((entry) => entry.model) ?? []}
+            onOpenChange={setModelPricesOpen}
+          />
+        ) : null}
         <div className="ms-auto flex min-w-0 items-center justify-end gap-2">
           <div className="hidden items-center gap-2 xl:flex">
             <div

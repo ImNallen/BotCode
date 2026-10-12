@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { PreferencesProvider, usePreferences } from "./preferences";
+import { defaults, PreferencesProvider, usePreferences } from "./preferences";
 import { categories, visibleRows } from "./settingsCatalog";
 
 function storedMeter(stored: unknown) {
@@ -263,7 +263,7 @@ it("defaults Working off, saves it on this device, and resets it without a proje
       },
     ] satisfies Array<import("./settingsScope").SettingsScope>) {
       assert.ok(
-        visibleRows(organization, scope)?.some(
+        visibleRows(organization, scope, defaults)?.some(
           (row) => row.id === "working-shelf",
         ),
       );
@@ -328,5 +328,101 @@ it("opens links in the default browser unless Bot Code was chosen, and persists 
   assert.deepEqual(
     { id: row?.id, title: row?.title },
     { id: "browser-link-target", title: "Open links in" },
+  );
+});
+
+it("keeps custom model prices across unrelated saves and Restore defaults, and drops malformed ones", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const price = { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 };
+  let stored: Record<string, unknown> = {
+    usagePriceOverrides: {
+      "vendor/Model": price,
+      broken: { inputCostPerMillionTokens: -1, outputCostPerMillionTokens: 8 },
+    },
+  };
+  let state: ReturnType<typeof usePreferences> | undefined;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: () => JSON.stringify(stored),
+      setItem: (_key: string, text: string) => {
+        stored = JSON.parse(text);
+      },
+    },
+  });
+  function Inspect() {
+    state = usePreferences();
+    return null;
+  }
+  const render = () =>
+    renderToStaticMarkup(
+      createElement(PreferencesProvider, { children: createElement(Inspect) }),
+    );
+  try {
+    render();
+    assert.deepEqual(state?.preferences.usagePriceOverrides, {
+      "vendor/Model": price,
+    });
+    state?.update({ followUpBehavior: "steer" });
+    assert.deepEqual(stored.usagePriceOverrides, { "vendor/Model": price });
+    render();
+    state?.reset();
+    assert.deepEqual(stored.usagePriceOverrides, { "vendor/Model": price });
+    render();
+    await state?.save({ usagePriceOverrides: {} });
+    assert.deepEqual(stored.usagePriceOverrides, {});
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+it("defaults the quit shortcut to Hold, persists Double press and restores Hold with defaults", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  let stored: unknown = {};
+  let state: ReturnType<typeof usePreferences> | undefined;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: () => JSON.stringify(stored),
+      setItem: (_key: string, text: string) => {
+        stored = JSON.parse(text);
+      },
+    },
+  });
+  function Inspect() {
+    state = usePreferences();
+    return null;
+  }
+  const read = () => {
+    renderToStaticMarkup(
+      createElement(PreferencesProvider, { children: createElement(Inspect) }),
+    );
+    return state?.preferences.confirmQuit;
+  };
+  try {
+    assert.equal(read(), "hold");
+    stored = { confirmQuit: "direct" };
+    assert.equal(read(), "direct");
+    stored = { confirmQuit: true };
+    assert.equal(read(), "hold");
+    state?.update({ confirmQuit: "double-click" });
+    assert.equal(
+      (stored as { confirmQuit?: unknown }).confirmQuit,
+      "double-click",
+    );
+    assert.equal(read(), "double-click");
+    state?.reset();
+    assert.equal((stored as { confirmQuit?: unknown }).confirmQuit, "hold");
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+  const behavior = categories.general.groups.find(
+    (group) => group.id === "behavior",
+  );
+  assert.ok(
+    !behavior?.rows.some((row) => row.id === "quit-confirmation"),
+    "only macOS intercepts the quit shortcut, so other platforms hide the row",
   );
 });

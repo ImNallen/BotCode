@@ -1,4 +1,5 @@
 use super::{UsageRecord, scan::atomic_json};
+use crate::settings::ModelPrice;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -98,14 +99,40 @@ pub(super) fn parse_rates(document: &Value) -> RateTable {
     }
     table
 }
-pub(super) fn price(rates: &RateTable, record: &UsageRecord) -> Option<f64> {
-    let rate = rates.get(&record.model.trim().to_lowercase())?;
-    Some(
-        record.tokens.uncached_input as f64 * rate.input
-            + record.tokens.cached_input as f64 * rate.cached
-            + record.tokens.cache_creation as f64 * rate.creation
-            + record.tokens.output as f64 * rate.output,
-    )
+pub(super) struct Prices {
+    table: RateTable,
+    overrides: RateTable,
+}
+impl Prices {
+    pub(super) fn new(table: RateTable, overrides: BTreeMap<String, ModelPrice>) -> Self {
+        let overrides = overrides
+            .into_iter()
+            .map(|(model, price)| {
+                let rate = Rate {
+                    input: price.input / 1e6,
+                    output: price.output / 1e6,
+                    cached: price.cache_read / 1e6,
+                    creation: price.cache_write / 1e6,
+                };
+                (model, rate)
+            })
+            .collect();
+        Self { table, overrides }
+    }
+    // Ports T3 Code v0.0.45 apps/server/src/usage/usagePricing.ts priceUsage (MIT).
+    pub(super) fn price(&self, record: &UsageRecord) -> Option<f64> {
+        let model = record.model.trim();
+        let rate = self
+            .overrides
+            .get(model)
+            .or_else(|| self.table.get(&model.to_lowercase()))?;
+        Some(
+            record.tokens.uncached_input as f64 * rate.input
+                + record.tokens.cached_input as f64 * rate.cached
+                + record.tokens.cache_creation as f64 * rate.creation
+                + record.tokens.output as f64 * rate.output,
+        )
+    }
 }
 fn fetch() -> std::result::Result<Value, String> {
     let client = reqwest::blocking::Client::builder()
@@ -248,6 +275,66 @@ mod tests {
             panic!("failed fetch has a cooldown")
         });
         assert_eq!(status.status, PricingState::Stale);
+    }
+    fn record(model: &str) -> UsageRecord {
+        UsageRecord {
+            timestamp_ms: 0,
+            session_id: "s".into(),
+            model: model.into(),
+            tokens: super::super::TokenTotals {
+                uncached_input: 1_000_000,
+                cached_input: 1_000_000,
+                cache_creation: 1_000_000,
+                output: 1_000_000,
+                reasoning: 0,
+            },
+            event_key: "e".into(),
+            occurrence: 0,
+        }
+    }
+    fn custom(input: f64, output: f64, cache_read: f64, cache_write: f64) -> ModelPrice {
+        ModelPrice {
+            input,
+            output,
+            cache_read,
+            cache_write,
+        }
+    }
+    #[test]
+    fn custom_prices_beat_the_table_for_exact_model_ids_only() {
+        let table = parse_rates(
+            &json!({"model-a":{"input_cost_per_token":0.000001,"output_cost_per_token":0.000004}}),
+        );
+        let prices = Prices::new(
+            table,
+            BTreeMap::from([
+                ("model-a".to_owned(), custom(2.0, 8.0, 2.0, 2.0)),
+                ("Vendor/Model".to_owned(), custom(3.0, 6.0, 0.0, 3.0)),
+            ]),
+        );
+        assert_eq!(
+            prices.price(&record(" model-a ")),
+            Some(2.0 + 2.0 + 2.0 + 8.0)
+        );
+        assert_eq!(
+            prices.price(&record("MODEL-A")),
+            Some(1.0 + 1.0 + 1.0 + 4.0),
+            "the table still answers a different case"
+        );
+        assert_eq!(
+            prices.price(&record("Vendor/Model")),
+            Some(3.0 + 0.0 + 3.0 + 6.0)
+        );
+        assert_eq!(prices.price(&record("vendor/model")), None);
+        let free = Prices::new(
+            RateTable::new(),
+            BTreeMap::from([("free".to_owned(), custom(0.0, 0.0, 0.0, 0.0))]),
+        );
+        assert_eq!(
+            free.price(&record("free")),
+            Some(0.0),
+            "explicit 0 is priced, not unpriced"
+        );
     }
     #[test]
     fn bad_rates_do_not_guess_aliases_or_accept_half_prices() {

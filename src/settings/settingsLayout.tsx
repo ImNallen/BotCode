@@ -8,12 +8,14 @@ export function SettingsGroup({
   id,
   title,
   hideTitle = false,
+  icon,
   headerAction,
   children,
 }: {
   id: string;
   title: ReactNode;
   hideTitle?: boolean;
+  icon?: ReactNode;
   headerAction?: ReactNode;
   children: ReactNode;
 }) {
@@ -35,6 +37,7 @@ export function SettingsGroup({
         >
           <div className="min-w-0">
             <h2 className="flex min-h-7 items-center gap-2 text-sm font-normal text-foreground/70">
+              {icon}
               {title}
             </h2>
           </div>

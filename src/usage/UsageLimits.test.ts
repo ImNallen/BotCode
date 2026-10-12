@@ -33,6 +33,7 @@ it("shows the plan and the reason when a page has no windows", () => {
         kind: "reported",
         plan: "ChatGPT Pro 20x Subscription",
         windows: [weekly],
+        resetCredits: null,
       },
       error: undefined,
       now,
@@ -49,4 +50,32 @@ it("shows the plan and the reason when a page has no windows", () => {
   );
   assert.ok(unsupported.includes("This account has no subscription limits."));
   assert.ok(!unsupported.includes('role="img"'));
+});
+
+it("offers banked reset credits under the windows and hides an empty bank", () => {
+  const section = (resetCredits: {
+    availableCount: number;
+    nextExpiresAtMs: number | null;
+  }) =>
+    renderToStaticMarkup(
+      createElement(UsageLimitsSection, {
+        limits: {
+          kind: "reported",
+          plan: "ChatGPT Pro 20x Subscription",
+          windows: [weekly],
+          resetCredits,
+        },
+        error: undefined,
+        now,
+      }),
+    );
+  const banked = section({
+    availableCount: 2,
+    nextExpiresAtMs: now + 2 * 86_400_000,
+  });
+  assert.ok(banked.includes("2 reset credits banked · next expires in 2d 0h"));
+  assert.ok(banked.includes(">Use reset</button>"));
+  const empty = section({ availableCount: 0, nextExpiresAtMs: null });
+  assert.ok(!empty.includes("banked"));
+  assert.ok(!empty.includes("Use reset"));
 });

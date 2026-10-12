@@ -1,5 +1,6 @@
 // Section order and labels follow pingdotgg/t3code v0.0.45 settings/settingsSearch.ts (MIT).
 import {
+  ActivityIcon,
   ArchiveIcon,
   GitBranchIcon,
   HardDriveIcon,
@@ -11,7 +12,7 @@ import {
 import { z } from "zod";
 import { isMac } from "../permissions/platform";
 import { actionIds, actions } from "../lib/actions";
-import type { ProjectSetting } from "./preferences";
+import type { Preferences, ProjectSetting } from "./preferences";
 import type { SettingsScope } from "./settingsScope";
 
 export const settingsSection = z.enum([
@@ -22,6 +23,7 @@ export const settingsSection = z.enum([
   "keybindings",
   "storage",
   "archived",
+  "diagnostics",
 ]);
 export type SettingsSection = z.infer<typeof settingsSection>;
 
@@ -32,6 +34,7 @@ export type SettingsRowInfo = {
   keywords?: string;
   // Rows for a project-scoped setting read and write the picked project's override.
   setting?: ProjectSetting;
+  when?: "project" | "worktree-rules";
 };
 type SettingsGroupInfo = {
   id: string;
@@ -144,8 +147,11 @@ export const autoSettleDaysRow = {
   title: "Days of inactivity before auto-settle",
   description: "Any new activity un-settles a thread automatically.",
 };
+// Search terms follow T3 Code v0.0.45 settings/settingsSearch.ts (MIT).
 const worktreeCleanupKeywords =
-  "worktree cleanup disk storage delete threads old inactive unchanged worktrees retention days off";
+  "worktree cleanup disk storage delete deleted archived threads old inactive merged unchanged worktrees retention days project inherit off custom";
+const artifactsKeywords =
+  "disk storage browser screenshots captures rotated logs cleanup retention";
 
 export const projectRows = {
   model: {
@@ -391,6 +397,17 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
               "Queue follow-ups while the agent runs or steer the current run.",
             keywords: "queue steer running turn send default behavior composer",
           },
+          ...(isMac
+            ? [
+                {
+                  id: "quit-confirmation",
+                  title: "Quit shortcut",
+                  description: "Hold mode also quits on two quick presses.",
+                  keywords:
+                    "confirmation desktop app exit direct hold double click press twice",
+                },
+              ]
+            : []),
         ],
       },
       {
@@ -416,7 +433,27 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "restore",
             title: "Restore defaults",
             description:
-              "Reset appearance, font sizes, follow-up behavior, the composer, the context window indicator, notifications, storage cleanup, new thread defaults, the text generation model, source control and auto-settle, including project overrides, on this device.",
+              "Reset appearance, font sizes, follow-up behavior, the composer, the context window indicator, notifications, the quit shortcut, storage cleanup, new thread defaults, the text generation model, source control and auto-settle, including project overrides, on this device.",
+          },
+        ],
+      },
+      {
+        id: "general-diagnostics",
+        title: "Diagnostics",
+        rows: [
+          {
+            id: "diagnostics",
+            title: "Diagnostics",
+            description:
+              "Inspect processes, resource use, and logs on this device.",
+            keywords:
+              "logs traces processes resource history failures spans cpu memory",
+          },
+          {
+            id: "open-source-licenses",
+            title: "Open source licenses",
+            description:
+              "Notices for dependencies, assets, and code used by Bot Code.",
           },
         ],
       },
@@ -573,21 +610,36 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
       },
     ],
   },
+  diagnostics: {
+    title: "Diagnostics",
+    icon: ActivityIcon,
+    scoped: false,
+    groups: [],
+  },
   storage: {
     title: "Storage",
     icon: HardDriveIcon,
-    scoped: false,
+    scoped: true,
     groups: [
       {
         id: "storage-worktrees",
         title: "Worktrees",
+        when: "available",
         rows: [
+          {
+            id: "automatic-worktree-cleanup",
+            title: "Automatic worktree cleanup",
+            description: "Use each machine's worktree cleanup settings.",
+            keywords: worktreeCleanupKeywords,
+            when: "project",
+          },
           {
             id: "worktree-on-delete",
             title: "Delete worktrees with deleted threads",
             description:
               "Remove unused worktrees when active or archived threads are deleted. Worktrees with local changes are kept.",
             keywords: worktreeCleanupKeywords,
+            when: "worktree-rules",
           },
           {
             id: "worktree-after-days",
@@ -595,6 +647,15 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             description:
               "Remove worktrees after their threads have been inactive for this many days. Branches and thread history are kept.",
             keywords: worktreeCleanupKeywords,
+            when: "worktree-rules",
+          },
+          {
+            id: "worktree-on-merge",
+            title: "Delete merged worktrees",
+            description:
+              "Remove worktrees whose pull request is merged and whose commits are included in the default branch.",
+            keywords: worktreeCleanupKeywords,
+            when: "worktree-rules",
           },
           {
             id: "worktree-unchanged",
@@ -602,6 +663,28 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             description:
               "Remove worktrees with no commits beyond the default branch.",
             keywords: worktreeCleanupKeywords,
+            when: "worktree-rules",
+          },
+        ],
+      },
+      {
+        id: "storage-artifacts",
+        title: "Artifacts and logs",
+        when: "all-projects",
+        rows: [
+          {
+            id: "browser-artifacts-after-days",
+            title: "Delete old browser artifacts",
+            description:
+              "Delete saved browser captures after this many days. Older capture links will no longer open.",
+            keywords: artifactsKeywords,
+          },
+          {
+            id: "logs-after-days",
+            title: "Delete old rotated logs",
+            description:
+              "Delete inactive rotated log files after this many days. Current logs are kept.",
+            keywords: artifactsKeywords,
           },
         ],
       },
@@ -611,8 +694,31 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
 
 export function visibleSections(scope: SettingsScope | undefined) {
   return settingsSection.options.filter(
-    (section) => section !== "projects" || scope?.kind === "project",
+    (section) =>
+      section !== "diagnostics" &&
+      (section !== "projects" || scope?.kind === "project"),
   );
+}
+
+function rowVisible(
+  row: SettingsRowInfo,
+  scope: SettingsScope | undefined,
+  preferences: Preferences,
+) {
+  switch (row.when) {
+    case undefined:
+      return true;
+    case "project":
+      return scope?.kind === "project";
+    case "worktree-rules":
+      return (
+        scope?.kind === "all" ||
+        (scope?.kind === "project" &&
+          scope.workspace.kind === "repository" &&
+          preferences.projectOverrides[scope.workspace.id]?.worktreeCleanup
+            ?.mode === "custom")
+      );
+  }
 }
 
 // The page and settings search both use this, so search never targets a row
@@ -620,17 +726,19 @@ export function visibleSections(scope: SettingsScope | undefined) {
 export function visibleRows(
   group: SettingsGroupInfo,
   scope: SettingsScope | undefined,
+  preferences: Preferences,
 ): SettingsRowInfo[] | undefined {
-  if (group.when === undefined) return group.rows;
+  const rows = group.rows.filter((row) => rowVisible(row, scope, preferences));
+  if (group.when === undefined) return rows;
   if (scope === undefined) return undefined;
   switch (group.when) {
     case "all-projects":
-      return scope.kind === "all" ? group.rows : undefined;
+      return scope.kind === "all" ? rows : undefined;
     case "available":
-      return scope.kind === "unavailable" ? [] : group.rows;
+      return scope.kind === "unavailable" ? [] : rows;
     case "repository":
       return scope.kind === "project" && scope.workspace.kind === "repository"
-        ? group.rows
+        ? rows
         : undefined;
   }
 }

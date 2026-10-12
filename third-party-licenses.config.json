@@ -1,0 +1,114 @@
+{
+  "customNotices": [
+    {
+      "bundles": ["desktop", "web"],
+      "license": "MIT",
+      "name": "T3 Code",
+      "noticeFile": "third-party/t3code/LICENSE",
+      "sourceUrl": "https://github.com/pingdotgg/t3code",
+      "version": "0.0.45"
+    },
+    {
+      "bundles": ["assets", "desktop", "web"],
+      "license": "CC0-1.0",
+      "name": "Notification Sound 1 by deadrobotmusic",
+      "sourceUrl": "https://freesound.org/people/deadrobotmusic/sounds/750607/",
+      "generatedNotices": [
+        {
+          "licenseId": "CC0-1.0",
+          "preamble": [
+            "The bundled notification-completion.mp3 is derived from Notification Sound 1 by deadrobotmusic:\nhttps://freesound.org/people/deadrobotmusic/sounds/750607/\n\nThe original sound is dedicated to the public domain under CC0 1.0 Universal."
+          ]
+        }
+      ]
+    },
+    {
+      "bundles": ["assets", "desktop", "web"],
+      "license": "CC0-1.0",
+      "name": "Notification Sound 3 by deadrobotmusic",
+      "sourceUrl": "https://freesound.org/people/deadrobotmusic/sounds/750609/",
+      "generatedNotices": [
+        {
+          "licenseId": "CC0-1.0",
+          "preamble": [
+            "The bundled notification-input.mp3 is derived from Notification Sound 3 by deadrobotmusic:\nhttps://freesound.org/people/deadrobotmusic/sounds/750609/\n\nThe original sound is dedicated to the public domain under CC0 1.0 Universal."
+          ]
+        }
+      ]
+    },
+    {
+      "bundles": ["assets", "web"],
+      "license": "MIT",
+      "name": "libghostty-vt",
+      "noticeFile": "src/terminal/ghostty/vendor/LICENSE",
+      "sourceUrl": "https://github.com/ghostty-org/ghostty"
+    },
+    {
+      "bundles": ["assets", "web"],
+      "license": "MIT",
+      "name": "Symbols Nerd Font Mono",
+      "noticeFile": "src/terminal/ghostty/fonts/LICENSE",
+      "sourceUrl": "https://github.com/ryanoasis/nerd-fonts"
+    },
+    {
+      "bundles": ["desktop"],
+      "license": "blessing",
+      "name": "SQLite",
+      "sourceUrl": "https://sqlite.org/",
+      "generatedNotices": [
+        {
+          "licenseId": "blessing",
+          "preamble": [
+            "Bot Code links the SQLite amalgamation bundled by the rusqlite crate through libsqlite3-sys.\n\nSQLite is in the public domain. Its source carries this blessing in place of a license."
+          ]
+        }
+      ]
+    },
+    {
+      "bundles": ["web"],
+      "license": "MIT",
+      "name": "tailwindcss",
+      "noticeFile": "node_modules/tailwindcss/LICENSE",
+      "sourceUrl": "https://tailwindcss.com"
+    }
+  ],
+  "packageOverrides": [
+    {
+      "name": "lru_map",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": [
+          "Copyright (c) 2010-2016 Rasmus Andersson <https://rsms.me/>"
+        ]
+      }
+    },
+    {
+      "name": "@tauri-apps/plugin-dialog",
+      "noticeFile": "vendor/tauri-plugin-notification/LICENSE_MIT"
+    },
+    {
+      "name": "@tauri-apps/plugin-notification",
+      "noticeFile": "vendor/tauri-plugin-notification/LICENSE_MIT"
+    },
+    {
+      "repositoryUrl": "https://github.com/madsmtm/objc2",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright 2026 Mads Marquart"]
+      }
+    },
+    {
+      "name": "mac-notification-sys",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2017 Felix Döring"]
+      }
+    },
+    {
+      "name": "selectors",
+      "generatedNotice": {
+        "licenseId": "MPL-2.0"
+      }
+    }
+  ]
+}

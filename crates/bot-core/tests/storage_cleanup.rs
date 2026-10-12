@@ -1,11 +1,12 @@
 #![cfg(unix)]
 #![allow(clippy::disallowed_methods)]
 use bot_core::*;
+use serde_json::json;
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 const DAY_MS: u64 = 86_400_000;
@@ -78,6 +79,17 @@ impl Fixture {
             .unwrap()
             .status
             .success()
+    }
+    fn with_github(mut self) -> Self {
+        let gh = self.repository.with_file_name("gh");
+        std::fs::write(&gh, include_str!("fixtures/gh-lifecycle.py")).unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        self.config.gh_binary = gh;
+        self.github_state(json!({"exists": false}));
+        self
+    }
+    fn github_state(&self, state: serde_json::Value) {
+        std::fs::write(self.repository.with_file_name("gh.json"), state.to_string()).unwrap();
     }
     /// A bare origin whose HEAD is main, mirroring the fixture repository.
     fn add_origin(&self) {
@@ -529,6 +541,20 @@ async fn malformed_settings_disable_each_rule_independently() {
         app.sweep_worktrees_at(four_days_later()).await;
         assert!(path.exists(), "{label} must keep the worktree");
     }
+    f.settings(
+        &json!({
+            "storageCleanup": {"worktreeAfterDays": null},
+            "projectOverrides": {workspace.id.to_string(): {
+                "worktreeCleanup": {"mode": "custom", "rules": {"worktreeAfterDays": 3}}
+            }}
+        })
+        .to_string(),
+    );
+    app.sweep_worktrees_at(four_days_later()).await;
+    assert!(
+        path.exists(),
+        "custom rules missing keys inherit the global rules, which are off"
+    );
     f.settings(r#"{"storageCleanup": {"worktreeAfterDays": "8", "worktreeUnchanged": true}}"#);
     app.sweep_worktrees_at(now_ms()).await;
     assert!(
@@ -553,5 +579,242 @@ async fn saving_settings_triggers_a_sweep() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(!path.exists(), "a settings save must start a sweep");
+    app.shutdown().await.unwrap();
+}
+
+async fn wait_for_merged(app: &App, thread: &ThreadId) {
+    for _ in 0..3000 {
+        let summary = app
+            .list_thread_pull_requests(thread.clone(), false)
+            .await
+            .unwrap();
+        if summary.links.iter().any(|link| {
+            link.pr
+                .snapshot
+                .as_ref()
+                .is_some_and(|pr| matches!(pr.lifecycle, PrLifecycle::Merged { .. }))
+        }) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the linked pull request never read as merged");
+}
+
+#[tokio::test]
+async fn merged_rule_removes_linked_merged_worktrees_whose_head_is_in_origin_default() {
+    let f = Fixture::new().with_github();
+    f.add_origin();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let merged = worktree_thread(&app, &workspace.id).await;
+    let squashed = worktree_thread(&app, &workspace.id).await;
+    let unlinked = worktree_thread(&app, &workspace.id).await;
+    let elsewhere = worktree_thread(&app, &workspace.id).await;
+    let (merged_path, merged_branch) = worktree(&merged.checkout);
+    let (squashed_path, squashed_branch) = worktree(&squashed.checkout);
+    let (unlinked_path, _) = worktree(&unlinked.checkout);
+    let (elsewhere_path, _) = worktree(&elsewhere.checkout);
+    commit_file(&merged_path, "merged.txt");
+    git_output(&merged_path, &["push", "-q", "origin", "HEAD:main"]);
+    commit_file(&squashed_path, "squashed.txt");
+    let merged_pr = |branch: &str| json!({"branch": branch, "lifecycle": "MERGED", "mergedAt": "2026-10-05T13:00:00Z"});
+    f.github_state(json!({
+        "exists": false,
+        "matchNumber": true,
+        "perNumber": {
+            "41": merged_pr(&merged_branch),
+            "42": merged_pr(&squashed_branch),
+            "43": merged_pr("someone-else/feature"),
+        }
+    }));
+    for (thread, number) in [(&merged, 41), (&squashed, 42), (&elsewhere, 43)] {
+        app.link_pull_request(
+            thread.id.clone(),
+            format!("https://github.com/fixture/project/pull/{number}"),
+        )
+        .await
+        .unwrap();
+        wait_for_merged(&app, &thread.id).await;
+    }
+    f.settings(r#"{"storageCleanup":{"worktreeOnMerge":false}}"#);
+    app.sweep_worktrees_at(now_ms()).await;
+    assert!(merged_path.exists(), "the merged rule is off");
+    f.settings(r#"{"storageCleanup":{"worktreeOnMerge":true}}"#);
+    app.sweep_worktrees_at(now_ms()).await;
+    assert!(!merged_path.exists(), "merged and contained in origin/main");
+    assert!(f.branch_exists(&merged_branch));
+    assert!(
+        squashed_path.exists(),
+        "a squash merge leaves HEAD outside origin/main"
+    );
+    assert!(
+        unlinked_path.exists(),
+        "an unchanged worktree without a merged pull request"
+    );
+    assert!(
+        elsewhere_path.exists(),
+        "a merged pull request from another branch does not count"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_overrides_replace_the_global_worktree_rules() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let thread = worktree_thread(&app, &workspace.id).await;
+    let (path, _) = worktree(&thread.checkout);
+    complete_turn(&app, &thread, "hello").await;
+    let project = |cleanup: serde_json::Value, global_days: Option<u64>| {
+        json!({
+            "storageCleanup": {"worktreeAfterDays": global_days},
+            "projectOverrides": {workspace.id.to_string(): {"worktreeCleanup": cleanup}}
+        })
+        .to_string()
+    };
+    f.settings(&project(json!({"mode": "off"}), Some(3)));
+    app.sweep_worktrees_at(four_days_later()).await;
+    assert!(path.exists(), "Off keeps what the global rule would remove");
+    f.settings(&project(
+        json!({"mode": "custom", "rules": {
+            "worktreeAfterDays": 3,
+            "worktreeOnMerge": false,
+            "worktreeOnDelete": false,
+            "worktreeUnchanged": false
+        }}),
+        None,
+    ));
+    app.sweep_worktrees_at(four_days_later()).await;
+    assert!(
+        !path.exists(),
+        "Custom applies its own inactive rule while the global one is off"
+    );
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_project_overrides_inherit_the_global_rules() {
+    let f = Fixture::new();
+    let app = App::open(f.config.clone()).await.unwrap();
+    let workspace = app.open_workspace(f.repository.clone()).await.unwrap();
+    let thread = worktree_thread(&app, &workspace.id).await;
+    let (path, _) = worktree(&thread.checkout);
+    complete_turn(&app, &thread, "hello").await;
+    for (cleanup, label) in [
+        (json!("off"), "a string"),
+        (json!({"mode": "sometimes"}), "an unknown mode"),
+        (json!({"mode": "custom"}), "custom without rules"),
+        (
+            json!({"mode": "custom", "rules": {
+                "worktreeAfterDays": null,
+                "worktreeOnMerge": false,
+                "worktreeOnDelete": false,
+                "worktreeUnchanged": "no"
+            }}),
+            "a custom rule that is not a boolean",
+        ),
+    ] {
+        f.settings(
+            &json!({
+                "storageCleanup": {"worktreeAfterDays": 3},
+                "projectOverrides": {workspace.id.to_string(): {"worktreeCleanup": cleanup}}
+            })
+            .to_string(),
+        );
+        app.sweep_worktrees_at(four_days_later()).await;
+        assert!(
+            !path.exists(),
+            "{label} must inherit the global inactive rule"
+        );
+        complete_turn(&app, &thread, label).await;
+        assert!(path.exists());
+    }
+    app.shutdown().await.unwrap();
+}
+
+fn file_aged(path: &Path, days: u64) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "fixture").unwrap();
+    std::fs::File::options()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(days * 86_400))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn file_retention_deletes_only_old_screenshots_and_rotated_logs() {
+    let f = Fixture::new();
+    let data = f.config.data_dir.clone();
+    let outside = f.repository.with_file_name("outside");
+    let screenshots = data.join("preview/screenshots");
+    let logs = data.join("logs");
+    let app = App::open(f.config.clone()).await.unwrap();
+    let old_screenshot = screenshots.join("old.png");
+    let fresh_screenshot = screenshots.join("fresh.png");
+    let nested_screenshot = screenshots.join("nested/old.png");
+    let old_rotated = logs.join("codex.log.2");
+    let fresh_rotated = logs.join("codex.log.1");
+    let current_log = logs.join("codex.log");
+    let terminal_log = logs.join("terminals/workspace/thread/x.log");
+    let nested_rotated = logs.join("terminals/workspace/thread/events.ndjson.3");
+    let outside_capture = outside.join("capture.png");
+    let outside_log = outside.join("secret.log.1");
+    for path in [
+        &old_screenshot,
+        &nested_screenshot,
+        &old_rotated,
+        &current_log,
+        &terminal_log,
+        &nested_rotated,
+        &outside_capture,
+        &outside_log,
+    ] {
+        file_aged(path, 30);
+    }
+    for path in [&fresh_screenshot, &fresh_rotated] {
+        file_aged(path, 1);
+    }
+    let linked_capture = screenshots.join("linked.png");
+    let linked_log = logs.join("linked.log.1");
+    let linked_folder = logs.join("linked");
+    std::os::unix::fs::symlink(&outside_capture, &linked_capture).unwrap();
+    std::os::unix::fs::symlink(&outside_log, &linked_log).unwrap();
+    std::os::unix::fs::symlink(&outside, &linked_folder).unwrap();
+    f.settings(r#"{"storageCleanup":{"browserArtifactsAfterDays":null,"logsAfterDays":null}}"#);
+    app.sweep_worktrees_at(now_ms()).await;
+    assert!(
+        old_screenshot.exists() && old_rotated.exists(),
+        "both rules off"
+    );
+    f.settings(r#"{"storageCleanup":{"browserArtifactsAfterDays":7,"logsAfterDays":7}}"#);
+    app.sweep_worktrees_at(now_ms()).await;
+    assert!(!old_screenshot.exists());
+    assert!(!old_rotated.exists());
+    assert!(
+        !nested_rotated.exists(),
+        "rotated logs are found in subfolders"
+    );
+    for (path, label) in [
+        (&fresh_screenshot, "a fresh screenshot"),
+        (&nested_screenshot, "a screenshot below the top level"),
+        (&fresh_rotated, "a fresh rotated log"),
+        (&current_log, "the current codex.log"),
+        (&terminal_log, "a terminal log"),
+        (&outside_capture, "a symlinked screenshot's target"),
+        (&outside_log, "a symlinked log's target"),
+    ] {
+        assert!(path.exists(), "{label} must survive");
+    }
+    for link in [&linked_capture, &linked_log, &linked_folder] {
+        assert!(
+            std::fs::symlink_metadata(link).is_ok(),
+            "{} must survive",
+            link.display()
+        );
+    }
     app.shutdown().await.unwrap();
 }

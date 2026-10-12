@@ -3,6 +3,12 @@ import { createRoot, type Root } from "react-dom/client";
 
 const HTML = "http://www.w3.org/1999/xhtml";
 
+type FakeListener = {
+  type: string;
+  listener: (event: unknown) => void;
+  capture: boolean;
+};
+
 export class FakeNode {
   childNodes: FakeNode[] = [];
   parentNode: FakeNode | null = null;
@@ -39,8 +45,28 @@ export class FakeNode {
   get textContent(): string {
     return this.text + this.childNodes.map((n) => n.textContent).join("");
   }
-  addEventListener() {}
-  removeEventListener() {}
+  listeners: FakeListener[] = [];
+  addEventListener(
+    type: string,
+    listener: (event: unknown) => void,
+    options?: boolean | { capture?: boolean },
+  ) {
+    const capture = typeof options === "boolean" ? options : !!options?.capture;
+    this.listeners.push({ type, listener, capture });
+  }
+  removeEventListener(
+    type: string,
+    listener: (event: unknown) => void,
+    options?: boolean | { capture?: boolean },
+  ) {
+    const capture = typeof options === "boolean" ? options : !!options?.capture;
+    this.listeners = this.listeners.filter(
+      (entry) =>
+        entry.type !== type ||
+        entry.listener !== listener ||
+        entry.capture !== capture,
+    );
+  }
   setAttribute(name: string, value: string) {
     this.attributes.set(name, value);
   }
@@ -67,6 +93,10 @@ export class FakeNode {
     return (
       node === this || this.childNodes.some((child) => child.contains(node))
     );
+  }
+  focus() {}
+  getBoundingClientRect() {
+    return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
   }
   showModal() {
     this.modal = true;
@@ -105,6 +135,35 @@ export function findAll(node: FakeNode, tagName: string): FakeNode[] {
     ...(node.tagName === tagName ? [node] : []),
     ...node.childNodes.flatMap((child) => findAll(child, tagName)),
   ];
+}
+
+// React listens on the root container, so firing its listeners reaches the target's handlers.
+export async function fireEvent(
+  container: FakeNode,
+  target: FakeNode,
+  type: string,
+  init: Record<string, unknown> = {},
+) {
+  const event = {
+    type,
+    target,
+    bubbles: true,
+    cancelable: true,
+    defaultPrevented: false,
+    timeStamp: 0,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+    stopPropagation() {},
+    ...init,
+  };
+  await act(async () => {
+    for (const capture of [true, false])
+      for (const entry of container.listeners)
+        if (entry.type === type && entry.capture === capture)
+          entry.listener(event);
+  });
+  return event;
 }
 
 export async function withFakeDom(

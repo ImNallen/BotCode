@@ -1,7 +1,7 @@
 // Copied from pingdotgg/t3code v0.0.45 components/chat/ComposerUsageLimits.tsx (MIT).
 import { useQuery } from "@tanstack/react-query";
 import { GaugeIcon } from "lucide-react";
-import { LimitWindows } from "../usage/UsageLimits";
+import { LimitWindows, ResetCredits } from "../usage/UsageLimits";
 import { accountLabel, limitsNotice, usageLimitsQuery } from "../usage/limits";
 import { ComposerBanner } from "./ComposerBanner";
 import { ComposerNotice } from "./ComposerNotice";
@@ -34,6 +34,9 @@ export function ComposerUsageLimits({
             ) : (
               <span className="text-xs text-muted-foreground">{notice}</span>
             )}
+            {limits.data?.kind === "reported" && limits.data.resetCredits ? (
+              <ResetCredits credits={limits.data.resetCredits} now={now} />
+            ) : null}
           </div>
         </ComposerBanner.Body>
       </ComposerBanner.Scroll>

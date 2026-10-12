@@ -56,6 +56,11 @@ const section = createRoute({
   },
   component: SettingsPage,
 });
+const openSourceLicenses = createRoute({
+  getParentRoute: () => route,
+  path: "/settings/open-source-licenses",
+  component: SettingsPage,
+});
 const usage = createRoute({
   getParentRoute: () => route,
   path: "/usage",
@@ -68,7 +73,14 @@ const pullRequests = createRoute({
   component: PullRequestInboxPage,
 });
 export const router = createRouter({
-  routeTree: route.addChildren([index, settings, section, usage, pullRequests]),
+  routeTree: route.addChildren([
+    index,
+    settings,
+    openSourceLicenses,
+    section,
+    usage,
+    pullRequests,
+  ]),
 });
 declare module "@tanstack/react-router" {
   interface Register {

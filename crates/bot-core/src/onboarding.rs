@@ -99,10 +99,11 @@ pub(crate) async fn readiness(configured: &Path, cwd: &Path) -> CodexReadiness {
         _ => return attention("Could not check the Codex version. Try again."),
     };
     let (events, _receiver) = mpsc::channel(32);
-    let provider = match Codex::launch(binary, 0, events, RotatingLog::silent()).await {
-        Ok(provider) => provider,
-        Err(_) => return attention("Could not start Codex. Try again."),
-    };
+    let provider =
+        match Codex::launch(binary, 0, events, RotatingLog::silent(), Default::default()).await {
+            Ok(provider) => provider,
+            Err(_) => return attention("Could not start Codex. Try again."),
+        };
     let result = tokio::time::timeout(PROBE_TIMEOUT, async {
         provider.initialize().await?;
         provider

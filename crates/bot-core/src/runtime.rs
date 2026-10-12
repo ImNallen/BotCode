@@ -34,7 +34,7 @@ use crate::{
         CloseScope, MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey, TerminalLabels,
         TerminalSize, Terminals,
     },
-    usage::{self, ContextUsage, UsageLimits},
+    usage::{self, ContextUsage, ResetOutcome, UsageLimits},
     vcs, workspace_files,
 };
 use pr_review::ReviewWork;
@@ -296,6 +296,7 @@ enum Command {
     CollaborationModes(Reply<Vec<InteractionMode>>),
     UserQuestions(UserQuestionRequestId, UserQuestionAnswers, Reply<()>),
     UsageLimits(bool, Reply<UsageLimits>),
+    ConsumeResetCredit(Reply<ResetOutcome>),
     Settings(ThreadId, SessionSettings, Reply<ThreadSnapshot>),
     /// The path carries a `Hold::Restore` to release in the same step as acceptance.
     Submit(
@@ -338,6 +339,7 @@ pub struct App {
     commands: mpsc::Sender<Command>,
     changes: broadcast::Sender<ChangeHint>,
     limits: watch::Receiver<Option<UsageLimits>>,
+    data_dir: PathBuf,
     worktrees: PathBuf,
     scratch: Option<PathBuf>,
     settings: PathBuf,
@@ -356,6 +358,7 @@ pub struct App {
     terminal_labels: watch::Receiver<TerminalLabels>,
     attachments: Attachments,
     project_search: crate::project_search::ProjectSearch,
+    resources: crate::diagnostics::ResourceMonitor,
 }
 impl App {
     pub async fn search_thread_messages(
@@ -503,6 +506,7 @@ impl App {
             ),
         }
         let discovery_root = config.data_dir.clone();
+        let data_dir = config.data_dir.clone();
         let worktrees = config.data_dir.join("worktrees");
         let native_app_icons =
             crate::native_app_icon::NativeAppIcons::new(config.data_dir.join("native-app-icons"));
@@ -537,6 +541,35 @@ impl App {
         let log = RotatingLog::open(config.data_dir.join("logs").join("codex.log"));
         let project_search = crate::project_search::ProjectSearch::default();
         let project_clones = crate::project_clone::ProjectClones::default();
+        let provider_pids = crate::diagnostics::ProviderPids::default();
+        let resources = crate::diagnostics::ResourceMonitor::start({
+            let (providers, terminals, setup_terminals) = (
+                provider_pids.clone(),
+                terminals.clone(),
+                setup_terminals.clone(),
+            );
+            Arc::new(move || {
+                use crate::diagnostics::Root;
+                let mut roots = crate::diagnostics::KnownRoots::new();
+                roots.insert(std::process::id(), Root::App);
+                for pid in providers.current() {
+                    roots.insert(pid, Root::Provider);
+                }
+                for (key, pid) in terminals
+                    .shells()
+                    .into_iter()
+                    .chain(setup_terminals.shells())
+                {
+                    roots.insert(
+                        pid,
+                        Root::Terminal {
+                            thread_id: key.thread,
+                        },
+                    );
+                }
+                roots
+            })
+        });
         tokio::spawn(
             Owner {
                 project_clones: project_clones.clone(),
@@ -584,6 +617,7 @@ impl App {
                 launching: false,
                 restarts: restarts::Restarts::default(),
                 log: log.clone(),
+                provider_pids: provider_pids.clone(),
                 pending: vec![],
                 models: None,
                 model_waiters: vec![],
@@ -591,6 +625,7 @@ impl App {
                 limits,
                 limit_waiters: vec![],
                 reading_limits: false,
+                reset_redeemer: usage::ResetRedeemer::default(),
                 dirty: HashSet::new(),
                 changes: changes.clone(),
                 provider_events,
@@ -607,6 +642,7 @@ impl App {
             commands,
             changes,
             limits: limits_rx,
+            data_dir,
             worktrees,
             scratch,
             settings,
@@ -625,6 +661,7 @@ impl App {
             terminal_labels,
             attachments,
             project_search,
+            resources,
         };
         tokio::spawn(Sweeper::from(&app).run(
             app.commands.downgrade(),
@@ -1018,6 +1055,13 @@ impl App {
             OpenTarget::ChatLink { thread_id, path } => {
                 let thread = self.thread(thread_id).await?;
                 tokio::task::spawn_blocking(move || editors::chat_link_path(&thread, &path))
+            }
+            OpenTarget::Logs => {
+                let logs = self.data_dir.join("logs");
+                tokio::task::spawn_blocking(move || {
+                    std::fs::create_dir_all(&logs)?;
+                    Ok(dunce::canonicalize(&logs)?)
+                })
             }
         };
         resolve.await.map_err(|e| AppError::new("repository", e))?
@@ -1597,6 +1641,9 @@ impl App {
     pub async fn usage_limits(&self, refresh: bool) -> Result<UsageLimits> {
         self.call(|r| Command::UsageLimits(refresh, r)).await
     }
+    pub async fn consume_reset_credit(&self) -> Result<ResetOutcome> {
+        self.call(Command::ConsumeResetCredit).await
+    }
     pub fn watch_usage_limits(&self) -> watch::Receiver<Option<UsageLimits>> {
         self.limits.clone()
     }
@@ -1922,6 +1969,42 @@ impl App {
     pub fn watch_terminal_labels(&self) -> watch::Receiver<TerminalLabels> {
         self.terminal_labels.clone()
     }
+    pub async fn resource_snapshot(&self) -> Result<crate::ResourceSnapshot> {
+        let resources = self.resources.clone();
+        tokio::task::spawn_blocking(move || resources.snapshot())
+            .await
+            .map_err(|e| AppError::new("diagnostics", e))
+    }
+    pub async fn resource_history(
+        &self,
+        window_ms: u64,
+        bucket_ms: u64,
+    ) -> Result<crate::ResourceHistory> {
+        let resources = self.resources.clone();
+        tokio::task::spawn_blocking(move || resources.history(window_ms, bucket_ms))
+            .await
+            .map_err(|e| AppError::new("diagnostics", e))
+    }
+    /// Samples every second while at least one subscriber is open.
+    pub fn resource_subscribe(&self) -> u64 {
+        self.resources.subscribe()
+    }
+    pub fn resource_unsubscribe(&self, subscription: u64) {
+        self.resources.unsubscribe(subscription);
+    }
+    pub fn watch_resource_telemetry(&self) -> watch::Receiver<Option<crate::ResourceSnapshot>> {
+        self.resources.watch()
+    }
+    pub async fn signal_process(
+        &self,
+        identity: crate::ProcessIdentity,
+        signal: crate::ProcessSignal,
+    ) -> Result<crate::SignalOutcome> {
+        let resources = self.resources.clone();
+        tokio::task::spawn_blocking(move || resources.signal(identity, signal))
+            .await
+            .map_err(|e| AppError::new("diagnostics", e))
+    }
     /// Stops sending events to a subscription. The shell keeps running.
     pub fn terminal_detach(&self, subscription: u64) {
         self.terminals.detach(subscription);
@@ -1996,14 +2079,15 @@ impl App {
         let _ = Sweeper::from(self).sweep(&self.commands, now_ms).await;
     }
 }
-/// Worktree cleanup: once at startup, hourly, and after every settings save.
 struct Sweeper {
+    data_dir: PathBuf,
     worktrees: PathBuf,
     settings: PathBuf,
 }
 impl From<&App> for Sweeper {
     fn from(app: &App) -> Self {
         Self {
+            data_dir: app.data_dir.clone(),
             worktrees: app.worktrees.clone(),
             settings: app.settings.clone(),
         }
@@ -2034,8 +2118,20 @@ impl Sweeper {
     }
     /// Errors only when the runtime is closed. Every other failure is logged and skipped.
     async fn sweep(&self, commands: &mpsc::Sender<Command>, now: u64) -> Result<()> {
-        let rules = settings::cleanup_rules(&self.settings);
-        if !rules.enabled() {
+        let policy = settings::storage_policy(&self.settings);
+        let (data_dir, settings, files_policy) =
+            (self.data_dir.clone(), self.settings.clone(), policy.clone());
+        let _ = tokio::task::spawn_blocking(move || {
+            let current = || settings::storage_policy(&settings);
+            for kind in [
+                cleanup::Retained::BrowserArtifacts,
+                cleanup::Retained::RotatedLogs,
+            ] {
+                cleanup::clean_files(&data_dir, kind, &files_policy, now, &current);
+            }
+        })
+        .await;
+        if !policy.worktrees_enabled() {
             return Ok(());
         }
         let (candidates, roots) = call(commands, Command::CleanupCandidates).await?;
@@ -2049,7 +2145,7 @@ impl Sweeper {
                 Sweep {
                     worktrees: &worktrees,
                     roots: &roots,
-                    rules,
+                    policy,
                     now,
                 }
                 .evaluate(candidates)
@@ -2076,7 +2172,7 @@ impl Sweeper {
                 Sweep {
                     worktrees: &worktrees,
                     roots: &roots,
-                    rules: settings::cleanup_rules(&settings),
+                    policy: settings::storage_policy(&settings),
                     now,
                 }
                 .remove(&eligible)
@@ -2142,6 +2238,12 @@ enum Completion {
         epoch: u64,
         result: Result<UsageLimits>,
     },
+    ResetConsumed {
+        epoch: u64,
+        result: Result<ResetOutcome>,
+        refreshed: Option<Result<UsageLimits>>,
+        reply: Reply<ResetOutcome>,
+    },
     Launched {
         epoch: u64,
         result: Result<collaboration::ProviderSession>,
@@ -2188,7 +2290,9 @@ enum Completion {
 impl Completion {
     fn process_died(&self) -> bool {
         let error = match self {
-            Self::StackProgress { .. } | Self::CompactionExpired { .. } => None,
+            Self::StackProgress { .. }
+            | Self::CompactionExpired { .. }
+            | Self::ResetConsumed { .. } => None,
             Self::Models { result, .. } => result.as_ref().err(),
             Self::Limits { result, .. } => result.as_ref().err(),
             Self::Launched { result, .. } => result.as_ref().err(),
@@ -2269,6 +2373,7 @@ struct Owner {
     launching: bool,
     restarts: restarts::Restarts,
     log: RotatingLog,
+    provider_pids: crate::diagnostics::ProviderPids,
     pending: Vec<Prepare>,
     models: Option<Vec<ModelOption>>,
     model_waiters: Vec<Reply<Vec<ModelOption>>>,
@@ -2276,6 +2381,7 @@ struct Owner {
     limits: watch::Sender<Option<UsageLimits>>,
     limit_waiters: Vec<Reply<UsageLimits>>,
     reading_limits: bool,
+    reset_redeemer: usage::ResetRedeemer,
     dirty: HashSet<ThreadId>,
     changes: broadcast::Sender<ChangeHint>,
     provider_events: mpsc::Sender<Signal>,
@@ -2575,6 +2681,7 @@ impl Owner {
         let w = &self.workspaces[&t.workspace_id];
         (self.owners(path) == 1 && self.idle(t, path)).then(|| Candidate {
             thread: t.id.clone(),
+            workspace: t.workspace_id.clone(),
             workspace_root: w.root.clone(),
             path: path.clone(),
             branch: branch.clone(),
@@ -2584,6 +2691,7 @@ impl Owner {
                 .flat_map(|turn| [turn.started_at_ms, turn.completed_at_ms])
                 .flatten()
                 .max(),
+            linked_pr_merged: self.merged_pr(&t.id, branch),
         })
     }
     fn claim_cleanup(&mut self, candidate: &Candidate) -> Result<()> {
@@ -3269,6 +3377,32 @@ impl Owner {
                         self.read_limits();
                     }
                 }
+            }
+            Command::ConsumeResetCredit(reply) => {
+                let Some(provider) = self.provider.clone() else {
+                    let _ = reply.send(Err(AppError::new("provider", "Codex is not running.")));
+                    return;
+                };
+                let redeemer = self.reset_redeemer.clone();
+                let epoch = self.epoch;
+                let done = self.done.clone();
+                tokio::spawn(async move {
+                    let result = redeemer
+                        .redeem(|key| usage::consume_reset(&provider, key))
+                        .await;
+                    let refreshed = match result {
+                        Ok(_) => Some(usage::read(&provider).await),
+                        Err(_) => None,
+                    };
+                    let _ = done
+                        .send(Completion::ResetConsumed {
+                            epoch,
+                            result,
+                            refreshed,
+                            reply,
+                        })
+                        .await;
+                });
             }
             Command::Settings(id, settings, reply) => {
                 let result = (|| -> Result<ThreadSnapshot> {
@@ -4004,12 +4138,13 @@ impl Owner {
             );
         }
         let log = self.log.clone();
+        let providers = self.provider_pids.clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
             if done.is_closed() {
                 return;
             }
-            let result = match Codex::launch(binary, epoch, signals, log).await {
+            let result = match Codex::launch(binary, epoch, signals, log, providers).await {
                 Ok(provider) => match provider.initialize().await {
                     Ok(()) => Ok(collaboration::discover(provider).await),
                     Err(e) => {
@@ -4054,6 +4189,16 @@ impl Owner {
     }
     fn settle_limits(&mut self, result: Result<UsageLimits>) {
         self.reading_limits = false;
+        self.publish_limits(result);
+        let limits = self.limits.borrow().clone();
+        for reply in std::mem::take(&mut self.limit_waiters) {
+            let _ =
+                reply.send(limits.clone().ok_or_else(|| {
+                    AppError::new("provider", "Codex usage limits are unavailable.")
+                }));
+        }
+    }
+    fn publish_limits(&mut self, result: Result<UsageLimits>) {
         self.limits.send_if_modified(|current| match result {
             Ok(limits) => {
                 let changed = current.as_ref() != Some(&limits);
@@ -4062,13 +4207,6 @@ impl Owner {
             }
             Err(e) => UsageLimits::after_failure(current, &e.message),
         });
-        let limits = self.limits.borrow().clone();
-        for reply in std::mem::take(&mut self.limit_waiters) {
-            let _ =
-                reply.send(limits.clone().ok_or_else(|| {
-                    AppError::new("provider", "Codex usage limits are unavailable.")
-                }));
-        }
     }
     fn prepare(&mut self, job: Prepare) {
         if self.closing {
@@ -4160,6 +4298,19 @@ impl Owner {
             }
             Completion::Limits { epoch, result } if epoch == self.epoch => {
                 self.settle_limits(result);
+            }
+            Completion::ResetConsumed {
+                epoch,
+                result,
+                refreshed,
+                reply,
+            } => {
+                if let Some(limits) = refreshed.clone()
+                    && epoch == self.epoch
+                {
+                    self.publish_limits(limits);
+                }
+                let _ = reply.send(usage::confirm_reset(result, refreshed.as_ref()));
             }
             Completion::Launched { epoch, result } if epoch == self.epoch => match result {
                 Ok(session) => {

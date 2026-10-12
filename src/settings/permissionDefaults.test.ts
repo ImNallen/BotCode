@@ -12,6 +12,7 @@ import {
 import type { ProviderCapabilities } from "../ipc";
 import { resolvePermissionMode } from "../chat/permissionModes";
 import {
+  defaults,
   PreferencesProvider,
   projectSetting,
   usePreferences,
@@ -195,7 +196,7 @@ it("validates saved permissions independently and keeps defaults eligible for No
   );
   assert.ok(group);
   assert.ok(
-    visibleRows(group, scope)?.some(
+    visibleRows(group, scope, defaults)?.some(
       (row) =>
         row.id === "default-permissions" &&
         row.setting === "defaultPermissionMode",

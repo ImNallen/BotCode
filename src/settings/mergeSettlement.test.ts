@@ -9,6 +9,7 @@ import {
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import {
+  defaults,
   PreferencesProvider,
   projectSetting,
   usePreferences,
@@ -105,7 +106,7 @@ it("falls back independently on invalid stored settings and exposes merge settle
     (group) => group.id === "organization",
   );
   assert.ok(organization);
-  const rows = visibleRows(organization, { kind: "all" });
+  const rows = visibleRows(organization, { kind: "all" }, defaults);
   assert.ok(
     rows?.some(
       (row) =>

@@ -315,7 +315,7 @@ fn write_png(
     }
     let root = dunce::canonicalize(data_dir).map_err(|error| error.to_string())?;
     let mut directory = root.clone();
-    for component in ["preview", "screenshots"] {
+    for component in bot_core::PREVIEW_SCREENSHOTS {
         directory.push(component);
         match std::fs::create_dir(&directory) {
             Ok(()) => {}

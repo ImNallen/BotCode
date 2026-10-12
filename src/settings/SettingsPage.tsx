@@ -32,11 +32,18 @@ import { useKeybindings } from "../keybindings/store";
 import { cn } from "../lib/cn";
 import { isMacPlatform } from "../lib/utils";
 import { ProjectSettingRow } from "./ProjectSettingRow";
-import { defaults, usePreferences } from "./preferences";
+import {
+  defaults,
+  quitShortcutSchema,
+  usePreferences,
+  type QuitShortcut,
+} from "./preferences";
 import type { LinkTarget } from "../preview/linkTarget";
 import { ArchivedThreadsPanel } from "./ArchivedThreadsPanel";
+import { DiagnosticsSettings } from "./DiagnosticsSettings";
+import { OpenSourceLicensesPanel } from "./OpenSourceLicenses";
 import { ProjectsSettings } from "./ProjectsSettings";
-import { RetentionControl } from "./RetentionControl";
+import { StorageSettingsRow } from "./StorageSettings";
 import {
   categories,
   settingsSection,
@@ -57,7 +64,11 @@ function useCategory() {
   const section = settingsSection
     .catch("general")
     .parse(pathname.split("/")[2]);
-  return { section, ...categories[section] };
+  return {
+    section,
+    licenses: pathname === "/settings/open-source-licenses",
+    ...categories[section],
+  };
 }
 
 export function SettingsSidebar() {
@@ -66,6 +77,7 @@ export function SettingsSidebar() {
   const navigate = useNavigate();
   const selection = useSearch({ from: "__root__" });
   const { scope } = useSettingsScope();
+  const { preferences } = usePreferences();
   const visible = visibleSections(scope).map((section) => ({
     section,
     ...categories[section],
@@ -86,7 +98,7 @@ export function SettingsSidebar() {
         text: item.title,
       },
       ...item.groups.flatMap((group) => {
-        const rows = visibleRows(group, scope);
+        const rows = visibleRows(group, scope, preferences);
         if (rows === undefined) return [];
         return [
           ...(group.hideTitle
@@ -306,6 +318,46 @@ const sendShortcutOptions = [
   { value: "mod-enter", label: `${modifierLabel} + Enter always` },
 ] as const;
 
+const QUIT_CONFIRMATION_MODE_LABELS: Readonly<Record<QuitShortcut, string>> = {
+  direct: "Direct",
+  hold: "Hold",
+  "double-click": "Double press",
+};
+
+function QuitShortcutControl() {
+  const { preferences, update } = usePreferences();
+  return (
+    <Menu
+      align="end"
+      trigger={(props) => (
+        <button
+          type="button"
+          {...props}
+          className={selectTrigger({ size: "sm", className: "w-full sm:w-40" })}
+          aria-label="Quit shortcut behavior"
+        >
+          <span className="min-w-0 flex-1 truncate text-left">
+            {QUIT_CONFIRMATION_MODE_LABELS[preferences.confirmQuit]}
+          </span>
+          <ChevronDownIcon className="size-3.5" />
+        </button>
+      )}
+    >
+      {quitShortcutSchema.options.map((mode) => (
+        <MenuItem
+          key={mode}
+          className={selectItem}
+          role="menuitemradio"
+          aria-checked={preferences.confirmQuit === mode}
+          onClick={() => update({ confirmQuit: mode })}
+        >
+          {QUIT_CONFIRMATION_MODE_LABELS[mode]}
+        </MenuItem>
+      ))}
+    </Menu>
+  );
+}
+
 function PreferredEditorControl() {
   const { preferences, update } = usePreferences();
   const editors = useEditorActions();
@@ -440,13 +492,15 @@ export function SettingsPage() {
   const selection = useSearch({ from: "__root__" });
   const { preferences, update, reset, persistenceError } = usePreferences();
   const { scope, workspaces } = useSettingsScope();
+  const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const target = document.getElementById(
       hash || `section-${category.section}`,
     );
-    target?.scrollIntoView({ block: "nearest" });
+    if (hash) target?.scrollIntoView({ block: "nearest" });
+    else scrollRef.current?.scrollTo({ top: 0 });
     target?.focus({ preventScroll: true });
-  }, [category.section, hash]);
+  }, [category.section, category.licenses, hash]);
   const control = (id: string) => {
     if (id === "theme")
       return (
@@ -485,51 +539,6 @@ export function SettingsPage() {
         />
       );
     }
-    if (id === "worktree-on-delete")
-      return (
-        <Switch
-          aria-label="Delete worktrees with deleted threads"
-          checked={preferences.storageCleanup.worktreeOnDelete}
-          onCheckedChange={(worktreeOnDelete) =>
-            update({
-              storageCleanup: {
-                ...preferences.storageCleanup,
-                worktreeOnDelete,
-              },
-            })
-          }
-        />
-      );
-    if (id === "worktree-after-days")
-      return (
-        <RetentionControl
-          label="Delete inactive worktrees"
-          value={preferences.storageCleanup.worktreeAfterDays}
-          onChange={(worktreeAfterDays) =>
-            update({
-              storageCleanup: {
-                ...preferences.storageCleanup,
-                worktreeAfterDays,
-              },
-            })
-          }
-        />
-      );
-    if (id === "worktree-unchanged")
-      return (
-        <Switch
-          aria-label="Delete unchanged worktrees"
-          checked={preferences.storageCleanup.worktreeUnchanged}
-          onCheckedChange={(worktreeUnchanged) =>
-            update({
-              storageCleanup: {
-                ...preferences.storageCleanup,
-                worktreeUnchanged,
-              },
-            })
-          }
-        />
-      );
     if (id === "working-shelf")
       return (
         <Switch
@@ -642,6 +651,7 @@ export function SettingsPage() {
           ))}
         </Menu>
       );
+    if (id === "quit-confirmation") return <QuitShortcutControl />;
     if (id === "preferred-editor") return <PreferredEditorControl />;
     if (id === "browser-link-target") return <LinkTargetControl />;
     if (id === "context-window-indicator")
@@ -660,6 +670,43 @@ export function SettingsPage() {
           Restore defaults
         </Button>
       );
+    if (id === "diagnostics")
+      return (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() =>
+            void navigate({
+              to: "/settings/$section",
+              params: { section: "diagnostics" },
+              search: selection,
+              hash: "",
+              resetScroll: false,
+              hashScrollIntoView: false,
+            })
+          }
+        >
+          View diagnostics
+        </Button>
+      );
+    if (id === "open-source-licenses")
+      return (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() =>
+            void navigate({
+              to: "/settings/open-source-licenses",
+              search: selection,
+              hash: "",
+              resetScroll: false,
+              hashScrollIntoView: false,
+            })
+          }
+        >
+          View licenses
+        </Button>
+      );
     return null;
   };
   const resettable = {
@@ -670,6 +717,7 @@ export function SettingsPage() {
       "composerCollapseOnScroll",
     ],
     "send-shortcut": ["send shortcut", "sendShortcut"],
+    "quit-confirmation": ["quit shortcut behavior", "confirmQuit"],
     "browser-link-target": ["link target", "browserLinkTarget"],
   } as const;
   const resetAction = (id: string) => {
@@ -683,8 +731,10 @@ export function SettingsPage() {
     ) : undefined;
   };
   const row = (info: SettingsRowInfo) =>
-    info.id === "source-control-writing-style" ||
-    info.id === "follow-change-request-templates" ? (
+    category.section === "storage" ? (
+      <StorageSettingsRow key={info.id} info={info} scope={scope} />
+    ) : info.id === "source-control-writing-style" ||
+      info.id === "follow-change-request-templates" ? (
       <SourceControlWritingRow
         key={info.id}
         scope={scope}
@@ -728,7 +778,7 @@ export function SettingsPage() {
           <WorkspaceBreadcrumbItem>Settings</WorkspaceBreadcrumbItem>
           <WorkspaceBreadcrumbSeparator />
           <WorkspaceBreadcrumbItem current className="truncate">
-            {category.title}
+            {category.licenses ? "Open source licenses" : category.title}
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
         <Button
@@ -749,13 +799,19 @@ export function SettingsPage() {
         </Button>
       </header>
       <div
+        ref={scrollRef}
         data-settings-page-scroll
         className="topbar-scroll-fade scrollbar-gutter-both flex-1 overflow-y-auto"
       >
         <div
           className={cn(
-            "mx-auto flex w-full flex-col px-5 pt-6 pb-12 sm:px-6 max-w-4xl",
-            category.section === "projects" ? "gap-6" : "gap-8",
+            "mx-auto flex w-full flex-col px-5 pt-6 pb-12 sm:px-6",
+            category.section === "diagnostics" ? "max-w-6xl" : "max-w-4xl",
+            category.section === "projects"
+              ? "gap-6"
+              : category.section === "diagnostics"
+                ? "gap-10"
+                : "gap-8",
           )}
         >
           <h1
@@ -763,9 +819,13 @@ export function SettingsPage() {
             tabIndex={-1}
             className="sr-only"
           >
-            {category.title} settings
+            {category.licenses
+              ? "Open source licenses"
+              : `${category.title} settings`}
           </h1>
-          {category.scoped ? <SettingsScopeSentence /> : null}
+          {category.scoped && !category.licenses ? (
+            <SettingsScopeSentence />
+          ) : null}
           {persistenceError ? (
             <p
               role="alert"
@@ -774,8 +834,12 @@ export function SettingsPage() {
               {persistenceError}
             </p>
           ) : null}
-          {category.section === "archived" ? (
+          {category.licenses ? (
+            <OpenSourceLicensesPanel />
+          ) : category.section === "archived" ? (
             <ArchivedThreadsPanel />
+          ) : category.section === "diagnostics" ? (
+            <DiagnosticsSettings />
           ) : category.section === "projects" ? (
             scope && <ProjectsSettings scope={scope} workspaces={workspaces} />
           ) : category.section === "keybindings" ? (
@@ -799,7 +863,7 @@ export function SettingsPage() {
                 ) : null;
               if (group.id === "source-control-providers")
                 return <GitHubProviderSettings key={group.id} />;
-              const rows = visibleRows(group, scope);
+              const rows = visibleRows(group, scope, preferences);
               if (rows === undefined) return null;
               return (
                 <SettingsGroup key={group.id} id={group.id} title={group.title}>
