@@ -39,7 +39,6 @@ export function Popover({
   className?: string;
   padding?: "default" | "none";
   "aria-label"?: string;
-  // The theme editor's inspector ignores anything inside an element with this attribute.
   "data-theme-editor-panel"?: string;
 }) {
   const anchor = useRef<HTMLElement | null>(null);

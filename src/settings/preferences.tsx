@@ -231,8 +231,6 @@ type PreferenceState = {
 const Context = createContext<
   | (PreferenceState & {
       update: (patch: Partial<Preferences>) => void;
-      // Merges into the latest appearance, so two changes in one handler both
-      // land. Resolves false when settings.json could not be written.
       updateAppearance: (
         change: (current: AppearanceSettings) => Partial<AppearanceSettings>,
       ) => Promise<boolean>;
@@ -268,7 +266,6 @@ export function readPreferences(): PreferenceState {
         defaultPermissionMode: z.unknown().optional(),
         autoSettleOnMerge: z.unknown().optional(),
         appearance: z.unknown().optional(),
-        // Legacy keys, read only to migrate them into appearance.
         promptFontSize: z.unknown().optional(),
         codeFontSize: z.unknown().optional(),
         followUpBehavior: z.unknown().optional(),

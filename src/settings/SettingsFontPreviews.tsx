@@ -18,9 +18,6 @@ import type { TerminalFont } from "../appearanceFonts";
 // terminal, the font passed down as props), so what the row shows is
 // exactly what the app renders.
 
-// Serialized the way the composer stores inline tokens: the markdown-style
-// file links render as chips, so the preview shows prompt text and pills
-// exactly as the real composer draws them.
 const PROMPT_PREVIEW_TEXT =
   "Use $frontend-design to fix the flaky test in " +
   "[surface.test.ts](src/terminal/ghostty/surface.test.ts) and align the header with " +

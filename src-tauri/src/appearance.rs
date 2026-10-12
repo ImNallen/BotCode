@@ -1,7 +1,6 @@
 use bot_core::{AppError, Result};
 
-/// Installed font families for the Appearance font picker. A synchronous
-/// command runs on the main thread, which NSFontManager requires.
+/// A synchronous command runs on the main thread, which NSFontManager requires.
 #[tauri::command]
 pub fn installed_font_families() -> Vec<String> {
     #[cfg(target_os = "macos")]
@@ -18,10 +17,8 @@ pub fn installed_font_families() -> Vec<String> {
     Vec::new()
 }
 
-/// Saves an exported theme through the native save panel and reports whether
-/// the user saved. The chosen path never reaches the webview. A Blob
-/// download cannot replace this: wry cancels download navigations because
-/// Bot Code registers no download handler.
+/// A Blob download cannot replace the native save panel: wry cancels download
+/// navigations because Bot Code registers no download handler.
 #[tauri::command]
 pub async fn export_theme_file(
     window: tauri::WebviewWindow,
@@ -52,9 +49,6 @@ pub async fn export_theme_file(
     Ok(true)
 }
 
-/// Theme files are a few KB; a larger one returns empty text so the renderer
-/// rejects it by size without its contents crossing IPC (T3 window.ts
-/// PICKED_THEME_FILE_MAX_BYTES).
 const PICKED_THEME_FILE_MAX_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, PartialEq, serde::Serialize)]
@@ -64,8 +58,6 @@ pub struct PickedThemeFile {
     text: String,
 }
 
-/// T3's desktop pickThemeFiles: a multi-select JSON panel that opens in
-/// ~/.vscode/extensions when it exists. Cancelling returns no files.
 #[tauri::command]
 pub async fn pick_theme_files(window: tauri::WebviewWindow) -> Result<Vec<PickedThemeFile>> {
     use tauri_plugin_dialog::DialogExt;
@@ -105,7 +97,6 @@ pub async fn pick_theme_files(window: tauri::WebviewWindow) -> Result<Vec<Picked
     .map_err(|error| AppError::new("pick_theme_files", error))
 }
 
-// An unreadable file degrades to an empty entry the renderer reports, as in T3.
 fn read_picked_theme_file(path: &std::path::Path) -> PickedThemeFile {
     let name = path
         .file_name()

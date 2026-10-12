@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeColorPicker.tsx (MIT). Base UI's Popover and Tooltip map to src/ui's controlled Popover and content Tooltip.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeColorPicker.tsx (MIT).
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   isThemeColor,

@@ -65,7 +65,6 @@ export function Tooltip({
   return (
     <>
       {cloneElement(children, {
-        // A trigger that is also a popover anchor keeps its own ref.
         ref: (node: HTMLButtonElement | null) => {
           anchor.current = node;
           const ref = children.props.ref;

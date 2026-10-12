@@ -102,8 +102,6 @@ it("offers T3's size range for each font row", () => {
   assert.equal(fontSizeOptions("fontSizeTerminal").length, 13);
 });
 
-// Canvas advances: Menlo is fixed-width, Arial is proportional, and any other
-// name is not installed, so it measures as the generic it falls back to.
 function fakeCanvasContext() {
   const context = {
     font: "",
@@ -136,11 +134,22 @@ it("commits a settled family only when it is installed, and monospace for code r
       tag === "canvas"
         ? Object.assign(createElementNode(tag), { getContext: () => canvas })
         : createElementNode(tag);
-    assert.equal(fontFamilyCommit("Menlo", true), "Menlo");
-    assert.equal(fontFamilyCommit("Arial", true), null);
-    assert.equal(fontFamilyCommit("Arial", false), "Arial");
-    assert.equal(fontFamilyCommit("Not Installed", false), null);
-    assert.equal(fontFamilyCommit("", true), "");
+    assert.deepEqual(fontFamilyCommit("Menlo", true), {
+      kind: "commit",
+      family: "Menlo",
+    });
+    assert.deepEqual(fontFamilyCommit("Arial", true), { kind: "reject" });
+    assert.deepEqual(fontFamilyCommit("Arial", false), {
+      kind: "commit",
+      family: "Arial",
+    });
+    assert.deepEqual(fontFamilyCommit("Not Installed", false), {
+      kind: "reject",
+    });
+    assert.deepEqual(fontFamilyCommit("", true), {
+      kind: "commit",
+      family: "",
+    });
   });
 });
 

@@ -134,7 +134,6 @@ export function SettingsSidebar() {
     .filter((result) => result.text.toLowerCase().includes(needle));
   const active = results[activeIndex];
   const go = (section: SettingsSection, hash = "") => {
-    // T3 flips Advanced on so the hidden typography row exists to scroll to.
     const advanced = categories[section].groups.some((group) =>
       group.rows.some((row) => row.id === hash && row.advanced),
     );

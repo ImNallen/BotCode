@@ -31,6 +31,8 @@ import {
   type ThemeEditorSessionInput,
 } from "./themeEditorStore";
 
+const EDITED_SURFACE = "#00ffff";
+
 const dusk = parseThemeFile({
   version: THEME_FILE_VERSION,
   id: "dusk",
@@ -50,10 +52,9 @@ const guided = parseThemeFile({
   id: "guided",
   name: "Guided",
   appearance: "dark",
-  // A surface the vivid engine would not derive, so any regeneration shows.
   colors: {
     ...createVividThemeColors("dark", "#101827", "#7c3aed"),
-    surface: "#00ffff",
+    surface: EDITED_SURFACE,
   },
   managed: true,
 });
@@ -496,14 +497,14 @@ it("regenerates a palette from Background and Accent only when the guided editor
       await open({ editingThemeId: "guided" });
       assert.equal(checked(), "false");
       await click(advanced());
-      assert.equal(hex("Surface"), "#00ffff");
+      assert.equal(hex("Surface"), EDITED_SURFACE);
       await click(advanced());
       await click(advanced());
-      assert.equal(hex("Surface"), "#00ffff");
+      assert.equal(hex("Surface"), EDITED_SURFACE);
       await click(advanced());
       await type(labelled("Background hex value"), "#203040");
       await click(advanced());
-      assert.notEqual(hex("Surface"), "#00ffff");
+      assert.notEqual(hex("Surface"), EDITED_SURFACE);
     },
   );
 });

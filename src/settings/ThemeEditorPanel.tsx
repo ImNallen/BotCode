@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeEditorPanel.tsx (MIT). The draft reaches <html> through themeEditorStore and AppearanceRoot, saves await the durable library, and Base UI maps to src/ui with T3's classes.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeEditorPanel.tsx (MIT).
 import {
   ChevronDownIcon,
   ChevronUpIcon,
@@ -313,7 +313,6 @@ export function ThemeEditorPanel({
   seedTheme?: ThemeDefinition | null;
   /** Prefilled name for an explicit duplicate; a plain create stays unnamed. */
   seedName?: string | undefined;
-  /** Reports a theme library write that did not reach storage. */
   onStorageFailure: () => void;
 }) {
   const isEditing = editingTheme !== null;
@@ -858,8 +857,6 @@ export function ThemeEditorPanel({
     ],
   );
 
-  // Library writes are durable and asynchronous, so every step is awaited and
-  // a second submit is ignored until the first settles.
   const handleSubmit = async () => {
     if (isSaving) return;
     if (!name.trim()) {
@@ -1029,7 +1026,6 @@ export function ThemeEditorPanel({
       }
       onOpenChange(false);
     } catch (cause) {
-      // A storage failure gets T3's toast; its technical message stays out of the panel.
       if (cause instanceof ThemeLibraryStorageError) onStorageFailure();
       setError(
         cause instanceof Error && !(cause instanceof ThemeLibraryStorageError)

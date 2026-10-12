@@ -39,7 +39,6 @@ export function resolveTerminalFontSizePreference(input: {
   return input.code;
 }
 
-// An empty family is the terminal surface's own default.
 export type TerminalFont = Readonly<{ family: string; size: number }>;
 
 export function resolveTerminalFont(
@@ -82,9 +81,8 @@ export function cssFontFamilies(input: string): string | null {
 }
 
 /**
- * T3's applyAppearanceFontVariables, returning the declarations so the root
- * writer stays the only code that touches <html>. Unset families are absent,
- * so the stylesheet defaults (and theme changes) stay in charge.
+ * Unset families are absent, so the stylesheet defaults (and theme changes)
+ * stay in charge.
  *
  * Sizes are always present: the interface size drives the root font size (and
  * with it every rem-based dimension), while the prompt and code sizes stay in
@@ -336,22 +334,12 @@ export function resolveDefaultFamilyLabel(stack: string): string | null {
 
 export interface InstalledFontFamiliesResult {
   readonly families: readonly string[];
-  /**
-   * "unsupported" - this platform cannot list its fonts, so the rows keep the
-   * plain family-name input.
-   */
   readonly status: "granted" | "unsupported";
 }
 
 let installedFamiliesCache: Promise<InstalledFontFamiliesResult> | null = null;
 
-/**
- * Every installed family. T3 asks Chromium's Local Font Access API, which
- * WKWebView lacks, so Bot Code asks the native side (NSFontManager on macOS;
- * an empty list elsewhere). Rust already dedupes, drops the "."-prefixed
- * macOS-internal faces and sorts. No permission prompt exists, so callers
- * can discover eagerly.
- */
+/** WKWebView lacks Chromium's Local Font Access API, so the native side lists the families. */
 export function queryInstalledFontFamilies(): Promise<InstalledFontFamiliesResult> {
   installedFamiliesCache ??= ipc.installedFontFamilies().then(
     (families): InstalledFontFamiliesResult =>

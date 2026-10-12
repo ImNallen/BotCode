@@ -19,9 +19,6 @@ import { selectTrigger } from "../ui/controls";
 import { Menu } from "../ui/menu";
 
 export const DEFAULT_FONT_VALUE = "__default__";
-// LegendList is not a Bot Code dependency, so the list windows fixed-height
-// rows itself. T3 estimates 30px rows, caps the list at 288px and draws 360px
-// beyond the viewport.
 const ROW_HEIGHT = 30;
 const MAX_LIST_HEIGHT = 288;
 const OVERSCAN_ROWS = 12;
@@ -31,8 +28,6 @@ type FontEnumerationState =
   | { readonly status: "granted"; readonly families: readonly string[] }
   | { readonly status: "unavailable" };
 
-// Shared across every row: once one row learns the fonts, the others follow
-// without re-querying, and the rows swap to the picker together.
 let enumerationState: FontEnumerationState = { status: "unknown" };
 const enumerationListeners = new Set<() => void>();
 let enumerationLoad: Promise<void> | null = null;
@@ -58,12 +53,6 @@ export function discoverInstalledFonts(): void {
   });
 }
 
-/**
- * Whether this platform can list installed fonts. Rows render a plain
- * family-name input until the state is known granted, then upgrade to the
- * picker. The native list needs no permission prompt, so discovery starts at
- * mount.
- */
 export function useFontEnumeration(): FontEnumerationState {
   useEffect(discoverInstalledFonts, []);
   return useSyncExternalStore(
@@ -73,7 +62,6 @@ export function useFontEnumeration(): FontEnumerationState {
   );
 }
 
-/** The default sentinel first while the query is empty, then every match. */
 export function fontPickerItems(
   families: readonly string[],
   query: string,
@@ -83,7 +71,6 @@ export function fontPickerItems(
   return families.filter((family) => family.toLowerCase().includes(needle));
 }
 
-/** The rows to render for a scroll position: the viewport plus overscan. */
 export function fontPickerWindow(
   scrollTop: number,
   count: number,
@@ -115,7 +102,6 @@ export function FontFamilyPicker({
   /** Committed family name; empty string means the default is in use. */
   selectedFamily: string;
   requireMonospace?: boolean;
-  /** Open the popup on mount - set when the control upgrades under focus. */
   initialOpen?: boolean;
   onSelect: (family: string) => void;
 }) {
@@ -162,9 +148,7 @@ export function FontFamilyPicker({
     onSelect(value === DEFAULT_FONT_VALUE ? "" : value);
   };
 
-  // Keyboard highlights must pull the windowed row into view, or arrow keys
-  // walk past the rendered rows and navigate blind.
-  const highlight = (index: number) => {
+  const highlightAndReveal = (index: number) => {
     setActive(index);
     const element = list.current;
     if (!element) return;
@@ -220,7 +204,7 @@ export function FontFamilyPicker({
             spellCheck={false}
             onChange={(event) => {
               setQuery(event.target.value);
-              highlight(0);
+              highlightAndReveal(0);
             }}
             className="h-6.5 w-full bg-transparent ps-5 font-sans text-sm leading-6.5 outline-none"
             onKeyDown={(event) => {
@@ -232,7 +216,7 @@ export function FontFamilyPicker({
               );
               if (next !== undefined) {
                 event.preventDefault();
-                highlight(next);
+                highlightAndReveal(next);
               } else if (event.key === "Enter") {
                 event.preventDefault();
                 const item = items[activeIndex];

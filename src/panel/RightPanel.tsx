@@ -140,7 +140,6 @@ export function RightPanel({
   view: WorkspaceView | undefined;
   state: PanelState;
   onChange: (state: PanelState) => void;
-  // False while the panel stays mounted for its closing transition.
   open: boolean;
   maximized: boolean;
   conversationId: string | undefined;

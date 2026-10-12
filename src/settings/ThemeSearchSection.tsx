@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeSearchSection.tsx (MIT). Base UI pieces map to src/ui with T3's classes, the collection write is awaited, and the source link opens through Bot Code's URL opener.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeSearchSection.tsx (MIT).
 import {
   ChevronDownIcon,
   ExternalLinkIcon,
@@ -46,7 +46,6 @@ const SORT_OPTIONS: ReadonlyArray<{ value: OpenVsxThemeSort; label: string }> =
   ];
 const SEARCH_DEBOUNCE_MS = 350;
 
-// T3 state/queries.ts useDebouncedValue.
 function useDebouncedValue<A>(value: A, delayMs: number): A {
   const [debounced, setDebounced] = useState(value);
 

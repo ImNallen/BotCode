@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeEditorHost.tsx (MIT). Toasts go through Bot Code's editor toasts, and AppearanceRoot repaints a saved theme without a refresh.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeEditorHost.tsx (MIT).
 import { lazy, Suspense, useCallback, useSyncExternalStore } from "react";
 
 import { useThemeSelection } from "../appearance/AppearanceRoot";
@@ -28,8 +28,6 @@ function useThemeDefinition(id: string | null | undefined) {
   );
 }
 
-// T3 says "Browser storage is unavailable"; Bot Code keeps themes and the
-// selection in its own storage, so the reason names that instead.
 function notifyThemeSaveFailure() {
   notifyEditorResult(
     "error",
@@ -79,8 +77,6 @@ export function ThemeEditorHost() {
         return true;
       }
       if (!created) {
-        // The edited theme may be showing through the base preference or
-        // either half of the mix; AppearanceRoot repaints it from the library.
         const wasActive =
           getThemeDefinition(theme)?.id === savedTheme.id ||
           themeHalves?.light === savedTheme.id ||

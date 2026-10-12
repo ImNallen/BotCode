@@ -23,7 +23,6 @@ export type RootState = Readonly<{
   style: Readonly<Record<string, string>>;
 }>;
 
-// The theme editor's unsaved draft. While present it wins over the selection.
 export type ThemePreview = Readonly<{
   colors: ThemeColors;
   appearance: ThemeAppearance;
@@ -38,12 +37,10 @@ export type RootInputs = Readonly<{
 
 export type ResolvedThemeSelection = Readonly<{
   appearance: ThemeAppearance;
-  // Halves that name an installed theme able to render their side.
   halves: ThemeHalves | null;
   theme: ThemeDefinition | null;
 }>;
 
-// T3 useTheme applyTheme: the appearance, then the theme that owns it.
 export function resolveThemeSelection(
   appearance: Pick<
     AppearanceSettings,
@@ -132,9 +129,7 @@ export function resolveRootState(inputs: RootInputs): RootState {
   };
 }
 
-// T3 applies a changed palette inside a no-transitions frame, but paints an
-// editor draft without one so dragging a color stays live.
-export function changesColorScheme(
+export function needsNoTransitionsFrame(
   previous: RootState | null,
   next: RootState,
 ): boolean {
@@ -148,7 +143,6 @@ export function changesColorScheme(
   );
 }
 
-// The subset of HTMLElement that applyRootState touches.
 export type RootTarget = {
   classList: { toggle(token: string, force: boolean): boolean };
   setAttribute(name: string, value: string): void;
@@ -159,7 +153,6 @@ export type RootTarget = {
   };
 };
 
-// Writes only what differs from `previous` and removes what `next` no longer declares.
 export function applyRootState(
   root: RootTarget,
   previous: RootState | null,

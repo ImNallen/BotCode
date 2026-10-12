@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/themePalette.ts (MIT). Cuts: the library lives in ui_state with async durable writes, errors are Error subclasses, environment themes, cross-tab storage events, preview sidebar artwork and the desktop theme sync are gone, and src/appearance/root.ts writes <html>.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/themePalette.ts (MIT).
 import "culori/css";
 import { converter, parse } from "culori/fn";
 import {
@@ -71,11 +71,8 @@ export type ThemeFile = Readonly<{
 
 export type ThemeLibraryStore = Pick<Storage, "getItem" | "setItemDurable">;
 let themeLibraryStore: ThemeLibraryStore = storage;
-// Every mutation reads, writes and publishes inside this queue, so two
-// overlapping mutations never build on the same snapshot.
-const enqueueThemeLibraryWrite = serial();
+const serializeThemeLibraryChange = serial();
 
-/** Points the library at another store, the way T3's tests stub window.localStorage. */
 export function setThemeLibraryStore(store: ThemeLibraryStore): void {
   themeLibraryStore = store;
   invalidateCustomThemes();
@@ -1179,7 +1176,6 @@ export function updateThemeColorFamily(
 const BUILT_IN_THEME_DEFINITIONS: ReadonlyArray<ThemeDefinition> =
   BUILT_IN_THEMES;
 
-// The custom library is a parameter so the root resolver stays pure and tests pass their own.
 export function getThemeDefinition(
   theme: ThemePreference,
   customThemes: ReadonlyArray<ThemeDefinition> = getCustomThemes(),
@@ -1267,8 +1263,6 @@ export class ThemeLibraryStorageError extends Error {
   }
 }
 
-// The snapshot changes only after the durable write commits, so the library
-// never shows a theme as saved that a failed write left out of ui_state.
 async function saveCustomThemes(
   storedThemes: ReadonlyArray<unknown>,
   themes: ReadonlyArray<ThemeDefinition>,
@@ -1336,7 +1330,7 @@ function storedThemeHasCollectionId(
 export function installCustomTheme(
   theme: ThemeDefinition,
 ): Promise<ThemeDefinition> {
-  return enqueueThemeLibraryWrite(async () => {
+  return serializeThemeLibraryChange(async () => {
     if (RESERVED_THEME_IDS.has(theme.id)) {
       throw new Error(`The theme id "${theme.id}" is reserved.`);
     }
@@ -1359,7 +1353,7 @@ export function installCustomTheme(
 export function updateCustomTheme(
   theme: ThemeDefinition,
 ): Promise<ThemeDefinition> {
-  return enqueueThemeLibraryWrite(async () => {
+  return serializeThemeLibraryChange(async () => {
     if (RESERVED_THEME_IDS.has(theme.id)) {
       throw new Error(`The theme id "${theme.id}" is reserved.`);
     }
@@ -1395,7 +1389,7 @@ export function replaceCustomThemeCollection(
   themes: ReadonlyArray<ThemeDefinition>,
   options?: { expectedCollection?: ReadonlyArray<ThemeDefinition> },
 ): Promise<ReadonlyArray<ThemeDefinition>> {
-  return enqueueThemeLibraryWrite(async () => {
+  return serializeThemeLibraryChange(async () => {
     if (themes.length === 0)
       throw new Error("A theme collection cannot be empty.");
 
@@ -1471,7 +1465,7 @@ export function removeCustomTheme(themeId: string): Promise<void> {
 export function removeCustomThemes(
   themeIds: ReadonlyArray<string>,
 ): Promise<void> {
-  return enqueueThemeLibraryWrite(async () => {
+  return serializeThemeLibraryChange(async () => {
     const removedIds = new Set(themeIds);
     if (removedIds.size === 0) return;
     const library = getWritableCustomThemeLibrary();
@@ -1707,7 +1701,6 @@ export function resolveThemeAppearance(
  */
 export type ThemeHalves = Readonly<{ light?: string; dark?: string }>;
 
-// T3 parses the JSON it kept in localStorage; Bot Code's halves arrive parsed from settings.json.
 export function parseThemeHalves(
   value: ThemeHalves,
   customThemes: ReadonlyArray<ThemeDefinition> = getCustomThemes(),

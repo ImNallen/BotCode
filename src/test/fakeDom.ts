@@ -45,7 +45,6 @@ export class FakeNode {
   get textContent(): string {
     return this.text + this.childNodes.map((n) => n.textContent).join("");
   }
-  // React updates a text node in place through nodeValue.
   set nodeValue(text: string) {
     this.text = text;
   }

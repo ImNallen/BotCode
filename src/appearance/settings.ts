@@ -19,20 +19,16 @@ const ranged = (key: AppearanceRangeKey) =>
     .min(appearanceRanges[key].min)
     .max(appearanceRanges[key].max);
 
-// An empty family means the app default.
 const fontFamily = z.string().max(200);
 
 export const themeModeSchema = z.enum(["system", "light", "dark"]);
 export type ThemeMode = z.infer<typeof themeModeSchema>;
 
-// T3 themePalette.ts isThemeId. Built-in ids and the mode keywords match too.
 const themeId = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,47})$/);
 
 export const appearanceSchema = z.object({
-  // T3's ThemePreference: "system", "light", "dark" or a theme id.
   theme: themeId,
   themeAppearanceMode: themeModeSchema,
-  // T3's appearance mix: the theme that renders light or dark, whatever the base theme.
   themeHalves: z.object({
     light: themeId.optional(),
     dark: themeId.optional(),
@@ -52,7 +48,6 @@ export const appearanceSchema = z.object({
   fontSizeTerminal: ranged("fontSizeTerminal"),
   fontSmoothing: z.boolean(),
   wordWrap: z.boolean(),
-  // Lives here, not in UI state as in T3, because the terminal font follows it too.
   typographyAdvanced: z.boolean(),
 });
 export type AppearanceSettings = Readonly<z.infer<typeof appearanceSchema>>;
@@ -81,8 +76,6 @@ export const defaultAppearance = {
   typographyAdvanced: false,
 } as const satisfies AppearanceSettings;
 
-// Values written before appearance became one object: top-level settings.json
-// keys, and the ui_state "z1.wordWrap" flag.
 export type LegacyAppearance = Readonly<{
   promptFontSize?: unknown;
   codeFontSize?: unknown;
@@ -97,7 +90,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function migrate(
+function migrateLegacyAppearance(
   mode: unknown,
   legacy: LegacyAppearance,
 ): Record<string, unknown> {
@@ -113,19 +106,23 @@ function migrate(
   };
 }
 
-// A stored object is already migrated, so the legacy keys are ignored and a second read changes nothing.
-// wordWrap arrived later than the object, so the ui_state flag seeds it while the object lacks it.
-// Each field falls back to its own default.
+function seedLegacyWordWrap(
+  source: Record<string, unknown>,
+  legacyWordWrap: LegacyAppearance["wordWrap"],
+): Record<string, unknown> {
+  if (source.wordWrap !== undefined) return source;
+  if (legacyWordWrap !== "true" && legacyWordWrap !== "false") return source;
+  return { ...source, wordWrap: legacyWordWrap === "true" };
+}
+
 export function readAppearance(
   stored: unknown,
   legacy: LegacyAppearance,
 ): AppearanceSettings {
-  const migrated = isRecord(stored) ? stored : migrate(stored, legacy);
-  const source =
-    migrated.wordWrap === undefined &&
-    (legacy.wordWrap === "true" || legacy.wordWrap === "false")
-      ? { ...migrated, wordWrap: legacy.wordWrap === "true" }
-      : migrated;
+  const source = seedLegacyWordWrap(
+    isRecord(stored) ? stored : migrateLegacyAppearance(stored, legacy),
+    legacy.wordWrap,
+  );
   return Object.fromEntries(
     appearanceSchema.keyof().options.map((key) => {
       const parsed = appearanceSchema.shape[key].safeParse(source[key]);

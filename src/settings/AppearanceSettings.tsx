@@ -44,9 +44,8 @@ import { SettingResetButton, SettingsRow } from "./settingsLayout";
 const readoutClass =
   "rounded-md bg-muted px-2 py-1 text-center font-mono text-xs font-medium tabular-nums text-foreground";
 
-// Previews on every input event. React's onChange also fires on input, so the
-// commit listens to the native change event (pointer release, keyboard step or
-// blur), and a drag saves settings once.
+// React's onChange also fires on input, so the commit listens to the native
+// change event.
 export function SettingsSlider({
   id,
   label,
@@ -278,7 +277,7 @@ function FontSizeSelect({
 let defaultFamilyLabels: { sans: string; code: string } | undefined;
 // An unset preference shows the font it resolves to on this machine; the
 // default stacks are the platform's own faces, so the name is probed, not
-// hardcoded. Probing measures the DOM, so it runs once.
+// hardcoded.
 function fontDefaultFamilies() {
   defaultFamilyLabels ??= {
     sans:
@@ -289,18 +288,19 @@ function fontDefaultFamilies() {
   return defaultFamilyLabels;
 }
 
-// The family a settled draft commits, or null when it stays in the field
-// flagged: the terminal would silently fall back to its default, so the row
-// must not claim it took the value. Empty is an explicit clear.
+export type FontFamilyCommit =
+  | { kind: "commit"; family: string }
+  | { kind: "reject" };
+
 export function fontFamilyCommit(
   draft: string,
   requireMonospace: boolean,
-): string | null {
-  if (draft.trim().length === 0) return draft;
+): FontFamilyCommit {
+  if (draft.trim().length === 0) return { kind: "commit", family: draft };
   return isFontFamilyAvailable(draft) &&
     (!requireMonospace || isMonospaceFamily(draft))
-    ? draft
-    : null;
+    ? { kind: "commit", family: draft }
+    : { kind: "reject" };
 }
 
 // Flag an unknown name only once typing pauses, and never for an empty
@@ -360,8 +360,6 @@ export function FontFamilySettingsRow({
     commitTimerRef.current = null;
   };
   if (lastValueRef.current !== value) {
-    // The committed value changed externally (reset, picker selection);
-    // adopt it and drop any pending commit of a stale draft.
     lastValueRef.current = value;
     clearCommitTimer();
     setDraft(value);
@@ -370,8 +368,8 @@ export function FontFamilySettingsRow({
   useEffect(() => clearCommitTimer, []);
   const commitDraft = (next: string) => {
     setDraftSettled(true);
-    const family = fontFamilyCommit(next, requireMonospace);
-    if (family !== null) onValueChange(family);
+    const commit = fontFamilyCommit(next, requireMonospace);
+    if (commit.kind === "commit") onValueChange(commit.family);
   };
   const flushDraft = () => {
     if (commitTimerRef.current === null) return;
@@ -392,9 +390,6 @@ export function FontFamilySettingsRow({
       />
     ) : null;
   const fontEnumeration = useFontEnumeration();
-  // Every row starts on the plain input. Where the platform lists its fonts,
-  // the control then upgrades to the picker - popped open when the swap
-  // happens under focus, so the interaction continues without a second click.
   const inputFocusedRef = useRef(false);
   const familyControl =
     fontEnumeration.status === "granted" ? (
@@ -531,9 +526,6 @@ function AppearanceFontRow({
   const row = fontRows[rowId];
   const defaults = fontDefaultFamilies();
   const advanced = appearance.typographyAdvanced;
-  // The two-font view: the prompt follows the interface font and the
-  // terminal follows the monospace font, so the previews under each row show
-  // every surface the choice reaches.
   const simpleCode = rowId === "code-font" && !advanced;
   const preview =
     rowId === "prompt-font" || (rowId === "interface-font" && !advanced) ? (
@@ -588,10 +580,6 @@ function AppearanceFontRow({
   );
 }
 
-/**
- * T3's Typography header switch: the two-font view by default, the
- * per-surface override rows when on.
- */
 export function TypographyAdvancedSwitch() {
   const { appearance, update } = useAppearance();
   return (

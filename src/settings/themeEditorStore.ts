@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/themeEditorStore.ts (MIT). A module store replaces zustand, and it also holds the draft AppearanceRoot paints while a session is open.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/themeEditorStore.ts (MIT).
 import { useSyncExternalStore } from "react";
 import type { ThemePreview } from "../appearance/root";
 import {
@@ -55,7 +55,6 @@ let state: ThemeEditorStore = {
   preview: null,
   openThemeEditor: (session) =>
     set({ session: { ...session, id: ++nextSessionId } }),
-  // Dropping the draft with the session is what restores the stored theme.
   closeThemeEditor: () => set({ session: null, preview: null }),
   setThemeEditorPreview: (preview) =>
     set({ preview: state.session ? preview : null }),

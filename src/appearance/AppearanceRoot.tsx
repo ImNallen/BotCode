@@ -11,7 +11,7 @@ import {
 } from "../themePalette";
 import {
   applyRootState,
-  changesColorScheme,
+  needsNoTransitionsFrame,
   resolveRootState,
   resolveThemeSelection,
   type RootInputs,
@@ -23,7 +23,6 @@ export const systemDarkQuery = "(prefers-color-scheme: dark)";
 
 type AppearancePatch = Partial<AppearanceSettings>;
 
-// Slider values shown while dragging. Never persisted; a commit removes its keys.
 let draft: AppearancePatch = {};
 const draftListeners = new Set<() => void>();
 function setDraft(next: AppearancePatch) {
@@ -68,7 +67,6 @@ export function useAppearance(): AppearanceApi {
   };
 }
 
-// Advanced off: the code family and size. Advanced on: the terminal's own.
 export function useTerminalFont(): TerminalFont {
   const { appearance } = useAppearance();
   const { family, size } = resolveTerminalFont(appearance);
@@ -86,7 +84,6 @@ export function useCustomThemes(): ReadonlyArray<ThemeDefinition> {
   );
 }
 
-// T3 hooks/useTheme.ts surface over appearance.theme, themeAppearanceMode and themeHalves.
 export function useThemeSelection() {
   const { appearance, update } = useAppearance();
   const customThemes = useCustomThemes();
@@ -97,9 +94,7 @@ export function useThemeSelection() {
     appearanceMode: appearance.themeAppearanceMode,
     resolvedTheme: resolved.appearance,
     themeHalves: resolved.halves,
-    // T3 readThemeHalvesRaw: the mix as saved, before ids that no longer resolve are dropped.
     themeHalvesRaw: appearance.themeHalves,
-    // Choosing a whole theme keeps the mode and replaces any mix.
     setTheme: (theme: string) => update({ theme, themeHalves: {} }),
     setAppearanceMode: (themeAppearanceMode: ThemeMode) =>
       update({ themeAppearanceMode }),
@@ -115,15 +110,14 @@ export function useThemeSelection() {
 
 let painted: RootState | null = null;
 
-// The only writer of appearance state onto <html>.
 export function paintRoot(inputs: RootInputs): void {
   const next = resolveRootState(inputs);
   const root = document.documentElement;
-  const schemeChanged = changesColorScheme(painted, next);
-  if (schemeChanged) root.classList.add("no-transitions");
+  const noTransitionsFrame = needsNoTransitionsFrame(painted, next);
+  if (noTransitionsFrame) root.classList.add("no-transitions");
   applyRootState(root, painted, next);
   painted = next;
-  if (schemeChanged) {
+  if (noTransitionsFrame) {
     // T3 useTheme.ts: a reflow commits the class before the next frame removes it.
     void root.offsetHeight;
     requestAnimationFrame(() => root.classList.remove("no-transitions"));

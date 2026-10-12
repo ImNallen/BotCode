@@ -36,7 +36,6 @@ export type SettingsRowInfo = {
   // Rows for a project-scoped setting read and write the picked project's override.
   setting?: ProjectSetting;
   when?: "project" | "worktree-rules";
-  // Shown only while Typography's Advanced switch is on; a search jump turns it on.
   advanced?: true;
   macOnly?: true;
 };
@@ -542,7 +541,6 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
     scoped: false,
     groups: [
       {
-        // T3's plain "Colors & themes" section: the scheme tiles, then the theme cards.
         id: "appearance",
         title: "Colors & themes",
         hideTitle: true,

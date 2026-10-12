@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeSettings.tsx (MIT). The import dialog's open state lives here, and export goes through a native save panel.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeSettings.tsx (MIT).
 import {
   CheckIcon,
   CopyIcon,
@@ -520,9 +520,6 @@ export function ThemeLibrary() {
     setThemeIdsToRemove(collectionThemes.length > 1 ? [] : [customTheme.id]);
   };
 
-  // T3 moves the selection first because its storage writes can fail
-  // synchronously. Here the durable library write is the step that can fail,
-  // so it goes first and a failure leaves the selection untouched.
   const handleConfirmRemoveTheme = async () => {
     if (!themeRemovalTarget) return;
     const removedIds = new Set(themeIdsToRemove);

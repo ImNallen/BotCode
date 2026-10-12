@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeImportDialog.tsx (MIT). Library writes are awaited, Choose files always uses the native pick_theme_files panel, and Base UI pieces map to src/ui with T3's classes.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeImportDialog.tsx (MIT).
 import { DownloadIcon, PlusIcon } from "lucide-react";
 import type { DragEvent, UIEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -171,8 +171,6 @@ export function ThemeImportDialog({
   const [fileName, setFileName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isReading, setIsReading] = useState(false);
-  // T3 writes the library synchronously; here a write is in flight across
-  // renders, so its buttons stay disabled until it commits.
   const [isSaving, setIsSaving] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   // Imports whose id is already installed wait here for an update-or-copy
@@ -291,8 +289,6 @@ export function ThemeImportDialog({
     [readThemeBatch, readThemeFile],
   );
 
-  // The native panel opens in ~/.vscode/extensions (when it exists) and Rust
-  // reads the files, returning empty text for one over the size limit.
   const openFilePicker = useCallback(() => {
     void ipc.pickThemeFiles().then(
       (picked) =>

@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/themePalette.test.ts (MIT). Cases for the cut DOM writers, cross-tab storage events, desktop sync and sidebar artwork are dropped; library cases stub the ui_state store instead of window.localStorage. The durable library writes case is Bot Code's.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/themePalette.test.ts (MIT).
 import { describe, expect, it, vi } from "./test/expectShim";
 import { BUILT_IN_THEMES } from "./themePalettes";
 
@@ -35,7 +35,6 @@ import {
   singleAppearanceOf,
 } from "./themePalette";
 
-// Stands in for T3's stubThemeStore({ localStorage }) so each case keeps its stored fixtures.
 function stubThemeStore(window: {
   localStorage: {
     getItem: (key: string) => string | null;

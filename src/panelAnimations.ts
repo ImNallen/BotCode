@@ -69,7 +69,6 @@ export function usePanelAnimationSettings(): PanelAnimation {
   return usePanelAnimation(useContext(PanelAnimationSuppressionContext));
 }
 
-// Bot Code keeps the thread in the search string, so it is part of the navigation key.
 export function useShellPanelAnimations(): {
   suppressed: boolean;
   active: boolean;

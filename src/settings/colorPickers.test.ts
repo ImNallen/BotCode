@@ -1,4 +1,4 @@
-// Theme cases ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/colorPickers.test.tsx (MIT). The popover-free picker panel renders in the fake DOM, and handlers are called through React's props as T3's test renderer does.
+// Theme cases ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/colorPickers.test.tsx (MIT).
 import { act, createElement } from "react";
 import type { Root } from "react-dom/client";
 import {

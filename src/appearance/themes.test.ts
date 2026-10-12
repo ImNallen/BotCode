@@ -160,7 +160,6 @@ it("chooses a whole theme without changing the mode and lets two changes in one 
       assert.equal(savedAppearance(values).theme, "iris");
       assert.equal(savedAppearance(values).themeAppearanceMode, "dark");
 
-      // T3's "default card over a themed base" flow: reset the base, then keep the other half.
       selection.setTheme("dark");
       selection.setThemeHalf("light", "ember");
       assert.equal(savedAppearance(values).theme, "dark");

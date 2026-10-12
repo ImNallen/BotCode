@@ -1,5 +1,3 @@
-// The vitest subset T3's ported suites use, over node:test and node:assert, so
-// a T3 test file carries over with its import line changed.
 import assert from "node:assert/strict";
 import { mock } from "node:test";
 import { inspect, isDeepStrictEqual } from "node:util";
@@ -209,8 +207,6 @@ async function outcomeOf(promise: unknown): Promise<Outcome> {
   }
 }
 
-// vitest .resolves/.rejects: each matcher awaits the promise, requires the
-// expected settlement, then applies to the value or the rejection reason.
 function settledAssertions(
   promise: unknown,
   rejects: boolean,
@@ -292,7 +288,6 @@ export const vi = {
     }
     stubbed.clear();
   },
-  // setImmediate stays real so advanceTimersByTimeAsync can settle promises between ticks.
   useFakeTimers(): void {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
   },

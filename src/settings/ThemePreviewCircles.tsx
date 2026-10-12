@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemePreviewCircles.tsx (MIT). The stock card is labelled Bot Code.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemePreviewCircles.tsx (MIT).
 import { MoonIcon, SunIcon } from "lucide-react";
 import type { CSSProperties } from "react";
 import {

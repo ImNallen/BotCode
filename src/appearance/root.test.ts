@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import {
   applyRootState,
-  changesColorScheme,
+  needsNoTransitionsFrame,
   resolveRootState,
   type RootState,
   type RootTarget,
@@ -214,7 +214,6 @@ it("resolves the scheme and theme the way T3's useTheme does", () => {
       ["light", null],
     ],
     [{ theme: "system", themeAppearanceMode: "system" }, true, ["dark", null]],
-    // A mode-only change leaves a mode keyword in theme; the mode wins and "light" names no theme.
     [{ theme: "light", themeAppearanceMode: "dark" }, false, ["dark", null]],
     [{ theme: "dark", themeAppearanceMode: "light" }, true, ["light", null]],
     [
@@ -227,7 +226,6 @@ it("resolves the scheme and theme the way T3's useTheme does", () => {
       true,
       ["light", "ocean"],
     ],
-    // A one-appearance theme keeps its own appearance whatever the mode asks.
     [{ theme: "dusk", themeAppearanceMode: "light" }, false, ["dark", "dusk"]],
     [{ theme: "dusk", themeAppearanceMode: "system" }, false, ["dark", "dusk"]],
     [
@@ -275,7 +273,6 @@ it("resolves the scheme and theme the way T3's useTheme does", () => {
       false,
       ["dark", "dusk"],
     ],
-    // A half that cannot render its side, or names a removed theme, is ignored.
     [
       {
         theme: "system",
@@ -366,25 +363,25 @@ it("suppresses transitions when the palette changes but not while an editor draf
     attributes: { ...light.attributes, "data-theme-id": "__preview" },
     style: { ...light.style, "--app-theme-canvas": canvas },
   });
-  assert.equal(changesColorScheme(null, light), false);
-  assert.equal(changesColorScheme(light, light), false);
+  assert.equal(needsNoTransitionsFrame(null, light), false);
+  assert.equal(needsNoTransitionsFrame(light, light), false);
   assert.equal(
-    changesColorScheme(
+    needsNoTransitionsFrame(
       light,
       resolve({ theme: "ocean", themeAppearanceMode: "dark" }),
     ),
     true,
   );
   assert.equal(
-    changesColorScheme(
+    needsNoTransitionsFrame(
       light,
       resolve({ theme: "grove", themeAppearanceMode: "light" }),
     ),
     true,
   );
-  assert.equal(changesColorScheme(original, edited), true);
+  assert.equal(needsNoTransitionsFrame(original, edited), true);
   assert.equal(
-    changesColorScheme(
+    needsNoTransitionsFrame(
       light,
       resolve({
         theme: "ocean",
@@ -395,7 +392,7 @@ it("suppresses transitions when the palette changes but not while an editor draf
     false,
   );
   assert.equal(
-    changesColorScheme(draft("oklch(0.3 0 0)"), draft("oklch(0.4 0 0)")),
+    needsNoTransitionsFrame(draft("oklch(0.3 0 0)"), draft("oklch(0.4 0 0)")),
     false,
   );
 });

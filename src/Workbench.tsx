@@ -951,6 +951,22 @@ export function Workbench() {
   );
 }
 
+function suspendPanelTransitions(rail: HTMLElement): () => void {
+  const targets = [
+    ...(rail
+      .closest("[data-slot='sidebar']")
+      ?.querySelectorAll<HTMLElement>(
+        "[data-slot='sidebar-gap'], [data-slot='sidebar-container']",
+      ) ?? []),
+  ];
+  for (const element of targets)
+    element.style.setProperty("transition-duration", "0ms");
+  return () => {
+    for (const element of targets)
+      element.style.removeProperty("transition-duration");
+  };
+}
+
 function SidebarRail({
   width,
   onResize,
@@ -963,7 +979,7 @@ function SidebarRail({
   const drag = useRef<{
     x: number;
     width: number;
-    transitionTargets: HTMLElement[];
+    restoreTransitions: () => void;
   } | null>(null);
   return (
     <button
@@ -976,17 +992,11 @@ function SidebarRail({
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.currentTarget.setPointerCapture(event.pointerId);
-        // T3 ui/sidebar.tsx: a drag follows the pointer without panel motion.
-        const transitionTargets = [
-          ...(event.currentTarget
-            .closest("[data-slot='sidebar']")
-            ?.querySelectorAll<HTMLElement>(
-              "[data-slot='sidebar-gap'], [data-slot='sidebar-container']",
-            ) ?? []),
-        ];
-        for (const element of transitionTargets)
-          element.style.setProperty("transition-duration", "0ms");
-        drag.current = { x: event.clientX, width, transitionTargets };
+        drag.current = {
+          x: event.clientX,
+          width,
+          restoreTransitions: suspendPanelTransitions(event.currentTarget),
+        };
         document.body.style.cursor = "col-resize";
         document.body.style.userSelect = "none";
       }}
@@ -1001,8 +1011,7 @@ function SidebarRail({
         const next = clampSidebar(
           drag.current.width + event.clientX - drag.current.x,
         );
-        for (const element of drag.current.transitionTargets)
-          element.style.removeProperty("transition-duration");
+        drag.current.restoreTransitions();
         drag.current = null;
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
