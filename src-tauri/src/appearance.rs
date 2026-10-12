@@ -1,3 +1,5 @@
+use bot_core::{AppError, Result};
+
 /// Installed font families for the Appearance font picker. A synchronous
 /// command runs on the main thread, which NSFontManager requires.
 #[tauri::command]
@@ -14,6 +16,40 @@ pub fn installed_font_families() -> Vec<String> {
     }
     #[cfg(not(target_os = "macos"))]
     Vec::new()
+}
+
+/// Saves an exported theme through the native save panel and reports whether
+/// the user saved. The chosen path never reaches the webview. A Blob
+/// download cannot replace this: wry cancels download navigations because
+/// Bot Code registers no download handler.
+#[tauri::command]
+pub async fn export_theme_file(
+    window: tauri::WebviewWindow,
+    default_name: String,
+    contents: String,
+) -> Result<bool> {
+    use tauri_plugin_dialog::DialogExt;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_file_name(default_name)
+        .add_filter("JSON", &["json"])
+        .save_file(move |path| {
+            let _ = sender.send(path);
+        });
+    let Some(path) = receiver
+        .await
+        .map_err(|error| AppError::new("export_theme", error))?
+    else {
+        return Ok(false);
+    };
+    let path = path
+        .into_path()
+        .map_err(|error| AppError::new("export_theme", error))?;
+    tokio::fs::write(path, contents).await?;
+    Ok(true)
 }
 
 // Dot-prefixed families are macOS-internal UI faces that web content cannot

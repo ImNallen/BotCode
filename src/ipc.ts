@@ -1689,6 +1689,9 @@ export const ipc = {
   saveSettingsFile: (text: string) => call("save_settings", { text }, z.null()),
   installedFontFamilies: () =>
     call("installed_font_families", {}, z.array(z.string())),
+  // Resolves false when the save panel is cancelled.
+  exportThemeFile: (defaultName: string, contents: string) =>
+    call("export_theme_file", { defaultName, contents }, z.boolean()),
 };
 const searchInvalidationListeners = new Set<
   (change: SearchInvalidation) => void

@@ -25,10 +25,18 @@ const fontFamily = z.string().max(200);
 export const themeModeSchema = z.enum(["system", "light", "dark"]);
 export type ThemeMode = z.infer<typeof themeModeSchema>;
 
+// T3 themePalette.ts isThemeId. Built-in ids and the mode keywords match too.
+const themeId = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,47})$/);
+
 export const appearanceSchema = z.object({
   // T3's ThemePreference: "system", "light", "dark" or a theme id.
-  theme: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,47})$/),
+  theme: themeId,
   themeAppearanceMode: themeModeSchema,
+  // T3's appearance mix: the theme that renders light or dark, whatever the base theme.
+  themeHalves: z.object({
+    light: themeId.optional(),
+    dark: themeId.optional(),
+  }),
   appearanceContrast: ranged("appearanceContrast"),
   glassOpacity: ranged("glassOpacity"),
   diffColorScheme: z.enum(["red-green", "blue-orange"]),
@@ -54,6 +62,7 @@ export type DiffColorScheme = AppearanceSettings["diffColorScheme"];
 export const defaultAppearance = {
   theme: "system",
   themeAppearanceMode: "system",
+  themeHalves: {},
   appearanceContrast: 100,
   glassOpacity: 80,
   diffColorScheme: "red-green",

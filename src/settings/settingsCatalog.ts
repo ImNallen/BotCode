@@ -542,14 +542,24 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
     scoped: false,
     groups: [
       {
-        id: "colors",
-        title: "Colors",
+        // T3's plain "Colors & themes" section: the scheme tiles, then the theme cards.
+        id: "appearance",
+        title: "Colors & themes",
+        hideTitle: true,
         rows: [
           {
-            id: "theme",
-            title: "Appearance",
+            id: "color-scheme",
+            title: "Color scheme",
             description:
               "Use a light or dark interface, or follow your system.",
+            keywords: "appearance light dark system mode",
+          },
+          {
+            id: "theme",
+            title: "Themes",
+            description:
+              "Pick a theme for light and dark mode, or one for each.",
+            keywords: "appearance colors palette custom import",
           },
         ],
       },

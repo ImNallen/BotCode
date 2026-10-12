@@ -23,6 +23,7 @@ import {
   defaultAppearance,
   LEGACY_WORD_WRAP_KEY,
   readAppearance,
+  type AppearanceSettings,
 } from "../appearance/settings";
 import { storage } from "../lib/storage";
 
@@ -230,6 +231,10 @@ type PreferenceState = {
 const Context = createContext<
   | (PreferenceState & {
       update: (patch: Partial<Preferences>) => void;
+      // Merges into the latest appearance, so two changes in one handler both land.
+      updateAppearance: (
+        change: (current: AppearanceSettings) => Partial<AppearanceSettings>,
+      ) => void;
       save: (patch: Partial<Preferences>) => Promise<void>;
       saveActions: (
         workspaceId: string | undefined,
@@ -500,6 +505,10 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       value={{
         ...state,
         update,
+        updateAppearance: (change) => {
+          const appearance = current.current.appearance;
+          update({ appearance: { ...appearance, ...change(appearance) } });
+        },
         save: persist,
         saveActions: (workspaceId, scripts) => {
           if (!workspaceId)

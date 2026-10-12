@@ -17,6 +17,7 @@ import {
   systemDarkQuery,
 } from "./appearance/AppearanceRoot";
 import { matchesMediaQuery } from "./lib/useMediaQuery";
+import { getCustomThemes } from "./themePalette";
 import "./styles.css";
 import { FirstRunGate } from "./onboarding/FirstRunGate";
 import { FollowUpSender } from "./chat/FollowUpSender";
@@ -55,6 +56,7 @@ function initialize(): Promise<void> {
       paintRoot({
         appearance: readPreferences().preferences.appearance,
         systemDark: matchesMediaQuery(systemDarkQuery),
+        customThemes: getCustomThemes(),
       });
       await migrateLegacyScriptShortcuts();
       unsubscribe ??= await subscribe(client);

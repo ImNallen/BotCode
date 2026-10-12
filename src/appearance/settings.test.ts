@@ -120,6 +120,7 @@ it("keeps every appearance key through a save and a fresh read", () => {
   const changed: AppearanceSettings = {
     theme: "light",
     themeAppearanceMode: "dark",
+    themeHalves: { light: "ocean", dark: "my-dusk" },
     appearanceContrast: 135,
     glassOpacity: 100,
     diffColorScheme: "blue-orange",

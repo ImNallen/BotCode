@@ -2,16 +2,30 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import {
   applyRootState,
+  changesColorScheme,
   resolveRootState,
   type RootState,
   type RootTarget,
 } from "./root";
 import { defaultAppearance, type AppearanceSettings } from "./settings";
+import {
+  APP_THEME_VARIABLES,
+  GROVE_THEME,
+  OCEAN_THEME,
+  parseThemeFile,
+  THEME_FILE_VERSION,
+  type ThemeDefinition,
+} from "../themePalette";
 
-function resolve(patch: Partial<AppearanceSettings>, systemDark = false) {
+function resolve(
+  patch: Partial<AppearanceSettings>,
+  systemDark = false,
+  customThemes: ReadonlyArray<ThemeDefinition> = [],
+) {
   return resolveRootState({
     appearance: { ...defaultAppearance, ...patch },
     systemDark,
+    customThemes,
   });
 }
 
@@ -161,4 +175,227 @@ it("sizes the root from the interface size and toggles font smoothing", () => {
   applyRootState(root, large, resolve({ fontSmoothing: false }));
   assert.equal(style.get("font-size"), "16px");
   assert.equal(style.has("-webkit-font-smoothing"), false);
+});
+
+const dusk = parseThemeFile({
+  version: THEME_FILE_VERSION,
+  id: "dusk",
+  name: "Dusk",
+  appearance: "dark",
+  colors: { canvas: "#101827", accent: "#67c2ff" },
+});
+
+function painted(
+  patch: Partial<AppearanceSettings>,
+  systemDark: boolean,
+): [scheme: "light" | "dark", themeId: string | null] {
+  const state = resolve(patch, systemDark, [dusk]);
+  return [
+    state.dark ? "dark" : "light",
+    state.attributes["data-theme-id"] ?? null,
+  ];
+}
+
+function themeVariables(entries: Iterable<[string, string]>) {
+  return Object.fromEntries(
+    [...entries].filter(([name]) => name.startsWith("--app-theme-")),
+  );
+}
+
+it("resolves the scheme and theme the way T3's useTheme does", () => {
+  const cases: [
+    Partial<AppearanceSettings>,
+    boolean,
+    ReturnType<typeof painted>,
+  ][] = [
+    [
+      { theme: "system", themeAppearanceMode: "system" },
+      false,
+      ["light", null],
+    ],
+    [{ theme: "system", themeAppearanceMode: "system" }, true, ["dark", null]],
+    // Item 1's mode control wrote only the mode; the mode wins and "light" names no theme.
+    [{ theme: "light", themeAppearanceMode: "dark" }, false, ["dark", null]],
+    [{ theme: "dark", themeAppearanceMode: "light" }, true, ["light", null]],
+    [
+      { theme: "ocean", themeAppearanceMode: "system" },
+      true,
+      ["dark", "ocean"],
+    ],
+    [
+      { theme: "ocean", themeAppearanceMode: "light" },
+      true,
+      ["light", "ocean"],
+    ],
+    // A one-appearance theme keeps its own appearance whatever the mode asks.
+    [{ theme: "dusk", themeAppearanceMode: "light" }, false, ["dark", "dusk"]],
+    [{ theme: "dusk", themeAppearanceMode: "system" }, false, ["dark", "dusk"]],
+    [
+      {
+        theme: "dusk",
+        themeAppearanceMode: "light",
+        themeHalves: { light: "grove" },
+      },
+      false,
+      ["light", "grove"],
+    ],
+    [
+      {
+        theme: "system",
+        themeAppearanceMode: "system",
+        themeHalves: { dark: "dusk" },
+      },
+      true,
+      ["dark", "dusk"],
+    ],
+    [
+      {
+        theme: "system",
+        themeAppearanceMode: "system",
+        themeHalves: { dark: "dusk" },
+      },
+      false,
+      ["light", null],
+    ],
+    [
+      {
+        theme: "ocean",
+        themeAppearanceMode: "system",
+        themeHalves: { dark: "dusk" },
+      },
+      false,
+      ["light", "ocean"],
+    ],
+    [
+      {
+        theme: "ocean",
+        themeAppearanceMode: "dark",
+        themeHalves: { dark: "dusk" },
+      },
+      false,
+      ["dark", "dusk"],
+    ],
+    // A half that cannot render its side, or names a removed theme, is ignored.
+    [
+      {
+        theme: "system",
+        themeAppearanceMode: "light",
+        themeHalves: { light: "dusk" },
+      },
+      false,
+      ["light", null],
+    ],
+    [
+      {
+        theme: "removed",
+        themeAppearanceMode: "system",
+        themeHalves: { dark: "gone" },
+      },
+      true,
+      ["dark", null],
+    ],
+  ];
+  for (const [patch, systemDark, expected] of cases)
+    assert.deepEqual(
+      painted(patch, systemDark),
+      expected,
+      `${JSON.stringify(patch)} systemDark=${systemDark}`,
+    );
+});
+
+it("writes every theme variable for the resolved palette and removes them all for the stock look", () => {
+  const { root, attributes, style, classes } = recordingRoot();
+  const oceanDark = resolve({ theme: "ocean", themeAppearanceMode: "dark" });
+  applyRootState(root, null, oceanDark);
+  assert.equal(attributes.get("data-theme-id"), "ocean");
+  assert.equal(classes.has("dark"), true);
+  const oceanColors = OCEAN_THEME.variants?.dark;
+  assert.ok(oceanColors);
+  for (const [role, name] of Object.entries(APP_THEME_VARIABLES))
+    assert.equal(
+      style.get(name),
+      oceanColors[role as keyof typeof oceanColors],
+      name,
+    );
+
+  const groveLight = resolve({ theme: "grove", themeAppearanceMode: "light" });
+  applyRootState(root, oceanDark, groveLight);
+  assert.equal(attributes.get("data-theme-id"), "grove");
+  assert.equal(classes.has("dark"), false);
+  assert.deepEqual(
+    themeVariables(style),
+    themeVariables(Object.entries(groveLight.style)),
+  );
+  assert.equal(style.get("--app-theme-canvas"), GROVE_THEME.colors.canvas);
+
+  const stock = resolve({ theme: "system", themeAppearanceMode: "light" });
+  applyRootState(root, groveLight, stock);
+  assert.equal(attributes.has("data-theme-id"), false);
+  assert.deepEqual(themeVariables(style), {});
+  assert.equal(style.get("--glass-opacity"), "80%");
+  assert.equal(attributes.get("data-chat-width"), "comfortable");
+});
+
+it("paints an editor preview over the selection and skips colors that do not parse", () => {
+  const groveDark = GROVE_THEME.variants?.dark;
+  assert.ok(groveDark);
+  const preview = resolveRootState({
+    appearance: {
+      ...defaultAppearance,
+      theme: "ocean",
+      themeAppearanceMode: "light",
+    },
+    systemDark: false,
+    customThemes: [],
+    preview: { appearance: "dark", colors: { ...groveDark, accent: "#12" } },
+  });
+  assert.equal(preview.dark, true);
+  assert.equal(preview.attributes["data-theme-id"], "__preview");
+  assert.equal(preview.style["--app-theme-canvas"], groveDark.canvas);
+  assert.equal("--app-theme-accent" in preview.style, false);
+});
+
+it("suppresses transitions when the palette changes but not while an editor draft moves", () => {
+  const light = resolve({ theme: "ocean", themeAppearanceMode: "light" });
+  const original = resolve({ theme: "dusk" }, false, [dusk]);
+  const edited = resolve({ theme: "dusk" }, false, [
+    { ...dusk, colors: { ...dusk.colors, canvas: "oklch(0.2 0 0)" } },
+  ]);
+  const draft = (canvas: string): RootState => ({
+    ...light,
+    attributes: { ...light.attributes, "data-theme-id": "__preview" },
+    style: { ...light.style, "--app-theme-canvas": canvas },
+  });
+  assert.equal(changesColorScheme(null, light), false);
+  assert.equal(changesColorScheme(light, light), false);
+  assert.equal(
+    changesColorScheme(
+      light,
+      resolve({ theme: "ocean", themeAppearanceMode: "dark" }),
+    ),
+    true,
+  );
+  assert.equal(
+    changesColorScheme(
+      light,
+      resolve({ theme: "grove", themeAppearanceMode: "light" }),
+    ),
+    true,
+  );
+  assert.equal(changesColorScheme(original, edited), true);
+  assert.equal(
+    changesColorScheme(
+      light,
+      resolve({
+        theme: "ocean",
+        themeAppearanceMode: "light",
+        glassOpacity: 90,
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    changesColorScheme(draft("oklch(0.3 0 0)"), draft("oklch(0.4 0 0)")),
+    false,
+  );
 });

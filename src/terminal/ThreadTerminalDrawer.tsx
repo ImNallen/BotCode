@@ -586,7 +586,7 @@ export function TerminalViewport({
       });
       themeObserver.observe(document.documentElement, {
         attributes: true,
-        attributeFilter: ["class", "style"],
+        attributeFilter: ["class", "style", "data-theme-id"],
       });
       setupCleanups.push(() => themeObserver.disconnect());
 

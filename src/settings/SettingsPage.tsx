@@ -38,6 +38,7 @@ import { DiagnosticsSettings } from "./DiagnosticsSettings";
 import { OpenSourceLicensesPanel } from "./OpenSourceLicenses";
 import { ProjectsSettings } from "./ProjectsSettings";
 import { StorageSettingsRow } from "./StorageSettings";
+import { ThemeLibrary } from "./ThemeSettings";
 import {
   AppearanceSettingsRow,
   TypographyAdvancedSwitch,
@@ -792,6 +793,20 @@ export function SettingsPage() {
                 ) : null;
               if (group.id === "source-control-providers")
                 return <GitHubProviderSettings key={group.id} />;
+              if (group.id === "appearance")
+                return (
+                  <SettingsGroup
+                    key={group.id}
+                    id={group.id}
+                    title={group.title}
+                    hideTitle
+                    variant="plain"
+                  >
+                    <div id="theme" tabIndex={-1} className="outline-none">
+                      <ThemeLibrary />
+                    </div>
+                  </SettingsGroup>
+                );
               const rows = visibleRows(group, scope, preferences)?.filter(
                 (row) =>
                   !row.advanced || preferences.appearance.typographyAdvanced,

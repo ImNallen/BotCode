@@ -33,6 +33,14 @@ declare module "node:assert/strict" {
   export default assert;
 }
 
+declare module "node:util" {
+  export function inspect(value: unknown, options?: { depth?: number }): string;
+  export function isDeepStrictEqual(
+    actual: unknown,
+    expected: unknown,
+  ): boolean;
+}
+
 declare module "node:fs" {
   export function readFileSync(path: string | URL, encoding: "utf8"): string;
 }

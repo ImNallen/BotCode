@@ -24,7 +24,7 @@ import {
   resolveDefaultFamilyLabel,
   resolveTerminalFont,
 } from "../appearanceFonts";
-import { Switch, Toggle, selectItem, selectTrigger } from "../ui/controls";
+import { Switch, selectItem, selectTrigger } from "../ui/controls";
 import { Input } from "../ui/input";
 import { Menu, MenuItem } from "../ui/menu";
 import {
@@ -683,27 +683,6 @@ export function AppearanceSettingsRow({ info }: { info: SettingsRowInfo }) {
         onChange={(diffColorScheme) => update({ diffColorScheme })}
       />,
       resetAction("diffColorScheme", "diff colors"),
-    );
-  if (info.id === "theme")
-    return row(
-      <div
-        className="flex items-center gap-1"
-        role="group"
-        aria-label="Appearance"
-      >
-        {(["system", "light", "dark"] as const).map((mode) => (
-          <Toggle
-            key={mode}
-            variant="outline"
-            size="sm"
-            pressed={appearance.themeAppearanceMode === mode}
-            onClick={() => update({ themeAppearanceMode: mode })}
-          >
-            {mode === "system" ? "System" : mode === "light" ? "Light" : "Dark"}
-          </Toggle>
-        ))}
-      </div>,
-      null,
     );
   if (info.id in fontRows)
     return (
