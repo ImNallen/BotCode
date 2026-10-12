@@ -675,7 +675,6 @@ export async function readCargoMetadata(
     "metadata",
     "--format-version",
     "1",
-    "--offline",
     "--locked",
     "--filter-platform",
     target,
