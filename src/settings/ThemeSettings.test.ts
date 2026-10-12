@@ -182,9 +182,7 @@ async function withImportDialog(
   invalidateCustomThemes();
   try {
     await withFakeDom(async ({ document, subtree, root }) => {
-      const popover = FakeNode.prototype as unknown as Record<string, unknown>;
-      popover.showPopover = () => {};
-      popover.hidePopover = () => {};
+      Object.assign(FakeNode.prototype, { showPopover() {}, hidePopover() {} });
       Object.assign(window, {
         addEventListener() {},
         removeEventListener() {},

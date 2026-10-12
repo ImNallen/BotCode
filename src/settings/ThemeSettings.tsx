@@ -511,7 +511,6 @@ export function ThemeLibrary() {
   const canRemoveCollection = removeDialogCollectionThemes.length > 1;
   const removeDialogCollectionLabel =
     removeDialogTheme?.collection?.label ?? removeDialogTheme?.label;
-  const modeBase = appearanceMode === "system" ? "system" : appearanceMode;
 
   const handleRemoveTheme = (
     customTheme: ThemeDefinition,
@@ -540,7 +539,7 @@ export function ThemeLibrary() {
     } finally {
       setRemoving(false);
     }
-    if (removesBase) setTheme(modeBase);
+    if (removesBase) setTheme(appearanceMode);
     for (const appearance of ["light", "dark"] as const) {
       const half = themeHalvesRaw[appearance];
       if (half === undefined) continue;
@@ -566,7 +565,7 @@ export function ThemeLibrary() {
     // explicit half on the other side so this side falls back to default.
     if (cardId === null && baseCardId !== null) {
       const otherOwner = themeHalvesRaw[otherAppearance] ?? baseCardId;
-      setTheme(modeBase);
+      setTheme(appearanceMode);
       setThemeHalf(otherAppearance, otherOwner);
       return;
     }
@@ -713,7 +712,7 @@ export function ThemeLibrary() {
               initialAppearance,
             })
           }
-          onUse={() => setTheme(modeBase)}
+          onUse={() => setTheme(appearanceMode)}
           onUseMode={handlePairPick(null)}
           theme={standardTheme}
         />

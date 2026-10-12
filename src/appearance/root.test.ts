@@ -214,7 +214,7 @@ it("resolves the scheme and theme the way T3's useTheme does", () => {
       ["light", null],
     ],
     [{ theme: "system", themeAppearanceMode: "system" }, true, ["dark", null]],
-    // Item 1's mode control wrote only the mode; the mode wins and "light" names no theme.
+    // A mode-only change leaves a mode keyword in theme; the mode wins and "light" names no theme.
     [{ theme: "light", themeAppearanceMode: "dark" }, false, ["dark", null]],
     [{ theme: "dark", themeAppearanceMode: "light" }, true, ["light", null]],
     [

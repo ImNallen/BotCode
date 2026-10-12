@@ -21,11 +21,12 @@ import type { AppearanceSettings, ThemeMode } from "./settings";
 
 export const systemDarkQuery = "(prefers-color-scheme: dark)";
 
+type AppearancePatch = Partial<AppearanceSettings>;
+
 // Slider values shown while dragging. Never persisted; a commit removes its keys.
-type Draft = Partial<AppearanceSettings>;
-let draft: Draft = {};
+let draft: AppearancePatch = {};
 const draftListeners = new Set<() => void>();
-function setDraft(next: Draft) {
+function setDraft(next: AppearancePatch) {
   draft = next;
   for (const listener of draftListeners) listener();
 }
@@ -35,7 +36,6 @@ function subscribeDraft(listener: () => void) {
 }
 const readDraft = () => draft;
 
-type AppearancePatch = Partial<AppearanceSettings>;
 export type AppearanceApi = Readonly<{
   appearance: AppearanceSettings;
   update: (
@@ -59,7 +59,7 @@ export function useAppearance(): AppearanceApi {
       updateAppearance((saved) => {
         const patch = typeof change === "function" ? change(saved) : change;
         const remaining = { ...draft };
-        for (const key of Object.keys(patch) as (keyof Draft)[])
+        for (const key of Object.keys(patch) as (keyof AppearancePatch)[])
           delete remaining[key];
         setDraft(remaining);
         return patch;

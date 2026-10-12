@@ -190,7 +190,6 @@ export function TerminalFontPreview({ font }: { font: TerminalFont }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<GhosttyTerminalSurface | null>(null);
   const fontRef = useRef(font);
-  const theme = useResolvedTheme();
 
   useEffect(() => {
     const current = fontRef.current;
@@ -199,12 +198,20 @@ export function TerminalFontPreview({ font }: { font: TerminalFont }) {
     void surfaceRef.current?.setFont(font);
   }, [font]);
 
+  // Re-read the terminal tokens on any theme change — switching between two
+  // palettes can leave the light/dark class untouched.
   useEffect(() => {
-    const mount = mountRef.current;
-    const surface = surfaceRef.current;
-    if (!mount || !surface) return;
-    surface.setTheme(terminalThemeFromApp(mount));
-  }, [theme]);
+    const observer = new MutationObserver(() => {
+      const mount = mountRef.current;
+      const surface = surfaceRef.current;
+      if (mount && surface) surface.setTheme(terminalThemeFromApp(mount));
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "style", "data-theme-id"],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const mount = mountRef.current;

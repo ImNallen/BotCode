@@ -111,28 +111,14 @@ fn read_picked_theme_file(path: &std::path::Path) -> PickedThemeFile {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let Ok(size) = std::fs::metadata(path).map(|metadata| metadata.len()) else {
-        return PickedThemeFile {
-            name,
-            size: 0,
-            text: String::new(),
-        };
+    let (size, text) = match std::fs::metadata(path).map(|metadata| metadata.len()) {
+        Ok(size) if size > PICKED_THEME_FILE_MAX_BYTES => (size, String::new()),
+        Ok(size) => {
+            std::fs::read_to_string(path).map_or_else(|_| (0, String::new()), |text| (size, text))
+        }
+        Err(_) => (0, String::new()),
     };
-    if size > PICKED_THEME_FILE_MAX_BYTES {
-        return PickedThemeFile {
-            name,
-            size,
-            text: String::new(),
-        };
-    }
-    match std::fs::read_to_string(path) {
-        Ok(text) => PickedThemeFile { name, size, text },
-        Err(_) => PickedThemeFile {
-            name,
-            size: 0,
-            text: String::new(),
-        },
-    }
+    PickedThemeFile { name, size, text }
 }
 
 // Dot-prefixed families are macOS-internal UI faces that web content cannot
