@@ -1,4 +1,5 @@
 // Token policy follows pingdotgg/t3code v0.0.45 apps/web/src/routes/__root.tsx appearance sync effects and appearanceContrast.ts (MIT).
+import { appearanceFontStyle } from "../appearanceFonts";
 import type { AppearanceSettings } from "./settings";
 
 export type RootState = Readonly<{
@@ -31,9 +32,7 @@ export function resolveRootState({
       "--appearance-contrast-border-boost": `${boost / 4}%`,
       "--glass-opacity": `${appearance.glassOpacity}%`,
       ...(appearance.glassOpacity === 100 ? { "--glass-blur": "0px" } : {}),
-      "--font-size-prompt": `${appearance.fontSizePrompt}px`,
-      "--font-size-code": `${appearance.fontSizeCode}px`,
-      "--diffs-font-size": `${appearance.fontSizeCode}px`,
+      ...appearanceFontStyle(appearance),
     },
   };
 }

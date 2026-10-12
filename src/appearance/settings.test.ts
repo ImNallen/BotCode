@@ -125,8 +125,17 @@ it("keeps every appearance key through a save and a fresh read", () => {
     diffColorScheme: "blue-orange",
     chatWidth: "full",
     panelAnimationDurationMs: 225,
+    fontFamilySans: "Inter",
+    fontFamilyComposer: "Iosevka",
+    fontFamilyCode: "JetBrains Mono",
+    fontFamilyTerminal: "Menlo",
+    fontSizeInterface: 18,
     fontSizePrompt: 17,
     fontSizeCode: 10,
+    fontSizeTerminal: 9,
+    fontSmoothing: false,
+    wordWrap: false,
+    typographyAdvanced: true,
   };
   for (const key of appearanceSchema.keyof().options)
     assert.notEqual(changed[key], defaultAppearance[key], key);
@@ -135,4 +144,45 @@ it("keeps every appearance key through a save and a fresh read", () => {
     saveUnrelatedChange();
     assert.deepEqual(file.read().appearance, changed);
   });
+});
+
+it("seeds wordWrap from the ui_state flag only while settings lack it", () => {
+  const stored = { ...defaultAppearance } as Record<string, unknown>;
+  delete stored.wordWrap;
+  assert.equal(readAppearance(stored, { wordWrap: "false" }).wordWrap, false);
+  assert.equal(readAppearance("dark", { wordWrap: "false" }).wordWrap, false);
+  assert.equal(readAppearance(stored, { wordWrap: null }).wordWrap, true);
+  assert.equal(
+    readAppearance({ ...stored, wordWrap: true }, { wordWrap: "false" })
+      .wordWrap,
+    true,
+  );
+});
+
+it("reads the legacy word wrap flag from ui_state and saves it into settings", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const values = new Map<string, string>([
+    ["z1:preferences:v1", JSON.stringify({ appearance: "system" })],
+    ["z1.wordWrap", "false"],
+  ]);
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    },
+  });
+  try {
+    assert.equal(readPreferences().preferences.appearance.wordWrap, false);
+    saveUnrelatedChange();
+    const saved = JSON.parse(values.get("z1:preferences:v1") ?? "{}") as {
+      appearance: AppearanceSettings;
+    };
+    assert.equal(saved.appearance.wordWrap, false);
+    values.set("z1.wordWrap", "true");
+    assert.equal(readPreferences().preferences.appearance.wordWrap, false);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
 });

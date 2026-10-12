@@ -82,12 +82,11 @@ import {
   type FileCommentDraftAnchor,
 } from "./fileComments";
 import { installFileEditorDismissal } from "./fileEditorDismissal";
+import { useAppearance } from "../appearance/AppearanceRoot";
 import { useResolvedTheme, type ResolvedTheme } from "./useResolvedTheme";
 
 const FILE_SURFACE_SUBHEADER_CLASS =
   "flex h-10 min-h-10 shrink-0 items-center gap-2 border-b border-border/60 bg-background px-3 in-data-[preview-panel-mode=inline]:mb-3 in-data-[preview-panel-mode=inline]:h-7 in-data-[preview-panel-mode=inline]:min-h-7 in-data-[preview-panel-mode=inline]:border-b-transparent";
-
-export const WORD_WRAP_KEY = "z1.wordWrap";
 
 const TOGGLE_ICONS: Record<RenderToggle["icon"], React.ReactNode> = {
   code: <Code2Icon className="size-3.5" />,
@@ -116,10 +115,8 @@ export function FilesSurface({
     "z1.fileExplorerOpen",
     storedFlag(true),
   );
-  const [wordWrap, setWordWrap] = useStoredState(
-    WORD_WRAP_KEY,
-    storedFlag(true),
-  );
+  const { appearance, update } = useAppearance();
+  const wordWrap = appearance.wordWrap;
   const preferences = {
     markdown: useStoredState(
       RENDER_PREFERENCES.markdown.key,
@@ -200,7 +197,7 @@ export function FilesSurface({
             <SurfaceAction
               label={wordWrap ? "Disable word wrap" : "Enable word wrap"}
               pressed={wordWrap}
-              onPress={() => setWordWrap(!wordWrap)}
+              onPress={() => update({ wordWrap: !wordWrap })}
             >
               <WrapTextIcon className="size-3.5" />
             </SurfaceAction>

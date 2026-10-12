@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { PreferencesProvider } from "../settings/preferences";
 import {
   createRootRoute,
   createRouter,
@@ -19,6 +20,9 @@ import { Checkbox } from "../ui/checkbox";
 import { storage } from "../lib/storage";
 import { draftKey, reviewDrafts } from "./reviewDrafts";
 import { prReviewDetail } from "./prReview";
+
+const renderWithPreferences = (node: ReactElement) =>
+  renderToStaticMarkup(createElement(PreferencesProvider, { children: node }));
 
 const detail = prReviewDetail.parse({
   capabilities: {
@@ -83,7 +87,7 @@ it("a retained collapsed file header checkbox alternates marks using current Vie
     });
     let viewed = false;
     const writes: { path: string; viewed: boolean }[] = [];
-    renderToStaticMarkup(
+    renderWithPreferences(
       createElement(RouterContextProvider, {
         router,
         children: createElement(PullRequestCodeTab, {
@@ -171,7 +175,7 @@ it("completed comment gutter clicks and drags each add one draft while number dr
       routeTree: createRootRoute(),
       history: createMemoryHistory({ initialEntries: ["/"] }),
     });
-    renderToStaticMarkup(
+    renderWithPreferences(
       createElement(RouterContextProvider, {
         router,
         children: createElement(PullRequestCodeTab, {

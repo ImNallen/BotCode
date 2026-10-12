@@ -8,7 +8,6 @@ import {
 import { useEffect, useState } from "react";
 import { ipc, type CodexReadiness, type CodexSetupAction } from "../ipc";
 import { storage } from "../lib/storage";
-import { usePreferences } from "../settings/preferences";
 import { TerminalViewport } from "../terminal/ThreadTerminalDrawer";
 import { Button } from "../ui/controls";
 import { Checkbox } from "../ui/checkbox";
@@ -292,7 +291,6 @@ function AgentInstallTerminal({
 }) {
   const [state, setState] = useState<TerminalSetup>({ kind: "preparing" });
   const [attempt, setAttempt] = useState(0);
-  const { preferences } = usePreferences();
   useEffect(() => {
     let active = true;
     const terminalId = `onboarding-codex-${crypto.randomUUID()}`;
@@ -346,7 +344,6 @@ function AgentInstallTerminal({
         {state.kind === "ready" ? (
           <TerminalViewport
             target={{ owner: "setup", terminalId: state.terminalId }}
-            fontSize={preferences.appearance.fontSizeCode}
             fileLinks={undefined}
             onSessionExited={onClose}
             focusRequestId={1}

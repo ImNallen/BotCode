@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { z } from "zod";
 import { isMac } from "../permissions/platform";
+import { isMacPlatform } from "../lib/utils";
 import { actionIds, actions } from "../lib/actions";
 import type { Preferences, ProjectSetting } from "./preferences";
 import type { SettingsScope } from "./settingsScope";
@@ -35,6 +36,9 @@ export type SettingsRowInfo = {
   // Rows for a project-scoped setting read and write the picked project's override.
   setting?: ProjectSetting;
   when?: "project" | "worktree-rules";
+  // Shown only while Typography's Advanced switch is on; a search jump turns it on.
+  advanced?: true;
+  macOnly?: true;
 };
 type SettingsGroupInfo = {
   id: string;
@@ -600,15 +604,49 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         title: "Typography",
         rows: [
           {
+            id: "interface-font",
+            title: "Interface font",
+            description: "Everything outside code blocks and the terminal.",
+            keywords: "typography family size system sans",
+          },
+          {
             id: "prompt-font",
-            title: "Prompt font size",
-            description: "Set the font size of the message composer.",
+            title: "Prompt font",
+            description:
+              "Only the box you write prompts in. Mono works well here.",
+            keywords: "typography family size composer input",
+            advanced: true,
           },
           {
             id: "code-font",
-            title: "Code font size",
+            title: "Code font",
+            description: "Code blocks, diffs, and file previews.",
+            keywords:
+              "typography family size monospace code blocks diffs file previews",
+          },
+          {
+            id: "terminal-font",
+            title: "Terminal font",
             description:
-              "Set the font size of code blocks, tool output, file previews, diffs and the terminal.",
+              "Terminal output, independent from code blocks and diffs.",
+            keywords: "typography family size monospace output",
+            advanced: true,
+          },
+          {
+            id: "font-smoothing",
+            title: "Font smoothing",
+            description:
+              "Use thinner grayscale text smoothing instead of the macOS default.",
+            keywords: "typography text grayscale anti aliasing macos thin",
+            advanced: true,
+            macOnly: true,
+          },
+          {
+            id: "word-wrap",
+            title: "Word wrap",
+            description:
+              "Wrap long lines in code blocks, tables, diffs, and file previews by default.",
+            keywords: "long lines code blocks tables diffs file previews",
           },
         ],
       },
@@ -751,6 +789,7 @@ function rowVisible(
   scope: SettingsScope | undefined,
   preferences: Preferences,
 ) {
+  if (row.macOnly && !isMacPlatform(navigator.platform)) return false;
   switch (row.when) {
     case undefined:
       return true;

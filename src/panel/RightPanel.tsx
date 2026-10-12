@@ -21,7 +21,6 @@ import type { AgentPanelModel } from "../chat/subagents";
 import type { CheckoutRef, WorkspaceView, Thread } from "../ipc";
 import type { TurnDiffSelection } from "./turnDiffSelection";
 import { cn } from "../lib/cn";
-import { usePreferences } from "../settings/preferences";
 import {
   PersistentThreadTerminalPanel,
   requestClosePanelSurface,
@@ -204,7 +203,6 @@ export function RightPanel({
   const tabList = useRef<HTMLDivElement>(null);
   const active =
     state.active === null ? undefined : state.surfaces[state.active];
-  const { preferences } = usePreferences();
   const pendingFiles = usePendingFiles(checkout);
   const threadId = conversationId ?? null;
   const terminalScope = terminalScopeKey(checkout.workspaceId, threadId);
@@ -503,7 +501,6 @@ export function RightPanel({
                   workspaceId={checkout.workspaceId}
                   threadId={threadId}
                   surfaceId={active.id}
-                  fontSize={preferences.appearance.fontSizeCode}
                   fileLinks={fileLinks}
                   onNewTerminal={openTerminal}
                 />

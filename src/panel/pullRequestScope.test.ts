@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { storage } from "../lib/storage";
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { PreferencesProvider } from "../settings/preferences";
 import {
   createRootRoute,
   createRouter,
@@ -16,6 +17,9 @@ import {
   prScopeIdentity,
 } from "./pullRequestScope";
 import { prReviewDetail, type PrReviewDetail } from "./prReview";
+
+const renderWithPreferences = (node: ReactElement) =>
+  renderToStaticMarkup(createElement(PreferencesProvider, { children: node }));
 const detail = prReviewDetail.parse({
   capabilities: {
     primary: "unavailable",
@@ -77,7 +81,7 @@ function render(
   const previousGetItem = storage.getItem;
   storage.getItem = () => null;
   try {
-    return renderToStaticMarkup(
+    return renderWithPreferences(
       createElement(RouterContextProvider, {
         router,
         children: createElement(PullRequestCodeTab, {

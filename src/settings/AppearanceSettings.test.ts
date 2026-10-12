@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { act, createElement } from "react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterContextProvider,
+} from "@tanstack/react-router";
 import { useAppearance } from "../appearance/AppearanceRoot";
 import {
   findAll,
@@ -8,7 +14,13 @@ import {
   withFakeDom,
   type FakeNode,
 } from "../test/fakeDom";
-import { AppearanceSettingsRow } from "./AppearanceSettings";
+import {
+  AppearanceSettingsRow,
+  FontFamilySettingsRow,
+  fontDraftInvalid,
+  fontFamilyCommit,
+  fontSizeOptions,
+} from "./AppearanceSettings";
 import { PreferencesProvider } from "./preferences";
 import { categories } from "./settingsCatalog";
 
@@ -79,4 +91,111 @@ it("previews a contrast drag everywhere and saves settings once on release", asy
     if (previous) Object.defineProperty(globalThis, "localStorage", previous);
     else Reflect.deleteProperty(globalThis, "localStorage");
   }
+});
+
+it("offers T3's size range for each font row", () => {
+  const range = (options: number[]) => [options[0], options.at(-1)];
+  assert.deepEqual(range(fontSizeOptions("fontSizeInterface")), [12, 20]);
+  assert.deepEqual(range(fontSizeOptions("fontSizePrompt")), [12, 20]);
+  assert.deepEqual(range(fontSizeOptions("fontSizeCode")), [10, 18]);
+  assert.deepEqual(range(fontSizeOptions("fontSizeTerminal")), [8, 20]);
+  assert.equal(fontSizeOptions("fontSizeTerminal").length, 13);
+});
+
+// Canvas advances: Menlo is fixed-width, Arial is proportional, and any other
+// name is not installed, so it measures as the generic it falls back to.
+function fakeCanvasContext() {
+  const context = {
+    font: "",
+    measureText(text: string) {
+      const perGlyph = (glyph: string) =>
+        context.font.includes("Menlo")
+          ? 10
+          : context.font.includes("Arial")
+            ? glyph === "i"
+              ? 4
+              : glyph === "M"
+                ? 12
+                : 8
+            : context.font.includes("sans-serif")
+              ? 8.5
+              : context.font.includes("serif")
+                ? 7
+                : 9;
+      return { width: [...text].reduce((sum, g) => sum + perGlyph(g), 0) };
+    },
+  };
+  return context;
+}
+
+it("commits a settled family only when it is installed, and monospace for code rows", async () => {
+  await withFakeDom(async ({ document }) => {
+    const createElementNode = document.createElement.bind(document);
+    const canvas = fakeCanvasContext();
+    document.createElement = (tag: string) =>
+      tag === "canvas"
+        ? Object.assign(createElementNode(tag), { getContext: () => canvas })
+        : createElementNode(tag);
+    assert.equal(fontFamilyCommit("Menlo", true), "Menlo");
+    assert.equal(fontFamilyCommit("Arial", true), null);
+    assert.equal(fontFamilyCommit("Arial", false), "Arial");
+    assert.equal(fontFamilyCommit("Not Installed", false), null);
+    assert.equal(fontFamilyCommit("", true), "");
+  });
+});
+
+it("flags a settled draft that differs from the committed family", () => {
+  assert.equal(fontDraftInvalid("Arial", true, ""), true);
+  assert.equal(fontDraftInvalid("Arial", false, ""), false);
+  assert.equal(fontDraftInvalid(" Menlo ", true, "Menlo"), false);
+  assert.equal(fontDraftInvalid("  ", true, "Menlo"), false);
+});
+
+it("keeps the settings page open when Escape discards a family draft", async () => {
+  await withFakeDom(async ({ subtree, root }) => {
+    const router = createRouter({
+      routeTree: createRootRoute(),
+      history: createMemoryHistory({ initialEntries: ["/"] }),
+    });
+    await act(async () =>
+      root.render(
+        createElement(RouterContextProvider, {
+          router,
+          children: createElement(FontFamilySettingsRow, {
+            id: "code-font",
+            title: "Code font",
+            description: "Code blocks, diffs, and file previews.",
+            defaultFamily: "SF Mono",
+            defaultValue: "",
+            value: "Menlo",
+            onValueChange: () => assert.fail("Escape must not commit"),
+            onReset: () => {},
+            requireMonospace: true,
+            size: {
+              label: "Code font size",
+              options: fontSizeOptions("fontSizeCode"),
+              value: 13,
+              defaultValue: 13,
+              onChange: () => {},
+            },
+          }),
+        }),
+      ),
+    );
+    const [input] = findAll(subtree, "INPUT") as (FakeNode & {
+      value: string;
+    })[];
+    assert.ok(input);
+    assert.equal(input.attributes.get("aria-label"), "Code font family");
+    let stopped = false;
+    const event = await fireEvent(subtree, input, "keydown", {
+      key: "Escape",
+      stopPropagation: () => {
+        stopped = true;
+      },
+    });
+    assert.equal(stopped, true);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(input.value, "Menlo");
+  });
 });

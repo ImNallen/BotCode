@@ -38,7 +38,11 @@ import { DiagnosticsSettings } from "./DiagnosticsSettings";
 import { OpenSourceLicensesPanel } from "./OpenSourceLicenses";
 import { ProjectsSettings } from "./ProjectsSettings";
 import { StorageSettingsRow } from "./StorageSettings";
-import { AppearanceSettingsRow } from "./AppearanceSettings";
+import {
+  AppearanceSettingsRow,
+  TypographyAdvancedSwitch,
+} from "./AppearanceSettings";
+import { useAppearance } from "../appearance/AppearanceRoot";
 import {
   categories,
   settingsSection,
@@ -73,6 +77,7 @@ export function SettingsSidebar() {
   const selection = useSearch({ from: "__root__" });
   const { scope } = useSettingsScope();
   const { preferences } = usePreferences();
+  const { appearance, update: updateAppearance } = useAppearance();
   const visible = visibleSections(scope).map((section) => ({
     section,
     ...categories[section],
@@ -128,6 +133,12 @@ export function SettingsSidebar() {
     .filter((result) => result.text.toLowerCase().includes(needle));
   const active = results[activeIndex];
   const go = (section: SettingsSection, hash = "") => {
+    // T3 flips Advanced on so the hidden typography row exists to scroll to.
+    const advanced = categories[section].groups.some((group) =>
+      group.rows.some((row) => row.id === hash && row.advanced),
+    );
+    if (advanced && !appearance.typographyAdvanced)
+      updateAppearance({ typographyAdvanced: true });
     setQuery("");
     setActiveIndex(0);
     if (section === "keybindings" && category.section === "keybindings")
@@ -781,10 +792,22 @@ export function SettingsPage() {
                 ) : null;
               if (group.id === "source-control-providers")
                 return <GitHubProviderSettings key={group.id} />;
-              const rows = visibleRows(group, scope, preferences);
+              const rows = visibleRows(group, scope, preferences)?.filter(
+                (row) =>
+                  !row.advanced || preferences.appearance.typographyAdvanced,
+              );
               if (rows === undefined) return null;
               return (
-                <SettingsGroup key={group.id} id={group.id} title={group.title}>
+                <SettingsGroup
+                  key={group.id}
+                  id={group.id}
+                  title={group.title}
+                  headerAction={
+                    group.id === "typography" ? (
+                      <TypographyAdvancedSwitch />
+                    ) : undefined
+                  }
+                >
                   {rows.length > 0 ? (
                     rows.map(row)
                   ) : (

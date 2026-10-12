@@ -126,3 +126,39 @@ it("removes stale properties, writes only changes, and writes nothing when reapp
     "remove data-diff-color-scheme",
   ]);
 });
+
+it("prepends a custom family to T3's default stack and removes the variable when cleared", () => {
+  const { root, style } = recordingRoot();
+  const custom = resolve({
+    fontFamilySans: "Inter Display",
+    fontFamilyCode: "JetBrains Mono",
+    fontFamilyComposer: "Iosevka",
+  });
+  applyRootState(root, null, custom);
+  assert.equal(
+    style.get("--font-sans"),
+    '"Inter Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+  );
+  assert.equal(
+    style.get("--font-mono"),
+    '"JetBrains Mono", "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace',
+  );
+  assert.equal(style.get("--font-composer"), "Iosevka, var(--font-sans)");
+
+  applyRootState(root, custom, resolve({ fontFamilyCode: "  " }));
+  assert.equal(style.has("--font-sans"), false);
+  assert.equal(style.has("--font-mono"), false);
+  assert.equal(style.has("--font-composer"), false);
+});
+
+it("sizes the root from the interface size and toggles font smoothing", () => {
+  const { root, style } = recordingRoot();
+  const large = resolve({ fontSizeInterface: 20, fontSmoothing: true });
+  applyRootState(root, null, large);
+  assert.equal(style.get("font-size"), "20px");
+  assert.equal(style.get("-webkit-font-smoothing"), "antialiased");
+
+  applyRootState(root, large, resolve({ fontSmoothing: false }));
+  assert.equal(style.get("font-size"), "16px");
+  assert.equal(style.has("-webkit-font-smoothing"), false);
+});

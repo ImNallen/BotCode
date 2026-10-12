@@ -37,6 +37,7 @@ import { isTerminalUrl } from "../terminal-links";
 import { openLink } from "../preview/linkTarget";
 import { scopeForPreview } from "../preview/model";
 import { usePreferences } from "../settings/preferences";
+import { useTerminalFont } from "../appearance/AppearanceRoot";
 import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { type GhosttyColor, type GhosttyTheme } from "./ghostty/core";
@@ -157,7 +158,9 @@ function readThemeColor(
   return normalizeComputedColor(styles.getPropertyValue(variable), fallback);
 }
 
-function terminalThemeFromApp(mountElement?: HTMLElement | null): GhosttyTheme {
+export function terminalThemeFromApp(
+  mountElement?: HTMLElement | null,
+): GhosttyTheme {
   const drawerSurface =
     mountElement?.closest("[data-thread-terminal-drawer]") ??
     document.querySelector("[data-thread-terminal-drawer]") ??
@@ -276,7 +279,6 @@ type TerminalMenu = {
 
 interface TerminalViewportProps {
   target: TerminalTarget;
-  fontSize: number;
   fileLinks: FileLinks | undefined;
   onSessionExited: () => void;
   focusRequestId: number;
@@ -288,7 +290,6 @@ interface TerminalViewportProps {
 
 export function TerminalViewport({
   target,
-  fontSize,
   fileLinks,
   onSessionExited,
   focusRequestId,
@@ -305,7 +306,8 @@ export function TerminalViewport({
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<GhosttyTerminalSurface | null>(null);
   const visibleRef = useRef(visible);
-  const fontSizeRef = useRef(fontSize);
+  const font = useTerminalFont();
+  const fontRef = useRef(font);
   const [menu, setMenu] = useState<TerminalMenu | null>(null);
   const handleSessionExited = useEffectEvent(() => onSessionExited());
   const openPath = useEffectEvent((text: string) => {
@@ -335,10 +337,10 @@ export function TerminalViewport({
   }, [visible]);
 
   useEffect(() => {
-    if (fontSizeRef.current === fontSize) return;
-    fontSizeRef.current = fontSize;
-    void terminalRef.current?.setFont({ size: fontSize });
-  }, [fontSize]);
+    if (fontRef.current === font) return;
+    fontRef.current = font;
+    void terminalRef.current?.setFont(font);
+  }, [font]);
 
   useEffect(() => {
     const mount = containerRef.current;
@@ -389,10 +391,10 @@ export function TerminalViewport({
     };
 
     const setup = async (): Promise<(() => void) | null> => {
-      const setupFontSize = fontSizeRef.current;
+      const setupFont = fontRef.current;
       const terminal = await GhosttyTerminalSurface.create(mount, {
         theme: terminalThemeFromApp(mount),
-        font: { size: setupFontSize },
+        font: setupFont,
         get visible() {
           return visibleRef.current;
         },
@@ -416,8 +418,8 @@ export function TerminalViewport({
       terminal.setTheme(terminalThemeFromApp(mount));
       setupTerminal = terminal;
       terminalRef.current = terminal;
-      if (fontSizeRef.current !== setupFontSize) {
-        void terminal.setFont({ size: fontSizeRef.current });
+      if (fontRef.current !== setupFont) {
+        void terminal.setFont(fontRef.current);
       }
       attach = inOrder(() =>
         ipc.terminalAttach(
@@ -738,7 +740,6 @@ interface ThreadTerminalDrawerProps {
   mode?: "drawer" | "panel";
   workspaceId: string;
   threadId: string | null;
-  fontSize: number;
   fileLinks: FileLinks | undefined;
   visible: boolean;
   height: number;
@@ -786,7 +787,6 @@ function ThreadTerminalDrawer({
   mode = "drawer",
   workspaceId,
   threadId,
-  fontSize,
   fileLinks,
   visible,
   height,
@@ -1022,7 +1022,6 @@ function ThreadTerminalDrawer({
   const viewport = (terminalId: string, autoFocus: boolean) => (
     <TerminalViewport
       target={{ workspaceId, threadId, terminalId }}
-      fontSize={fontSize}
       fileLinks={fileLinks}
       onSessionExited={() => onCloseTerminal(terminalId)}
       focusRequestId={focusRequestId}
@@ -1280,13 +1279,11 @@ export function PersistentThreadTerminalDrawer({
   workspaceId,
   threadId,
   active,
-  fontSize,
   fileLinks,
 }: {
   workspaceId: string;
   threadId: string | null;
   active: boolean;
-  fontSize: number;
   fileLinks: FileLinks | undefined;
 }) {
   const scopeKey = terminalScopeKey(workspaceId, threadId);
@@ -1399,7 +1396,6 @@ export function PersistentThreadTerminalDrawer({
         <ThreadTerminalDrawer
           workspaceId={workspaceId}
           threadId={threadId}
-          fontSize={fontSize}
           fileLinks={fileLinks}
           visible={visible}
           height={terminalUiState.terminalHeight}
@@ -1427,14 +1423,12 @@ export function PersistentThreadTerminalPanel({
   workspaceId,
   threadId,
   surfaceId,
-  fontSize,
   fileLinks,
   onNewTerminal,
 }: {
   workspaceId: string;
   threadId: string | null;
   surfaceId: TerminalSurfaceId;
-  fontSize: number;
   fileLinks: FileLinks | undefined;
   onNewTerminal: () => void;
 }) {
@@ -1522,7 +1516,6 @@ export function PersistentThreadTerminalPanel({
       mode="panel"
       workspaceId={workspaceId}
       threadId={threadId}
-      fontSize={fontSize}
       fileLinks={fileLinks}
       visible
       height={0}

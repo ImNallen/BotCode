@@ -22,7 +22,7 @@ dunce = "1"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSEvent", "NSWindow", "NSView", "NSResponder", "block2", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSAppearance"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSEvent", "NSWindow", "NSView", "NSResponder", "block2", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSAppearance", "NSFontManager"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebView", "WKSnapshotConfiguration", "block2", "objc2-app-kit"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSURL", "NSData", "NSDictionary", "NSError", "NSValue", "NSObject"] }
 

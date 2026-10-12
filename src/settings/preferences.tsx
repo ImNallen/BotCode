@@ -21,8 +21,10 @@ import { readUsagePrices } from "../usage/prices";
 import {
   appearanceSchema,
   defaultAppearance,
+  LEGACY_WORD_WRAP_KEY,
   readAppearance,
 } from "../appearance/settings";
+import { storage } from "../lib/storage";
 
 const favoriteModelSchema = z.object({
   provider: z.string().min(1),
@@ -406,7 +408,10 @@ export function readPreferences(): PreferenceState {
           .boolean()
           .catch(false)
           .parse(object.inAppNotificationsEnabled),
-        appearance: readAppearance(object.appearance, object),
+        appearance: readAppearance(object.appearance, {
+          ...object,
+          wordWrap: storage.getItem(LEGACY_WORD_WRAP_KEY),
+        }),
         contextWindowMeter: contextWindowMeter.success
           ? contextWindowMeter.data
           : defaults.contextWindowMeter,

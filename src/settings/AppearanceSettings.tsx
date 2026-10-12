@@ -16,9 +16,28 @@ import {
   type DiffColorScheme,
 } from "../appearance/settings";
 import { cn } from "../lib/cn";
-import { Toggle, selectItem, selectTrigger } from "../ui/controls";
+import {
+  DEFAULT_CODE_FONT_STACK,
+  DEFAULT_SANS_FONT_STACK,
+  isFontFamilyAvailable,
+  isMonospaceFamily,
+  resolveDefaultFamilyLabel,
+  resolveTerminalFont,
+} from "../appearanceFonts";
+import { Switch, Toggle, selectItem, selectTrigger } from "../ui/controls";
+import { Input } from "../ui/input";
 import { Menu, MenuItem } from "../ui/menu";
+import {
+  discoverInstalledFonts,
+  FontFamilyPicker,
+  useFontEnumeration,
+} from "./FontFamilyPicker";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
+import {
+  CodeFontPreview,
+  PromptFontPreview,
+  TerminalFontPreview,
+} from "./SettingsFontPreviews";
 import type { SettingsRowInfo } from "./settingsCatalog";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
 
@@ -203,47 +222,387 @@ function AppearanceSelect<T extends string>({
   );
 }
 
-function FontSizeControl({
-  value,
-  min,
-  max,
+export function fontSizeOptions(
+  key:
+    | "fontSizeInterface"
+    | "fontSizePrompt"
+    | "fontSizeCode"
+    | "fontSizeTerminal",
+): number[] {
+  const { min, max } = appearanceRanges[key];
+  return Array.from({ length: max - min + 1 }, (_, index) => min + index);
+}
+
+function FontSizeSelect({
   label,
+  value,
+  options,
   onChange,
 }: {
-  value: number;
-  min: number;
-  max: number;
   label: string;
+  value: number;
+  options: readonly number[];
   onChange: (value: number) => void;
 }) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
   return (
-    <div
-      data-size="sm"
-      data-slot="number-field"
-      className="flex w-28 flex-col items-start gap-2"
-    >
-      <div
-        data-slot="number-field-group"
-        className="relative flex w-full justify-between rounded-lg border border-input bg-background not-dark:bg-clip-padding text-base text-foreground shadow-xs/5 ring-ring/24 transition-shadow before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] not-data-disabled:not-focus-within:not-aria-invalid:before:shadow-[0_1px_--theme(--color-black/4%)] focus-within:border-ring focus-within:ring-[3px] has-aria-invalid:border-destructive/36 has-autofill:bg-foreground/4 focus-within:has-aria-invalid:border-destructive/64 focus-within:has-aria-invalid:ring-destructive/48 data-disabled:pointer-events-none data-disabled:opacity-64 sm:text-sm dark:bg-input/32 dark:has-autofill:bg-foreground/8 dark:has-aria-invalid:ring-destructive/24 dark:not-data-disabled:not-focus-within:not-aria-invalid:before:shadow-[0_-1px_--theme(--color-white/6%)] [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0 [[data-disabled],:focus-within,[aria-invalid]]:shadow-none"
-      >
-        <input
-          type="number"
-          min={min}
-          max={max}
-          step={1}
+    <Menu
+      align="end"
+      trigger={(props) => (
+        <button
+          type="button"
+          {...props}
           aria-label={label}
-          value={draft}
-          onChange={(event) => {
-            setDraft(event.currentTarget.value);
-            onChange(event.currentTarget.valueAsNumber);
-          }}
-          onBlur={() => setDraft(String(value))}
-          className="h-8.5 in-data-[size=lg]:h-9.5 in-data-[size=sm]:h-7.5 w-full min-w-0 grow bg-transparent in-data-[size=sm]:px-[calc(--spacing(2.5)-1px)] px-[calc(--spacing(3)-1px)] text-center tabular-nums in-data-[size=lg]:leading-9.5 in-data-[size=sm]:leading-7.5 leading-8.5 outline-none [transition:background-color_5000000s_ease-in-out_0s] sm:h-7.5 sm:in-data-[size=lg]:h-8.5 sm:in-data-[size=sm]:h-6.5 sm:in-data-[size=lg]:leading-8.5 sm:in-data-[size=sm]:leading-8.5 sm:leading-7.5"
-        />
-      </div>
-    </div>
+          data-slot="select-trigger"
+          className={selectTrigger({ size: "sm", className: "w-22 shrink-0" })}
+        >
+          <span className="flex-1 truncate">{value} px</span>
+          <ChevronDownIcon className="-me-1 size-3 opacity-50" />
+        </button>
+      )}
+    >
+      {options.map((px) => (
+        <MenuItem
+          key={px}
+          className={selectItem}
+          role="menuitemradio"
+          aria-checked={value === px}
+          onClick={() => onChange(px)}
+        >
+          {px} px
+        </MenuItem>
+      ))}
+    </Menu>
+  );
+}
+
+let defaultFamilyLabels: { sans: string; code: string } | undefined;
+// An unset preference shows the font it resolves to on this machine; the
+// default stacks are the platform's own faces, so the name is probed, not
+// hardcoded. Probing measures the DOM, so it runs once.
+function fontDefaultFamilies() {
+  defaultFamilyLabels ??= {
+    sans:
+      resolveDefaultFamilyLabel(DEFAULT_SANS_FONT_STACK) ?? "System default",
+    code:
+      resolveDefaultFamilyLabel(DEFAULT_CODE_FONT_STACK) ?? "System monospace",
+  };
+  return defaultFamilyLabels;
+}
+
+// The family a settled draft commits, or null when it stays in the field
+// flagged: the terminal would silently fall back to its default, so the row
+// must not claim it took the value. Empty is an explicit clear.
+export function fontFamilyCommit(
+  draft: string,
+  requireMonospace: boolean,
+): string | null {
+  if (draft.trim().length === 0) return draft;
+  return isFontFamilyAvailable(draft) &&
+    (!requireMonospace || isMonospaceFamily(draft))
+    ? draft
+    : null;
+}
+
+// Flag an unknown name only once typing pauses, and never for an empty
+// field - that is the starting state, not a rejected entry.
+export function fontDraftInvalid(
+  draft: string,
+  settled: boolean,
+  committed: string,
+): boolean {
+  const trimmed = draft.trim();
+  return settled && trimmed.length > 0 && trimmed !== committed.trim();
+}
+
+export function FontFamilySettingsRow({
+  id,
+  title,
+  description,
+  defaultFamily,
+  defaultValue,
+  preview,
+  value,
+  onValueChange,
+  onReset,
+  requireMonospace = false,
+  size,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  /** What an unset preference renders as, e.g. "Menlo". */
+  defaultFamily: string;
+  defaultValue: string;
+  preview?: ReactNode;
+  value: string;
+  onValueChange: (value: string) => void;
+  onReset: () => void;
+  requireMonospace?: boolean;
+  size: {
+    label: string;
+    options: readonly number[];
+    value: number;
+    defaultValue: number;
+    onChange: (value: number) => void;
+  };
+}) {
+  const trimmed = value.trim();
+  // The fallback input edits a draft; the preference only commits once typing
+  // pauses and the text probes as an available font (or is an explicit
+  // clear), so the current font holds and nothing reflows mid-word.
+  const [draft, setDraft] = useState(value);
+  const [draftSettled, setDraftSettled] = useState(true);
+  const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastValueRef = useRef(value);
+  const clearCommitTimer = () => {
+    if (commitTimerRef.current === null) return;
+    clearTimeout(commitTimerRef.current);
+    commitTimerRef.current = null;
+  };
+  if (lastValueRef.current !== value) {
+    // The committed value changed externally (reset, picker selection);
+    // adopt it and drop any pending commit of a stale draft.
+    lastValueRef.current = value;
+    clearCommitTimer();
+    setDraft(value);
+    setDraftSettled(true);
+  }
+  useEffect(() => clearCommitTimer, []);
+  const commitDraft = (next: string) => {
+    setDraftSettled(true);
+    const family = fontFamilyCommit(next, requireMonospace);
+    if (family !== null) onValueChange(family);
+  };
+  const flushDraft = () => {
+    if (commitTimerRef.current === null) return;
+    clearCommitTimer();
+    commitDraft(draft);
+  };
+  const draftPending = fontDraftInvalid(draft, draftSettled, value);
+  const resetAction =
+    value !== defaultValue || size.value !== size.defaultValue ? (
+      <SettingResetButton
+        label={title.toLowerCase()}
+        onClick={() => {
+          clearCommitTimer();
+          setDraft(defaultValue);
+          setDraftSettled(true);
+          onReset();
+        }}
+      />
+    ) : null;
+  const fontEnumeration = useFontEnumeration();
+  // Every row starts on the plain input. Where the platform lists its fonts,
+  // the control then upgrades to the picker - popped open when the swap
+  // happens under focus, so the interaction continues without a second click.
+  const inputFocusedRef = useRef(false);
+  const familyControl =
+    fontEnumeration.status === "granted" ? (
+      <FontFamilyPicker
+        ariaLabel={`${title} family`}
+        defaultFamily={defaultFamily}
+        selectedFamily={trimmed}
+        requireMonospace={requireMonospace}
+        initialOpen={inputFocusedRef.current}
+        onSelect={onValueChange}
+      />
+    ) : (
+      <Input
+        size="sm"
+        aria-label={`${title} family`}
+        aria-invalid={draftPending || undefined}
+        autoCapitalize="off"
+        autoComplete="off"
+        className="min-w-0 flex-1"
+        maxLength={200}
+        onFocus={() => {
+          inputFocusedRef.current = true;
+          discoverInstalledFonts();
+        }}
+        onBlur={() => {
+          inputFocusedRef.current = false;
+          flushDraft();
+        }}
+        onChange={(event) => {
+          const next = event.currentTarget.value;
+          setDraft(next);
+          setDraftSettled(false);
+          clearCommitTimer();
+          commitTimerRef.current = setTimeout(() => {
+            commitTimerRef.current = null;
+            commitDraft(next);
+          }, 400);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") flushDraft();
+          if (event.key === "Escape") {
+            // Discard uncommitted typing without closing the settings page,
+            // which is what an unhandled Escape does.
+            event.preventDefault();
+            event.stopPropagation();
+            clearCommitTimer();
+            setDraft(value);
+            setDraftSettled(true);
+          }
+        }}
+        placeholder={defaultFamily}
+        spellCheck={false}
+        value={draft}
+      />
+    );
+  return (
+    <SettingsRow
+      id={id}
+      title={title}
+      description={description}
+      resetAction={resetAction}
+      control={
+        <div className="flex w-full items-center gap-2 sm:w-auto">
+          <div className="min-w-0 flex-1 sm:w-44 sm:flex-none">
+            {familyControl}
+          </div>
+          <FontSizeSelect
+            label={size.label}
+            value={size.value}
+            options={size.options}
+            onChange={size.onChange}
+          />
+        </div>
+      }
+    >
+      {preview}
+    </SettingsRow>
+  );
+}
+
+type FontFamilyKey =
+  | "fontFamilySans"
+  | "fontFamilyComposer"
+  | "fontFamilyCode"
+  | "fontFamilyTerminal";
+type FontSizeKey =
+  | "fontSizeInterface"
+  | "fontSizePrompt"
+  | "fontSizeCode"
+  | "fontSizeTerminal";
+const fontRows = {
+  "interface-font": {
+    family: "fontFamilySans",
+    size: "fontSizeInterface",
+    sizeLabel: "Interface font size",
+    monospace: false,
+  },
+  "prompt-font": {
+    family: "fontFamilyComposer",
+    size: "fontSizePrompt",
+    sizeLabel: "Prompt font size",
+    monospace: false,
+  },
+  "code-font": {
+    family: "fontFamilyCode",
+    size: "fontSizeCode",
+    sizeLabel: "Code font size",
+    monospace: true,
+  },
+  "terminal-font": {
+    family: "fontFamilyTerminal",
+    size: "fontSizeTerminal",
+    sizeLabel: "Terminal font size",
+    monospace: true,
+  },
+} as const satisfies Record<
+  string,
+  {
+    family: FontFamilyKey;
+    size: FontSizeKey;
+    sizeLabel: string;
+    monospace: boolean;
+  }
+>;
+
+function AppearanceFontRow({
+  rowId,
+  info,
+}: {
+  rowId: keyof typeof fontRows;
+  info: SettingsRowInfo;
+}) {
+  const { appearance, update } = useAppearance();
+  const row = fontRows[rowId];
+  const defaults = fontDefaultFamilies();
+  const advanced = appearance.typographyAdvanced;
+  // The two-font view: the prompt follows the interface font and the
+  // terminal follows the monospace font, so the previews under each row show
+  // every surface the choice reaches.
+  const simpleCode = rowId === "code-font" && !advanced;
+  const preview =
+    rowId === "prompt-font" || (rowId === "interface-font" && !advanced) ? (
+      <PromptFontPreview />
+    ) : rowId === "code-font" ? (
+      <>
+        <CodeFontPreview />
+        {simpleCode ? (
+          <TerminalFontPreview font={resolveTerminalFont(appearance)} />
+        ) : null}
+      </>
+    ) : rowId === "terminal-font" ? (
+      <TerminalFontPreview
+        font={resolveTerminalFont({ ...appearance, typographyAdvanced: true })}
+      />
+    ) : undefined;
+  return (
+    <FontFamilySettingsRow
+      id={info.id}
+      title={simpleCode ? "Monospace font" : info.title}
+      description={
+        simpleCode
+          ? "Code blocks, diffs, file previews, and the terminal."
+          : info.description
+      }
+      defaultFamily={
+        row.monospace
+          ? defaults.code
+          : rowId === "prompt-font"
+            ? appearance.fontFamilySans.trim() || defaults.sans
+            : defaults.sans
+      }
+      defaultValue={defaultAppearance[row.family]}
+      value={appearance[row.family]}
+      onValueChange={(family) => update({ [row.family]: family })}
+      onReset={() =>
+        update({
+          [row.family]: defaultAppearance[row.family],
+          [row.size]: defaultAppearance[row.size],
+        })
+      }
+      requireMonospace={row.monospace}
+      size={{
+        label: row.sizeLabel,
+        options: fontSizeOptions(row.size),
+        value: appearance[row.size],
+        defaultValue: defaultAppearance[row.size],
+        onChange: (value) => update({ [row.size]: value }),
+      }}
+      preview={preview}
+    />
+  );
+}
+
+/**
+ * T3's Typography header switch: the two-font view by default, the
+ * per-surface override rows when on.
+ */
+export function TypographyAdvancedSwitch() {
+  const { appearance, update } = useAppearance();
+  return (
+    <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-muted-foreground">
+      Advanced
+      <Switch
+        checked={appearance.typographyAdvanced}
+        onCheckedChange={(typographyAdvanced) => update({ typographyAdvanced })}
+        aria-label="Show advanced typography settings"
+      />
+    </label>
   );
 }
 
@@ -346,20 +705,28 @@ export function AppearanceSettingsRow({ info }: { info: SettingsRowInfo }) {
       </div>,
       null,
     );
-  if (info.id === "prompt-font" || info.id === "code-font") {
-    const key = info.id === "prompt-font" ? "fontSizePrompt" : "fontSizeCode";
-    return row(
-      <FontSizeControl
-        value={appearance[key]}
-        {...appearanceRanges[key]}
-        label={
-          info.id === "prompt-font" ? "Prompt font size" : "Code font size"
-        }
-        onChange={(value) => update({ [key]: value })}
-      />,
-      null,
+  if (info.id in fontRows)
+    return (
+      <AppearanceFontRow rowId={info.id as keyof typeof fontRows} info={info} />
     );
-  }
+  if (info.id === "font-smoothing")
+    return row(
+      <Switch
+        checked={appearance.fontSmoothing}
+        onCheckedChange={(fontSmoothing) => update({ fontSmoothing })}
+        aria-label="Font smoothing"
+      />,
+      resetAction("fontSmoothing", "font smoothing"),
+    );
+  if (info.id === "word-wrap")
+    return row(
+      <Switch
+        checked={appearance.wordWrap}
+        onCheckedChange={(wordWrap) => update({ wordWrap })}
+        aria-label="Wrap code, tables, diffs, and file previews by default"
+      />,
+      resetAction("wordWrap", "word wrapping"),
+    );
   if (info.id === "chat-width")
     return row(
       <AppearanceSelect

@@ -1,4 +1,5 @@
 import { useLayoutEffect, useMemo, useSyncExternalStore } from "react";
+import { resolveTerminalFont, type TerminalFont } from "../appearanceFonts";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { usePreferences } from "../settings/preferences";
 import {
@@ -49,6 +50,13 @@ export function useAppearance(): AppearanceApi {
     },
     preview: (patch) => setDraft({ ...draft, ...patch }),
   };
+}
+
+// Advanced off: the code family and size. Advanced on: the terminal's own.
+export function useTerminalFont(): TerminalFont {
+  const { appearance } = useAppearance();
+  const { family, size } = resolveTerminalFont(appearance);
+  return useMemo(() => ({ family, size }), [family, size]);
 }
 
 let painted: RootState | null = null;

@@ -1687,6 +1687,8 @@ export const ipc = {
   saveKeybindingsFile: (text: string, expectedText: string | null) =>
     call("save_keybindings_file", { text, expectedText }, z.null()),
   saveSettingsFile: (text: string) => call("save_settings", { text }, z.null()),
+  installedFontFamilies: () =>
+    call("installed_font_families", {}, z.array(z.string())),
 };
 const searchInvalidationListeners = new Set<
   (change: SearchInvalidation) => void
