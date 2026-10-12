@@ -1,7 +1,10 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeSettings.tsx (MIT). Create, Add, Edit and Duplicate wait for the theme editor and import dialog; export goes through a native save panel.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeSettings.tsx (MIT). Add waits for the import dialog; export goes through a native save panel.
 import {
   CheckIcon,
+  CopyIcon,
   MoonIcon,
+  PaintbrushIcon,
+  PenLineIcon,
   SunIcon,
   Trash2Icon,
   UploadIcon,
@@ -40,6 +43,7 @@ import {
   type ThemeMode,
 } from "./ThemePreviewCircles";
 import { ThemeWireframe } from "./ThemeWireframe";
+import { useThemeEditorStore } from "./themeEditorStore";
 
 const MAINTAINER_THEMES: ReadonlyArray<ThemeDefinition> = [
   T3_CHAT_THEME,
@@ -91,6 +95,8 @@ function ThemeLibraryCard({
   onUse,
   onUseMode,
   activeModes,
+  onEdit,
+  onDuplicate,
   onDownload,
   onRemove,
   variantNavigation,
@@ -100,6 +106,8 @@ function ThemeLibraryCard({
   onUse: () => void;
   onUseMode: (mode: ThemeMode) => void;
   activeModes: ReadonlyArray<ThemeMode>;
+  onEdit?: () => void;
+  onDuplicate?: () => void;
   onDownload?: () => void;
   onRemove?: () => void;
   variantNavigation?: {
@@ -310,8 +318,38 @@ function ThemeLibraryCard({
             </button>
           </div>
         </div>
-        {onDownload || onRemove ? (
+        {onEdit || onDuplicate || onDownload || onRemove ? (
           <div className="flex shrink-0 items-center gap-1">
+            {onDuplicate ? (
+              <Tooltip content="Duplicate theme">
+                <Button
+                  aria-label={`Duplicate ${theme.label}`}
+                  size="icon-xs"
+                  variant="ghost"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDuplicate();
+                  }}
+                >
+                  <CopyIcon />
+                </Button>
+              </Tooltip>
+            ) : null}
+            {onEdit ? (
+              <Tooltip content="Edit theme">
+                <Button
+                  aria-label={`Edit ${theme.label}`}
+                  size="icon-xs"
+                  variant="ghost"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEdit();
+                  }}
+                >
+                  <PenLineIcon />
+                </Button>
+              </Tooltip>
+            ) : null}
             {onDownload ? (
               <Tooltip content="Export theme file">
                 <Button
@@ -360,6 +398,8 @@ function CustomThemeCollectionCard({
   activeModesFor,
   onUse,
   onUseMode,
+  onDuplicate,
+  onEdit,
   onDownload,
   onRemove,
 }: {
@@ -367,6 +407,8 @@ function CustomThemeCollectionCard({
   activeModesFor: (themeId: string) => ReadonlyArray<ThemeMode>;
   onUse: (theme: ThemeDefinition) => void;
   onUseMode: (theme: ThemeDefinition, mode: ThemeMode) => void;
+  onDuplicate: (theme: ThemeDefinition) => void;
+  onEdit: (theme: ThemeDefinition) => void;
   onDownload: (theme: ThemeDefinition) => void;
   onRemove: (theme: ThemeDefinition) => void;
 }) {
@@ -406,6 +448,8 @@ function CustomThemeCollectionCard({
     <ThemeLibraryCard
       activeModes={activeModesFor(theme.id)}
       isActive={false}
+      onDuplicate={() => onDuplicate(theme)}
+      onEdit={() => onEdit(theme)}
       onDownload={() => onDownload(theme)}
       onRemove={() => onRemove(theme)}
       onUse={selectCollectionDefaults}
@@ -445,8 +489,10 @@ export function ThemeLibrary() {
     themeHalves,
     themeHalvesRaw,
     setThemeHalf,
+    resolvedTheme: initialAppearance,
   } = useThemeSelection();
   const customThemes = useCustomThemes();
+  const openThemeEditor = useThemeEditorStore((store) => store.openThemeEditor);
   const [themeRemovalTarget, setThemeRemovalTarget] = useState<{
     theme: ThemeDefinition;
     collectionThemes: ReadonlyArray<ThemeDefinition>;
@@ -523,6 +569,14 @@ export function ThemeLibrary() {
     }
     setThemeHalf(appearance, cardId);
   };
+
+  // "Create theme" starts from whatever is on screen for the appearance being
+  // edited, so tuning the theme you already use never means rebuilding it.
+  const activeThemeForAppearance =
+    getThemeDefinition(
+      (initialAppearance === "light" ? lightOwner : darkOwner) ?? "",
+      customThemes,
+    ) ?? null;
 
   const cardDefById = (id: string | null): ThemeCardDefinition => {
     if (id === null) return STANDARD_THEME_CARDS[0]!;
@@ -648,6 +702,14 @@ export function ThemeLibrary() {
           activeModes={pickedModesFor(null)}
           isActive={false}
           key={standardTheme.id}
+          onDuplicate={() =>
+            openThemeEditor({
+              editingThemeId: null,
+              seedThemeId: null,
+              seedName: `${standardTheme.label} copy`,
+              initialAppearance,
+            })
+          }
           onUse={() => setTheme(modeBase)}
           onUseMode={handlePairPick(null)}
           theme={standardTheme}
@@ -658,6 +720,14 @@ export function ThemeLibrary() {
           activeModes={pickedModesFor(maintainerTheme.id)}
           isActive={false}
           key={maintainerTheme.id}
+          onDuplicate={() =>
+            openThemeEditor({
+              editingThemeId: null,
+              seedThemeId: maintainerTheme.id,
+              seedName: `${maintainerTheme.label} copy`,
+              initialAppearance,
+            })
+          }
           onUse={() => setTheme(maintainerTheme.id)}
           onUseMode={handlePairPick(maintainerTheme.id)}
           theme={getThemeCardDefinition(maintainerTheme)}
@@ -668,6 +738,22 @@ export function ThemeLibrary() {
           activeModesFor={pickedModesFor}
           key={collectionId}
           onDownload={(customTheme) => void exportThemeFile(customTheme)}
+          onDuplicate={(customTheme) =>
+            openThemeEditor({
+              editingThemeId: null,
+              seedThemeId: customTheme.id,
+              seedName: `${customTheme.label} copy`,
+              initialAppearance,
+            })
+          }
+          onEdit={(customTheme) =>
+            openThemeEditor({
+              editingThemeId: customTheme.id,
+              seedThemeId: null,
+              seedName: null,
+              initialAppearance,
+            })
+          }
           onRemove={(customTheme) => handleRemoveTheme(customTheme, themes)}
           onUse={(customTheme) => {
             const modes = getThemeModes(customTheme);
@@ -691,6 +777,23 @@ export function ThemeLibrary() {
       {renderModeTiles()}
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-3 px-3 pt-2 sm:px-4">
         <h3 className="text-sm font-normal text-foreground/70">Themes</h3>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() =>
+              openThemeEditor({
+                editingThemeId: null,
+                seedThemeId: activeThemeForAppearance?.id ?? null,
+                seedName: null,
+                initialAppearance,
+              })
+            }
+          >
+            <PaintbrushIcon />
+            Create theme
+          </Button>
+        </div>
       </div>
       {renderPairGrid()}
       <Dialog

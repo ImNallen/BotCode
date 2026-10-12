@@ -75,6 +75,7 @@ function context(): ActionContext {
     newThreadDirect: noop,
     startScratch: noop,
     openSettings: noop,
+    toggleThemeEditor: noop,
     openProjectSettings: noop,
     closePage: noop,
     toggleSidebar: noop,
@@ -541,4 +542,23 @@ it("hides Auto-settle behavior and Regenerate title without a live open thread",
     }
     assert.equal(calls, 0, reason);
   }
+});
+it("toggles the theme editor from T3's palette item and Command+Option+Shift+T, even in a terminal", () => {
+  const ctx = context();
+  let toggles = 0;
+  ctx.toggleThemeEditor = () => toggles++;
+  for (const query of ["theme editor", "customize", "colors", "palette"])
+    assert.ok(
+      searchActions(ctx, "root", query).includes("themeEditor.toggle"),
+      query,
+    );
+  assert.equal(actionLabel("themeEditor.toggle", ctx), "Toggle theme editor");
+  const chord = key("t", { altKey: true, shiftKey: true });
+  assert.equal(
+    matchAction(chord, ctx, false, "MacIntel"),
+    "themeEditor.toggle",
+  );
+  assert.equal(matchAction(chord, ctx, true, "MacIntel"), "themeEditor.toggle");
+  assert.equal(runAction("themeEditor.toggle", ctx), true);
+  assert.equal(toggles, 1);
 });

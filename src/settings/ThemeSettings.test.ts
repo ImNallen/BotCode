@@ -11,6 +11,7 @@ import {
 import {
   CUSTOM_THEMES_STORAGE_KEY,
   getCustomThemes,
+  GROVE_THEME,
   parseThemeFile,
   setThemeLibraryStore,
   THEME_FILE_VERSION,
@@ -18,6 +19,7 @@ import {
 import type { AppearanceSettings } from "../appearance/settings";
 import { PreferencesProvider } from "./preferences";
 import { ThemeLibrary } from "./ThemeSettings";
+import { useThemeEditorStore } from "./themeEditorStore";
 
 const dusk = parseThemeFile({
   version: THEME_FILE_VERSION,
@@ -79,12 +81,44 @@ it("assigns a one-appearance theme to its half, switches the scheme, and removes
       ])
         assert.ok(texts.includes(name), name);
       assert.ok(labels.includes("Export Dusk"));
-      assert.ok(!texts.some((text) => /Create theme|Add theme/.test(text)));
-      assert.ok(!labels.some((label) => /^(Duplicate|Edit) /.test(label)));
+      assert.ok(!texts.some((text) => /Add theme/.test(text)));
+      assert.ok(labels.includes("Edit Dusk"));
+      assert.ok(!labels.includes("Edit Grove"));
 
       await fireEvent(subtree, labelled("Use Dusk theme"), "click");
       assert.deepEqual(saved().themeHalves, { dark: "dusk" });
       assert.equal(saved().theme, "system");
+
+      const opened = async (target: FakeNode) => {
+        await fireEvent(subtree, target, "click");
+        const { id: _, ...session } =
+          useThemeEditorStore.getState().session ?? {};
+        useThemeEditorStore.getState().closeThemeEditor();
+        return session;
+      };
+      await fireEvent(subtree, labelled("Use dark mode"), "click");
+      const create = buttons().find(
+        (button) => button.textContent === "Create theme",
+      );
+      assert.ok(create);
+      assert.deepEqual(await opened(create), {
+        editingThemeId: null,
+        seedThemeId: "dusk",
+        seedName: null,
+        initialAppearance: "dark",
+      });
+      assert.deepEqual(await opened(labelled("Duplicate Grove")), {
+        editingThemeId: null,
+        seedThemeId: GROVE_THEME.id,
+        seedName: "Grove copy",
+        initialAppearance: "dark",
+      });
+      assert.deepEqual(await opened(labelled("Edit Dusk")), {
+        editingThemeId: "dusk",
+        seedThemeId: null,
+        seedName: null,
+        initialAppearance: "dark",
+      });
 
       await fireEvent(subtree, labelled("Use light mode"), "click");
       assert.equal(saved().themeAppearanceMode, "light");

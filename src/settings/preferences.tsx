@@ -231,10 +231,11 @@ type PreferenceState = {
 const Context = createContext<
   | (PreferenceState & {
       update: (patch: Partial<Preferences>) => void;
-      // Merges into the latest appearance, so two changes in one handler both land.
+      // Merges into the latest appearance, so two changes in one handler both
+      // land. Resolves false when settings.json could not be written.
       updateAppearance: (
         change: (current: AppearanceSettings) => Partial<AppearanceSettings>,
-      ) => void;
+      ) => Promise<boolean>;
       save: (patch: Partial<Preferences>) => Promise<void>;
       saveActions: (
         workspaceId: string | undefined,
@@ -507,7 +508,12 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         update,
         updateAppearance: (change) => {
           const appearance = current.current.appearance;
-          update({ appearance: { ...appearance, ...change(appearance) } });
+          return persist({
+            appearance: { ...appearance, ...change(appearance) },
+          }).then(
+            () => true,
+            () => false,
+          );
         },
         save: persist,
         saveActions: (workspaceId, scripts) => {

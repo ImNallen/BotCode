@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { inspect, isDeepStrictEqual } from "node:util";
 
-export { describe, it } from "node:test";
+export { afterEach, beforeEach, describe, it } from "node:test";
 
 const asymmetric = Symbol("asymmetric matcher");
 type AsymmetricMatcher = {

@@ -16,6 +16,7 @@ import {
   paintRoot,
   systemDarkQuery,
 } from "./appearance/AppearanceRoot";
+import { ThemeEditorHost } from "./settings/ThemeEditorHost";
 import { matchesMediaQuery } from "./lib/useMediaQuery";
 import { getCustomThemes } from "./themePalette";
 import "./styles.css";
@@ -120,6 +121,7 @@ function Startup() {
     <QueryClientProvider client={client}>
       <PreferencesProvider>
         <AppearanceRoot />
+        <ThemeEditorHost />
         <FirstRunGate>
           <FollowUpSender />
           <RouterProvider router={router} />

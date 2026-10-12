@@ -2,6 +2,7 @@ import { useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 import { resolveTerminalFont, type TerminalFont } from "../appearanceFonts";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { usePreferences } from "../settings/preferences";
+import { useThemeEditorStore } from "../settings/themeEditorStore";
 import {
   getCustomThemes,
   subscribeToCustomThemes,
@@ -41,7 +42,7 @@ export type AppearanceApi = Readonly<{
     change:
       | AppearancePatch
       | ((current: AppearanceSettings) => AppearancePatch),
-  ) => void;
+  ) => Promise<boolean>;
   preview: (patch: AppearancePatch) => void;
 }>;
 
@@ -133,9 +134,10 @@ export function AppearanceRoot() {
   const { appearance } = useAppearance();
   const customThemes = useCustomThemes();
   const systemDark = useMediaQuery(systemDarkQuery);
+  const preview = useThemeEditorStore((store) => store.preview);
   useLayoutEffect(
-    () => paintRoot({ appearance, systemDark, customThemes }),
-    [appearance, systemDark, customThemes],
+    () => paintRoot({ appearance, systemDark, customThemes, preview }),
+    [appearance, systemDark, customThemes, preview],
   );
   return null;
 }

@@ -33,6 +33,7 @@ const context: ActionContext = {
   newThreadDirect: noop,
   startScratch: noop,
   openSettings: noop,
+  toggleThemeEditor: noop,
   openProjectSettings: noop,
   closePage: noop,
   toggleSidebar: noop,

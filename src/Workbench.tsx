@@ -47,6 +47,8 @@ import {
   type Workspace,
 } from "./ipc";
 import { EditorToasts, useEditorActions } from "./lib/editorActions";
+import { useThemeSelection } from "./appearance/AppearanceRoot";
+import { toggleThemeEditorForTheme } from "./settings/themeEditorStore";
 import { editorById } from "./lib/editors";
 import { Sidebar, SidebarBrand } from "./Sidebar";
 import { SidebarFooter } from "./SidebarFooter";
@@ -100,6 +102,7 @@ export function Workbench() {
   const selection = useSearch({ from: "__root__" });
   const navigate = useNavigate();
   const panelMotion = useShellPanelAnimations();
+  const themeSelection = useThemeSelection();
   const page = useLocation({
     select: (location): "settings" | "usage" | "pull-requests" | null =>
       location.pathname.startsWith("/settings")
@@ -453,6 +456,12 @@ export function Workbench() {
     newThreadDirect: () => createThread(undefined, true),
     startScratch: () => void startScratch(),
     openSettings,
+    toggleThemeEditor: () =>
+      toggleThemeEditorForTheme({
+        theme: themeSelection.theme,
+        themeHalves: themeSelection.themeHalves,
+        initialAppearance: themeSelection.resolvedTheme,
+      }),
     openProjectSettings: (id) => openSettingsAt("projects", id),
     closePage,
     toggleSidebar: () => setSidebarOpen((value) => !value),
