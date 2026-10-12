@@ -1692,6 +1692,19 @@ export const ipc = {
   // Resolves false when the save panel is cancelled.
   exportThemeFile: (defaultName: string, contents: string) =>
     call("export_theme_file", { defaultName, contents }, z.boolean()),
+  // Empty when cancelled. A file over 256 KB, or one that cannot be read, has empty text.
+  pickThemeFiles: () =>
+    call(
+      "pick_theme_files",
+      {},
+      z.array(
+        z.object({
+          name: z.string(),
+          size: z.number().int().nonnegative(),
+          text: z.string(),
+        }),
+      ),
+    ),
 };
 const searchInvalidationListeners = new Set<
   (change: SearchInvalidation) => void

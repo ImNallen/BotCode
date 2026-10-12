@@ -1,10 +1,11 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeSettings.tsx (MIT). Add waits for the import dialog; export goes through a native save panel.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/settings/ThemeSettings.tsx (MIT). The import dialog's open state lives here, and export goes through a native save panel.
 import {
   CheckIcon,
   CopyIcon,
   MoonIcon,
   PaintbrushIcon,
   PenLineIcon,
+  PlusIcon,
   SunIcon,
   Trash2Icon,
   UploadIcon,
@@ -42,6 +43,7 @@ import {
   type ThemeCardDefinition,
   type ThemeMode,
 } from "./ThemePreviewCircles";
+import { ThemeImportDialog } from "./ThemeImportDialog";
 import { ThemeWireframe } from "./ThemeWireframe";
 import { useThemeEditorStore } from "./themeEditorStore";
 
@@ -501,6 +503,7 @@ export function ThemeLibrary() {
     ReadonlyArray<string>
   >([]);
   const [removing, setRemoving] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
   const themeIdsToRemoveSet = new Set(themeIdsToRemove);
   const removeDialogTheme = themeRemovalTarget?.theme;
   const removeDialogCollectionThemes =
@@ -793,9 +796,59 @@ export function ThemeLibrary() {
             <PaintbrushIcon />
             Create theme
           </Button>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => setIsImportOpen(true)}
+          >
+            <PlusIcon />
+            Add theme
+          </Button>
         </div>
       </div>
       {renderPairGrid()}
+      <ThemeImportDialog
+        onImportedMany={(importedThemes, { updated }) => {
+          const verb = updated ? "updated" : "added";
+          notifyEditorResult(
+            "success",
+            importedThemes.length === 1
+              ? `${importedThemes[0]!.label} ${verb}`
+              : `${importedThemes.length} themes ${verb}`,
+            importedThemes.map((imported) => imported.label).join(", "),
+          );
+        }}
+        onImported={async (importedTheme) => {
+          // Same rule as clicking the card: a one-appearance theme takes its
+          // side of the mix instead of becoming the base for both.
+          const modes = getThemeModes(importedTheme);
+          if (modes.length === 1) {
+            assignHalf(modes[0]!, importedTheme.id);
+            notifyEditorResult(
+              "success",
+              `${importedTheme.label} added`,
+              `It’s now your ${modes[0]!} theme.`,
+            );
+            return true;
+          }
+          if (!(await setTheme(importedTheme.id))) {
+            notifyEditorResult(
+              "error",
+              "Couldn’t save theme selection",
+              "Try again.",
+            );
+            return false;
+          }
+          notifyEditorResult(
+            "success",
+            `${importedTheme.label} added`,
+            "It’s now active.",
+          );
+          return true;
+        }}
+        onOpenChange={setIsImportOpen}
+        open={isImportOpen}
+      />
       <Dialog
         open={themeRemovalTarget !== null}
         onOpenChange={(open) => {

@@ -1,4 +1,4 @@
-// Ported from pingdotgg/t3code v0.0.45 apps/web/src/themePalette.test.ts (MIT). Cases for the cut DOM writers, cross-tab storage events, desktop sync and sidebar artwork are dropped; library cases stub the ui_state store instead of window.localStorage.
+// Ported from pingdotgg/t3code v0.0.45 apps/web/src/themePalette.test.ts (MIT). Cases for the cut DOM writers, cross-tab storage events, desktop sync and sidebar artwork are dropped; library cases stub the ui_state store instead of window.localStorage. The durable library writes case is Bot Code's.
 import { describe, expect, it, vi } from "./test/expectShim";
 import { BUILT_IN_THEMES } from "./themePalettes";
 
@@ -1146,5 +1146,58 @@ describe("singleAppearanceOf", () => {
       "dark",
     );
     expect(singleAppearanceOf(T3_CHAT_THEME)).toBe(null);
+  });
+});
+
+describe("durable library writes", () => {
+  it("leaves an installed collection in place when its replacement fails to save", async () => {
+    const collection = { id: "open-vsx:demo.theme", label: "Demo Theme" };
+    const installed = {
+      ...parseThemeFile({
+        version: THEME_FILE_VERSION,
+        id: "demo-dark",
+        name: "Demo Dark",
+        appearance: "dark",
+        colors: { canvas: "#101010" },
+      }),
+      collection,
+    };
+    const storedJson = JSON.stringify([installed]);
+    setThemeLibraryStore({
+      getItem: () => storedJson,
+      setItemDurable: async () => {
+        throw new Error("ui_state is read-only");
+      },
+    });
+    invalidateCustomThemes();
+    const before = getCustomThemes();
+    const expectedCollection = getStoredCustomThemeCollection(collection.id);
+    const replacement = [
+      {
+        ...parseThemeFile({
+          version: THEME_FILE_VERSION,
+          id: "demo-light",
+          name: "Demo Light",
+          appearance: "light",
+          colors: { canvas: "#fafafa" },
+        }),
+        collection,
+      },
+    ];
+
+    await expect(
+      replaceCustomThemeCollection(collection.id, replacement, {
+        expectedCollection,
+      }),
+    ).rejects.toThrow(
+      `Failed to write the theme library to ${CUSTOM_THEMES_STORAGE_KEY}.`,
+    );
+    expect(getCustomThemes()).toBe(before);
+    expect(getStoredCustomThemeCollection(collection.id)).toEqual(
+      expectedCollection,
+    );
+
+    resetThemeStore();
+    invalidateCustomThemes();
   });
 });

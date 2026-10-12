@@ -1,7 +1,9 @@
 // The vitest subset T3's ported suites use, over node:test and node:assert, so
 // a T3 test file carries over with its import line changed.
 import assert from "node:assert/strict";
+import { mock } from "node:test";
 import { inspect, isDeepStrictEqual } from "node:util";
+import { advanceTimersByTimeAsync } from "./timers";
 
 export { afterEach, beforeEach, describe, it } from "node:test";
 
@@ -119,6 +121,12 @@ function matchers(actual: unknown) {
           : expected.test(actual)),
       `${show(actual)} to match ${show(expected)}`,
     ],
+    toContain: (expected: unknown): Result => [
+      typeof actual === "string"
+        ? typeof expected === "string" && actual.includes(expected)
+        : Array.isArray(actual) && actual.includes(expected),
+      `${show(actual)} to contain ${show(expected)}`,
+    ],
     toBeNull: (): Result => [actual === null, `${show(actual)} to be null`],
     toBeUndefined: (): Result => [
       actual === undefined,
@@ -143,6 +151,10 @@ function matchers(actual: unknown) {
     toBeLessThan: (expected: number): Result => [
       (actual as number) < expected,
       `${show(actual)} to be less than ${expected}`,
+    ],
+    toBeLessThanOrEqual: (expected: number): Result => [
+      (actual as number) <= expected,
+      `${show(actual)} to be at most ${expected}`,
     ],
     toBeCloseTo: (expected: number, digits = 2): Result => [
       Math.abs((actual as number) - expected) < 10 ** -digits / 2,
@@ -187,24 +199,58 @@ function assertions(actual: unknown, negate: boolean): Assertions {
   ) as Assertions;
 }
 
+type Outcome = { rejected: boolean; value: unknown };
+
+async function outcomeOf(promise: unknown): Promise<Outcome> {
+  try {
+    return { rejected: false, value: await promise };
+  } catch (error) {
+    return { rejected: true, value: error };
+  }
+}
+
+// vitest .resolves/.rejects: each matcher awaits the promise, requires the
+// expected settlement, then applies to the value or the rejection reason.
+function settledAssertions(
+  promise: unknown,
+  rejects: boolean,
+): {
+  [K in keyof Assertions]: (
+    ...args: Parameters<Assertions[K]>
+  ) => Promise<void>;
+} {
+  const names = Object.keys(matchers(undefined)) as (keyof Assertions)[];
+  return Object.fromEntries(
+    names.map((name) => [
+      name,
+      async (...args: unknown[]) => {
+        const { rejected, value } = await outcomeOf(promise);
+        assert.ok(
+          rejected === rejects,
+          `Expected promise to ${rejects ? "reject" : "resolve"}, it ${rejected ? "rejected" : "resolved"} with ${inspect(value)}`,
+        );
+        if (rejects && name === "toThrow") {
+          const [expected] = args as [string | RegExp | undefined];
+          assert.ok(
+            messageMatches(value, expected),
+            `Expected promise to reject with ${inspect(expected)}, got ${inspect(value)}`,
+          );
+          return;
+        }
+        (assertions(value, false)[name] as (...args: unknown[]) => void)(
+          ...args,
+        );
+      },
+    ]),
+  ) as never;
+}
+
 export function expect(actual: unknown) {
   return {
     ...assertions(actual, false),
     not: assertions(actual, true),
-    rejects: {
-      toThrow: async (expected?: string | RegExp) => {
-        let error: unknown;
-        try {
-          await actual;
-        } catch (cause) {
-          error = cause;
-        }
-        assert.ok(
-          messageMatches(error, expected),
-          `Expected promise to reject with ${inspect(expected)}, got ${inspect(error)}`,
-        );
-      },
-    },
+    resolves: settledAssertions(actual, false),
+    rejects: settledAssertions(actual, true),
   };
 }
 
@@ -246,4 +292,12 @@ export const vi = {
     }
     stubbed.clear();
   },
+  // setImmediate stays real so advanceTimersByTimeAsync can settle promises between ticks.
+  useFakeTimers(): void {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  },
+  useRealTimers(): void {
+    mock.timers.reset();
+  },
+  advanceTimersByTimeAsync,
 };

@@ -83,6 +83,15 @@
       }
     },
     {
+      "name": "isarray",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": [
+          "Copyright (c) 2013 Julian Gruber <julian@juliangruber.com>"
+        ]
+      }
+    },
+    {
       "name": "@tauri-apps/plugin-dialog",
       "noticeFile": "vendor/tauri-plugin-notification/LICENSE_MIT"
     },

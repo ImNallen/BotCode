@@ -52,6 +52,89 @@ pub async fn export_theme_file(
     Ok(true)
 }
 
+/// Theme files are a few KB; a larger one returns empty text so the renderer
+/// rejects it by size without its contents crossing IPC (T3 window.ts
+/// PICKED_THEME_FILE_MAX_BYTES).
+const PICKED_THEME_FILE_MAX_BYTES: u64 = 256 * 1024;
+
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct PickedThemeFile {
+    name: String,
+    size: u64,
+    text: String,
+}
+
+/// T3's desktop pickThemeFiles: a multi-select JSON panel that opens in
+/// ~/.vscode/extensions when it exists. Cancelling returns no files.
+#[tauri::command]
+pub async fn pick_theme_files(window: tauri::WebviewWindow) -> Result<Vec<PickedThemeFile>> {
+    use tauri_plugin_dialog::DialogExt;
+    let mut dialog = window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .add_filter("JSON", &["json"]);
+    if let Some(extensions) = std::env::home_dir()
+        .map(|home| home.join(".vscode").join("extensions"))
+        .filter(|path| path.is_dir())
+    {
+        dialog = dialog.set_directory(extensions);
+    }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    dialog.pick_files(move |paths| {
+        let _ = sender.send(paths);
+    });
+    let paths = receiver
+        .await
+        .map_err(|error| AppError::new("pick_theme_files", error))?
+        .unwrap_or_default();
+    let paths = paths
+        .into_iter()
+        .map(|path| {
+            path.into_path()
+                .map_err(|error| AppError::new("pick_theme_files", error))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    tokio::task::spawn_blocking(move || {
+        paths
+            .iter()
+            .map(|path| read_picked_theme_file(path))
+            .collect()
+    })
+    .await
+    .map_err(|error| AppError::new("pick_theme_files", error))
+}
+
+// An unreadable file degrades to an empty entry the renderer reports, as in T3.
+fn read_picked_theme_file(path: &std::path::Path) -> PickedThemeFile {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let Ok(size) = std::fs::metadata(path).map(|metadata| metadata.len()) else {
+        return PickedThemeFile {
+            name,
+            size: 0,
+            text: String::new(),
+        };
+    };
+    if size > PICKED_THEME_FILE_MAX_BYTES {
+        return PickedThemeFile {
+            name,
+            size,
+            text: String::new(),
+        };
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => PickedThemeFile { name, size, text },
+        Err(_) => PickedThemeFile {
+            name,
+            size: 0,
+            text: String::new(),
+        },
+    }
+}
+
 // Dot-prefixed families are macOS-internal UI faces that web content cannot
 // render (T3 appearanceFonts.ts queryInstalledFontFamilies).
 #[cfg(any(target_os = "macos", test))]
@@ -90,6 +173,41 @@ mod tests {
             normalize_font_families(names),
             ["Avenir", "avenir Next", "Menlo", "menlo"]
         );
+    }
+
+    #[test]
+    fn reads_picked_theme_files_up_to_the_size_cap() {
+        let dir = std::env::temp_dir().join(format!("bot-code-themes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let limit = PICKED_THEME_FILE_MAX_BYTES as usize;
+        let at_limit = dir.join("at-limit.json");
+        std::fs::write(&at_limit, "a".repeat(limit)).unwrap();
+        let oversized = dir.join("oversized.json");
+        std::fs::write(&oversized, "a".repeat(limit + 1)).unwrap();
+        let not_utf8 = dir.join("binary.json");
+        std::fs::write(&not_utf8, [0xff, 0xfe, 0x00]).unwrap();
+
+        assert_eq!(
+            read_picked_theme_file(&at_limit),
+            PickedThemeFile {
+                name: "at-limit.json".into(),
+                size: limit as u64,
+                text: "a".repeat(limit),
+            }
+        );
+        assert_eq!(
+            read_picked_theme_file(&oversized),
+            PickedThemeFile {
+                name: "oversized.json".into(),
+                size: limit as u64 + 1,
+                text: String::new(),
+            }
+        );
+        for unreadable in [not_utf8, dir.join("missing.json")] {
+            let picked = read_picked_theme_file(&unreadable);
+            assert_eq!((picked.size, picked.text.as_str()), (0, ""));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(target_os = "macos")]
