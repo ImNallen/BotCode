@@ -305,7 +305,10 @@ async fn worktree_threads_record_their_base_and_refuse_once_removed() {
         )
         .await
         .unwrap();
-    let Checkout::Worktree { path, branch: name } = thread.checkout.clone() else {
+    let Checkout::Worktree {
+        path, branch: name, ..
+    } = thread.checkout.clone()
+    else {
         panic!("expected a worktree");
     };
     assert_eq!(
@@ -478,7 +481,10 @@ async fn commit_push_pr_opens_one_pull_request_against_the_worktree_base() {
         )
         .await
         .unwrap();
-    let Checkout::Worktree { path, branch: name } = thread.checkout.clone() else {
+    let Checkout::Worktree {
+        path, branch: name, ..
+    } = thread.checkout.clone()
+    else {
         panic!("expected a worktree");
     };
     std::fs::write(path.join("feature.txt"), "feature\n").unwrap();

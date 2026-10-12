@@ -135,7 +135,7 @@ async fn dedicated_pr_checkout_uses_fork_oid_without_overwriting_branch_and_pers
         .prepare_pull_request_thread(request(source, &head, PrCheckoutDestination::Dedicated))
         .await
         .unwrap();
-    let Checkout::Worktree { path, branch } = &created.checkout else {
+    let Checkout::Worktree { path, branch, .. } = &created.checkout else {
         panic!()
     };
     assert_eq!(git_at(path, &["rev-parse", "HEAD"]), head);

@@ -2641,10 +2641,12 @@ impl Owner {
                 }
                 match &t.checkout {
                     Checkout::Folder { path } => Location::Folder(path.clone()),
-                    Checkout::Worktree { path, branch } if !path.exists() => Location::Removed {
-                        root: w.root.clone(),
-                        branch: branch.clone(),
-                    },
+                    Checkout::Worktree { path, branch, .. } if !path.exists() => {
+                        Location::Removed {
+                            root: w.root.clone(),
+                            branch: branch.clone(),
+                        }
+                    }
                     Checkout::Local | Checkout::Worktree { .. } => {
                         Location::Repository(t.root(w).to_path_buf())
                     }
@@ -2675,7 +2677,7 @@ impl Owner {
     }
     /// The thread as a cleanup candidate, or `None` when it is not an idle, sole-owner worktree thread.
     fn candidate(&self, t: &ThreadSnapshot) -> Option<Candidate> {
-        let Checkout::Worktree { path, branch } = &t.checkout else {
+        let Checkout::Worktree { path, branch, .. } = &t.checkout else {
             return None;
         };
         let w = &self.workspaces[&t.workspace_id];
@@ -2724,7 +2726,7 @@ impl Owner {
     }
     fn claim_restore(&mut self, id: &ThreadId) -> Result<Option<Restore>> {
         let t = self.thread(id)?;
-        let Checkout::Worktree { path, branch } = &t.checkout else {
+        let Checkout::Worktree { path, branch, .. } = &t.checkout else {
             return Ok(None);
         };
         if path.exists() {
@@ -3250,6 +3252,7 @@ impl Owner {
                         Checkout::Worktree {
                             path: row.path,
                             branch: row.branch.unwrap_or_else(|| "HEAD".into()),
+                            sandbox: None,
                         }
                     };
                     let result = self.new_thread(id, checkout, SessionSettings::default(), None);

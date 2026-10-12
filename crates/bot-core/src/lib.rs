@@ -69,6 +69,7 @@ pub use pull_requests::{
     ThreadPrSummary,
 };
 mod runtime;
+pub mod sandbox;
 mod settings;
 mod skills;
 pub use skills::Skill;

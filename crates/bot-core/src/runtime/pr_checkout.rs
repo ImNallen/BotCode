@@ -157,6 +157,7 @@ impl Owner {
                     Checkout::Worktree {
                         path: path.clone(),
                         branch: row.branch.unwrap_or_else(|| "HEAD".into()),
+                        sandbox: None,
                     }
                 };
                 let thread =

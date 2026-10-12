@@ -122,6 +122,7 @@ pub fn add_worktree(
     Ok(Checkout::Worktree {
         path: dunce::canonicalize(path)?,
         branch,
+        sandbox: None,
     })
 }
 pub fn switch_branch(root: &Path, name: &str, create: bool) -> Result<String> {

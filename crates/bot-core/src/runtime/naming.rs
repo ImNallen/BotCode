@@ -81,7 +81,7 @@ impl Owner {
         if first.prompt.is_empty() {
             return;
         }
-        let Checkout::Worktree { path, branch } = &t.checkout else {
+        let Checkout::Worktree { path, branch, .. } = &t.checkout else {
             return;
         };
         if self.owners(path) != 1 || temporary_suffix(branch).is_none() {
@@ -126,7 +126,7 @@ impl Owner {
             && self.checkout_generation(&job.path) == job.generation
             && self.threads.get(&job.thread).is_some_and(|t| {
                 matches!(t.turns.as_slice(), [first] if first.id == job.first_turn)
-                    && matches!(&t.checkout, Checkout::Worktree { path, branch }
+                    && matches!(&t.checkout, Checkout::Worktree { path, branch, .. }
                         if path == &job.path && branch == &job.temporary_branch)
             })
     }
@@ -204,6 +204,7 @@ impl Owner {
                             t.checkout = Checkout::Worktree {
                                 path: job.path.clone(),
                                 branch,
+                                sandbox: t.checkout.sandbox().cloned(),
                             };
                             if let Err(error) = self.commit(&job.thread) {
                                 let _ = self

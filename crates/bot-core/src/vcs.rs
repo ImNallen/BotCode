@@ -307,7 +307,7 @@ impl Tool<'_> {
             .unwrap_or_default()
     }
 }
-async fn stop(child: &mut Child, pid: Option<u32>) -> Result<()> {
+pub(crate) async fn stop(child: &mut Child, pid: Option<u32>) -> Result<()> {
     use crate::process::{Kill, kill_tree, tree_alive};
     if let Some(pid) = pid {
         kill_tree(pid, Kill::Polite);
