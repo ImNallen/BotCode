@@ -79,6 +79,10 @@ import { newThreadDestination } from "./command/projectNavigation";
 import { followUps } from "./chat/followUps";
 import { confirmAndDeleteThread, restoreThread } from "./threadActions";
 import { isTerminalFocused } from "./terminal/terminalKeys";
+import {
+  PanelAnimationSuppressionProvider,
+  useShellPanelAnimations,
+} from "./panelAnimations";
 
 const SIDEBAR_DEFAULT = 256;
 const SIDEBAR_MIN = 208;
@@ -95,6 +99,7 @@ export function Workbench() {
   useKeybindings();
   const selection = useSearch({ from: "__root__" });
   const navigate = useNavigate();
+  const panelMotion = useShellPanelAnimations();
   const page = useLocation({
     select: (location): "settings" | "usage" | "pull-requests" | null =>
       location.pathname.startsWith("/settings")
@@ -621,14 +626,16 @@ export function Workbench() {
       </div>
     );
   return (
-    <>
+    <PanelAnimationSuppressionProvider value={panelMotion.suppressed}>
       <div
         inert={paletteOpen}
         data-slot="sidebar-wrapper"
         data-sidebar-state={sidebarOpen ? "expanded" : "collapsed"}
+        data-panel-animations={panelMotion.active ? "true" : "false"}
         className="group/sidebar-wrapper flex w-full h-dvh min-h-0"
         style={
           {
+            ...panelMotion.style,
             "--sidebar-width": `${sidebarWidth}px`,
             "--workspace-titlebar-content-left":
               "calc(var(--workspace-controls-left) + var(--workspace-titlebar-control-size) + var(--workspace-titlebar-control-gap))",
@@ -659,14 +666,14 @@ export function Workbench() {
         >
           <div
             data-slot="sidebar-gap"
-            className="relative w-(--sidebar-width) bg-transparent group-data-[collapsible=offcanvas]:w-0"
+            className="relative w-(--sidebar-width) bg-transparent [[data-panel-animations=true]_&]:transition-[width] [[data-panel-animations=true]_&]:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:ease-out group-data-[collapsible=offcanvas]:w-0"
           />
           <div
             data-slot="sidebar-container"
             data-app-sidebar=""
             role="navigation"
             aria-label={settingsOpen ? "Settings" : "Threads"}
-            className="fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] border-r"
+            className="fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex [[data-panel-animations=true]_&]:transition-[left,right,width] [[data-panel-animations=true]_&]:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:ease-out left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] border-r"
           >
             <div
               data-sidebar="sidebar"
@@ -931,7 +938,7 @@ export function Workbench() {
           }}
         />
       ) : null}
-    </>
+    </PanelAnimationSuppressionProvider>
   );
 }
 
@@ -944,7 +951,11 @@ function SidebarRail({
   onResize: (width: number) => void;
   onReset: () => void;
 }) {
-  const drag = useRef<{ x: number; width: number } | null>(null);
+  const drag = useRef<{
+    x: number;
+    width: number;
+    transitionTargets: HTMLElement[];
+  } | null>(null);
   return (
     <button
       type="button"
@@ -952,11 +963,21 @@ function SidebarRail({
       aria-label="Resize Sidebar"
       title="Drag to resize sidebar"
       data-sidebar="rail"
-      className="-translate-x-1/2 -right-4 absolute inset-y-0 z-20 hidden w-4 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] hover:after:bg-sidebar-border sm:flex cursor-w-resize"
+      className="-translate-x-1/2 -right-4 absolute inset-y-0 z-20 hidden w-4 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] hover:after:bg-sidebar-border sm:flex [[data-panel-animations=true]_&]:transition-all [[data-panel-animations=true]_&]:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:ease-out cursor-w-resize"
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = { x: event.clientX, width };
+        // T3 ui/sidebar.tsx: a drag follows the pointer without panel motion.
+        const transitionTargets = [
+          ...(event.currentTarget
+            .closest("[data-slot='sidebar']")
+            ?.querySelectorAll<HTMLElement>(
+              "[data-slot='sidebar-gap'], [data-slot='sidebar-container']",
+            ) ?? []),
+        ];
+        for (const element of transitionTargets)
+          element.style.setProperty("transition-duration", "0ms");
+        drag.current = { x: event.clientX, width, transitionTargets };
         document.body.style.cursor = "col-resize";
         document.body.style.userSelect = "none";
       }}
@@ -971,6 +992,8 @@ function SidebarRail({
         const next = clampSidebar(
           drag.current.width + event.clientX - drag.current.x,
         );
+        for (const element of drag.current.transitionTargets)
+          element.style.removeProperty("transition-duration");
         drag.current = null;
         document.body.style.cursor = "";
         document.body.style.userSelect = "";

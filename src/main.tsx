@@ -6,7 +6,17 @@ import { RouterProvider } from "@tanstack/react-router";
 import { configurePullRequestQueries, ipc, native, subscribe } from "./ipc";
 import { loadStorage } from "./lib/storage";
 import { router } from "./router";
-import { loadPreferences, PreferencesProvider } from "./settings/preferences";
+import {
+  loadPreferences,
+  PreferencesProvider,
+  readPreferences,
+} from "./settings/preferences";
+import {
+  AppearanceRoot,
+  paintRoot,
+  systemDarkQuery,
+} from "./appearance/AppearanceRoot";
+import { matchesMediaQuery } from "./lib/useMediaQuery";
 import "./styles.css";
 import { FirstRunGate } from "./onboarding/FirstRunGate";
 import { FollowUpSender } from "./chat/FollowUpSender";
@@ -42,6 +52,10 @@ function initialize(): Promise<void> {
     loadKeybindings(),
   ])
     .then(async () => {
+      paintRoot({
+        appearance: readPreferences().preferences.appearance,
+        systemDark: matchesMediaQuery(systemDarkQuery),
+      });
       await migrateLegacyScriptShortcuts();
       unsubscribe ??= await subscribe(client);
       void client.prefetchQuery({
@@ -103,6 +117,7 @@ function Startup() {
   return (
     <QueryClientProvider client={client}>
       <PreferencesProvider>
+        <AppearanceRoot />
         <FirstRunGate>
           <FollowUpSender />
           <RouterProvider router={router} />

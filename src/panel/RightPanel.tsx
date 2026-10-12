@@ -12,6 +12,7 @@ import {
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -121,6 +122,7 @@ export function RightPanel({
   view,
   state: savedState,
   onChange,
+  open: panelOpen,
   maximized,
   conversationId,
   pullRequests,
@@ -139,6 +141,8 @@ export function RightPanel({
   view: WorkspaceView | undefined;
   state: PanelState;
   onChange: (state: PanelState) => void;
+  // False while the panel stays mounted for its closing transition.
+  open: boolean;
   maximized: boolean;
   conversationId: string | undefined;
   pullRequests: ThreadPrSummary["links"];
@@ -159,6 +163,43 @@ export function RightPanel({
   );
   const host = useRef<HTMLDivElement>(null);
   const { width, handlers } = usePanelWidth(host, !maximized);
+  // Derive suppression before the layout commits so the browser never creates
+  // a width transition for resize or maximize changes.
+  const [layoutTransition, setLayoutTransition] = useState(() => ({
+    open: panelOpen,
+    width,
+    maximized,
+    suppressed: false,
+  }));
+  if (
+    layoutTransition.open !== panelOpen ||
+    layoutTransition.width !== width ||
+    layoutTransition.maximized !== maximized
+  ) {
+    setLayoutTransition({
+      open: panelOpen,
+      width,
+      maximized,
+      suppressed:
+        layoutTransition.open === panelOpen &&
+        (layoutTransition.width !== width ||
+          layoutTransition.maximized !== maximized),
+    });
+  }
+  const suppressWidthTransition = layoutTransition.suppressed;
+  useLayoutEffect(() => {
+    if (!suppressWidthTransition) return;
+    let restoreFrame = 0;
+    const paintFrame = window.requestAnimationFrame(() => {
+      restoreFrame = window.requestAnimationFrame(() => {
+        setLayoutTransition((current) => ({ ...current, suppressed: false }));
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(paintFrame);
+      window.cancelAnimationFrame(restoreFrame);
+    };
+  }, [suppressWidthTransition]);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const tabList = useRef<HTMLDivElement>(null);
   const active =
@@ -263,8 +304,14 @@ export function RightPanel({
         maximized
           ? "flex-1 border-l border-border"
           : "shrink-0 border-l border-border",
+        "[[data-panel-animations=true]_&]:transition-[width] [[data-panel-animations=true]_&]:duration-(--panel-animation-duration) [[data-panel-animations=true]_&]:ease-out",
+        panelOpen && "[[data-panel-animations=true]_&]:starting:w-0!",
+        !panelOpen && "pointer-events-none",
       )}
-      style={{ width: maximized ? "100%" : `${width}px` }}
+      style={{
+        width: maximized ? "100%" : !panelOpen ? "0px" : `${width}px`,
+        transitionDuration: suppressWidthTransition ? "0ms" : undefined,
+      }}
       data-preview-panel-mode="inline"
       data-preview-panel-maximized={maximized ? "true" : "false"}
     >
@@ -282,8 +329,11 @@ export function RightPanel({
           />
         </div>
       )}
-      <div className="h-full min-h-0 w-full">
-        <div className="flex h-full min-h-0 min-w-0 flex-col">
+      <div className="h-full min-h-0 w-full overflow-clip">
+        <div
+          className="flex h-full min-h-0 min-w-0 flex-col"
+          style={maximized ? undefined : { width: `calc(${width}px - 1px)` }}
+        >
           <div
             className={cn(
               "flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center gap-1 pl-2 pr-28 drag-region",
@@ -453,7 +503,7 @@ export function RightPanel({
                   workspaceId={checkout.workspaceId}
                   threadId={threadId}
                   surfaceId={active.id}
-                  fontSize={preferences.codeFontSize}
+                  fontSize={preferences.appearance.fontSizeCode}
                   fileLinks={fileLinks}
                   onNewTerminal={openTerminal}
                 />

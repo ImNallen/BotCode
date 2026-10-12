@@ -43,7 +43,7 @@ it("persists independent source control defaults, project overrides, explicit nu
   const id = "67ce24cf-70e2-44b3-99f4-53bd8d155d19";
   try {
     let current = render();
-    assert.equal(current.preferences.appearance, "dark");
+    assert.equal(current.preferences.appearance.themeAppearanceMode, "dark");
     assert.equal(current.preferences.automaticGitFetchInterval, 30_000);
     assert.equal(current.preferences.defaultAutoPull, false);
     assert.deepEqual(current.preferences.sourceControlWritingStyle, {

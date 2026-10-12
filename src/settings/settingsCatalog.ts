@@ -550,6 +550,52 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
         ],
       },
       {
+        id: "appearance-interface",
+        title: "Interface",
+        rows: [
+          {
+            id: "setting-appearance-contrast",
+            title: "Contrast",
+            description:
+              "Adjust the contrast of colors and borders across the interface.",
+            keywords: "colors borders interface",
+          },
+          {
+            id: "setting-glass-opacity",
+            title: "Glass opacity",
+            description:
+              "Higher values make menus, dialogs, and the composer more solid.",
+            keywords: "transparent transparency solid menus dialogs composer",
+          },
+          {
+            id: "diff-color-scheme",
+            title: "Diff colors",
+            description:
+              "Choose colors for additions and deletions, including change counts.",
+            keywords:
+              "red green blue orange additions deletions changes counts palette colorblind",
+          },
+          {
+            id: "chat-width",
+            title: "Chat width",
+            description:
+              "Set how wide messages and the composer can grow on large screens.",
+            keywords: "wide full width column layout messages composer monitor",
+          },
+        ],
+      },
+      {
+        id: "motion",
+        title: "Motion",
+        rows: [
+          {
+            id: "panel-animations",
+            title: "Panel animations",
+            description: "Set how fast panels open and close.",
+          },
+        ],
+      },
+      {
         id: "typography",
         title: "Typography",
         rows: [

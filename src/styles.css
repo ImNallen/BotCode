@@ -3,9 +3,6 @@
 :root {
   font-size: 16px;
   -webkit-font-smoothing: antialiased;
-  --font-size-prompt: 14px;
-  --font-size-code: 13px;
-  --diffs-font-size: 13px;
 }
 
 :root.macos-desktop {

@@ -126,7 +126,7 @@ export function TerminalDrawerHost({
             active={isActive}
             fileLinks={isActive ? active?.fileLinks : undefined}
             composer={isActive ? (active?.composer ?? null) : null}
-            fontSize={preferences.codeFontSize}
+            fontSize={preferences.appearance.fontSizeCode}
           />,
           hostFor(scope),
           scope,

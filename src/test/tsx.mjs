@@ -24,6 +24,8 @@ registerHooks({
       compilerOptions: {
         jsx: ts.JsxEmit.ReactJSX,
         module: ts.ModuleKind.ESNext,
+        // TypeScript defaults to ES5, where for...of over a Set or Map iterates nothing.
+        target: ts.ScriptTarget.ES2022,
       },
       fileName: fileURLToPath(url),
     }).outputText;

@@ -346,7 +346,7 @@ function AgentInstallTerminal({
         {state.kind === "ready" ? (
           <TerminalViewport
             target={{ owner: "setup", terminalId: state.terminalId }}
-            fontSize={preferences.codeFontSize}
+            fontSize={preferences.appearance.fontSizeCode}
             fileLinks={undefined}
             onSessionExited={onClose}
             focusRequestId={1}
