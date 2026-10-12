@@ -12,6 +12,7 @@ import {
 import {
   attachPreviewHost,
   intersectPreviewRect,
+  measurePreviewHost,
   type PreviewLayout,
 } from "./nativeHost.ts";
 import { openProjectScriptPreview } from "./projectScriptPreview.ts";
@@ -112,6 +113,50 @@ it("a native preview frame stays inside the renderer host and window", () => {
     ),
     null,
   );
+});
+
+it("a closed kept-mounted menu popup does not hide the native preview, an open one does", () => {
+  const popup = {
+    hidden: true,
+    inert: true,
+    checkVisibility() {
+      return !this.hidden;
+    },
+  };
+  const host = {
+    isConnected: true,
+    parentElement: null,
+    closest: () => null,
+    getBoundingClientRect: () => ({ x: 500, y: 100, width: 400, height: 600 }),
+  } as unknown as HTMLElement;
+  const globals = {
+    document: {
+      querySelector: () => popup,
+      querySelectorAll: () => [popup],
+    },
+    window: { innerWidth: 1200, innerHeight: 800 },
+  };
+  const previous = Object.fromEntries(
+    Object.keys(globals).map((name) => [
+      name,
+      Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
+  );
+  for (const [name, value] of Object.entries(globals))
+    Object.defineProperty(globalThis, name, { configurable: true, value });
+  try {
+    assert.deepEqual(measurePreviewHost(host), {
+      rect: { x: 500, y: 100, width: 400, height: 600 },
+      visible: true,
+    });
+    popup.hidden = false;
+    popup.inert = false;
+    assert.deepEqual(measurePreviewHost(host), { rect: null, visible: false });
+  } finally {
+    for (const [name, descriptor] of Object.entries(previous))
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+  }
 });
 
 it("closing the Preview tab before native attach completes releases its lease without showing it", async () => {
