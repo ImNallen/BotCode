@@ -152,7 +152,7 @@ impl SandboxHandle {
     pub(crate) fn is_ready(&self) -> bool {
         self.phase() == Phase::Running
     }
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn mark_ready_for_tests(&self) {
         self.set_phase(Phase::Running);
     }

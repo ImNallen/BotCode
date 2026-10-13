@@ -205,219 +205,224 @@ mod tests {
         assert!(!marks.feed("plain ]133;A\u{7} text"));
     }
 
-    use super::super::{
-        CloseScope, Launch, Sink, TerminalEvent, TerminalKey, TerminalLabels, TerminalSize,
-        Terminals,
-    };
-    use crate::{
-        domain::{ThreadId, WorkspaceId},
-        sandbox::{
-            Desired,
-            tests::{Fixture, gone_within, running, stdout},
-        },
-    };
-    use std::sync::{Arc, Mutex};
+    #[cfg(unix)]
+    mod docker {
+        use super::*;
 
-    struct Shell {
-        terminals: Terminals,
-        key: TerminalKey,
-        output: Arc<Mutex<String>>,
-    }
-    impl Shell {
-        fn open(terminals: Terminals, container: &Container) -> Self {
-            let key = TerminalKey {
-                workspace: WorkspaceId::default(),
-                thread: Some(ThreadId::default()),
-                terminal: "term-1".parse().unwrap(),
-            };
-            let output = Arc::new(Mutex::new(String::new()));
-            let sink: Sink = {
-                let output = output.clone();
-                Arc::new(move |event| {
-                    if let TerminalEvent::Output { data } = event {
-                        output.lock().unwrap().push_str(&data);
+        use crate::terminal::{
+            CloseScope, Launch, Sink, TerminalEvent, TerminalKey, TerminalLabels, TerminalSize,
+            Terminals,
+        };
+        use crate::{
+            domain::{ThreadId, WorkspaceId},
+            sandbox::{
+                Desired,
+                tests::{Fixture, gone_within, running, stdout},
+            },
+        };
+        use std::sync::{Arc, Mutex};
+
+        struct Shell {
+            terminals: Terminals,
+            key: TerminalKey,
+            output: Arc<Mutex<String>>,
+        }
+        impl Shell {
+            fn open(terminals: Terminals, container: &Container) -> Self {
+                let key = TerminalKey {
+                    workspace: WorkspaceId::default(),
+                    thread: Some(ThreadId::default()),
+                    terminal: "term-1".parse().unwrap(),
+                };
+                let output = Arc::new(Mutex::new(String::new()));
+                let sink: Sink = {
+                    let output = output.clone();
+                    Arc::new(move |event| {
+                        if let TerminalEvent::Output { data } = event {
+                            output.lock().unwrap().push_str(&data);
+                        }
+                    })
+                };
+                terminals
+                    .attach(
+                        key.clone(),
+                        Some(&Launch::Sandbox {
+                            container: container.clone(),
+                        }),
+                        TerminalSize::new(80, 24).unwrap(),
+                        sink,
+                    )
+                    .unwrap()
+                    .expect("a new terminal");
+                Self {
+                    terminals,
+                    key,
+                    output,
+                }
+            }
+            fn type_line(&self, line: &str) {
+                self.terminals
+                    .write(&self.key, format!("{line}\r").as_bytes())
+                    .unwrap();
+            }
+            async fn expect(&self, from: usize, pattern: &str) -> usize {
+                let started = Instant::now();
+                loop {
+                    let output = self.output.lock().unwrap().clone();
+                    if let Some(at) = output[from..].find(pattern) {
+                        return from + at + pattern.len();
                     }
-                })
-            };
-            terminals
-                .attach(
-                    key.clone(),
-                    Some(&Launch::Sandbox {
-                        container: container.clone(),
-                    }),
-                    TerminalSize::new(80, 24).unwrap(),
-                    sink,
-                )
-                .unwrap()
-                .expect("a new terminal");
-            Self {
-                terminals,
-                key,
-                output,
+                    assert!(
+                        started.elapsed() < Duration::from_secs(20),
+                        "no {pattern:?} in {:?}",
+                        &output[from..]
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+            fn len(&self) -> usize {
+                self.output.lock().unwrap().len()
+            }
+            fn client(&self) -> i32 {
+                self.terminals.shells()[0].1 as i32
             }
         }
-        fn type_line(&self, line: &str) {
-            self.terminals
-                .write(&self.key, format!("{line}\r").as_bytes())
-                .unwrap();
+
+        async fn running_container(fixture: &Fixture) -> Container {
+            let container = fixture.container();
+            container.converge(Desired::Running).await.unwrap();
+            container
         }
-        async fn expect(&self, from: usize, pattern: &str) -> usize {
+
+        #[tokio::test]
+        #[ignore = "needs Docker"]
+        async fn a_sandbox_terminal_is_a_login_shell_of_the_sandbox_user_that_resizes() {
+            let fixture = Fixture::new().await;
+            let container = running_container(&fixture).await;
+            let (prompts, mut prompted) = tokio::sync::mpsc::unbounded_channel();
+            let shell = Shell::open(Terminals::new(None, None, None, Some(prompts)), &container);
+            tokio::time::timeout(Duration::from_secs(20), prompted.recv())
+                .await
+                .expect("the first prompt is reported")
+                .unwrap();
+            let from = shell.len();
+            shell.type_line("whoami; pwd; uname -s; echo \"home=$HOME\"; env | grep -c /Users/");
+            shell
+                .expect(
+                    from,
+                    "botcode\r\n/workspace\r\nLinux\r\nhome=/home/botcode\r\n0\r\n",
+                )
+                .await;
+            assert_eq!(
+                prompted.recv().await.as_ref(),
+                Some(&shell.key),
+                "the prompt after the command is reported"
+            );
+            shell
+                .terminals
+                .resize(&shell.key, TerminalSize::new(123, 40).unwrap())
+                .unwrap();
+            // The Docker client forwards the size asynchronously, so a command can still see the old one.
             let started = Instant::now();
             loop {
-                let output = self.output.lock().unwrap().clone();
-                if let Some(at) = output[from..].find(pattern) {
-                    return from + at + pattern.len();
+                let from = shell.len();
+                shell.type_line("tput cols");
+                let end = shell.expect(from, "$ ").await;
+                if shell.output.lock().unwrap()[from..end].contains("\r123\r\n") {
+                    break;
                 }
                 assert!(
-                    started.elapsed() < Duration::from_secs(20),
-                    "no {pattern:?} in {:?}",
-                    &output[from..]
+                    started.elapsed() < Duration::from_secs(10),
+                    "the size never reached the container"
                 );
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
+            shell.terminals.shutdown();
         }
-        fn len(&self) -> usize {
-            self.output.lock().unwrap().len()
-        }
-        fn client(&self) -> i32 {
-            self.terminals.shells()[0].1 as i32
-        }
-    }
 
-    async fn running_container(fixture: &Fixture) -> Container {
-        let container = fixture.container();
-        container.converge(Desired::Running).await.unwrap();
-        container
-    }
-
-    #[tokio::test]
-    #[ignore = "needs Docker"]
-    async fn a_sandbox_terminal_is_a_login_shell_of_the_sandbox_user_that_resizes() {
-        let fixture = Fixture::new().await;
-        let container = running_container(&fixture).await;
-        let (prompts, mut prompted) = tokio::sync::mpsc::unbounded_channel();
-        let shell = Shell::open(Terminals::new(None, None, None, Some(prompts)), &container);
-        tokio::time::timeout(Duration::from_secs(20), prompted.recv())
-            .await
-            .expect("the first prompt is reported")
-            .unwrap();
-        let from = shell.len();
-        shell.type_line("whoami; pwd; uname -s; echo \"home=$HOME\"; env | grep -c /Users/");
-        shell
-            .expect(
-                from,
-                "botcode\r\n/workspace\r\nLinux\r\nhome=/home/botcode\r\n0\r\n",
-            )
-            .await;
-        assert_eq!(
-            prompted.recv().await.as_ref(),
-            Some(&shell.key),
-            "the prompt after the command is reported"
-        );
-        shell
-            .terminals
-            .resize(&shell.key, TerminalSize::new(123, 40).unwrap())
-            .unwrap();
-        // The Docker client forwards the size asynchronously, so a command can still see the old one.
-        let started = Instant::now();
-        loop {
-            let from = shell.len();
-            shell.type_line("tput cols");
-            let end = shell.expect(from, "$ ").await;
-            if shell.output.lock().unwrap()[from..end].contains("\r123\r\n") {
-                break;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(10),
-                "the size never reached the container"
-            );
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        shell.terminals.shutdown();
-    }
-
-    #[tokio::test]
-    #[ignore = "needs Docker"]
-    async fn a_killed_client_or_a_closed_terminal_leaves_nothing_running_in_the_container() {
-        let fixture = Fixture::new().await;
-        let container = running_container(&fixture).await;
-        let terminals = Terminals::new(None, None, None, None);
-        for (round, how) in ["kill the client", "close the terminal"]
-            .into_iter()
-            .enumerate()
-        {
-            let shell = Shell::open(terminals.clone(), &container);
-            let (background, foreground) =
-                (format!("sleep 10{round}1"), format!("sleep 10{round}2"));
-            shell.type_line(&format!("{background} &"));
-            shell.type_line(&foreground);
-            let started = Instant::now();
-            while !(running(&container, &background).await
-                && running(&container, &foreground).await)
+        #[tokio::test]
+        #[ignore = "needs Docker"]
+        async fn a_killed_client_or_a_closed_terminal_leaves_nothing_running_in_the_container() {
+            let fixture = Fixture::new().await;
+            let container = running_container(&fixture).await;
+            let terminals = Terminals::new(None, None, None, None);
+            for (round, how) in ["kill the client", "close the terminal"]
+                .into_iter()
+                .enumerate()
             {
+                let shell = Shell::open(terminals.clone(), &container);
+                let (background, foreground) =
+                    (format!("sleep 10{round}1"), format!("sleep 10{round}2"));
+                shell.type_line(&format!("{background} &"));
+                shell.type_line(&foreground);
+                let started = Instant::now();
+                while !(running(&container, &background).await
+                    && running(&container, &foreground).await)
+                {
+                    assert!(
+                        started.elapsed() < Duration::from_secs(20),
+                        "{how}: jobs never started"
+                    );
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                match round {
+                    0 => unsafe {
+                        libc::kill(shell.client(), libc::SIGKILL);
+                    },
+                    _ => terminals.close(&CloseScope::Terminal(shell.key.clone())),
+                }
+                for pattern in [background.as_str(), foreground.as_str(), "bash -l"] {
+                    assert!(
+                        gone_within(&container, pattern, Duration::from_secs(10)).await,
+                        "{how}: {pattern} survived"
+                    );
+                }
+                let left = stdout(&container, &["ps", "-eo", "args="]).await;
                 assert!(
-                    started.elapsed() < Duration::from_secs(20),
-                    "{how}: jobs never started"
+                    !left
+                        .lines()
+                        .any(|args| args.starts_with("bash") || args.starts_with("sleep 10")),
+                    "{how}: {left}"
                 );
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            match round {
-                0 => unsafe {
-                    libc::kill(shell.client(), libc::SIGKILL);
-                },
-                _ => terminals.close(&CloseScope::Terminal(shell.key.clone())),
-            }
-            for pattern in [background.as_str(), foreground.as_str(), "bash -l"] {
                 assert!(
-                    gone_within(&container, pattern, Duration::from_secs(10)).await,
-                    "{how}: {pattern} survived"
+                    stdout(&container, &["sh", "-c", "ls /dev/shm/botcode-terminals"])
+                        .await
+                        .trim()
+                        .is_empty(),
+                    "{how}: the record is removed"
                 );
             }
-            let left = stdout(&container, &["ps", "-eo", "args="]).await;
-            assert!(
-                !left
-                    .lines()
-                    .any(|args| args.starts_with("bash") || args.starts_with("sleep 10")),
-                "{how}: {left}"
-            );
-            assert!(
-                stdout(&container, &["sh", "-c", "ls /dev/shm/botcode-terminals"])
-                    .await
-                    .trim()
-                    .is_empty(),
-                "{how}: the record is removed"
-            );
         }
-    }
 
-    #[tokio::test]
-    #[ignore = "needs Docker"]
-    async fn the_label_poller_reads_the_command_inside_the_container() {
-        let fixture = Fixture::new().await;
-        let container = running_container(&fixture).await;
-        let (labels, mut watched) = tokio::sync::watch::channel(TerminalLabels::default());
-        let shell = Shell::open(Terminals::new(None, Some(labels), None, None), &container);
-        shell.expect(0, "$ ").await;
-        shell.type_line("sleep 30");
-        let label = |labels: &TerminalLabels| labels.labels.first().map(|l| l.label.clone());
-        let found = tokio::time::timeout(
-            Duration::from_secs(20),
-            watched.wait_for(|labels| label(labels).is_some()),
-        )
-        .await
-        .expect("a label within 20 s")
-        .unwrap()
-        .clone();
-        assert_eq!(label(&found).as_deref(), Some("sleep"));
-        assert_eq!(found.labels[0].terminal_id, shell.key.terminal);
-        shell.terminals.write(&shell.key, b"\x03").unwrap();
-        tokio::time::timeout(
-            Duration::from_secs(20),
-            watched.wait_for(|labels| labels.labels.is_empty()),
-        )
-        .await
-        .expect("the label clears when the command ends")
-        .unwrap();
-        shell.terminals.shutdown();
+        #[tokio::test]
+        #[ignore = "needs Docker"]
+        async fn the_label_poller_reads_the_command_inside_the_container() {
+            let fixture = Fixture::new().await;
+            let container = running_container(&fixture).await;
+            let (labels, mut watched) = tokio::sync::watch::channel(TerminalLabels::default());
+            let shell = Shell::open(Terminals::new(None, Some(labels), None, None), &container);
+            shell.expect(0, "$ ").await;
+            shell.type_line("sleep 30");
+            let label = |labels: &TerminalLabels| labels.labels.first().map(|l| l.label.clone());
+            let found = tokio::time::timeout(
+                Duration::from_secs(20),
+                watched.wait_for(|labels| label(labels).is_some()),
+            )
+            .await
+            .expect("a label within 20 s")
+            .unwrap()
+            .clone();
+            assert_eq!(label(&found).as_deref(), Some("sleep"));
+            assert_eq!(found.labels[0].terminal_id, shell.key.terminal);
+            shell.terminals.write(&shell.key, b"\x03").unwrap();
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                watched.wait_for(|labels| labels.labels.is_empty()),
+            )
+            .await
+            .expect("the label clears when the command ends")
+            .unwrap();
+            shell.terminals.shutdown();
+        }
     }
 }

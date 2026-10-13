@@ -1,7 +1,9 @@
 // Ports T3 Code v0.0.45 apps/server/src/project/ProjectSetupScriptRunner.ts (MIT).
 use super::*;
 use crate::project::{self, ProjectConfig, SetupState, WorktreeSetup};
-use crate::sandbox::{Attach, Container, Exec, WORKSPACE};
+use crate::sandbox::Container;
+#[cfg(unix)]
+use crate::sandbox::{Attach, Exec, WORKSPACE};
 use std::io::{Read, Seek, SeekFrom};
 
 impl Owner {
