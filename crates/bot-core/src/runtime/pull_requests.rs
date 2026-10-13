@@ -239,7 +239,7 @@ impl Owner {
         let links = self.pr_summary(&thread.id).links;
         let blocked = root
             .is_some_and(|root| self.leases.contains_key(root) || self.held.contains_key(root))
-            || self.pending.iter().any(|job| {
+            || self.providers.pending().any(|job| {
                 job.thread() == &thread.id
                     || root.is_some_and(|root| {
                         self.threads.get(job.thread()).is_some_and(|pending| {

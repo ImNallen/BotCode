@@ -4,6 +4,8 @@ mod checkpoints;
 mod collaboration;
 mod compaction;
 mod naming;
+mod providers;
+use providers::EnvKey;
 mod restarts;
 mod thread_actions;
 mod titles;
@@ -610,15 +612,10 @@ impl App {
                 leases: HashMap::new(),
                 held: HashMap::new(),
                 callbacks: HashMap::new(),
-                collaboration_modes: vec![],
                 collaboration_waiters: vec![],
-                provider: None,
-                epoch: 0,
-                launching: false,
-                restarts: restarts::Restarts::default(),
+                providers: Default::default(),
                 log: log.clone(),
                 provider_pids: provider_pids.clone(),
-                pending: vec![],
                 models: None,
                 model_waiters: vec![],
                 listing_models: false,
@@ -2288,6 +2285,22 @@ enum Completion {
     },
 }
 impl Completion {
+    fn epoch(&self) -> Option<u64> {
+        match self {
+            Self::StackProgress { .. } => None,
+            Self::Models { epoch, .. }
+            | Self::Limits { epoch, .. }
+            | Self::ResetConsumed { epoch, .. }
+            | Self::Launched { epoch, .. }
+            | Self::Prepared { epoch, .. }
+            | Self::Started { epoch, .. }
+            | Self::CompactionExpired { epoch, .. }
+            | Self::Steered { epoch, .. }
+            | Self::Answered { epoch, .. }
+            | Self::UserQuestionsAnswered { epoch, .. }
+            | Self::Interrupted { epoch, .. } => Some(*epoch),
+        }
+    }
     fn process_died(&self) -> bool {
         let error = match self {
             Self::StackProgress { .. }
@@ -2366,15 +2379,10 @@ struct Owner {
     leases: HashMap<PathBuf, ThreadId>,
     held: HashMap<PathBuf, Hold>,
     callbacks: HashMap<Callback, Route>,
-    collaboration_modes: Vec<collaboration::ModePreset>,
     collaboration_waiters: Vec<Reply<Vec<InteractionMode>>>,
-    provider: Option<Codex>,
-    epoch: u64,
-    launching: bool,
-    restarts: restarts::Restarts,
+    providers: providers::Providers,
     log: RotatingLog,
     provider_pids: crate::diagnostics::ProviderPids,
-    pending: Vec<Prepare>,
     models: Option<Vec<ModelOption>>,
     model_waiters: Vec<Reply<Vec<ModelOption>>>,
     listing_models: bool,
@@ -2586,7 +2594,7 @@ impl Owner {
                 || self.held.contains_key(t.root(w))
         }) || self.held.contains_key(&w.root)
             || self.leases.values().any(owns)
-            || self.pending.iter().any(|job| owns(job.thread()));
+            || self.providers.pending().any(|job| owns(job.thread()));
         if busy
             || self
                 .review_work
@@ -2601,7 +2609,7 @@ impl Owner {
         }
         let removed: HashSet<ThreadId> = threads.iter().map(|t| t.id.clone()).collect();
         self.store.remove_workspace(id)?;
-        self.cancel_thread_commit_previews(&removed);
+        self.cancel_thread_commit_previews(|id| removed.contains(id));
         for id in &removed {
             self.cancel_name(id);
             self.supersede_title(id);
@@ -2666,7 +2674,7 @@ impl Owner {
         ) && !t.input_open()
             && t.pending_revert.is_none()
             && !self.leases.contains_key(root)
-            && !self.pending.iter().any(|job| job.thread() == &t.id)
+            && !self.providers.pending().any(|job| job.thread() == &t.id)
             && !self.held.contains_key(root)
     }
     fn owners(&self, path: &Path) -> usize {
@@ -2780,6 +2788,40 @@ impl Owner {
         let _ = self.changes.send(hint);
         Ok(())
     }
+    /// Signals from a retired epoch are dropped.
+    async fn signal(&mut self, signal: Signal) {
+        match signal {
+            Signal::Frame { epoch, value } => {
+                let Some(key) = self.providers.key(epoch).cloned() else {
+                    return;
+                };
+                if let Err(error) = self.frame(&key, epoch, value).await
+                    && error.code != "provider_lost"
+                {
+                    self.lose_env(&key, &error.message, &error.message).await;
+                }
+            }
+            Signal::Exited { epoch, exit } => {
+                if let Some(key) = self.providers.key(epoch).cloned() {
+                    self.lose_env(&key, &exit.headline(), &exit.reason()).await;
+                }
+            }
+        }
+    }
+    /// Stops the live processes of `scope`, or of every slot, on purpose. No failure counts
+    /// toward backoff, and each process's later `Exited` carries a retired epoch, so it is
+    /// dropped. Their threads are released by the `lose` that follows.
+    async fn stop_providers(&mut self, scope: Option<&EnvKey>) -> Result<()> {
+        let mut result = Ok(());
+        for key in self.providers.keys() {
+            if scope.is_none_or(|scope| *scope == key)
+                && let Some(provider) = self.providers.stop(&key)
+            {
+                result = result.and(provider.terminate().await);
+            }
+        }
+        result
+    }
     async fn run(
         mut self,
         mut commands: mpsc::Receiver<Command>,
@@ -2810,22 +2852,14 @@ impl Owner {
                     if let Command::Shutdown(reply)=command {
                         self.closing = true;
                         commands.close();
-                        let result=if let Some(provider)=self.provider.take(){provider.terminate().await}else{Ok(())};
+                        let result=self.stop_providers(None).await;
                         self.lose("Bot Code closed. Native execution stopped.").await;
                         shutdown=Some((reply,result));
                         break;
                     }
                     self.command(command).await;
                 }
-                Some(signal)=signals.recv()=>{
-                    match signal {
-                        Signal::Frame{epoch,value} if epoch==self.epoch=>{
-                            if let Err(error)=self.frame(value).await && error.code!="provider_lost" {self.lose(&error.message).await;}
-                        }
-                        Signal::Exited{epoch,exit} if epoch==self.epoch=>self.lose_with(&exit.headline(),&exit.reason()).await,
-                        _=>{}
-                    }
-                }
+                Some(signal)=signals.recv()=>self.signal(signal).await,
                 Some(done)=self.writing.active.join_next(), if !self.writing.active.is_empty()=>{
                     self.finish_commit_preview(done);
                 }
@@ -2863,7 +2897,8 @@ impl Owner {
                     if let Err(error)=self.finish_tool(done).await {self.lose(&error.message).await;}
                 }
                 Some(done)=completions.recv()=>{
-                    if let Err(error)=self.complete(done).await {self.lose(&error.message).await;}
+                    let key=done.epoch().and_then(|epoch| self.providers.key(epoch).cloned());
+                    if let Err(error)=self.complete(done).await {self.lose_in(key.as_ref(),&error.message,&error.message).await;}
                 }
                 _=tick.tick()=>{
                     self.poll_source_control();
@@ -2882,12 +2917,10 @@ impl Owner {
                 else=>break,
             }
         }
-        if let Some(provider) = self.provider.take() {
-            let _ = provider.terminate().await;
-        }
+        let _ = self.stop_providers(None).await;
         commands.close();
         let clone_shutdown = self.project_clones.shutdown().await;
-        self.tools.revoke();
+        self.tools.revoke(&HashSet::new());
         while self.tools.jobs.join_next().await.is_some() {}
         while let Some(Ok(done)) = self.delete_jobs.join_next().await {
             self.finish_delete(done);
@@ -3346,22 +3379,18 @@ impl Owner {
             }
             Command::Models(reply) => {
                 self.model_waiters.push(reply);
-                if self.provider.is_none() {
-                    self.launch();
+                if self.providers.client(&EnvKey::Mac).is_none() {
+                    self.launch(EnvKey::Mac);
                 } else {
                     self.list_models();
                 }
             }
             Command::CollaborationModes(reply) => {
-                if self.provider.is_some() {
-                    let _ = reply.send(Ok(self
-                        .collaboration_modes
-                        .iter()
-                        .filter_map(|preset| preset.mode)
-                        .collect()));
+                if self.providers.client(&EnvKey::Mac).is_some() {
+                    let _ = reply.send(Ok(self.mode_catalog()));
                 } else {
                     self.collaboration_waiters.push(reply);
-                    self.launch();
+                    self.launch(EnvKey::Mac);
                 }
             }
             Command::UserQuestions(id, answers, reply) => {
@@ -3374,20 +3403,19 @@ impl Owner {
                     let _ = reply.send(Ok(limits));
                 } else {
                     self.limit_waiters.push(reply);
-                    if self.provider.is_none() {
-                        self.launch();
+                    if self.providers.client(&EnvKey::Mac).is_none() {
+                        self.launch(EnvKey::Mac);
                     } else {
                         self.read_limits();
                     }
                 }
             }
             Command::ConsumeResetCredit(reply) => {
-                let Some(provider) = self.provider.clone() else {
+                let Some((epoch, provider)) = self.providers.client(&EnvKey::Mac) else {
                     let _ = reply.send(Err(AppError::new("provider", "Codex is not running.")));
                     return;
                 };
                 let redeemer = self.reset_redeemer.clone();
-                let epoch = self.epoch;
                 let done = self.done.clone();
                 tokio::spawn(async move {
                     let result = redeemer
@@ -3496,16 +3524,13 @@ impl Owner {
                             "This approval no longer has a live callback.",
                         )
                     })?;
-                    if route.epoch != self.epoch {
+                    let Some((_, provider)) = self.providers.live(route.epoch) else {
                         return Err(AppError::new(
                             "approval_expired",
                             "Codex restarted. This approval expired.",
                         ));
-                    }
-                    let provider = self
-                        .provider
-                        .clone()
-                        .ok_or_else(|| AppError::new("provider_lost", "Codex is unavailable."))?;
+                    };
+                    let provider = provider.clone();
                     let mut thread = self.threads.get(&route.thread).cloned().ok_or_else(|| {
                         AppError::new("missing_thread", "Conversation not found.")
                     })?;
@@ -3547,7 +3572,7 @@ impl Owner {
                     self.install(thread)?;
                     self.callbacks.remove(&callback);
                     let done = self.done.clone();
-                    let epoch = self.epoch;
+                    let epoch = route.epoch;
                     tokio::spawn(async move {
                         let result = provider.respond(route.request, response).await;
                         let _ = done.send(Completion::Answered { epoch, id, result }).await;
@@ -3558,11 +3583,11 @@ impl Owner {
             }
             Command::Interrupt(id, reply) => {
                 let result = (|| -> Result<()> {
-                    let provider = self
-                        .provider
-                        .clone()
-                        .ok_or_else(|| AppError::new("provider_lost", "Codex is unavailable."))?;
                     let t = self.thread(&id)?;
+                    let (epoch, provider) = self
+                        .providers
+                        .client(&EnvKey::of(&t.checkout))
+                        .ok_or_else(|| AppError::new("provider_lost", "Codex is unavailable."))?;
                     let native_thread = t.native_thread_id.clone().ok_or_else(|| {
                         AppError::new(
                             "not_started",
@@ -3586,7 +3611,6 @@ impl Owner {
                     self.install(next)?;
                     self.tools.cancel_thread(&id);
                     let done = self.done.clone();
-                    let epoch = self.epoch;
                     tokio::spawn(async move {
                         let result = provider
                             .request(
@@ -3775,8 +3799,8 @@ impl Owner {
                 "Wait for the current operation to finish.",
             ));
         }
-        // Without a provider the catalogs are unknown; turn start checks them after the relaunch.
-        if self.provider.is_some() && kind == TurnKind::Prompt {
+        // Without the Mac agent the catalogs are unknown; turn start checks them after the relaunch.
+        if self.providers.client(&EnvKey::Mac).is_some() && kind == TurnKind::Prompt {
             self.startable(
                 &thread.settings,
                 thread.native_thread_id.is_some(),
@@ -3920,7 +3944,11 @@ impl Owner {
                 "A previous follow-up still needs delivery confirmation.",
             ));
         }
-        if self.provider.is_none() {
+        if self
+            .providers
+            .client(&EnvKey::of(&thread.checkout))
+            .is_none()
+        {
             return Err(AppError::new("provider_lost", "Codex is unavailable."));
         }
         let root = thread.root(&self.workspaces[&thread.workspace_id]);
@@ -3998,10 +4026,9 @@ impl Owner {
             self.dirty.insert(id.clone());
             return;
         }
-        let provider = self.provider.clone().unwrap();
+        let (epoch, provider) = self.providers.client(&self.env(id)).unwrap();
         let native = self.threads[id].native_thread_id.clone().unwrap();
         let done = self.done.clone();
-        let epoch = self.epoch;
         let thread = id.clone();
         let turn = turn_id.clone();
         let operation = operation.to_owned();
@@ -4031,7 +4058,8 @@ impl Owner {
         }
         if settings.interaction_mode == InteractionMode::Plan
             && !self
-                .collaboration_modes
+                .providers
+                .modes(&EnvKey::Mac)
                 .iter()
                 .any(|preset| preset.mode == Some(InteractionMode::Plan))
         {
@@ -4119,24 +4147,31 @@ impl Owner {
                 .map(|option| option.default_reasoning_effort.as_str())
         })
     }
-    fn launch(&mut self) {
-        if self.launching || self.provider.is_some() {
+    fn mode_catalog(&self) -> Vec<InteractionMode> {
+        self.providers
+            .modes(&EnvKey::Mac)
+            .iter()
+            .filter_map(|preset| preset.mode)
+            .collect()
+    }
+    fn launch(&mut self, key: EnvKey) {
+        let Some(providers::Launch {
+            epoch,
+            delay,
+            failures,
+        }) = self.providers.begin_launch(&key, Instant::now())
+        else {
             return;
-        }
-        self.launching = true;
-        self.epoch += 1;
-        let epoch = self.epoch;
-        let binary = self.config.codex_binary.clone();
+        };
+        let launcher = providers::Launcher::new(&key, self.config.codex_binary.clone());
         let signals = self.provider_events.clone();
         let done = self.done.clone();
-        let delay = self.restarts.delay(Instant::now());
         if !delay.is_zero() {
             self.log.line(
                 "bot-code",
                 &format!(
-                    "restarting Codex in {}s after {} consecutive failures",
+                    "restarting Codex in {}s after {failures} consecutive failures",
                     restarts::whole_seconds(delay),
-                    self.restarts.failures()
                 ),
             );
         }
@@ -4147,16 +4182,7 @@ impl Owner {
             if done.is_closed() {
                 return;
             }
-            let result = match Codex::launch(binary, epoch, signals, log, providers).await {
-                Ok(provider) => match provider.initialize().await {
-                    Ok(()) => Ok(collaboration::discover(provider).await),
-                    Err(e) => {
-                        let _ = provider.terminate().await;
-                        Err(e)
-                    }
-                },
-                Err(e) => Err(e),
-            };
+            let result = launcher.start(epoch, signals, log, providers).await;
             let _ = done.send(Completion::Launched { epoch, result }).await;
         });
     }
@@ -4164,11 +4190,10 @@ impl Owner {
         if self.listing_models || self.model_waiters.is_empty() {
             return;
         }
-        let Some(provider) = self.provider.clone() else {
+        let Some((epoch, provider)) = self.providers.client(&EnvKey::Mac) else {
             return;
         };
         self.listing_models = true;
-        let epoch = self.epoch;
         let done = self.done.clone();
         tokio::spawn(async move {
             let result = collaboration::read_models(&provider).await;
@@ -4179,11 +4204,10 @@ impl Owner {
         if self.reading_limits {
             return;
         }
-        let Some(provider) = self.provider.clone() else {
+        let Some((epoch, provider)) = self.providers.client(&EnvKey::Mac) else {
             return;
         };
         self.reading_limits = true;
-        let epoch = self.epoch;
         let done = self.done.clone();
         tokio::spawn(async move {
             let result = usage::read(&provider).await;
@@ -4228,21 +4252,28 @@ impl Owner {
                 return;
             }
         }
-        if self.provider.is_none() {
+        let Some(key) = self
+            .threads
+            .get(job.thread())
+            .map(|t| EnvKey::of(&t.checkout))
+        else {
+            return;
+        };
+        let Some((epoch, provider)) = self.providers.client(&key) else {
             if let Prepare::Revert(id) = &job {
                 self.waiting_revert_provider(id.clone());
             }
-            self.launch();
+            self.launch(key.clone());
             if let Prepare::Submit(id, _) | Prepare::Resume(id) = &job
-                && let Some(notice) = self.restarts.notice(Instant::now())
+                && let Some(notice) = self.providers.notice(&key, Instant::now())
                 && let Some(t) = self.threads.get_mut(id)
             {
                 t.diagnostic = Some(notice);
                 self.dirty.insert(id.clone());
             }
-            self.pending.push(job);
+            self.providers.queue(key, job);
             return;
-        }
+        };
         if let Prepare::Revert(id) = job {
             self.fork_revert(id);
             return;
@@ -4253,16 +4284,14 @@ impl Owner {
         };
         let root = t.root(&self.workspaces[&t.workspace_id]).to_path_buf();
         let native = t.native_thread_id.clone();
-        let provider = self.provider.clone().unwrap();
         let settings = t.settings.clone();
         let (approval_policy, approvals_reviewer, sandbox) =
             codex::permission_protocol(settings.permission_mode);
         let model = self.resolve_model(&settings).map(str::to_owned);
         let done = self.done.clone();
-        let epoch = self.epoch;
         let creating = native.is_none();
         let mut params = json!({"cwd":root,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandbox":sandbox,"model":model});
-        self.tools_thread_params(job.thread(), &mut params, creating);
+        self.tools_thread_params(job.thread(), epoch, &mut params, creating);
         tokio::spawn(async move {
             let result = if let Some(native) = native {
                 params["threadId"] = json!(native);
@@ -4290,7 +4319,7 @@ impl Owner {
                 let result = self.persist_stack_progress(&access, generation, &operation);
                 let _ = reply.send(result);
             }
-            Completion::Models { epoch, result } if epoch == self.epoch => {
+            Completion::Models { epoch, result } if self.providers.current(epoch) => {
                 self.listing_models = false;
                 if let Ok(models) = &result {
                     self.models = Some(models.clone());
@@ -4299,7 +4328,7 @@ impl Owner {
                     let _ = reply.send(result.clone());
                 }
             }
-            Completion::Limits { epoch, result } if epoch == self.epoch => {
+            Completion::Limits { epoch, result } if self.providers.current(epoch) => {
                 self.settle_limits(result);
             }
             Completion::ResetConsumed {
@@ -4309,44 +4338,45 @@ impl Owner {
                 reply,
             } => {
                 if let Some(limits) = refreshed.clone()
-                    && epoch == self.epoch
+                    && self.providers.current(epoch)
                 {
                     self.publish_limits(limits);
                 }
                 let _ = reply.send(usage::confirm_reset(result, refreshed.as_ref()));
             }
-            Completion::Launched { epoch, result } if epoch == self.epoch => match result {
-                Ok(session) => {
-                    self.launching = false;
-                    self.restarts.ready(Instant::now());
-                    self.collaboration_modes = session.modes;
-                    self.models = session.models;
-                    self.provider = Some(session.provider);
-                    let modes = self
-                        .collaboration_modes
-                        .iter()
-                        .filter_map(|preset| preset.mode)
-                        .collect::<Vec<_>>();
-                    for reply in std::mem::take(&mut self.collaboration_waiters) {
-                        let _ = reply.send(Ok(modes.clone()));
+            Completion::Launched { epoch, result } => {
+                match (self.providers.key(epoch).cloned(), result) {
+                    (Some(key), Ok(session)) => {
+                        let jobs = self.providers.launched(
+                            &key,
+                            session.provider,
+                            session.modes,
+                            Instant::now(),
+                        );
+                        // The catalogs come from the Mac agent.
+                        if key == EnvKey::Mac {
+                            self.models = session.models;
+                            let modes = self.mode_catalog();
+                            for reply in std::mem::take(&mut self.collaboration_waiters) {
+                                let _ = reply.send(Ok(modes.clone()));
+                            }
+                            self.read_limits();
+                            if !self.model_waiters.is_empty() {
+                                self.list_models();
+                            }
+                        }
+                        for job in jobs {
+                            self.prepare(job)
+                        }
                     }
-                    self.read_limits();
-                    if !self.model_waiters.is_empty() {
-                        self.list_models();
+                    (Some(key), Err(e)) => self.lose_env(&key, &e.message, &e.message).await,
+                    (None, Ok(session)) => {
+                        tokio::spawn(async move { session.provider.terminate().await });
                     }
-                    for job in std::mem::take(&mut self.pending) {
-                        self.prepare(job)
-                    }
+                    (None, Err(_)) => {}
                 }
-                Err(e) => self.lose(&e.message).await,
-            },
-            Completion::Launched {
-                result: Ok(session),
-                ..
-            } => {
-                tokio::spawn(async move { session.provider.terminate().await });
             }
-            Completion::Prepared { epoch, job, result } if epoch == self.epoch => {
+            Completion::Prepared { epoch, job, result } if self.providers.current(epoch) => {
                 let id = job.thread().clone();
                 match result {
                     Ok(value) => {
@@ -4399,16 +4429,17 @@ impl Owner {
                                 .startable(&settings, true, &t.turns[..previous.unwrap_or(0)])
                                 .and_then(|()| {
                                     collaboration::turn_mode(
-                                        &self.collaboration_modes,
+                                        self.providers.modes(&self.env(&id)),
                                         &settings,
                                         model.as_deref(),
                                         effort.as_deref(),
                                     )
                                 });
                             self.commit(&id)?;
-                            let provider = self.provider.clone().ok_or_else(|| {
-                                AppError::new("provider_lost", "Codex is unavailable.")
-                            })?;
+                            let (epoch, provider) =
+                                self.providers.client(&self.env(&id)).ok_or_else(|| {
+                                    AppError::new("provider_lost", "Codex is unavailable.")
+                                })?;
                             let done = self.done.clone();
                             let tool_guidance = self.tools.guidance(&native);
                             tokio::spawn(async move {
@@ -4465,7 +4496,7 @@ impl Owner {
                 thread,
                 turn,
                 result,
-            } if epoch == self.epoch => {
+            } if self.providers.current(epoch) => {
                 let t = self.threads.get_mut(&thread).unwrap();
                 let row = t.turns.iter_mut().find(|r| r.id == turn).unwrap();
                 match result {
@@ -4538,7 +4569,8 @@ impl Owner {
                         row.execution=Execution::Lost{reason:"The request may have reached Codex. It will not be sent again automatically.".into()};
                         t.session = SessionState::Unavailable { reason: e.message };
                         self.commit(&thread)?;
-                        self.lose("Codex turn delivery is uncertain. Managed execution was stopped; resume native history before sending another prompt.").await;
+                        let reason = "Codex turn delivery is uncertain. Managed execution was stopped; resume native history before sending another prompt.";
+                        self.lose_env(&self.env(&thread), reason, reason).await;
                         return Ok(());
                     }
                 }
@@ -4548,14 +4580,14 @@ impl Owner {
                 epoch,
                 thread,
                 turn,
-            } if epoch == self.epoch => self.compaction_expired(&thread, &turn)?,
+            } if self.providers.current(epoch) => self.compaction_expired(&thread, &turn)?,
             Completion::Steered {
                 epoch,
                 thread,
                 turn,
                 operation,
                 result,
-            } if epoch == self.epoch => {
+            } if self.providers.current(epoch) => {
                 let Some(t) = self.threads.get_mut(&thread) else {
                     return Ok(());
                 };
@@ -4600,13 +4632,14 @@ impl Owner {
                 };
                 self.commit(&thread)?;
                 if uncertain {
-                    self.lose(
-                        "Follow-up delivery is uncertain. It will not be sent again automatically.",
-                    )
-                    .await;
+                    let reason =
+                        "Follow-up delivery is uncertain. It will not be sent again automatically.";
+                    self.lose_env(&self.env(&thread), reason, reason).await;
                 }
             }
-            Completion::UserQuestionsAnswered { epoch, id, result } if epoch == self.epoch => {
+            Completion::UserQuestionsAnswered { epoch, id, result }
+                if self.providers.current(epoch) =>
+            {
                 if let Some(t) = self
                     .threads
                     .values_mut()
@@ -4631,7 +4664,7 @@ impl Owner {
                     self.commit(&thread)?;
                 }
             }
-            Completion::Answered { epoch, id, result } if epoch == self.epoch => {
+            Completion::Answered { epoch, id, result } if self.providers.current(epoch) => {
                 if let Some(t) = self
                     .threads
                     .values_mut()
@@ -4654,65 +4687,96 @@ impl Owner {
                 epoch,
                 thread,
                 result: Err(e),
-            } if epoch == self.epoch => {
+            } if self.providers.current(epoch) => {
                 // The turn can finish before this reply arrives, and the project can be removed in between.
                 let Some(t) = self.threads.get_mut(&thread) else {
                     return Ok(());
                 };
                 t.diagnostic = Some(format!("Stop was not confirmed: {}", e.message));
                 self.commit(&thread)?;
-                self.lose(
-                    "Interruption could not be confirmed. Managed Codex execution was stopped.",
-                )
-                .await;
+                let reason =
+                    "Interruption could not be confirmed. Managed Codex execution was stopped.";
+                self.lose_env(&self.env(&thread), reason, reason).await;
             }
             _ => {}
         }
         Ok(())
     }
-    async fn lose(&mut self, reason: &str) {
-        self.lose_with(reason, reason).await
+    fn env(&self, thread: &ThreadId) -> EnvKey {
+        EnvKey::of(&self.threads[thread].checkout)
     }
-    /// `headline` is the short banner text; `reason` is recorded on the work that was lost.
-    async fn lose_with(&mut self, headline: &str, reason: &str) {
-        if self.provider.is_some() || self.launching {
-            if !self.closing {
-                self.restarts.lost(Instant::now());
+    /// The thread whose native ID is `native`, among the threads of slot `key`. A provider
+    /// can only address its own threads.
+    fn thread_by_native(&self, key: &EnvKey, native: &str) -> Option<ThreadId> {
+        self.threads
+            .values()
+            .find(|t| {
+                t.native_thread_id.as_deref() == Some(native) && EnvKey::of(&t.checkout) == *key
+            })
+            .map(|t| t.id.clone())
+    }
+    /// Loses every slot.
+    async fn lose(&mut self, reason: &str) {
+        self.lose_in(None, reason, reason).await
+    }
+    /// Loses one slot and only the work of its threads. `headline` is the short banner text;
+    /// `reason` is recorded on the work that was lost.
+    async fn lose_env(&mut self, key: &EnvKey, headline: &str, reason: &str) {
+        self.lose_in(Some(key), headline, reason).await
+    }
+    async fn lose_in(&mut self, scope: Option<&EnvKey>, headline: &str, reason: &str) {
+        let covers = |key: &EnvKey| scope.is_none_or(|scope| scope == key);
+        // Work of a thread that is gone is lost with any slot.
+        let spared: HashSet<ThreadId> = self
+            .threads
+            .values()
+            .filter(|t| !covers(&EnvKey::of(&t.checkout)))
+            .map(|t| t.id.clone())
+            .collect();
+        let now = Instant::now();
+        let mut lost = vec![];
+        for key in self.providers.keys().into_iter().filter(|key| covers(key)) {
+            if self.providers.active(&key) {
+                self.log.line(
+                    "bot-code",
+                    &format!(
+                        "provider lost: {}",
+                        reason.lines().next().unwrap_or_default()
+                    ),
+                );
             }
-            self.log.line(
-                "bot-code",
-                &format!(
-                    "provider lost: {}",
-                    reason.lines().next().unwrap_or_default()
-                ),
-            );
+            lost.extend(self.providers.lose(&key, now, self.closing));
         }
-        self.cancel_names();
-        self.cancel_commit_previews(None);
-        self.tools.revoke();
-        if let Some(provider) = self.provider.take() {
+        self.cancel_names(&spared);
+        self.cancel_thread_commit_previews(|id| !spared.contains(id));
+        self.tools.revoke(&spared);
+        for provider in lost {
             let _ = provider.terminate().await;
         }
-        self.epoch += 1;
-        self.launching = false;
-        self.pending.clear();
-        self.fail_reverts(headline);
-        self.models = None;
-        self.listing_models = false;
-        for reply in std::mem::take(&mut self.model_waiters) {
-            let _ = reply.send(Err(AppError::new("provider_lost", headline)));
+        self.fail_reverts(&spared, headline);
+        if covers(&EnvKey::Mac) {
+            self.models = None;
+            self.listing_models = false;
+            for reply in std::mem::take(&mut self.model_waiters) {
+                let _ = reply.send(Err(AppError::new("provider_lost", headline)));
+            }
+            self.reading_limits = false;
+            if !self.limit_waiters.is_empty() {
+                self.settle_limits(Err(AppError::new("provider_lost", headline)));
+            }
+            for reply in std::mem::take(&mut self.collaboration_waiters) {
+                let _ = reply.send(Err(AppError::new("provider_lost", headline)));
+            }
         }
-        self.reading_limits = false;
-        if !self.limit_waiters.is_empty() {
-            self.settle_limits(Err(AppError::new("provider_lost", headline)));
-        }
-        self.callbacks.clear();
-        self.collaboration_modes.clear();
-        for reply in std::mem::take(&mut self.collaboration_waiters) {
-            let _ = reply.send(Err(AppError::new("provider_lost", headline)));
-        }
-        self.leases.clear();
-        let ids: Vec<_> = self.threads.keys().cloned().collect();
+        self.callbacks
+            .retain(|_, route| spared.contains(&route.thread));
+        self.leases.retain(|_, thread| spared.contains(thread));
+        let ids: Vec<_> = self
+            .threads
+            .keys()
+            .filter(|id| !spared.contains(id))
+            .cloned()
+            .collect();
         for id in ids {
             let t = self.threads.get_mut(&id).unwrap();
             let affected = matches!(
@@ -4777,27 +4841,24 @@ impl Owner {
             let _ = self.commit(&id);
         }
     }
-    async fn frame(&mut self, value: Value) -> Result<()> {
+    /// A frame from slot `key`, which is launching or live under `epoch`.
+    async fn frame(&mut self, key: &EnvKey, epoch: u64, value: Value) -> Result<()> {
         let method = value
             .get("method")
             .and_then(Value::as_str)
             .ok_or_else(|| AppError::new("protocol", "Codex frame has no method."))?;
         let p = value.get("params").unwrap_or(&Value::Null);
         let native = p.get("threadId").and_then(Value::as_str);
-        let id = native.and_then(|native| {
-            self.threads
-                .values()
-                .find(|t| t.native_thread_id.as_deref() == Some(native))
-                .map(|t| t.id.clone())
-        });
+        let id = native.and_then(|native| self.thread_by_native(key, native));
+        let provider = self.providers.live(epoch).map(|(_, codex)| codex.clone());
         if let Some(request) = value.get("id") {
             if method == "item/tool/call" {
-                return self.dynamic_tool(request.clone(), p.clone()).await;
+                return self.dynamic_tool(epoch, request.clone(), p.clone()).await;
             }
             let decoded = match approvals::decode(value.clone()) {
                 Ok(decoded) => decoded,
                 Err(error) => {
-                    if let Some(provider) = &self.provider {
+                    if let Some(provider) = &provider {
                         provider
                             .invalid_request(request.clone(), &error.message)
                             .await?;
@@ -4810,14 +4871,9 @@ impl Owner {
                 ProviderRequest::UserInput(pending) => Some(pending.target.thread_id.as_str()),
                 ProviderRequest::Unsupported => native,
             };
-            let id = native.and_then(|native| {
-                self.threads
-                    .values()
-                    .find(|t| t.native_thread_id.as_deref() == Some(native))
-                    .map(|t| t.id.clone())
-            });
+            let id = native.and_then(|native| self.thread_by_native(key, native));
             let Some(id) = id else {
-                if let Some(provider) = &self.provider {
+                if let Some(provider) = &provider {
                     provider.refuse(request.clone(), method).await?;
                 }
                 return Ok(());
@@ -4827,7 +4883,7 @@ impl Owner {
             });
             let t = self.threads.get_mut(&id).unwrap();
             let Some(turn) = t.turns.iter().rev().find(|turn| turn.execution.active()) else {
-                if let Some(provider) = &self.provider {
+                if let Some(provider) = &provider {
                     provider.refuse(request.clone(), method).await?;
                 }
                 return Ok(());
@@ -4838,7 +4894,7 @@ impl Owner {
                 ProviderRequest::Unsupported => None,
             };
             if native_turn.is_some() && native_turn != turn.native_turn_id.as_deref() {
-                if let Some(provider) = &self.provider {
+                if let Some(provider) = &provider {
                     provider.refuse(request.clone(), method).await?;
                 }
                 return Ok(());
@@ -4846,7 +4902,7 @@ impl Owner {
             match decoded {
                 ProviderRequest::UserInput(pending) => {
                     if let Err(error) = collaboration::validate_questions(&pending.questions) {
-                        if let Some(provider) = &self.provider {
+                        if let Some(provider) = &provider {
                             provider
                                 .invalid_request(request.clone(), &error.message)
                                 .await?;
@@ -4866,7 +4922,7 @@ impl Owner {
                             thread: id.clone(),
                             request: request.clone(),
                             item_id: pending.item_id.clone(),
-                            epoch: self.epoch,
+                            epoch,
                             kind: RouteKind::UserInput,
                         },
                     );
@@ -4876,7 +4932,7 @@ impl Owner {
                 }
                 ProviderRequest::Approval(mut pending) => {
                     if let Some(response) = pending.reply.unsupported_response() {
-                        if let Some(provider) = &self.provider {
+                        if let Some(provider) = &provider {
                             provider.respond(request.clone(), response).await?;
                         }
                         return Ok(());
@@ -4906,7 +4962,7 @@ impl Owner {
                             thread: id.clone(),
                             request: request.clone(),
                             item_id: pending.item_id,
-                            epoch: self.epoch,
+                            epoch,
                             kind: RouteKind::Approval(pending.reply),
                         },
                     );
@@ -4919,7 +4975,7 @@ impl Owner {
                         "Codex requested {method}, which this version cannot answer. The request was refused."
                     ));
                     self.commit(&id)?;
-                    if let Some(provider) = &self.provider {
+                    if let Some(provider) = &provider {
                         provider.refuse(request.clone(), method).await?;
                     }
                 }
@@ -4927,13 +4983,19 @@ impl Owner {
             return Ok(());
         }
         if method == "account/rateLimits/updated" {
+            if *key != EnvKey::Mac {
+                return Ok(());
+            }
             self.limits
                 .send_if_modified(|limits| UsageLimits::apply_update(limits, p));
             return Ok(());
         }
         let Some(id) = id else {
             if let Some(child) = native
-                && let Some(t) = self.threads.values_mut().find(|t| t.subagents.owns(child))
+                && let Some(t) = self
+                    .threads
+                    .values_mut()
+                    .find(|t| t.subagents.owns(child) && EnvKey::of(&t.checkout) == *key)
                 && let Some(event) = crate::subagents::ChildEvent::parse(method, p)
                 && t.subagents.apply(child, event, now_ms())
             {
@@ -5091,8 +5153,10 @@ impl Owner {
                         .filter(|native| p.get("threadId").and_then(Value::as_str) == Some(native));
                         let end = turn.items.len();
                         upsert(&mut turn.items, item, end);
-                        if let Some(native) = restore {
-                            self.restore_context(&native);
+                        if let Some(native) = restore
+                            && let Some(provider) = provider
+                        {
+                            self.restore_context(provider, &native);
                         }
                     }
                 }

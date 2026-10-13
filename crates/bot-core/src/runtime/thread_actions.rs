@@ -67,7 +67,7 @@ impl Owner {
                             | SessionState::Interrupting
                     )
             });
-            let pending = self.pending.iter().any(|job| {
+            let pending = self.providers.pending().any(|job| {
                 self.threads
                     .get(job.thread())
                     .is_some_and(|other| other.root(&self.workspaces[&other.workspace_id]) == root)

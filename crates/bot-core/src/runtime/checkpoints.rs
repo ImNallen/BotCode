@@ -355,14 +355,14 @@ impl Owner {
             }
             return;
         }
-        let provider = self.provider.clone().unwrap();
+        let (epoch, provider) = self.providers.client(&self.env(&id)).unwrap();
         let cwd = if intent.checkout_root.exists() {
             intent.checkout_root.clone()
         } else {
             self.workspaces[&t.workspace_id].root.clone()
         };
         let mut params = json!({"threadId": native.unwrap(), "beforeTurnId": intent.before_native_turn_id.clone().unwrap(), "cwd": cwd, "excludeTurns": false});
-        self.tools_thread_params(&id, &mut params, false);
+        self.tools_thread_params(&id, epoch, &mut params, false);
         self.checkpoint_work.active.spawn(async move {
             let result = provider.request("thread/fork", params).await.and_then(|value| {
                 let thread = value.get("thread").unwrap_or(&Value::Null);
@@ -489,11 +489,12 @@ impl Owner {
             let _ = reply.send(Err(error.clone()));
         }
     }
-    pub(super) fn fail_reverts(&mut self, reason: &str) {
+    pub(super) fn fail_reverts(&mut self, spared: &HashSet<ThreadId>, reason: &str) {
         let ids: Vec<_> = self
             .checkpoint_work
             .running_reverts
             .iter()
+            .filter(|id| !spared.contains(id))
             .cloned()
             .collect();
         for id in ids {

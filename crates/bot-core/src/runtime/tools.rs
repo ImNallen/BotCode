@@ -20,9 +20,8 @@ struct Scope {
     epoch: u64,
 }
 pub(super) enum ToolReply {
-    Dynamic {
-        request: Value,
-    },
+    /// `epoch` is the process that asked, which alone may receive the result.
+    Dynamic { epoch: u64, request: Value },
     Mcp {
         credential: String,
         reply: oneshot::Sender<Result<Value>>,
@@ -138,12 +137,19 @@ impl ToolWork {
             },
         )
     }
-    pub fn revoke(&mut self) {
-        self.jobs.abort_all();
-        self.running.clear();
-        self.credentials.clear();
-        self.sessions.clear();
-        self.seen.clear();
+    /// Ends every tool session except those of `spared` threads.
+    pub fn revoke(&mut self, spared: &HashSet<ThreadId>) {
+        self.running.retain(|(thread, _, _), abort| {
+            if spared.contains(thread) {
+                return true;
+            }
+            abort.abort();
+            false
+        });
+        self.credentials
+            .retain(|_, scope| spared.contains(&scope.thread));
+        self.sessions.retain(|thread, _| spared.contains(thread));
+        self.seen.retain(|thread, _| spared.contains(thread));
     }
     pub fn cancel_thread(&mut self, thread: &ThreadId) {
         self.running.retain(|(id, _, _), abort| {
@@ -168,6 +174,7 @@ impl Owner {
     pub(super) fn tools_thread_params(
         &mut self,
         thread: &ThreadId,
+        epoch: u64,
         params: &mut Value,
         creating: bool,
     ) {
@@ -177,7 +184,7 @@ impl Owner {
             }
             Registration::Dynamic => {}
             Registration::Stdio { .. } => {
-                params["config"] = self.tools.config(thread, self.epoch).unwrap();
+                params["config"] = self.tools.config(thread, epoch).unwrap();
             }
         }
     }
@@ -208,7 +215,7 @@ impl Owner {
         Ok(())
     }
     fn tool_context(&self, thread: &ThreadId, epoch: u64, caller: &Caller) -> Result<ToolContext> {
-        if epoch != self.epoch || self.provider.is_none() {
+        if self.providers.live(epoch).is_none() {
             return Err(AppError::new(
                 "tool_expired",
                 "This tool session expired after Codex restarted.",
@@ -242,26 +249,29 @@ impl Owner {
             call_id: caller.call_id.clone(),
         })
     }
-    pub(super) async fn dynamic_tool(&mut self, request: Value, params: Value) -> Result<()> {
+    /// `item/tool/call` from the process live under `epoch`.
+    pub(super) async fn dynamic_tool(
+        &mut self,
+        epoch: u64,
+        request: Value,
+        params: Value,
+    ) -> Result<()> {
         let (caller, call) = match adapter::dynamic_call(params) {
             Ok(decoded) => decoded,
             Err(problem) => {
-                if let Some(provider) = &self.provider {
+                if let Some((_, provider)) = self.providers.live(epoch) {
                     provider.invalid_request(request, &problem.message).await?;
                 }
                 return Ok(());
             }
         };
         let target = self
-            .threads
-            .values()
-            .find(|thread| {
-                thread.native_thread_id.as_deref() == Some(caller.native_thread.as_str())
-            })
-            .map(|thread| thread.id.clone());
-        let reply = ToolReply::Dynamic { request };
+            .providers
+            .key(epoch)
+            .and_then(|key| self.thread_by_native(key, &caller.native_thread));
+        let reply = ToolReply::Dynamic { epoch, request };
         let context = match target
-            .and_then(|thread| self.tool_context(&thread, self.epoch, &caller).ok())
+            .and_then(|thread| self.tool_context(&thread, epoch, &caller).ok())
         {
             Some(context)
                 if matches!(self.tools.registration, Registration::Dynamic)
@@ -287,7 +297,7 @@ impl Owner {
             .tools
             .credentials
             .get(&request.credential)
-            .filter(|scope| scope.epoch == self.epoch)
+            .filter(|scope| self.providers.current(scope.epoch))
         else {
             let _ = reply.send(Err(AppError::new(
                 "tool_expired",
@@ -471,8 +481,8 @@ impl Owner {
     }
     async fn send_tool_result(&mut self, reply: ToolReply, result: ToolResult) -> Result<()> {
         match reply {
-            ToolReply::Dynamic { request } => {
-                if let Some(provider) = &self.provider {
+            ToolReply::Dynamic { epoch, request } => {
+                if let Some((_, provider)) = self.providers.live(epoch) {
                     provider
                         .respond(request, adapter::dynamic_result(result.bounded()))
                         .await?;

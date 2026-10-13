@@ -127,12 +127,12 @@ impl Owner {
             self.cancel_commit_preview(&id);
         }
     }
-    pub(super) fn cancel_thread_commit_previews(&mut self, threads: &HashSet<ThreadId>) {
+    pub(super) fn cancel_thread_commit_previews(&mut self, threads: impl Fn(&ThreadId) -> bool) {
         let ids: Vec<_> = self
             .writing
             .pending
             .iter()
-            .filter(|(_, preview)| threads.contains(&preview.thread))
+            .filter(|(_, preview)| threads(&preview.thread))
             .map(|(id, _)| id.clone())
             .collect();
         for id in ids {

@@ -47,11 +47,10 @@ pub(super) fn admit(t: &ThreadSnapshot, steering: bool) -> Result<()> {
 impl Owner {
     /// Codex acknowledges `thread/compact/start` with an empty result, then runs the compaction as its own turn.
     pub(super) fn dispatch_compaction(&mut self, thread: ThreadId, turn: TurnId, native: String) {
-        let Some(provider) = self.provider.clone() else {
+        let Some((epoch, provider)) = self.providers.client(&self.env(&thread)) else {
             return;
         };
         let done = self.done.clone();
-        let epoch = self.epoch;
         let ceiling = self.config.compaction_timeout;
         tokio::spawn(async move {
             let result = provider
@@ -96,11 +95,11 @@ impl Owner {
             .native_thread_id
             .clone()
             .zip(row.native_turn_id.clone())
-            .zip(self.provider.clone());
+            .zip(self.providers.client(&EnvKey::of(&t.checkout)));
         t.session = SessionState::Ready;
         t.diagnostic = Some(TIMEOUT_REASON.into());
         // Stop the stalled compaction so the next prompt does not start beside it.
-        if let Some(((native_thread, native_turn), provider)) = interrupt {
+        if let Some(((native_thread, native_turn), (_, provider))) = interrupt {
             tokio::spawn(async move {
                 let _ = provider
                     .request(
@@ -114,9 +113,8 @@ impl Owner {
         self.capture_after(thread, turn.clone())
     }
     /// Compaction drops `additionalContext`, and Codex resends an entry only when its value changes.
-    pub(super) fn restore_context(&self, native: &str) {
-        let (Some(provider), Some(guidance)) = (self.provider.clone(), self.tools.guidance(native))
-        else {
+    pub(super) fn restore_context(&self, provider: Codex, native: &str) {
+        let Some(guidance) = self.tools.guidance(native) else {
             return;
         };
         let log = self.log.clone();

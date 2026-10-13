@@ -1,5 +1,9 @@
 // Local CLI setup adapted from T3 Code v0.0.45 onboarding/providerReadiness.logic.ts and provider/Layers/CodexProvider.ts (MIT).
-use crate::{codex::Codex, log::RotatingLog, vcs};
+use crate::{
+    codex::{AgentProcess, Codex},
+    log::RotatingLog,
+    vcs,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -99,11 +103,18 @@ pub(crate) async fn readiness(configured: &Path, cwd: &Path) -> CodexReadiness {
         _ => return attention("Could not check the Codex version. Try again."),
     };
     let (events, _receiver) = mpsc::channel(32);
-    let provider =
-        match Codex::launch(binary, 0, events, RotatingLog::silent(), Default::default()).await {
-            Ok(provider) => provider,
-            Err(_) => return attention("Could not start Codex. Try again."),
-        };
+    let provider = match Codex::launch(
+        AgentProcess::mac(&binary),
+        0,
+        events,
+        RotatingLog::silent(),
+        Default::default(),
+    )
+    .await
+    {
+        Ok(provider) => provider,
+        Err(_) => return attention("Could not start Codex. Try again."),
+    };
     let result = tokio::time::timeout(PROBE_TIMEOUT, async {
         provider.initialize().await?;
         provider

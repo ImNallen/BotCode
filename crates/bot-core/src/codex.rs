@@ -10,7 +10,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
-    path::PathBuf,
+    path::Path,
     process::ExitStatus,
     sync::{
         Arc,
@@ -144,19 +144,26 @@ pub struct Codex {
     _alive: Arc<oneshot::Sender<()>>,
     pid: u32,
 }
+/// The command that starts an app-server. `Codex` pipes its stdio and stops its process group
+/// without knowing where it runs.
+pub(crate) struct AgentProcess(std::process::Command);
+impl AgentProcess {
+    pub(crate) fn mac(binary: &Path) -> Self {
+        let mut command = crate::process::grouped(crate::onboarding::resolve_binary(binary));
+        command.arg("app-server");
+        Self(command)
+    }
+}
 impl Codex {
     pub(crate) async fn launch(
-        binary: PathBuf,
+        process: AgentProcess,
         epoch: u64,
         events: mpsc::Sender<Signal>,
         log: RotatingLog,
         providers: crate::diagnostics::ProviderPids,
     ) -> Result<Self> {
-        let mut command = Command::from(crate::process::grouped(
-            crate::onboarding::resolve_binary(&binary),
-        ));
+        let mut command = Command::from(process.0);
         command
-            .arg("app-server")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -497,6 +504,7 @@ async fn next_frame(reader: &mut BufReader<ChildStdout>, buf: &mut Vec<u8>) -> R
 mod tests {
     use super::*;
     use std::os::unix::{fs::PermissionsExt, process::ExitStatusExt};
+    use std::path::PathBuf;
 
     fn exit(status: Option<i32>, cause: Option<&str>, stderr: usize) -> Exit {
         Exit {
@@ -568,9 +576,15 @@ mod tests {
         );
         let log = RotatingLog::open(dir.path().join("codex.log"));
         let (events, mut signals) = mpsc::channel(4);
-        let _codex = Codex::launch(binary, 7, events, log, Default::default())
-            .await
-            .unwrap();
+        let _codex = Codex::launch(
+            AgentProcess::mac(&binary),
+            7,
+            events,
+            log,
+            Default::default(),
+        )
+        .await
+        .unwrap();
         let Some(Signal::Exited { epoch, exit }) = signals.recv().await else {
             panic!("expected an exit signal");
         };
@@ -611,7 +625,7 @@ mod tests {
         );
         let (events, _signals) = mpsc::channel(4);
         let codex = Codex::launch(
-            binary,
+            AgentProcess::mac(&binary),
             1,
             events,
             RotatingLog::open(dir.path().join("codex.log")),

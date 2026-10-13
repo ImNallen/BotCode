@@ -65,8 +65,14 @@ impl Owner {
     pub(super) fn cancel_name(&mut self, id: &ThreadId) {
         self.naming.cancel(id);
     }
-    pub(super) fn cancel_names(&mut self) {
-        let ids: Vec<_> = self.naming.pending.keys().cloned().collect();
+    pub(super) fn cancel_names(&mut self, spared: &HashSet<ThreadId>) {
+        let ids: Vec<_> = self
+            .naming
+            .pending
+            .keys()
+            .filter(|id| !spared.contains(id))
+            .cloned()
+            .collect();
         for id in ids {
             self.naming.cancel(&id);
         }
@@ -223,7 +229,7 @@ impl Owner {
         self.apply_ready_names();
     }
     pub(super) async fn stop_names(&mut self) {
-        self.cancel_names();
+        self.cancel_names(&HashSet::new());
         while let Some(done) = self.naming.active.join_next().await {
             self.finish_name(done);
         }

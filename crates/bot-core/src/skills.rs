@@ -1,5 +1,9 @@
 // Ported from pingdotgg/t3code v0.0.45 apps/server/src/provider/Layers/CodexProvider.ts (MIT).
-use crate::{codex::Codex, domain::Result, log::RotatingLog};
+use crate::{
+    codex::{AgentProcess, Codex},
+    domain::Result,
+    log::RotatingLog,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
@@ -104,7 +108,14 @@ async fn list_with_timeout(
     log: RotatingLog,
 ) -> Vec<Skill> {
     let (events, mut signals) = mpsc::channel(16);
-    let provider = match Codex::launch(binary.to_owned(), 0, events, log, Default::default()).await
+    let provider = match Codex::launch(
+        AgentProcess::mac(binary),
+        0,
+        events,
+        log,
+        Default::default(),
+    )
+    .await
     {
         Ok(provider) => provider,
         Err(_) => return vec![],
