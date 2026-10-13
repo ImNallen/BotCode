@@ -130,7 +130,7 @@ export function DesktopSurface({
   if (!native)
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground">
-        The desktop is only available in the Bot Code desktop app.
+        The desktop is only available in the L1 Code desktop app.
       </div>
     );
   const problem = endpoint ? (error ?? state.error) : null;

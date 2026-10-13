@@ -22,7 +22,7 @@ const ids = [
   "018ba719-19f4-4fdb-bd79-aa4a676ea058",
 ];
 const boundary = {
-  reference: "refs/botcode/checkpoints/test/before",
+  reference: "refs/l1code/checkpoints/test/before",
   commit: "a".repeat(40),
 };
 

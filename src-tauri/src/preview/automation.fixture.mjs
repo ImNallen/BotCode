@@ -23,7 +23,7 @@ const automate = (0, eval)(`(${source})`);
 const fixture = document.querySelector("#fixture");
 const cases = [];
 let snapshotNumber = 0;
-const key = "__botcode_preview_behavior_fixture";
+const key = "__l1code_preview_behavior_fixture";
 
 function call(operation, args = {}) {
   return automate({ operation, key, args });

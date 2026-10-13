@@ -11,7 +11,7 @@ import {
   type ThreadTerminalUiState,
 } from "./terminalState";
 
-const STORAGE_KEY = "z1:terminal-state";
+const STORAGE_KEY = "l1code:terminal-state";
 
 let states: TerminalStates | undefined;
 const listeners = new Set<() => void>();

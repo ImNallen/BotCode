@@ -1,7 +1,7 @@
 // Ported from T3 Code v0.0.45 apps/server/src/mcp/toolkits/preview/tools.ts.
 use std::time::Duration;
 
-use bot_core::ToolCall;
+use l1_core::ToolCall;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 

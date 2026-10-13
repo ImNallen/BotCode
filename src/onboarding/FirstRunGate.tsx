@@ -50,7 +50,7 @@ export function FirstRunGate({ children }: { readonly children: ReactNode }) {
         <div className="flex max-w-sm flex-col items-center text-center">
           <h1 className="text-lg font-semibold">Still connecting</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Bot Code could not confirm this workspace.
+            L1 Code could not confirm this workspace.
           </p>
           <Button
             className="mt-5"
@@ -68,7 +68,7 @@ export function FirstRunGate({ children }: { readonly children: ReactNode }) {
       role="status"
       className="flex h-dvh items-center justify-center bg-background text-sm text-muted-foreground"
     >
-      Connecting to Bot Code...
+      Connecting to L1 Code...
     </main>
   );
 }

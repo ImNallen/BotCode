@@ -1167,7 +1167,7 @@ export function thirdPartyLicensesPlugin(
         : {}),
     });
   return {
-    name: "bot-code:third-party-licenses",
+    name: "l1code:third-party-licenses",
     configureServer(server) {
       let manifestPromise: Promise<ThirdPartyLicenseManifest> | null = null;
       server.middlewares.use((request, response, next) => {

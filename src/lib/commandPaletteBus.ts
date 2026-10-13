@@ -1,5 +1,5 @@
 // Adapted from pingdotgg/t3code v0.0.45 commandPaletteBus.ts (MIT).
-const OPEN = "bot-code:command-palette-open";
+const OPEN = "l1code:command-palette-open";
 export type PaletteIntent = "root" | "new-thread-in" | "add-project";
 export function openCommandPalette(intent: PaletteIntent = "root") {
   window.dispatchEvent(

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Bot Code",
+  "productName": "L1 Code",
   "version": "0.1.0",
-  "identifier": "dev.bot.code",
+  "identifier": "dev.l1.code",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Bot Code",
+        "title": "L1 Code",
         "width": 1100,
         "height": 780,
         "minWidth": 1000,
@@ -28,7 +28,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost botcode-attachment: http://botcode-attachment.localhost botcode-workspace: http://botcode-workspace.localhost data: https: http:; media-src botcode-attachment: http://botcode-attachment.localhost botcode-workspace: http://botcode-workspace.localhost; frame-src botcode-workspace: http://botcode-workspace.localhost; connect-src 'self' ipc: http://ipc.localhost https://open-vsx.org https://openvsx.eclipsecontent.org; worker-src 'self' blob:"
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost l1code-attachment: http://l1code-attachment.localhost l1code-workspace: http://l1code-workspace.localhost data: https: http:; media-src l1code-attachment: http://l1code-attachment.localhost l1code-workspace: http://l1code-workspace.localhost; frame-src l1code-workspace: http://l1code-workspace.localhost; connect-src 'self' ipc: http://ipc.localhost https://open-vsx.org https://openvsx.eclipsecontent.org; worker-src 'self' blob:"
     }
   },
   "bundle": {

@@ -41,8 +41,8 @@ const rustSnapshot = {
       identity: { pid: 55232, startTimeMs: 1791799066000 },
       ppid: 54926,
       depth: 0,
-      name: "bot_core-bea660d399127f90",
-      command: "target/debug/deps/bot_core-bea660d399127f90 --nocapture",
+      name: "l1_core-bea660d399127f90",
+      command: "target/debug/deps/l1_core-bea660d399127f90 --nocapture",
       category: "app",
       threadId: "0b15bf10-0bcd-462e-92b2-e51149153fd1",
       cpuPercent: 107.6923076923077,
@@ -86,8 +86,8 @@ const rustHistory = {
   topProcesses: [
     {
       identity: { pid: 55232, startTimeMs: 1791799066000 },
-      name: "bot_core",
-      command: "bot_core",
+      name: "l1_core",
+      command: "l1_core",
       category: "backend-child",
       cpuTimeMs: 14,
       maxCpuPercent: 107.7,
@@ -210,7 +210,7 @@ it("keeps Diagnostics out of the sidebar and reaches it from a searchable Genera
       [
         "open-source-licenses",
         "Open source licenses",
-        "Notices for dependencies, assets, and code used by Bot Code.",
+        "Notices for dependencies, assets, and code used by L1 Code.",
       ],
     ],
   );

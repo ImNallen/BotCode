@@ -163,11 +163,11 @@ describe("fileSurfaceView", () => {
     assert.equal(isRevealPending(null, null, "README.md", 3), false);
   });
 
-  it("defaults to source for Markdown and rendered for tables and HTML under z1 keys", () => {
+  it("defaults to source for Markdown and rendered for tables and HTML under l1code keys", () => {
     assert.deepEqual(RENDER_PREFERENCES, {
-      markdown: { key: "z1.renderMarkdown", fallback: false },
-      table: { key: "z1.renderTable", fallback: true },
-      html: { key: "z1.renderBrowserFile", fallback: true },
+      markdown: { key: "l1code:renderMarkdown", fallback: false },
+      table: { key: "l1code:renderTable", fallback: true },
+      html: { key: "l1code:renderBrowserFile", fallback: true },
     });
   });
 });

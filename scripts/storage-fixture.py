@@ -38,7 +38,7 @@ def prepare():
     fixture.mkdir(parents=True)
     provider = fixture / 'provider'
     provider.mkdir()
-    shutil.copyfile(root / 'crates/bot-core/tests/support/codex_peer.py', provider / 'codex')
+    shutil.copyfile(root / 'crates/l1-core/tests/support/codex_peer.py', provider / 'codex')
     (provider / 'codex').chmod(0o755)
     (data / 'worktrees').mkdir(parents=True)
     now = time.time()
@@ -64,7 +64,7 @@ def prepare():
         (repo / 'README.md').write_text(f'Disposable {label} repository.\n')
         git(repo, 'add', '.')
         git(repo, '-c', 'commit.gpgSign=false', 'commit', '-qm', 'Fixture main')
-        branch = f'botcode/{slug}-idle'
+        branch = f'l1code/{slug}-idle'
         path = data / 'worktrees' / f'{slug}-idle'
         git(repo, 'worktree', 'add', '-q', '-b', branch, str(path))
         workspace = {'id': str(uuid.uuid4()), 'root': str(repo), 'label': label, 'kind': 'repository'}
@@ -80,7 +80,7 @@ def prepare():
                           'checkout': {'kind': 'worktree', 'path': str(path), 'branch': branch}, 'turns': [turn],
                           'approvals': [], 'diagnostic': None, 'createdAtMs': month_ago - 120_000,
                           'placement': {'kind': 'auto'}, 'snooze': None}
-    with sqlite3.connect(data / 'z1.sqlite') as db:
+    with sqlite3.connect(data / 'l1code.sqlite') as db:
         db.executescript('''
             CREATE TABLE workspaces(id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
             CREATE TABLE threads(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), data TEXT NOT NULL, pr_generation INTEGER NOT NULL DEFAULT 0);
@@ -105,7 +105,7 @@ if args.check:
     raise SystemExit
 manifest = prepare()
 if args.app:
-    environment = dict(os.environ, BOT_CODE_DATA_DIR=str(data), BOT_CODE_CODEX_BIN=manifest['provider'])
+    environment = dict(os.environ, L1_CODE_DATA_DIR=str(data), L1_CODE_CODEX_BIN=manifest['provider'])
     binary = next((args.app.resolve() / 'Contents/MacOS').iterdir())
     process = subprocess.Popen([str(binary)], env=environment, stdout=(fixture / 'app.log').open('w'),
                                stderr=subprocess.STDOUT, start_new_session=True)

@@ -100,7 +100,7 @@ it("shows a sent image and video as media that open the preview, and other files
   assert.ok(markup.includes('aria-label="Play clip.mov"'));
   assert.ok(
     markup.includes(
-      `<video src="botcode-attachment://localhost/${"b".repeat(64)}.mov"`,
+      `<video src="l1code-attachment://localhost/${"b".repeat(64)}.mov"`,
     ),
   );
   assert.ok(markup.includes(">notes.txt<"));

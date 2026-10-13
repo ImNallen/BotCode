@@ -33,7 +33,7 @@ export function errorReport({
   area: string;
 }): string {
   const lines = [
-    `Bot Code ${version}`,
+    `L1 Code ${version}`,
     `Path: ${pathname.split(/[?#]/, 1)[0] ?? "/"}`,
     `Area: ${area}`,
     `Time: ${new Date().toISOString()}`,

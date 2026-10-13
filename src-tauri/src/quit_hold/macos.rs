@@ -170,7 +170,11 @@ fn run(app: &AppHandle, effects: Vec<Effect>) {
 }
 
 fn emit(app: &AppHandle, payload: Payload) {
-    let _ = app.emit_to(EventTarget::webview("main"), "bot:quit-shortcut", payload);
+    let _ = app.emit_to(
+        EventTarget::webview("main"),
+        "l1code:quit-shortcut",
+        payload,
+    );
 }
 
 // The window stays key while transparent, so the remaining repeats cannot reach the next app.

@@ -5,7 +5,7 @@ import { keybindings } from "./store";
 import { keybindingFromKeyboardEvent } from "./keyboard";
 import type { KeybindingRule } from "./rules";
 
-const legacyKey = "z1:project-script-keybindings";
+const legacyKey = "l1code:project-script-keybindings";
 const legacySchema = z.record(
   z.string(),
   z.object({

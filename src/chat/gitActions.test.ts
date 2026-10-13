@@ -69,7 +69,7 @@ function unavailable(
 const pr = {
   number: 7,
   title: "Add Git actions",
-  url: "https://github.com/bot-code/bot-code/pull/7",
+  url: "https://github.com/l1code/l1code/pull/7",
   base: "main",
   head: "feature",
 };
@@ -251,7 +251,7 @@ describe("toVcsStatus", () => {
         pr: {
           number: 7,
           title: "Add Git actions",
-          url: "https://github.com/bot-code/bot-code/pull/7",
+          url: "https://github.com/l1code/l1code/pull/7",
           baseRef: "main",
           headRef: "feature",
           state: "open",
@@ -569,7 +569,7 @@ describe("outcomeToast", () => {
         cta: {
           kind: "open_pr",
           label: "View PR",
-          url: "https://github.com/bot-code/bot-code/pull/7",
+          url: "https://github.com/l1code/l1code/pull/7",
         },
       },
     );
@@ -643,7 +643,7 @@ describe("outcomeToast", () => {
       {
         kind: "open_pr",
         label: "View PR",
-        url: "https://github.com/bot-code/bot-code/pull/7",
+        url: "https://github.com/l1code/l1code/pull/7",
       },
     );
   });

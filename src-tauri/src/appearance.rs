@@ -1,4 +1,4 @@
-use bot_core::{AppError, Result};
+use l1_core::{AppError, Result};
 
 /// A synchronous command runs on the main thread, which NSFontManager requires.
 #[tauri::command]
@@ -18,7 +18,7 @@ pub fn installed_font_families() -> Vec<String> {
 }
 
 /// A Blob download cannot replace the native save panel: wry cancels download
-/// navigations because Bot Code registers no download handler.
+/// navigations because L1 Code registers no download handler.
 #[tauri::command]
 pub async fn export_theme_file(
     window: tauri::WebviewWindow,
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn reads_picked_theme_files_up_to_the_size_cap() {
-        let dir = std::env::temp_dir().join(format!("bot-code-themes-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("l1code-themes-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         let limit = PICKED_THEME_FILE_MAX_BYTES as usize;
         let at_limit = dir.join("at-limit.json");

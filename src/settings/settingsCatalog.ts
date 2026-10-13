@@ -256,7 +256,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
           {
             id: "provider",
             title: "Provider",
-            description: "Bot Code runs your conversations with Codex.",
+            description: "L1 Code runs your conversations with Codex.",
           },
           {
             id: "approval",
@@ -358,7 +358,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "thread-notifications",
             title: "Thread notifications",
             description:
-              "System alerts when a thread finishes, fails, or needs approval. Applies to this device while Bot Code is open.",
+              "System alerts when a thread finishes, fails, or needs approval. Applies to this device while L1 Code is open.",
             keywords:
               "notification sound alert completion input approval desktop",
           },
@@ -456,7 +456,7 @@ export const categories: Record<SettingsSection, SettingsCategory> = {
             id: "open-source-licenses",
             title: "Open source licenses",
             description:
-              "Notices for dependencies, assets, and code used by Bot Code.",
+              "Notices for dependencies, assets, and code used by L1 Code.",
           },
         ],
       },

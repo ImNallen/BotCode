@@ -61,7 +61,7 @@ git('worktree', 'add', '-qb', 'missing', str(missing), 'main')
 shutil.rmtree(missing)
 provider = fixture / 'provider'
 provider.mkdir()
-shutil.copyfile(root / 'crates/bot-core/tests/support/codex_peer.py', provider / 'codex')
+shutil.copyfile(root / 'crates/l1-core/tests/support/codex_peer.py', provider / 'codex')
 (provider / 'codex').chmod(0o755)
 state = fixture / 'gh.json'
 state.write_text(json.dumps({'repository': 'fixture/project', 'number': 41, 'head': head, 'branch': 'feature', 'outdated': False}))
@@ -70,7 +70,7 @@ data.mkdir()
 workspace_id, source_id, existing_id = [str(uuid.uuid4()) for _ in range(3)]
 workspace = {'id': workspace_id, 'root': str(repo), 'label': 'PR handoff fixture', 'kind': 'repository'}
 now = int(time.time() * 1000)
-with sqlite3.connect(data / 'z1.sqlite') as db:
+with sqlite3.connect(data / 'l1code.sqlite') as db:
     db.executescript('''
         CREATE TABLE workspaces(id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
         CREATE TABLE threads(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), data TEXT NOT NULL, pr_generation INTEGER NOT NULL DEFAULT 0);
@@ -102,9 +102,9 @@ manifest = {'workspace': workspace, 'sourceThreadId': source_id, 'existingThread
 (fixture / 'manifest.json').write_text(json.dumps(manifest, indent=2))
 if args.app:
     app = args.app.resolve()
-    environment = dict(os.environ, BOT_CODE_DATA_DIR=str(data), BOT_CODE_GH_BIN=str(root / 'crates/bot-core/tests/fixtures/gh-lifecycle.py'),
-                       BOT_CODE_PR_FIXTURE_STATE=str(state), BOT_CODE_CODEX_BIN=str(provider / 'codex'))
-    process = subprocess.Popen([str(app / 'Contents/MacOS/bot-code')], env=environment,
+    environment = dict(os.environ, L1_CODE_DATA_DIR=str(data), L1_CODE_GH_BIN=str(root / 'crates/l1-core/tests/fixtures/gh-lifecycle.py'),
+                       L1_CODE_PR_FIXTURE_STATE=str(state), L1_CODE_CODEX_BIN=str(provider / 'codex'))
+    process = subprocess.Popen([str(app / 'Contents/MacOS/l1-code')], env=environment,
                                stdout=(fixture / 'app.log').open('w'), stderr=subprocess.STDOUT, start_new_session=True)
     (fixture / 'app.pid').write_text(str(process.pid))
     manifest['pid'] = process.pid

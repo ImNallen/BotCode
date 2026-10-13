@@ -53,7 +53,7 @@ export const previewIpc = {
 export function subscribePreview(
   handler: (event: PreviewEvent) => void,
 ): Promise<() => void> {
-  return listen<unknown>("botcode-preview", ({ payload }) => {
+  return listen<unknown>("l1code-preview", ({ payload }) => {
     const result = previewEvent.safeParse(payload);
     if (result.success) handler(result.data);
   });

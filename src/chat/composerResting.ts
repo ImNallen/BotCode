@@ -19,7 +19,7 @@ export function getRestingComposerImagePreviewCounts(imageCount: number): {
   };
 }
 
-// Bot Code is desktop only, so T3's mobile viewport input is always false
+// L1 Code is desktop only, so T3's mobile viewport input is always false
 // and left out of both decisions.
 export function canScrollCollapseComposer(input: {
   isExistingThread: boolean;

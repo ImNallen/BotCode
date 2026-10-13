@@ -90,7 +90,7 @@ function useResourceTelemetry() {
     let disposed = false;
     let subscription: number | undefined;
     let unlisten: (() => void) | undefined;
-    listen<unknown>("bot:resource-telemetry", (event) => {
+    listen<unknown>("l1code:resource-telemetry", (event) => {
       const parsed = resourceSnapshot.safeParse(event.payload);
       if (parsed.success) accept(parsed.data);
     }).then(
@@ -865,7 +865,7 @@ export function DiagnosticsSettings() {
           <div className="flex flex-col gap-3 border-b border-border/60 bg-linear-to-r from-muted/45 via-muted/20 to-transparent px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
             <div>
               <div className="text-3xs font-semibold uppercase tracking-widest text-muted-foreground/70">
-                Bot Code system footprint
+                L1 Code system footprint
               </div>
               <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted-foreground">
                 Live native counters for the app, Codex, terminals, and their

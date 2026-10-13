@@ -500,7 +500,7 @@ fn reads_the_mode_on_each_fresh_press() {
 
 #[test]
 fn reads_confirm_quit_from_settings_and_defaults_to_hold() {
-    let dir = std::env::temp_dir().join(format!("bot-code-quit-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("l1code-quit-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("settings.json");
     assert_eq!(super::mode(&path), Mode::Hold);

@@ -219,7 +219,7 @@ mod macos {
                 .app
                 .emit_to(
                     EventTarget::webview("main"),
-                    "botcode-preview-shortcut",
+                    "l1code-preview-shortcut",
                     Event {
                         shortcut,
                         code,

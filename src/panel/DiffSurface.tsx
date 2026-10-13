@@ -269,7 +269,10 @@ export function DiffSurface({
   } | null>(null);
   const client = useQueryClient();
   const fileContextMenu = useFileContextMenu();
-  const [scope, setScope] = useStoredState<Scope>("z1.diffScope", parseScope);
+  const [scope, setScope] = useStoredState<Scope>(
+    "l1code:diffScope",
+    parseScope,
+  );
   const turns = completedCheckpointTurns(thread);
   const selectedTurn = selectedCheckpointTurn(thread, turnSelection);
   const scopeKey = selectedTurn?.turn.id ?? scope;

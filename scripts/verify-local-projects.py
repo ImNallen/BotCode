@@ -48,7 +48,7 @@ def prepare(root):
 
 def check_new(root):
     data = root / "data"
-    with sqlite3.connect(data / "z1.sqlite") as db:
+    with sqlite3.connect(data / "l1code.sqlite") as db:
         projects = [json.loads(row[0]) for row in db.execute("SELECT data FROM workspaces")]
     created = [p for p in projects if p["label"] == "Native Pinball Stats"]
     assert created, projects
@@ -74,7 +74,7 @@ def check_new(root):
 
 def check_clone(root, cancelled):
     repository = root / "native-clone"
-    with sqlite3.connect(root / "data/z1.sqlite") as db:
+    with sqlite3.connect(root / "data/l1code.sqlite") as db:
         projects = [json.loads(row[0]) for row in db.execute("SELECT data FROM workspaces")]
         matches = [project for project in projects if project["root"] == str(repository)]
         assert len(matches) == 1, matches
@@ -94,7 +94,7 @@ def check_clone(root, cancelled):
 def check_worktrees(root):
     keep = json.loads((root / "worktree-keep.json").read_text())
     remove = json.loads((root / "worktree-delete.json").read_text())
-    with sqlite3.connect(root / "data/z1.sqlite") as db:
+    with sqlite3.connect(root / "data/l1code.sqlite") as db:
         for thread in (keep, remove):
             assert db.execute("SELECT COUNT(*) FROM threads WHERE id = ?", (thread["id"],)).fetchone()[0] == 0
             workspace = json.loads(db.execute("SELECT data FROM workspaces WHERE id = ?", (thread["workspaceId"],)).fetchone()[0])

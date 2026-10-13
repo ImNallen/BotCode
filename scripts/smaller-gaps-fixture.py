@@ -47,7 +47,7 @@ def prepare(directory, pr_code=False):
     now = datetime.now(timezone.utc)
     first = event(now - timedelta(days=1, hours=2), 1000, 200, 0, 100, 40)
     records = [
-        {"timestamp": timestamp(now - timedelta(days=2)), "type": "session_meta", "payload": {"id": "outside-bot-session"}},
+        {"timestamp": timestamp(now - timedelta(days=2)), "type": "session_meta", "payload": {"id": "outside-l1code-session"}},
         context("gpt-fixture-a"),
         first,
         first,

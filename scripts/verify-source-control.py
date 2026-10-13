@@ -18,7 +18,7 @@ def git(repository, *arguments):
 
 
 def github_peer(root):
-    source = pathlib.Path(__file__).resolve().parents[1] / "crates/bot-core/tests/fixtures/gh-lifecycle.py"
+    source = pathlib.Path(__file__).resolve().parents[1] / "crates/l1-core/tests/fixtures/gh-lifecycle.py"
     peer = root / "peers/gh"
     peer.write_text(
         "#!/usr/bin/env python3\n"
@@ -72,7 +72,7 @@ def prepare(root):
     state, peers, repository = (root / name for name in ("state", "peers", "repository"))
     for directory in (state, peers, repository):
         directory.mkdir()
-    shutil.copy(source / "crates/bot-core/tests/support/codex_peer.py", peers / "codex")
+    shutil.copy(source / "crates/l1-core/tests/support/codex_peer.py", peers / "codex")
     (peers / "codex").chmod(0o755)
     (peers / "commit_output").write_text(json.dumps({"subject": "feat: native settings", "body": ""}))
     (peers / "pr_output").write_text(json.dumps({"title": "Native settings", "body": "## Fixture template\nNative verification."}))
@@ -127,7 +127,7 @@ def prepare(root):
             "items": [{"kind": "assistant", "id": "seed", "text": "Use Settings and the Git control to verify the disposable repository.", "complete": True}],
         }],
     }
-    with sqlite3.connect(state / "z1.sqlite") as database:
+    with sqlite3.connect(state / "l1code.sqlite") as database:
         database.executescript(
             "CREATE TABLE workspaces(id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, data TEXT NOT NULL);"
             "CREATE TABLE threads(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, data TEXT NOT NULL, pr_generation INTEGER NOT NULL DEFAULT 0);"
@@ -188,7 +188,7 @@ def prepare_publish(root):
         git(rejected, "config", "--add", f"url.{rejected_remote}.insteadOf", url)
     empty_workspace, empty_thread = str(uuid.uuid4()), str(uuid.uuid4())
     rejected_workspace, rejected_thread = str(uuid.uuid4()), str(uuid.uuid4())
-    with sqlite3.connect(pathlib.Path(manifest["dataDir"]) / "z1.sqlite") as database:
+    with sqlite3.connect(pathlib.Path(manifest["dataDir"]) / "l1code.sqlite") as database:
         database.execute("DELETE FROM thread_pull_requests")
         database.execute("DELETE FROM pull_requests")
         workspace = json.loads(database.execute("SELECT data FROM workspaces WHERE id=?", (manifest["workspace"],)).fetchone()[0])
@@ -242,7 +242,7 @@ def prepare_feature(root):
     git(clean, "commit", "-qm", "Existing clean commit")
     clean_head = git(clean, "rev-parse", "HEAD")
     clean_workspace, clean_thread = str(uuid.uuid4()), str(uuid.uuid4())
-    with sqlite3.connect(pathlib.Path(manifest["dataDir"]) / "z1.sqlite") as database:
+    with sqlite3.connect(pathlib.Path(manifest["dataDir"]) / "l1code.sqlite") as database:
         database.execute("DELETE FROM thread_pull_requests")
         database.execute("DELETE FROM pull_requests")
         workspace = json.loads(database.execute("SELECT data FROM workspaces WHERE id=?", (manifest["workspace"],)).fetchone()[0])
@@ -376,15 +376,15 @@ def launch(root, app):
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
     environment = dict(
         os.environ,
-        BOT_CODE_DATA_DIR=manifest["dataDir"],
-        BOT_CODE_CODEX_BIN=manifest["codex"],
-        BOT_CODE_GH_BIN=manifest["gh"],
-        BOT_CODE_PR_FIXTURE_STATE=manifest["ghState"],
+        L1_CODE_DATA_DIR=manifest["dataDir"],
+        L1_CODE_CODEX_BIN=manifest["codex"],
+        L1_CODE_GH_BIN=manifest["gh"],
+        L1_CODE_PR_FIXTURE_STATE=manifest["ghState"],
     )
     if "publishRemote" in manifest:
         environment["GH_HOST"] = "enterprise.invalid"
     process = subprocess.Popen(
-        [str(app.resolve() / "Contents/MacOS/bot-code")],
+        [str(app.resolve() / "Contents/MacOS/l1-code")],
         env=environment,
         stdout=(root / "app.log").open("a"),
         stderr=subprocess.STDOUT,

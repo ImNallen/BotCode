@@ -59,7 +59,7 @@ const guided = parseThemeFile({
   managed: true,
 });
 
-const PREFERENCES_KEY = "z1:preferences:v1";
+const PREFERENCES_KEY = "l1code:preferences:v1";
 
 type Harness = {
   document: FakeDocument;
@@ -113,7 +113,7 @@ async function withEditor(
     configurable: true,
     value: () => 0,
   });
-  values.set("z1.themes:v1", JSON.stringify(installed));
+  values.set("l1code:themes:v1", JSON.stringify(installed));
   setThemeLibraryStore({
     getItem: (key) => values.get(key) ?? null,
     setItemDurable: async (key, value) => {
@@ -240,7 +240,9 @@ async function withEditor(
             }
           ).appearance,
         library: () =>
-          JSON.parse(values.get("z1.themes:v1") ?? "[]") as ThemeDefinition[],
+          JSON.parse(
+            values.get("l1code:themes:v1") ?? "[]",
+          ) as ThemeDefinition[],
         occurrences: (text) => document.body.textContent.split(text).length - 1,
         root: rootState,
         failSettings,

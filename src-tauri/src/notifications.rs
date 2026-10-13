@@ -1,4 +1,4 @@
-use bot_core::{App, ThreadId, WorkspaceId};
+use l1_core::{App, ThreadId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, EventTarget, Manager, State};
@@ -16,7 +16,7 @@ pub struct NotificationActions(Mutex<Vec<NotificationTarget>>);
 pub async fn notification_actions(
     app: State<'_, App>,
     actions: State<'_, NotificationActions>,
-) -> bot_core::Result<Vec<NotificationTarget>> {
+) -> l1_core::Result<Vec<NotificationTarget>> {
     let queued = std::mem::take(&mut *actions.0.lock().expect("notification action lock"));
     let mut targets = Vec::new();
     for target in queued {
@@ -62,7 +62,7 @@ pub fn clear_badge(app: &AppHandle) {
     apply_badge(app, 0, None);
     let _ = app.emit_to(
         EventTarget::webview("main"),
-        "bot:notification-badge-clear",
+        "l1code:notification-badge-clear",
         (),
     );
 }
@@ -109,7 +109,7 @@ pub fn install(app: &AppHandle) {
                     .lock()
                     .expect("notification action lock")
                     .push(target);
-                let _ = main.emit_to(EventTarget::webview("main"), "bot:notification-open", ());
+                let _ = main.emit_to(EventTarget::webview("main"), "l1code:notification-open", ());
             }
         });
     });

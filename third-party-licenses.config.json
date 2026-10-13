@@ -59,7 +59,7 @@
         {
           "licenseId": "blessing",
           "preamble": [
-            "Bot Code links the SQLite amalgamation bundled by the rusqlite crate through libsqlite3-sys.\n\nSQLite is in the public domain. Its source carries this blessing in place of a license."
+            "L1 Code links the SQLite amalgamation bundled by the rusqlite crate through libsqlite3-sys.\n\nSQLite is in the public domain. Its source carries this blessing in place of a license."
           ]
         }
       ]

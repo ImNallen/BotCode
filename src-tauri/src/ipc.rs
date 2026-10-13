@@ -1,4 +1,4 @@
-use bot_core::*;
+use l1_core::*;
 use tauri::{State, ipc::Channel};
 #[tauri::command]
 pub async fn list_workspaces(app: State<'_, App>) -> Result<Vec<Workspace>> {
@@ -383,9 +383,9 @@ pub async fn open_url(app: State<'_, App>, url: String, thread_id: Option<Thread
         _ => url,
     };
     #[cfg(not(windows))]
-    let mut opener = bot_core::process::command("/usr/bin/open");
+    let mut opener = l1_core::process::command("/usr/bin/open");
     #[cfg(windows)]
-    let mut opener = bot_core::process::command("rundll32.exe");
+    let mut opener = l1_core::process::command("rundll32.exe");
     #[cfg(windows)]
     opener.arg("url.dll,FileProtocolHandler");
     let status = opener.arg(&url).status()?;
@@ -399,7 +399,7 @@ pub async fn open_url(app: State<'_, App>, url: String, thread_id: Option<Thread
 }
 #[tauri::command(async)]
 pub fn available_editors() -> Vec<EditorId> {
-    bot_core::available_editors()
+    l1_core::available_editors()
 }
 #[tauri::command]
 pub async fn open_in_editor(
@@ -510,7 +510,7 @@ pub async fn stage_attachment(
         ));
     }
     if bytes.len() > 50 * 1024 * 1024 {
-        return Err(bot_core::AppError::new(
+        return Err(l1_core::AppError::new(
             "file_too_large",
             format!("'{name}' exceeds the 50 MB attachment limit."),
         ));
@@ -624,7 +624,7 @@ pub async fn settings(app: State<'_, App>) -> Result<Option<String>> {
     app.settings()
 }
 #[tauri::command]
-pub async fn keybindings_file(app: State<'_, App>) -> Result<bot_core::KeybindingsFile> {
+pub async fn keybindings_file(app: State<'_, App>) -> Result<l1_core::KeybindingsFile> {
     app.keybindings_file()
 }
 #[tauri::command]

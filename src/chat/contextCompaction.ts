@@ -23,7 +23,7 @@ function hasCompactableConversation(thread: Thread): boolean {
 }
 
 /**
- * The reason the thread cannot compact now, or `null` when it can. Every Bot Code
+ * The reason the thread cannot compact now, or `null` when it can. Every L1 Code
  * thread has a project and Codex always compacts, so T3's project and provider
  * reasons never apply.
  */

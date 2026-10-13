@@ -283,7 +283,7 @@ it("defaults Working off, saves it on this device, and resets it without a proje
   }
 });
 
-it("opens links in the default browser unless Bot Code was chosen, and persists the choice", () => {
+it("opens links in the default browser unless L1 Code was chosen, and persists the choice", () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   let stored: unknown = {};
   let state: ReturnType<typeof usePreferences> | undefined;

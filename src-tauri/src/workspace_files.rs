@@ -1,4 +1,4 @@
-use bot_core::{App, workspace_files::FileResponse};
+use l1_core::{App, workspace_files::FileResponse};
 use tauri::{
     Manager, UriSchemeContext, UriSchemeResponder, Wry,
     http::{Method, Request, Response, header},

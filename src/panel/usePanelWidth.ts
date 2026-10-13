@@ -10,7 +10,7 @@ import {
 } from "react";
 import { storage } from "../lib/storage";
 
-const STORAGE_KEY = "z1:right-panel-width";
+const STORAGE_KEY = "l1code:right-panel-width";
 const MIN_WIDTH = 360;
 const DEFAULT_WIDTH = 540;
 const MAX_WIDTH_FRACTION = 0.7;

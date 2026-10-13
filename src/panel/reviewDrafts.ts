@@ -240,5 +240,5 @@ export class ConversationDrafts {
 export const conversationDrafts = new ConversationDrafts();
 
 export const commentDrafts = new ConversationDrafts(
-  "bot.pullRequestCommentDrafts",
+  "l1code:pullRequestCommentDrafts",
 );

@@ -37,8 +37,8 @@ describe("ChatMarkdown documents", () => {
     assert.ok(
       render({
         text: tasks,
-        imageSrc: (src) => `botcode-workspace://localhost/w/-/${src}`,
-      }).includes('src="botcode-workspace://localhost/w/-/./logo.png"'),
+        imageSrc: (src) => `l1code-workspace://localhost/w/-/${src}`,
+      }).includes('src="l1code-workspace://localhost/w/-/./logo.png"'),
     );
     assert.ok(
       render({ text: tasks, imageSrc: () => undefined }).includes(

@@ -1,0 +1,751 @@
+use crate::{
+    domain::*,
+    log::RotatingLog,
+    mirror::{Freshness, Mirror, Synced, WriteRoot, WriteSession},
+    sandbox::{
+        ATTACHMENTS, Container, ContainerState, DESKTOP, DESKTOP_PORT, Desired, Docker, Exec,
+        Input, RunState, WORKSPACE,
+    },
+    terminal::Launch,
+};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use tokio::sync::{OwnedMutexGuard, mpsc};
+
+#[cfg(test)]
+mod docker_tests;
+mod forward;
+pub use forward::{ListenerReading, Listeners, LocalNetwork, SandboxNetwork};
+pub(crate) mod idle;
+pub(crate) use idle::{Activity, Limits};
+
+const COPY: Duration = Duration::from_secs(60);
+const DESKTOP_START: Duration = Duration::from_secs(30);
+pub(crate) const FETCH_LIMIT: u64 = 4_400_000;
+
+#[derive(Clone)]
+pub(crate) enum Workdir {
+    Mac {
+        root: PathBuf,
+    },
+    Sandbox {
+        root: PathBuf,
+        handle: Arc<SandboxHandle>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Phase {
+    Unstarted,
+    Starting,
+    Running,
+    Paused,
+    Stopped,
+    /// The thread deletion removed the container; nothing brings this handle back.
+    Removed,
+}
+fn removed() -> AppError {
+    AppError::new("sandbox_removed", "This sandbox was deleted.")
+}
+impl Phase {
+    fn after(desired: Desired) -> Self {
+        match desired {
+            Desired::Running => Self::Running,
+            Desired::Paused => Self::Paused,
+            Desired::Stopped | Desired::Removed => Self::Stopped,
+        }
+    }
+}
+
+/// The flight lock, held. While it lives no `ready`, `wake` or retire runs on the sandbox.
+pub(crate) type Flight = OwnedMutexGuard<()>;
+
+pub(crate) struct SandboxHandle {
+    pub id: SandboxId,
+    pub container: Container,
+    pub mirror: Mirror,
+    docker: Docker,
+    log: RotatingLog,
+    branch: Mutex<String>,
+    flight: Arc<tokio::sync::Mutex<()>>,
+    phase: Mutex<Phase>,
+    changed: mpsc::UnboundedSender<SandboxId>,
+    activity: Mutex<Activity>,
+    stop_requested: Mutex<Option<&'static str>>,
+    working: AtomicBool,
+    probe_due: Mutex<Instant>,
+    probe_every: Duration,
+    desktop_secret: String,
+    gateway_secret: String,
+    forwards: forward::Forwards,
+}
+impl SandboxHandle {
+    pub(crate) fn new(
+        docker: Docker,
+        id: SandboxId,
+        mirror_root: PathBuf,
+        branch: String,
+        probe_every: Duration,
+        changed: mpsc::UnboundedSender<SandboxId>,
+        log: RotatingLog,
+    ) -> Arc<Self> {
+        let container = docker.container(&id);
+        Arc::new(Self {
+            mirror: Mirror::new(container.clone(), mirror_root),
+            container,
+            id,
+            docker,
+            log,
+            branch: Mutex::new(branch),
+            flight: Arc::new(tokio::sync::Mutex::new(())),
+            phase: Mutex::new(Phase::Unstarted),
+            changed,
+            activity: Mutex::new(Activity::new(Instant::now())),
+            stop_requested: Mutex::new(None),
+            working: AtomicBool::new(false),
+            probe_due: Mutex::new(Instant::now()),
+            probe_every,
+            desktop_secret: uuid::Uuid::new_v4().simple().to_string(),
+            gateway_secret: uuid::Uuid::new_v4().simple().to_string(),
+            forwards: Default::default(),
+        })
+    }
+    pub(crate) fn begin_work(&self) -> bool {
+        self.working
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+    pub(crate) fn end_work(&self) {
+        self.working.store(false, Ordering::Release);
+    }
+    pub(crate) fn probe_due(&self, now: Instant) -> bool {
+        let mut due = self.probe_due.lock().unwrap();
+        if now < *due {
+            return false;
+        }
+        *due = now + self.probe_every;
+        true
+    }
+    pub(crate) fn note(&self, line: &str) {
+        self.log(line);
+    }
+    pub(crate) fn set_branch(&self, branch: &str) {
+        let mut current = self.branch.lock().unwrap();
+        if *current != branch {
+            *current = branch.to_owned();
+        }
+    }
+    pub(crate) fn branch(&self) -> String {
+        self.branch.lock().unwrap().clone()
+    }
+    pub(crate) fn phase(&self) -> Phase {
+        *self.phase.lock().unwrap()
+    }
+    fn set_phase(&self, phase: Phase) {
+        {
+            let mut current = self.phase.lock().unwrap();
+            if *current == phase {
+                return;
+            }
+            *current = phase;
+        }
+        let _ = self.changed.send(self.id.clone());
+    }
+    pub(crate) fn is_ready(&self) -> bool {
+        self.phase() == Phase::Running
+    }
+    pub(crate) fn is_started(&self) -> bool {
+        matches!(self.phase(), Phase::Running | Phase::Paused)
+    }
+    pub(crate) fn activity(&self) -> Activity {
+        self.activity.lock().unwrap().clone()
+    }
+    pub(crate) fn touch(&self) {
+        self.activity.lock().unwrap().touched = Instant::now();
+        *self.stop_requested.lock().unwrap() = None;
+    }
+    pub(crate) fn request_stop(&self, reason: &'static str) {
+        *self.stop_requested.lock().unwrap() = Some(reason);
+    }
+    pub(crate) fn stop_requested(&self) -> Option<&'static str> {
+        *self.stop_requested.lock().unwrap()
+    }
+    pub(crate) fn mark_busy(&self, now: Instant) {
+        self.activity.lock().unwrap().busy = now;
+    }
+    fn log(&self, line: &str) {
+        self.log.line(&format!("sandbox[{}]", self.id), line);
+    }
+    pub(crate) async fn ready(&self) -> Result<()> {
+        let _flight = self.flight.lock().await;
+        self.touch();
+        let was = self.phase();
+        if was == Phase::Removed {
+            return Err(removed());
+        }
+        if was != Phase::Running {
+            self.set_phase(Phase::Starting);
+        }
+        let readied = self.start().await;
+        match &readied {
+            Ok(()) => {
+                if was != Phase::Running {
+                    self.activity.lock().unwrap().forget_probe();
+                }
+                self.set_phase(Phase::Running);
+            }
+            Err(_) => self.set_phase(was),
+        }
+        readied
+    }
+    pub(crate) async fn wake(&self) -> Result<()> {
+        let _flight = self.flight.lock().await;
+        self.touch();
+        let was = self.phase();
+        match was {
+            Phase::Running => return Ok(()),
+            Phase::Removed => return Err(removed()),
+            _ => {}
+        }
+        self.set_phase(Phase::Starting);
+        let readied = self.start().await;
+        match &readied {
+            Ok(()) => {
+                self.activity.lock().unwrap().forget_probe();
+                self.set_phase(Phase::Running);
+            }
+            Err(_) => self.set_phase(was),
+        }
+        readied
+    }
+    async fn start(&self) -> Result<()> {
+        let own = self.branch();
+        let image = self.docker.image(&|line| self.log(line)).await?;
+        if self.container.state().await?.stale(&image) {
+            self.log("recreating the container for the current image");
+            self.container.converge(Desired::Running).await?;
+            self.mirror.pull(Freshness::Exact, &own).await?;
+            self.container.converge(Desired::Removed).await?;
+        }
+        self.container.converge(Desired::Running).await?;
+        self.mirror.seed(&own).await
+    }
+    pub(crate) async fn desktop(&self) -> Result<SandboxDesktop> {
+        self.ready().await?;
+        {
+            let mut activity = self.activity.lock().unwrap();
+            activity.desktop_client = Instant::now();
+            activity.desktop_running = true;
+        }
+        let output = self
+            .container
+            .run(
+                &Exec {
+                    argv: &[DESKTOP, "start", "--secret-stdin"],
+                    workdir: WORKSPACE,
+                    env: &[],
+                },
+                Input::Bytes(format!("{}\n", self.desktop_secret).as_bytes()),
+                DESKTOP_START,
+            )
+            .await?;
+        if output.code != Some(0) {
+            let reason = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::new(
+                "sandbox",
+                format!("The sandbox desktop did not start. {}", reason.trim()),
+            ));
+        }
+        Ok(SandboxDesktop {
+            port: self.container.published(DESKTOP_PORT).await?,
+            secret: self.desktop_secret.clone(),
+        })
+    }
+    pub(crate) fn warm(self: &Arc<Self>) {
+        if self.is_ready() || self.flight.try_lock().is_err() {
+            return;
+        }
+        let handle = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = handle.ready().await {
+                handle.log(&format!("warm-up failed: {}", error.message));
+            }
+        });
+    }
+    pub(crate) async fn retire(&self, desired: Desired) -> Result<()> {
+        let _flight = self.flight.lock().await;
+        self.retire_locked(desired).await
+    }
+    /// Removes the container for good, as thread deletion does. The storage sweep's
+    /// `retire(Removed)` is different: its handle serves the next message again.
+    pub(crate) async fn delete(&self) -> Result<()> {
+        let _flight = self.flight.lock().await;
+        self.retire_locked(Desired::Removed).await?;
+        self.set_phase(Phase::Removed);
+        Ok(())
+    }
+    /// Claims the sandbox for the owner's lifecycle work without waiting. `None` while a `ready`,
+    /// `wake` or retire is in flight. Taken before the idle rule is read, it leaves no moment
+    /// between the decision and the retire for a wake to land in. A wake waits for the claim.
+    pub(crate) fn claim(&self) -> Option<Flight> {
+        self.flight.clone().try_lock_owned().ok()
+    }
+    pub(crate) async fn retire_claimed(&self, _flight: Flight, desired: Desired) -> Result<()> {
+        self.retire_locked(desired).await
+    }
+    async fn retire_locked(&self, desired: Desired) -> Result<()> {
+        let state = self.container.state().await?;
+        let pull_first = match state {
+            ContainerState::Absent => false,
+            ContainerState::Present { run, .. } => {
+                desired == Desired::Removed || matches!(run, RunState::Running | RunState::Paused)
+            }
+        };
+        if pull_first {
+            self.container.converge(Desired::Running).await?;
+            self.set_phase(Phase::Running);
+            self.mirror.pull(Freshness::Exact, &self.branch()).await?;
+        }
+        self.container.converge(desired).await?;
+        self.set_phase(Phase::after(desired));
+        if Phase::after(desired) == Phase::Stopped {
+            self.close_forwards().await;
+        }
+        Ok(())
+    }
+    pub(crate) async fn probe(&self) -> Result<Option<f64>> {
+        let probe = self.container.probe().await?;
+        self.observe_network(&probe).await;
+        Ok(self
+            .activity
+            .lock()
+            .unwrap()
+            .observe(Instant::now(), &probe))
+    }
+    pub(crate) async fn stop_desktop(&self) -> Result<()> {
+        self.container.stop_desktop().await?;
+        self.activity.lock().unwrap().desktop_running = false;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AgentPaths {
+    Mac { root: PathBuf },
+    Sandbox { mirror: PathBuf },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Inbound {
+    Host(String),
+    Mirror(String),
+    Container(String),
+}
+impl AgentPaths {
+    pub(crate) fn cwd(&self) -> String {
+        match self {
+            Self::Mac { root } => root.to_string_lossy().into_owned(),
+            Self::Sandbox { .. } => WORKSPACE.into(),
+        }
+    }
+    pub(crate) fn attachment(&self, host: &Path) -> String {
+        match self {
+            Self::Mac { .. } => host.to_string_lossy().into_owned(),
+            Self::Sandbox { .. } => format!(
+                "{ATTACHMENTS}/{}",
+                host.file_name().unwrap_or_default().to_string_lossy()
+            ),
+        }
+    }
+    pub(crate) fn inbound(&self, agent: &str) -> Inbound {
+        match self {
+            Self::Mac { .. } => Inbound::Host(agent.into()),
+            Self::Sandbox { .. } => {
+                if let Some(rest) = agent.strip_prefix(WORKSPACE)
+                    && (rest.is_empty() || rest.starts_with('/'))
+                {
+                    Inbound::Mirror(rest.trim_start_matches('/').into())
+                } else if agent.starts_with('/') {
+                    Inbound::Container(agent.into())
+                } else {
+                    Inbound::Mirror(agent.into())
+                }
+            }
+        }
+    }
+    pub(crate) fn mirror(&self) -> &Path {
+        match self {
+            Self::Mac { root } | Self::Sandbox { mirror: root } => root,
+        }
+    }
+}
+
+pub(crate) enum Write {
+    Mac(WriteRoot),
+    Sandbox(WriteSession),
+}
+impl Write {
+    pub(crate) fn root(&self) -> &WriteRoot {
+        match self {
+            Self::Mac(root) => root,
+            Self::Sandbox(session) => session.root(),
+        }
+    }
+    pub(crate) async fn finish(self) -> Result<()> {
+        match self {
+            Self::Mac(_) => Ok(()),
+            Self::Sandbox(session) => session.finish().await.map_err(AppError::from),
+        }
+    }
+    pub(crate) async fn discard(self) -> Result<()> {
+        match self {
+            Self::Mac(_) => Ok(()),
+            Self::Sandbox(session) => session.discard().await,
+        }
+    }
+}
+
+impl Workdir {
+    pub(crate) fn root(&self) -> &Path {
+        match self {
+            Self::Mac { root } | Self::Sandbox { root, .. } => root,
+        }
+    }
+    pub(crate) fn environment(&self) -> crate::codex::Environment {
+        match self {
+            Self::Mac { .. } => crate::codex::Environment::Mac,
+            Self::Sandbox { .. } => crate::codex::Environment::Container,
+        }
+    }
+    pub(crate) fn agent_paths(&self) -> AgentPaths {
+        match self {
+            Self::Mac { root } => AgentPaths::Mac { root: root.clone() },
+            Self::Sandbox { root, .. } => AgentPaths::Sandbox {
+                mirror: root.clone(),
+            },
+        }
+    }
+    pub(crate) fn sandbox(&self) -> Option<&Arc<SandboxHandle>> {
+        match self {
+            Self::Mac { .. } => None,
+            Self::Sandbox { handle, .. } => Some(handle),
+        }
+    }
+    pub(crate) async fn terminal(&self, starting: impl FnOnce()) -> Result<Launch> {
+        match self {
+            Self::Mac { root } => Ok(Launch::Mac { cwd: root.clone() }),
+            Self::Sandbox { handle, .. } => {
+                if !handle.is_ready() {
+                    starting();
+                }
+                handle.ready().await?;
+                Ok(Launch::Sandbox {
+                    container: handle.container.clone(),
+                })
+            }
+        }
+    }
+    pub(crate) async fn sync(&self, freshness: Freshness) -> Result<Option<Synced>> {
+        match (self, freshness) {
+            (Self::Mac { .. }, _) => Ok(None),
+            (Self::Sandbox { handle, .. }, _) if !handle.is_ready() => Ok(None),
+            (Self::Sandbox { handle, .. }, Freshness::Recent) => {
+                handle.mirror.try_sync_recent(&handle.branch()).await
+            }
+            (Self::Sandbox { handle, .. }, Freshness::Exact) => handle
+                .mirror
+                .sync(freshness, &handle.branch())
+                .await
+                .map(Some),
+        }
+    }
+    pub(crate) async fn begin_write(&self) -> Result<Write> {
+        match self {
+            Self::Mac { root } => Ok(Write::Mac(WriteRoot::mac(root.clone()))),
+            Self::Sandbox { handle, .. } => {
+                handle.ready().await?;
+                Ok(Write::Sandbox(
+                    handle.mirror.begin_write(&handle.branch()).await?,
+                ))
+            }
+        }
+    }
+    pub(crate) async fn write<T: Send + 'static>(
+        &self,
+        op: impl FnOnce(&WriteRoot) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let write = self.begin_write().await?;
+        let root = write.root().clone();
+        let result = tokio::task::spawn_blocking(move || op(&root))
+            .await
+            .map_err(|error| AppError::new("repository", error))
+            .and_then(|result| result);
+        match result {
+            Ok(value) => write.finish().await.map(|()| value),
+            Err(error) => {
+                if let (Err(undo), Some(handle)) = (write.discard().await, self.sandbox()) {
+                    handle.note(&format!(
+                        "the mirror was not reset after a failed write: {}",
+                        undo.message
+                    ));
+                }
+                Err(error)
+            }
+        }
+    }
+    pub(crate) async fn provide(&self, files: &[PathBuf]) -> Result<()> {
+        let Self::Sandbox { handle, .. } = self else {
+            return Ok(());
+        };
+        for file in files {
+            let bytes = tokio::fs::read(file).await?;
+            let target = AgentPaths::Sandbox {
+                mirror: PathBuf::new(),
+            }
+            .attachment(file);
+            let output = handle
+                .container
+                .run(
+                    &Exec {
+                        argv: &["sh", "-c", "cat > \"$1\"", "sh", &target],
+                        workdir: WORKSPACE,
+                        env: &[],
+                    },
+                    Input::Bytes(&bytes),
+                    COPY,
+                )
+                .await?;
+            if output.code != Some(0) {
+                return Err(AppError::new(
+                    "sandbox",
+                    format!(
+                        "Copying an attachment into the sandbox failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+    pub(crate) async fn fetch(&self, container_path: &str) -> Option<Vec<u8>> {
+        let Self::Sandbox { handle, .. } = self else {
+            return None;
+        };
+        let limit = (FETCH_LIMIT + 1).to_string();
+        let output = handle
+            .container
+            .run(
+                &Exec {
+                    argv: &["head", "-c", &limit, "--", container_path],
+                    workdir: WORKSPACE,
+                    env: &[],
+                },
+                Input::Lifeline,
+                COPY,
+            )
+            .await
+            .ok()?;
+        (output.code == Some(0) && output.stdout.len() as u64 <= FETCH_LIMIT)
+            .then_some(output.stdout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_paths_map_outbound_totally_and_inbound_only_inside_the_workspace() {
+        let mirror = PathBuf::from("/Users/me/.l1code/worktrees/repo/l1code-1");
+        let paths = AgentPaths::Sandbox {
+            mirror: mirror.clone(),
+        };
+        assert_eq!(paths.cwd(), "/workspace");
+        assert_eq!(
+            paths.attachment(Path::new("/Users/me/.l1code/attachments/abc.png")),
+            "/l1code/attachments/abc.png"
+        );
+        assert_eq!(
+            paths.inbound("/workspace/src/main.rs"),
+            Inbound::Mirror("src/main.rs".into())
+        );
+        assert_eq!(paths.inbound("/workspace"), Inbound::Mirror(String::new()));
+        assert_eq!(
+            paths.inbound("src/main.rs"),
+            Inbound::Mirror("src/main.rs".into())
+        );
+        assert_eq!(
+            paths.inbound("/workspaces/other"),
+            Inbound::Container("/workspaces/other".into()),
+            "a prefix match is not a workspace path"
+        );
+        assert_eq!(
+            paths.inbound("/tmp/shot.png"),
+            Inbound::Container("/tmp/shot.png".into())
+        );
+        assert_eq!(
+            paths.inbound(mirror.join("src/main.rs").to_str().unwrap()),
+            Inbound::Container(mirror.join("src/main.rs").to_string_lossy().into()),
+            "a Mac path from a sandbox agent never resolves on the Mac"
+        );
+        assert_eq!(paths.mirror(), mirror.as_path());
+    }
+
+    /// The fake Docker CLI from `tests/support`, with its call log under the returned state directory.
+    #[cfg(unix)]
+    fn fake_docker(dir: &Path) -> (Docker, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let docker = dir.join("docker");
+        std::fs::write(&docker, include_str!("../tests/support/docker_fake.py")).unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let state = dir.join("docker-state");
+        std::fs::write(dir.join("state_dir"), state.to_string_lossy().as_bytes()).unwrap();
+        let docker = Docker::new(crate::sandbox::SandboxConfig {
+            docker,
+            data_dir: dir.join("data"),
+            codex: crate::sandbox::CodexSource::Version("0.0.0".parse().unwrap()),
+        });
+        (docker, state)
+    }
+    #[cfg(unix)]
+    fn calls(state: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(state.join("calls.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+    #[cfg(unix)]
+    fn handle_on(docker: Docker, mirror: &Path, branch: &str) -> Arc<SandboxHandle> {
+        SandboxHandle::new(
+            docker,
+            "0123456789ab".parse().unwrap(),
+            mirror.to_path_buf(),
+            branch.into(),
+            Duration::from_millis(250),
+            tokio::sync::mpsc::unbounded_channel().0,
+            RotatingLog::silent(),
+        )
+    }
+    #[cfg(unix)]
+    fn git(root: &Path, args: &[&str]) -> String {
+        let output = crate::process::command("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deleted_sandbox_is_not_recreated_by_a_later_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let (docker, state) = fake_docker(dir.path());
+        let handle = handle_on(docker, &dir.path().join("mirror"), "l1code/deleted");
+        handle.delete().await.unwrap();
+
+        let readied = handle.ready().await;
+        let verbs: Vec<String> = calls(&state)
+            .iter()
+            .map(|call| call["argv"][0].as_str().unwrap().to_owned())
+            .collect();
+        assert!(
+            !verbs.iter().any(|verb| verb == "create" || verb == "start"),
+            "a deleted sandbox came back: {verbs:?}"
+        );
+        assert_eq!(readied.unwrap_err().code, "sandbox_removed");
+        assert_eq!(handle.phase(), Phase::Removed);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_mutation_is_undone_on_the_mirror_and_nothing_reaches_the_container() {
+        let dir = tempfile::tempdir().unwrap();
+        let (docker, state) = fake_docker(dir.path());
+        let mirror = dir.path().join("mirror");
+        std::fs::create_dir_all(&mirror).unwrap();
+        git(&mirror, &["init", "-q", "-b", "l1code/half"]);
+        git(&mirror, &["config", "user.name", "Fixture"]);
+        git(
+            &mirror,
+            &["config", "user.email", "fixture@example.invalid"],
+        );
+        git(&mirror, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(mirror.join("README.md"), "whole\n").unwrap();
+        git(&mirror, &["add", "README.md"]);
+        git(&mirror, &["commit", "-qm", "initial"]);
+        let handle = handle_on(docker, &mirror, "l1code/half");
+        handle.mirror.seed_from_mirror_for_tests().await.unwrap();
+        let workdir = Workdir::Sandbox {
+            root: mirror.clone(),
+            handle,
+        };
+
+        let error = workdir
+            .write(|root| {
+                std::fs::write(root.join("README.md"), "half\n")?;
+                std::fs::write(root.join("notes.txt"), "half\n")?;
+                Err::<(), _>(AppError::new("fixture", "the second step failed"))
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.code, "fixture",
+            "the mutation's own error is returned"
+        );
+        assert_eq!(
+            std::fs::read_to_string(mirror.join("README.md")).unwrap(),
+            "whole\n",
+            "the edit to a tracked file is undone"
+        );
+        assert!(
+            !mirror.join("notes.txt").exists(),
+            "the new file is removed"
+        );
+        assert_eq!(
+            git(&mirror, &["status", "--porcelain"]),
+            "",
+            "the mirror is back at the container's tree"
+        );
+        let execs: Vec<String> = calls(&state)
+            .iter()
+            .filter_map(|call| call.get("exec"))
+            .map(|exec| exec.to_string())
+            .collect();
+        assert!(
+            !execs
+                .iter()
+                .any(|exec| exec.contains("apply") || exec.contains("receive-pack")),
+            "nothing was pushed to the container: {execs:?}"
+        );
+    }
+
+    #[test]
+    fn mac_paths_are_the_identity() {
+        let root = PathBuf::from("/Users/me/repo");
+        let paths = AgentPaths::Mac { root: root.clone() };
+        assert_eq!(paths.cwd(), "/Users/me/repo");
+        assert_eq!(
+            paths.attachment(Path::new("/Users/me/.l1code/attachments/abc.png")),
+            "/Users/me/.l1code/attachments/abc.png"
+        );
+        assert_eq!(
+            paths.inbound("/Users/me/repo/a.png"),
+            Inbound::Host("/Users/me/repo/a.png".into())
+        );
+        assert_eq!(paths.inbound("a.png"), Inbound::Host("a.png".into()));
+    }
+}

@@ -97,7 +97,7 @@ export function serializeComposerFileLink(path: string): string {
   return `[${label}](${destination})`;
 }
 
-// T3's "background" intent sends a draft without leaving it; Bot Code has no
+// T3's "background" intent sends a draft without leaving it; L1 Code has no
 // background draft submission, so that case sends normally.
 export type ComposerEnterIntent = "send" | "alternate" | "newline";
 

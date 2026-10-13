@@ -29,7 +29,7 @@ const dusk = parseThemeFile({
 
 it("assigns a one-appearance theme to its half, switches the scheme, and removes the theme from the library and the mix", async () => {
   const values = new Map<string, string>([
-    ["z1:preferences:v1", JSON.stringify({})],
+    ["l1code:preferences:v1", JSON.stringify({})],
     [CUSTOM_THEMES_STORAGE_KEY, JSON.stringify([dusk])],
   ]);
   const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
@@ -43,7 +43,7 @@ it("assigns a one-appearance theme to its half, switches the scheme, and removes
   setThemeLibraryStore(storage);
   const saved = () =>
     (
-      JSON.parse(values.get("z1:preferences:v1") ?? "{}") as {
+      JSON.parse(values.get("l1code:preferences:v1") ?? "{}") as {
         appearance: AppearanceSettings;
       }
     ).appearance;
@@ -69,7 +69,7 @@ it("assigns a one-appearance theme to its half, switches the scheme, and removes
         (button) => button.attributes.get("aria-label") ?? "",
       );
       for (const name of [
-        "Bot Code",
+        "L1 Code",
         "T3 Chat",
         "Grove",
         "Ocean",
@@ -162,7 +162,7 @@ async function withImportDialog(
   picked: ReadonlyArray<PickedThemeFile> = [],
 ) {
   const values = new Map<string, string>([
-    ["z1:preferences:v1", JSON.stringify({})],
+    ["l1code:preferences:v1", JSON.stringify({})],
     [CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(installed)],
   ]);
   const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
@@ -228,7 +228,7 @@ async function withImportDialog(
       };
       const saved = () =>
         (
-          JSON.parse(values.get("z1:preferences:v1") ?? "{}") as {
+          JSON.parse(values.get("l1code:preferences:v1") ?? "{}") as {
             appearance?: AppearanceSettings;
           }
         ).appearance;
@@ -257,7 +257,7 @@ async function withImportDialog(
         },
         click: async (text) => press(dialogButton(text)),
         text: () => document.body.textContent,
-        preferences: () => values.get("z1:preferences:v1"),
+        preferences: () => values.get("l1code:preferences:v1"),
         selection: () => ({
           theme: saved()?.theme ?? "system",
           themeHalves: saved()?.themeHalves ?? {},

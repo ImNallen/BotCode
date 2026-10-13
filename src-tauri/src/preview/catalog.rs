@@ -1,5 +1,5 @@
 // Adapted from T3 v0.0.45 apps/server/src/mcp/toolkits/preview/tools.ts.
-use bot_core::{ToolAnnotations, ToolSpec};
+use l1_core::{ToolAnnotations, ToolSpec};
 use serde_json::{Value, json};
 
 pub fn specs() -> Vec<ToolSpec> {

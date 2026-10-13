@@ -61,9 +61,9 @@ export const RENDER_PREFERENCES: Record<
   RenderedMode,
   { readonly key: string; readonly fallback: boolean }
 > = {
-  markdown: { key: "z1.renderMarkdown", fallback: false },
-  table: { key: "z1.renderTable", fallback: true },
-  html: { key: "z1.renderBrowserFile", fallback: true },
+  markdown: { key: "l1code:renderMarkdown", fallback: false },
+  table: { key: "l1code:renderTable", fallback: true },
+  html: { key: "l1code:renderBrowserFile", fallback: true },
 };
 
 const hasExtension = (path: string, extensions: readonly string[]) => {

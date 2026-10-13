@@ -1,6 +1,6 @@
 {
   "identifier": "main",
-  "description": "Bot Code workbench window",
+  "description": "L1 Code workbench window",
   "webviews": ["main"],
   "permissions": [
     "core:default",
