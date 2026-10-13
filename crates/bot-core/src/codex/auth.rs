@@ -1,8 +1,3 @@
-//! The Mac's Codex credentials, relayed to sandbox agents. Bot Code reads the host `auth.json`
-//! and hands an access token to each sandbox app-server at login. The host Codex stays the
-//! only refresher: a sandbox's refresh request becomes `account/read { refreshToken: true }`
-//! against the Mac agent, then a re-read of the file. The refresh token never leaves the Mac,
-//! and no token is written to a sandbox's Codex home or to a log.
 use crate::{
     codex::{AgentProcess, Codex, Signal},
     domain::*,
@@ -19,12 +14,9 @@ use std::{
 use tokio::sync::{Mutex, mpsc};
 
 const PROBE: Duration = Duration::from_secs(20);
-/// Refreshes that start this close together share one result, so a burst of unauthorized
-/// requests from one sandbox turns into one host refresh.
 const COALESCE: Duration = Duration::from_secs(5);
 const PLAN_CLAIM: &str = "https://api.openai.com/auth";
 
-/// Redacted in Debug and never serialized.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Secret(String);
 impl Secret {
@@ -66,7 +58,6 @@ struct Tokens {
     account_id: Option<String>,
     id_token: Option<String>,
 }
-/// Codex's own `auth.json` shape: ChatGPT tokens, else an API key.
 fn parse(text: &str) -> Result<Credentials> {
     let file: AuthFile = serde_json::from_str(text).map_err(|_| {
         AppError::new(
@@ -99,8 +90,6 @@ fn parse(text: &str) -> Result<Credentials> {
         None => Err(sign_in_required()),
     }
 }
-/// The payload of a JWT, unverified: it only supplies the plan type and account id the host
-/// Codex itself derived.
 fn claims(jwt: &str) -> Option<Value> {
     let payload = jwt.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -109,14 +98,12 @@ fn claims(jwt: &str) -> Option<Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Cheap to clone. Clones share the coalescing state.
 #[derive(Clone)]
 pub(crate) struct TokenBroker {
     auth_file: PathBuf,
     binary: PathBuf,
     last: Arc<Mutex<Option<(Instant, ChatgptTokens)>>>,
 }
-/// `$CODEX_HOME`, else `~/.codex`, as `usage_history` resolves it.
 pub(crate) fn codex_home() -> PathBuf {
     std::env::var_os("CODEX_HOME")
         .filter(|p| !p.is_empty())
@@ -131,7 +118,6 @@ impl TokenBroker {
             last: Default::default(),
         }
     }
-    /// The host's current credentials. A missing file means the Mac is not signed in.
     pub(crate) fn read(&self) -> Result<Credentials> {
         match std::fs::read_to_string(&self.auth_file) {
             Ok(text) => parse(&text),
@@ -139,9 +125,6 @@ impl TokenBroker {
             Err(error) => Err(error.into()),
         }
     }
-    /// Asks the host Codex to refresh, through the live Mac agent when there is one and a
-    /// throwaway app-server otherwise, then re-reads the file. A refresh is refused when the
-    /// Mac's account is no longer the one the sandbox was signed in with.
     pub(crate) async fn refresh(
         &self,
         host: Option<Codex>,
@@ -201,7 +184,6 @@ async fn account_read(host: &Codex) -> Result<()> {
         .map(drop)
 }
 
-/// `account/login/start` for a freshly initialized sandbox agent.
 pub(crate) async fn login(agent: &Codex, credentials: &Credentials) -> Result<()> {
     let params = match credentials {
         Credentials::Chatgpt(tokens) => json!({
@@ -214,7 +196,6 @@ pub(crate) async fn login(agent: &Codex, credentials: &Credentials) -> Result<()
     };
     agent.request("account/login/start", params).await.map(drop)
 }
-/// The reply to `account/chatgptAuthTokens/refresh`.
 pub(crate) fn refresh_reply(tokens: &ChatgptTokens) -> Value {
     json!({
         "accessToken": tokens.access_token.expose(),
@@ -325,8 +306,6 @@ mod tests {
         use super::*;
         use std::os::unix::fs::PermissionsExt;
 
-        /// A fake host app-server: answers `initialize`, logs `account/read`, and on a
-        /// refresh writes a new access token into the auth file it was given.
         fn fake_host(dir: &Path, auth: &Path, account: &str) -> PathBuf {
             let script = dir.join("host.py");
             std::fs::write(

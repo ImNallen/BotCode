@@ -7,9 +7,6 @@ pub const INSTANCE_LABEL: &str = "dev.botcode.instance";
 pub const SANDBOX_LABEL: &str = "dev.botcode.sandbox";
 pub const IMAGE_LABEL: &str = "dev.botcode.image";
 
-/// The first 8 hex digits of the SHA-256 of the canonical data directory. Every label filter
-/// includes it, so a run with its own `BOT_CODE_DATA_DIR` never lists, stops or removes
-/// another run's containers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Instance(String);
 impl Instance {
@@ -44,7 +41,6 @@ pub(super) fn labels(
 pub(super) fn instance_filter(instance: &Instance) -> String {
     format!("label={INSTANCE_LABEL}={}", instance.0)
 }
-/// Survives container removal, so a recreated container resumes the same Codex sessions.
 pub(super) fn codex_home(data_dir: &Path, id: &SandboxId) -> PathBuf {
     data_dir
         .join("sandboxes")

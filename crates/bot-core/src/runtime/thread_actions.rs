@@ -7,7 +7,6 @@ pub(super) struct DeleteCompletion {
     outcome: Result<DeletedWorktree>,
     reply: Reply<DeletedWorktree>,
 }
-/// The last thread of a sandbox is going: its agent, already stopped, and its handle.
 struct SandboxRetirement {
     handle: Arc<SandboxHandle>,
     agent: Option<Codex>,
@@ -129,8 +128,6 @@ impl Owner {
                 return;
             }
         };
-        // The last thread of a sandbox takes its container with it, after a final pull. The
-        // deletion is committed only once that pull landed, so a failure keeps the thread.
         let sandbox = (self.owners(&root) == 1)
             .then(|| self.workdir(&self.threads[&id]).sandbox().cloned())
             .flatten()

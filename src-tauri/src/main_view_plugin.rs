@@ -2,8 +2,7 @@
 //! Desktop child webviews that load other sites. There the notification script replaces
 //! `window.Notification` and asks for its permission over IPC, and the dialog script replaces
 //! `alert` and `confirm` with IPC calls. The capabilities refuse IPC from those views, so the
-//! pages saw rejected promises, which noVNC reported as an error. Wrapped plugins run their
-//! script in the main webview only and keep every other behavior.
+//! pages saw rejected promises, which noVNC reported as an error.
 use tauri::{
     AppHandle, RunEvent, Runtime, Url, Webview, Window, ipc::Invoke, plugin::Plugin,
     webview::PageLoadPayload,

@@ -152,7 +152,6 @@ pub(crate) fn respond_image(root: Option<&Path>, path: &str) -> FileResponse {
     .unwrap_or_else(FileResponse::not_found)
 }
 
-/// An image fetched out of a sandbox, classified by its name like a Mac file.
 pub(crate) fn respond_image_bytes(path: &str, body: Vec<u8>) -> FileResponse {
     let Some((Class::Image, mime)) = served(Path::new(path)) else {
         return FileResponse::not_found();

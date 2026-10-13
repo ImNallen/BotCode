@@ -287,8 +287,6 @@ async fn generate(
     normalize(&output)
 }
 
-/// Renames on the mirror first, with every Mac-side check, then in the container, and ends
-/// with a pull so both sides agree. A container failure undoes the Mac rename.
 async fn rename_in(workdir: &Workdir, old: &str, requested: &str) -> Result<String> {
     let write = workdir.begin_write().await?;
     let branch = rename(write.root(), old, requested).await?;

@@ -44,8 +44,6 @@ mod owner {
     use crate::codex::AgentProcess;
     use std::os::unix::fs::PermissionsExt;
 
-    /// An owner with a live Mac agent and a live sandbox agent, each a fake app-server, and one
-    /// running thread on each.
     struct Fixture {
         dir: tempfile::TempDir,
         owner: Owner,
@@ -166,8 +164,6 @@ mod owner {
             fixture.running(&fixture.sandboxed.clone(), "sandbox");
             fixture
         }
-        /// What `Launcher::start` does, with a fake app-server in each slot's own directory.
-        /// The sandbox launch readies the container, so its handle reads running.
         async fn go_live(&mut self, key: &EnvKey) -> u64 {
             let name = match key {
                 EnvKey::Mac => "mac",
@@ -210,7 +206,6 @@ mod owner {
                 .unwrap();
             launch.epoch
         }
-        /// A thread whose acknowledged turn is running and holds its checkout lease.
         fn running(&mut self, id: &ThreadId, native: &str) {
             let owner = &mut self.owner;
             let t = owner.threads.get_mut(id).unwrap();
@@ -245,7 +240,6 @@ mod owner {
             t.root(&self.owner.workspaces[&t.workspace_id])
                 .to_path_buf()
         }
-        /// Lines the slot's fake app-server read from Bot Code.
         fn received(&self, name: &str) -> Vec<Value> {
             std::fs::read_to_string(self.dir.path().join(name).join("calls.jsonl"))
                 .unwrap_or_default()
@@ -266,7 +260,6 @@ mod owner {
             }
             panic!("{name} never received a reply to {id}");
         }
-        /// Forwards provider signals to the owner, as its loop does, through `epoch`'s exit.
         async fn until_exited(&mut self, epoch: u64) {
             loop {
                 let signal = tokio::time::timeout(Duration::from_secs(10), self.signals.recv())
@@ -280,7 +273,6 @@ mod owner {
                 }
             }
         }
-        /// Forwards completions to the owner, as its loop does, until `stop` matches one.
         async fn until_completed(&mut self, stop: impl Fn(&Completion) -> bool) {
             loop {
                 let done = tokio::time::timeout(Duration::from_secs(10), self.completions.recv())
@@ -301,7 +293,6 @@ mod owner {
                 }
             }
         }
-        /// Opening an unavailable thread resumes it.
         async fn resume(&mut self, id: &ThreadId) {
             let (reply, snapshot) = oneshot::channel();
             self.owner
@@ -458,7 +449,6 @@ mod owner {
         f.mac_intact();
     }
 
-    /// Lines the slot's fake app-server read that answer request `id`.
     fn replies(f: &Fixture, name: &str, id: &str) -> Vec<Value> {
         f.received(name)
             .into_iter()
@@ -477,7 +467,6 @@ mod owner {
             f.received(name)
         );
     }
-    /// `account/read { refreshToken: true }` calls the slot's fake app-server received.
     fn host_refreshes(f: &Fixture, name: &str) -> usize {
         f.received(name)
             .iter()
@@ -520,7 +509,6 @@ mod owner {
             json!({"accessToken": "at-fresh", "chatgptAccountId": "acct-1", "chatgptPlanType": null}),
             "{reply}"
         );
-        // The usage reader also calls account/read, without a refresh.
         assert_eq!(host_refreshes(&f, "mac"), 1, "{:?}", f.received("mac"));
         assert_eq!(
             host_refreshes(&f, "sandbox"),
@@ -529,7 +517,6 @@ mod owner {
         );
         f.mac_intact();
 
-        // A different host account is refused, so a Mac account switch does not leak in.
         f.frame(f.sandbox_epoch, refresh_request("refresh-2", "acct-other"))
             .await;
         let refused = reply_within(&f, "sandbox", "refresh-2").await;

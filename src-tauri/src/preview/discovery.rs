@@ -160,8 +160,6 @@ pub async fn wait_local_ready(url: &Url) -> bool {
     }
 }
 
-/// A sandbox's server is listening when its container's last reading lists the port. A paused
-/// container keeps its reading, so its page loads and the load wakes it.
 pub async fn wait_sandbox_ready(network: &SandboxNetwork, port: u16) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -179,8 +177,6 @@ pub async fn wait_sandbox_ready(network: &SandboxNetwork, port: u16) -> bool {
     }
 }
 
-/// Fetches a loopback page's document, connecting with `open`, so a sandbox's pages are read
-/// through its gateway.
 async fn http_document<F, C>(mut url: Url, open: F) -> Option<(String, Option<String>)>
 where
     F: Fn(Url) -> C,
@@ -250,7 +246,6 @@ where
             return None;
         }
         let lower = body.to_ascii_lowercase();
-        // A sandbox's Desktop page is reachable only with its secret and has its own tab.
         if lower.contains(DISCOVERY_OPT_OUT) {
             return None;
         }
@@ -268,7 +263,6 @@ where
     None
 }
 
-/// The Mac's servers, without `excluded`, which are Bot Code's own forwarders to sandboxes.
 pub async fn discover(excluded: &BTreeSet<u16>) -> Vec<LocalServer> {
     let mut ports = listener_ports().await;
     ports.extend(COMMON_PORTS.iter().copied());
@@ -311,8 +305,6 @@ async fn mac(url: Url) -> Option<TcpStream> {
     connect(&url).await
 }
 
-/// The servers inside a sandbox's container, with the container address the Preview opens.
-/// A paused container is not read, which would block on it; its last listeners show untitled.
 pub async fn discover_sandbox(network: &SandboxNetwork) -> Result<Vec<LocalServer>, String> {
     let listeners = network.listeners().await.map_err(|error| error.message)?;
     let mut jobs = JoinSet::new();

@@ -1,6 +1,3 @@
-//! The sandbox lifecycle end to end against real Docker and the Mac's signed-in Codex, with
-//! the windows shortened to seconds. Ignored by default. Run it with
-//! `cargo test -p bot-core --test sandbox_lifecycle_e2e -- --include-ignored --nocapture`.
 #![allow(clippy::disallowed_methods)]
 use bot_core::*;
 use std::{
@@ -48,8 +45,6 @@ async fn until_status(container: &str, expected: &str, limit: Duration) -> Durat
     }
     started.elapsed()
 }
-/// The container's state is read from Docker as the step starts; the strip state follows
-/// when the handle has finished the step.
 async fn until_state(
     app: &App,
     workspace: &WorkspaceId,
@@ -112,7 +107,6 @@ async fn wait(app: &App, id: &ThreadId, receipt: &Receipt, limit: Duration) -> T
 #[tokio::test]
 #[ignore = "needs Docker and a signed-in Codex"]
 async fn an_idle_sandbox_pauses_a_message_wakes_it_and_delete_removes_it() {
-    // Read at App::open; this file holds one test, so nothing else sees them.
     unsafe {
         std::env::set_var("BOT_CODE_SANDBOX_PAUSE_AFTER_SECS", "8");
         std::env::set_var("BOT_CODE_SANDBOX_STOP_AFTER_SECS", "30");
@@ -195,7 +189,6 @@ async fn an_idle_sandbox_pauses_a_message_wakes_it_and_delete_removes_it() {
     );
     until_state(&app, &workspace.id, &thread.id, SandboxState::Paused).await;
 
-    // The agent stayed live across the pause; the next message wakes the container.
     let started = Instant::now();
     let receipt = app
         .submit(
@@ -222,7 +215,6 @@ async fn an_idle_sandbox_pauses_a_message_wakes_it_and_delete_removes_it() {
         "FIRST\nSECOND\n"
     );
 
-    // Idle long enough, it stops, and a third message starts it and relaunches the agent.
     let stopped_after = until_status(&container, "exited", Duration::from_secs(120)).await;
     eprintln!("LIFECYCLE stopped {stopped_after:?} after the second turn");
     until_state(&app, &workspace.id, &thread.id, SandboxState::Stopped).await;
@@ -259,8 +251,6 @@ async fn an_idle_sandbox_pauses_a_message_wakes_it_and_delete_removes_it() {
     assert!(text.contains("FIRST") && text.contains("SECOND"), "{text}");
     assert_eq!(status(&container), "running");
 
-    // Deleting the only thread, here a stopped one, pulls one last time, removes the
-    // container and its Codex home, and takes a moment, not a timeout.
     let stopped_after = until_status(&container, "exited", Duration::from_secs(120)).await;
     eprintln!("LIFECYCLE stopped again {stopped_after:?} after the third turn");
     until_state(&app, &workspace.id, &thread.id, SandboxState::Stopped).await;

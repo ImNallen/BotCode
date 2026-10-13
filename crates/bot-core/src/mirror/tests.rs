@@ -1,5 +1,3 @@
-//! Docker tests are ignored by default. Run them against a running Docker with
-//! `cargo test -p bot-core --lib mirror -- --include-ignored --nocapture`.
 use super::host::{Entry, validate_entries};
 use super::*;
 use crate::sandbox::{CodexSource, Desired, Docker, SandboxConfig, docker_binary};
@@ -34,7 +32,6 @@ fn host_head_moves_only_the_own_branch_freely_and_other_branches_by_fast_forward
         ]),
         elsewhere: set(&["main", "feature"]),
     };
-    // `old` is an ancestor of `new` only for the one pair the table below names.
     let ff = |old: &str, new: &str| (old, new) == ("t1", "t2");
     let head = |container: &Head| host_head(container, &mac, "botcode/m", ff);
     let own = HostHead::Branch {
@@ -239,13 +236,8 @@ fn apply_output_is_classified_into_refusals() {
     );
 }
 
-// ---- Docker -------------------------------------------------------------------------------
-
-/// Concurrent tests share one image build.
 static IMAGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// A main checkout on `main`, a mirror worktree on `botcode/mirror`, and a seeded container
-/// that is removed on drop, including after a failure.
 struct Fixture {
     _data: tempfile::TempDir,
     _repos: tempfile::TempDir,
@@ -256,8 +248,6 @@ struct Fixture {
     mirror: Mirror,
     _removal: Removal,
 }
-/// Removes the container on drop. It exists before the container starts, so a panic while the
-/// fixture is still being built removes it too.
 struct Removal(String);
 impl Drop for Removal {
     fn drop(&mut self) {
@@ -350,7 +340,6 @@ impl Fixture {
             _removal: removal,
         }
     }
-    /// Runs a shell script in `/workspace` and returns its stdout.
     async fn ctr(&self, script: &str) -> String {
         let output = self
             .container
@@ -376,7 +365,6 @@ impl Fixture {
     fn mac(&self, args: &[&str]) -> String {
         git(&self.root, args)
     }
-    /// Index and worktree state, which must agree between the sides after every sync.
     fn mac_status(&self) -> Vec<String> {
         status(&git(&self.root, &STATUS))
     }
@@ -732,7 +720,6 @@ async fn refused_trees_leave_the_mirror_untouched() {
     ]);
     let base = base.trim().to_owned();
 
-    // Crafted sync points, planted at the container's outgoing ref behind the capture.
     let craft = |worktree_entries: &str| {
         format!(
             "set -e; index=$(git rev-parse 'HEAD^{{tree}}'); \
@@ -786,7 +773,6 @@ async fn refused_trees_leave_the_mirror_untouched() {
         );
     }
 
-    // The same through the real capture: a submodule and an escaping symlink in the worktree.
     f.ctr(
         "git init -q /tmp/sub && git -C /tmp/sub -c user.name=Sub -c user.email=sub@example.invalid commit -q --allow-empty -m sub \
          && git -c protocol.file.allow=always submodule add -q /tmp/sub sub",
@@ -979,7 +965,6 @@ async fn a_stale_container_without_the_desktop_port_is_pulled_then_recreated_wit
         assert!(output.status.success(), "docker {args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap()
     };
-    // Shaped like a container from a slice 3 image: another image label and no published port.
     let name = f.container.name();
     let image = f.docker.image(&|_| {}).await.unwrap();
     let home = f.container.codex_home();

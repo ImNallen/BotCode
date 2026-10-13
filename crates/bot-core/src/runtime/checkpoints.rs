@@ -81,7 +81,6 @@ impl Owner {
         self.checkpoint_work.active.spawn(async move {
             let path = root.clone();
             let result = async {
-                // The mirror lock stays held through the capture, so no UI read pulls under it.
                 let _synced = workdir.sync(Freshness::Exact).await?;
                 tokio::task::spawn_blocking(move || crate::checkpoints::capture(&path, &reference))
                     .await
@@ -404,8 +403,6 @@ impl Owner {
         self.install(next)?;
         self.continue_revert(id)
     }
-    /// Under the thread's `Hold::Revert`. A sandbox restore runs inside a write session, and a
-    /// push refusal fails this phase, so Retry revert runs it again.
     fn restore_revert(&mut self, id: ThreadId, intent: RevertIntent) {
         let workdir = self.workdir(&self.threads[&id]);
         self.checkpoint_work.active.spawn(async move {

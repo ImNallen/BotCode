@@ -25,7 +25,6 @@ const BUILD_TAIL: usize = 30;
 pub(super) enum Stdin<'a> {
     Null,
     Bytes(&'a [u8]),
-    /// Piped and left open until the client exits, as the run wrapper's lifeline.
     Held,
 }
 
@@ -66,7 +65,6 @@ impl Cli {
         command.args(args);
         command
     }
-    /// The exit status is the caller's to judge.
     pub async fn run<I, S>(&self, args: I, limit: Duration) -> Result<Output>
     where
         I: IntoIterator<Item = S>,
@@ -91,7 +89,6 @@ impl Cli {
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
-    /// Sends each output line to `line` and fails with the last lines when the command fails.
     pub async fn stream<I, S>(
         &self,
         args: I,
@@ -126,8 +123,6 @@ impl Cli {
     }
 }
 
-/// Runs `command` to completion with bounded output. On timeout or overflow the client's
-/// process group is stopped.
 pub(super) async fn capture(
     command: std::process::Command,
     stdin: Stdin<'_>,
@@ -231,7 +226,6 @@ fn spawn_error(error: io::Error) -> AppError {
     }
 }
 
-/// A failed Docker command as an error. An unreachable daemon gets the banner's wording.
 pub(super) fn failure(output: &Output) -> AppError {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -249,7 +243,6 @@ pub(super) fn failure(output: &Output) -> AppError {
     AppError::new("sandbox", text)
 }
 
-/// Whether a failed inspect only reported objects that do not exist.
 pub(super) fn absent(output: &Output) -> bool {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let mut lines = stderr
@@ -259,7 +252,6 @@ pub(super) fn absent(output: &Output) -> bool {
     lines.peek().is_some() && lines.all(|line| line.contains("No such"))
 }
 
-/// Whether Docker itself, not the command it ran, failed an exec.
 pub(super) fn exec_failed(output: &Output) -> bool {
     output.code != Some(0)
         && (String::from_utf8_lossy(&output.stderr).starts_with("Error response from daemon:")
@@ -284,7 +276,6 @@ struct InspectedConfig {
     labels: Option<HashMap<String, String>>,
 }
 
-/// `docker container inspect` output for containers Bot Code labelled.
 pub(super) fn parse_inspect(json: &[u8]) -> Result<Vec<Observed>> {
     let inspected: Vec<Inspected> = serde_json::from_slice(json)?;
     inspected
@@ -302,7 +293,6 @@ pub(super) fn parse_inspect(json: &[u8]) -> Result<Vec<Observed>> {
             Ok(Observed {
                 id: label(&mut labels, SANDBOX_LABEL)?.parse()?,
                 run: run_state(&container.state.status)?,
-                // Only ever compared with the current version, never interpolated.
                 image: ImageVersion(label(&mut labels, super::identity::IMAGE_LABEL)?),
             })
         })

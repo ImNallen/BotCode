@@ -1,6 +1,3 @@
-//! Blocking git on the Mac mirror: capture, transfer, parse, validate and apply. Every call
-//! runs with the user's own repository config, never the container's; the only process that
-//! talks to the container is the `ext::` transport, which exchanges objects.
 use super::{Head, HostHead, SyncPoint};
 use crate::domain::{AppError, Result, SandboxId};
 use crate::{process, vcs};
@@ -16,7 +13,6 @@ const TRANSFER: Duration = Duration::from_secs(300);
 const BUNDLE: Duration = Duration::from_secs(600);
 const CONTAINER_OUTGOING: &str = super::CONTAINER_OUTGOING;
 const CONTAINER_INCOMING: &str = super::CONTAINER_INCOMING;
-/// Fixed, so equal states have equal sync commit ids on both sides.
 const SYNC_IDENTITY: [(&str, &str); 6] = [
     ("GIT_AUTHOR_NAME", "Bot Code"),
     ("GIT_AUTHOR_EMAIL", "botcode@users.noreply.github.com"),
@@ -27,7 +23,6 @@ const SYNC_IDENTITY: [(&str, &str); 6] = [
 ];
 const OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 
-/// Host refs live in the shared common dir, so they survive the mirror worktree.
 fn host_ref(id: &SandboxId, name: &str) -> String {
     format!("refs/botcode/sandbox/{id}/{name}")
 }
@@ -125,7 +120,6 @@ impl Git<'_> {
             .text(&["rev-parse", "--path-format=absolute", "--git-path", name])?
             .into())
     }
-    /// A ref's commit, or `None` when it does not exist.
     fn resolve(&self, reference: &str) -> Result<Option<String>> {
         let output = self.run(
             &[
@@ -202,7 +196,6 @@ pub(super) fn base(root: &Path, id: &SandboxId) -> Result<Option<String>> {
 pub(super) fn outgoing(root: &Path, id: &SandboxId) -> Result<Option<String>> {
     Git { root, index: None }.resolve(&host_ref(id, "outgoing"))
 }
-/// Both refs move, so a later pull sees nothing pending from the host.
 pub(super) fn set_base(root: &Path, id: &SandboxId, commit: &str) -> Result<()> {
     let git = Git { root, index: None };
     git.out(&["update-ref", &host_ref(id, "outgoing"), commit])?;
@@ -210,10 +203,6 @@ pub(super) fn set_base(root: &Path, id: &SandboxId, commit: &str) -> Result<()> 
     Ok(())
 }
 
-/// The mirror's state as a sync point, kept at the host outgoing ref. The same recipe as the
-/// in-image script: the sync index starts as a copy of the real index, tracked files are
-/// updated, and untracked files that no `.gitignore` excludes are added. Nested repositories
-/// stay out.
 pub(super) fn capture(root: &Path, id: &SandboxId) -> Result<SyncPoint> {
     let git = Git { root, index: None };
     let real = git.git_path("index")?;
@@ -279,7 +268,6 @@ pub(super) fn capture(root: &Path, id: &SandboxId) -> Result<SyncPoint> {
         worktree_tree,
     })
 }
-/// The real index as a tree. Paths left unmerged by a conflict are left out.
 fn index_tree(git: &Git<'_>, real: &Path) -> Result<String> {
     let written = git.run(&["write-tree"], &[], LOCAL)?;
     if written.status.success() {
@@ -309,8 +297,6 @@ fn index_tree(git: &Git<'_>, real: &Path) -> Result<String> {
     merged.text(&["write-tree"])
 }
 
-/// Fetches the container's outgoing sync point. The hardening applies to this invocation
-/// only: fsck on every received object and the HFS and NTFS `.git` protections.
 pub(super) fn fetch(root: &Path, id: &SandboxId, transport: &str, expected: &str) -> Result<()> {
     let incoming = host_ref(id, "incoming");
     let git = Git { root, index: None };
@@ -344,8 +330,6 @@ pub(super) fn fetch(root: &Path, id: &SandboxId, transport: &str, expected: &str
     }
     Ok(())
 }
-/// Pushes the host outgoing sync point. `--no-verify` keeps the user's pre-push hook out of
-/// an internal transfer.
 pub(super) fn push(root: &Path, id: &SandboxId, transport: &str) -> Result<()> {
     Git { root, index: None }
         .ok(
@@ -365,8 +349,6 @@ pub(super) fn push(root: &Path, id: &SandboxId, transport: &str) -> Result<()> {
         .map(drop)
 }
 
-/// Parses a fetched sync commit. The head commit is the commit's parent, never a claim in
-/// the message, and a branch name has to be one git accepts.
 pub(super) fn point(root: &Path, commit: &str) -> Result<SyncPoint> {
     let git = Git { root, index: None };
     let raw = utf8(git.out(&["cat-file", "commit", commit])?)?;
@@ -417,16 +399,11 @@ pub(super) fn point(root: &Path, commit: &str) -> Result<SyncPoint> {
     })
 }
 
-/// One entry of a worktree tree, as [`validate_entries`] judges it.
 pub(super) struct Entry<'a> {
     pub mode: &'a str,
     pub path: &'a str,
-    /// A symlink's target bytes.
     pub target: Option<&'a [u8]>,
 }
-/// Nothing in a pulled tree may reach outside the mirror or into a repository directory:
-/// no gitlinks, no `.git` name variants, no symlink whose target is absolute, escapes the
-/// tree, or names a `.git` component.
 pub(super) fn validate_entries<'a>(entries: impl IntoIterator<Item = Entry<'a>>) -> Result<()> {
     let refuse = |why: String| AppError::new("mirror_refused", why);
     for entry in entries {
@@ -460,8 +437,6 @@ pub(super) fn validate_entries<'a>(entries: impl IntoIterator<Item = Entry<'a>>)
     }
     Ok(())
 }
-/// Resolved relative to the symlink's directory, the target has to stay inside the tree and
-/// name no `.git` component.
 fn safe_link(path: &str, target: &[u8]) -> bool {
     let Ok(target) = std::str::from_utf8(target) else {
         return false;
@@ -522,7 +497,6 @@ pub(super) fn validate_tree(root: &Path, tree: &str) -> Result<()> {
         }
     }))
 }
-/// `cat-file --batch` for the given blobs.
 fn blobs(git: &Git<'_>, oids: &[&str]) -> Result<Vec<(String, Vec<u8>)>> {
     if oids.is_empty() {
         return Ok(Vec::new());
@@ -578,16 +552,12 @@ pub(super) fn mac_branches(root: &Path) -> Result<super::MacBranches> {
     })
 }
 
-/// Whether moving a branch from `old` to `new` is a fast-forward.
 pub(super) fn is_ancestor(root: &Path, old: &str, new: &str) -> bool {
     Git { root, index: None }
         .run(&["merge-base", "--is-ancestor", old, new], &[], LOCAL)
         .is_ok_and(|output| output.status.success())
 }
 
-/// Applies a sync point to the mirror: worktree from the sync index (which deletes files the
-/// base had, untracked ones included), HEAD per policy, the real index, and the base ref last.
-/// `read-tree --reset` rewrites every entry whose stat differs, so Mac-side drift goes away.
 pub(super) fn apply(
     root: &Path,
     id: &SandboxId,
@@ -630,7 +600,6 @@ pub(super) fn apply(
     set_base(root, id, &point.commit)
 }
 
-/// Writes a bundle of the mirror's HEAD (and its branch) for seeding, unless HEAD is unborn.
 pub(super) fn bundle(root: &Path, path: &Path) -> Result<Head> {
     let git = Git { root, index: None };
     let head = git.head()?;
@@ -653,7 +622,6 @@ pub(super) fn bundle(root: &Path, path: &Path) -> Result<Head> {
     }
     Ok(head)
 }
-/// The resolved `user.name` and `user.email`, for commits made in the container.
 pub(super) fn identity(root: &Path) -> (Option<String>, Option<String>) {
     let git = Git { root, index: None };
     let setting = |key: &str| {

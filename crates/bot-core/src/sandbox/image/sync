@@ -1,14 +1,4 @@
 #!/bin/bash
-# sync capture [host-base]        print a sync point of /workspace, kept at refs/botcode/sync/outgoing
-# sync apply <base> <incoming>    fast-forward /workspace from one sync point to another
-# sync seed <bundle|-> <head...>  make /workspace a clone of the Mac mirror
-#
-# A sync point is one commit: its tree holds `index` (the real index) and `worktree` (tracked
-# files plus untracked files that no .gitignore excludes), its parent is HEAD when HEAD is
-# born, and its message names HEAD. Identity and dates are fixed, so equal states have equal
-# commit ids and the Mac compares ids. Only .gitignore files decide what is ignored, on both
-# sides, so a file that only the Mac's global excludes would hide is never deleted from the
-# container by a push. Nested repositories stay out of the sync tree.
 set -euo pipefail
 cd /workspace
 export GIT_AUTHOR_NAME="Bot Code" GIT_AUTHOR_EMAIL=botcode@users.noreply.github.com
@@ -17,7 +7,6 @@ export GIT_AUTHOR_DATE="1970-01-01T00:00:00Z" GIT_COMMITTER_DATE="1970-01-01T00:
 export GIT_TERMINAL_PROMPT=0 LC_ALL=C
 unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE
 
-# The agent owns this repository's config and hooks; they never run inside a sync step.
 g() { git -c core.fsmonitor=false -c core.splitIndex=false -c core.hooksPath=/dev/null "$@"; }
 real_index() { g rev-parse --path-format=absolute --git-path index; }
 sync_index() { g rev-parse --path-format=absolute --git-path botcode-sync-index; }
@@ -42,8 +31,6 @@ untracked_files() {
   done
 }
 
-# The sync index starts as a copy of the real index, so tracked files stay in even when a
-# .gitignore matches them.
 worktree_tree() {
   local real sync
   real=$(real_index)
@@ -60,7 +47,6 @@ worktree_tree() {
   )
 }
 
-# The real index as a tree. Paths left unmerged by a conflict are left out.
 index_tree() {
   local tmp
   if g write-tree 2>/dev/null; then return; fi
@@ -85,7 +71,6 @@ capture() {
   fi
 }
 
-# HEAD as the sync point recorded it: the parent plus the message line.
 head_of() { g log -1 --format='%P %B' "$1"; }
 changed() { g diff-tree -r --name-only -z "$1" "$2" | sort -zu; }
 
@@ -102,9 +87,6 @@ set_head() {
   esac
 }
 
-# Exit 3 with `<kind>\t<path>\0` records when the container moved on since the base: a
-# worktree path both sides changed, any index change, or a moved HEAD. Exit 4 when git
-# refuses the update, which happens when an ignored file is in the way.
 apply() {
   local base=$1 incoming=$2 base_tree new_tree current collisions spec commit
   base_tree=$(g rev-parse --verify "$base:worktree")
@@ -118,7 +100,7 @@ apply() {
         | sed -z 's/^/worktree\t/'
       changed "$base:index" "$current:index" | sed -z 's/^/index\t/'
     fi
-    # git would overwrite an ignored file in the way without a word; refuse like restore does.
+    # git would overwrite an ignored file in the way without a word.
     comm -z -23 <(changed "$base_tree" "$new_tree") <(g ls-tree -r --name-only -z "$current:worktree" | sort -zu) \
       | while IFS= read -r -d '' path; do
           if [[ -e $path || -L $path ]]; then printf 'blocked\t%s\0' "$path"; fi

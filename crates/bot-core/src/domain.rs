@@ -925,8 +925,6 @@ pub struct UserQuestionAnswer {
 }
 pub type UserQuestionAnswers = std::collections::BTreeMap<String, UserQuestionAnswer>;
 
-/// Twelve lowercase hex digits, random at creation. Container names, label filters and the
-/// `ext::` git transport interpolate it, so parsing refuses anything else.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct SandboxId(String);
@@ -969,13 +967,11 @@ impl std::fmt::Display for SandboxId {
         f.write_str(&self.0)
     }
 }
-/// Where a worktree checkout's authoritative files and its agent live. Fixed at creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Sandbox {
     Docker { id: SandboxId },
 }
-/// Whether a sandbox thread can be created now, with the reason the composer shows when not.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -983,16 +979,9 @@ pub enum Sandbox {
     rename_all_fields = "camelCase"
 )]
 pub enum SandboxAvailability {
-    Ready {
-        memory_bytes: u64,
-        /// Docker's memory cap is below 8 GiB.
-        low_memory: bool,
-    },
-    Unavailable {
-        reason: String,
-    },
+    Ready { memory_bytes: u64, low_memory: bool },
+    Unavailable { reason: String },
 }
-/// What Bot Code last made of a sandbox's container. The composer strip shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxState {
@@ -1001,8 +990,6 @@ pub enum SandboxState {
     Paused,
     Stopped,
 }
-/// Where a sandbox's Desktop tab connects: the Mac loopback port of its noVNC page and the
-/// secret that both the websocket and VNC require.
 #[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxDesktop {
@@ -1021,8 +1008,6 @@ impl std::fmt::Debug for SandboxDesktop {
 pub enum Checkout {
     #[default]
     Local,
-    /// On the Mac a sandbox checkout is still a worktree, its mirror, so cleanup, naming,
-    /// restore and leases apply unchanged, and a sandbox without a worktree cannot exist.
     Worktree {
         path: PathBuf,
         branch: String,
@@ -1059,24 +1044,11 @@ impl Checkout {
 )]
 pub enum NewCheckout {
     Local,
-    Worktree {
-        base: String,
-        from_origin: bool,
-    },
-    /// A worktree whose agent and authoritative files live in a Docker sandbox.
-    Sandbox {
-        base: String,
-        from_origin: bool,
-    },
-    Folder {
-        prompt: String,
-    },
-    Existing {
-        thread_id: ThreadId,
-    },
-    Registered {
-        path: PathBuf,
-    },
+    Worktree { base: String, from_origin: bool },
+    Sandbox { base: String, from_origin: bool },
+    Folder { prompt: String },
+    Existing { thread_id: ThreadId },
+    Registered { path: PathBuf },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2228,7 +2200,6 @@ pub enum PublishOutcome {
 mod tests {
     use super::*;
 
-    // Serialized by the code before sandboxes existed.
     const SAVED_SNAPSHOT: &str = r#"{"worktreeSetup":null,"createdAtMs":null,"latestUserActivityAtMs":null,"unsettledAtMs":null,"id":"0b0f4c1e-9f5a-4c8e-8f43-2b1d6f0c9a11","workspaceId":"5e1b2c3d-4f5a-4b6c-8d7e-9f0a1b2c3d4e","title":"Fix the build","nativeThreadId":"019a","revision":7,"session":{"kind":"dormant"},"settings":{"model":null,"effort":null,"permissionMode":"approval-required","interactionMode":"default"},"checkout":{"kind":"worktree","path":"/Users/me/.z1/worktrees/app/botcode-1a2b","branch":"botcode/1a2b"},"turns":[],"approvals":[],"userQuestions":[],"diagnostic":null,"placement":{"kind":"auto"},"snooze":null,"context":null,"pendingRevert":null,"lastRevert":null,"subagents":[]}"#;
 
     #[test]

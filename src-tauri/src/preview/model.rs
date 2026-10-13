@@ -19,7 +19,6 @@ pub enum PreviewScope {
         #[serde(rename = "workspaceId")]
         workspace_id: WorkspaceId,
     },
-    /// A sandbox thread's Desktop tab. Agent tools never address it.
     Desktop {
         #[serde(rename = "threadId")]
         thread_id: ThreadId,
@@ -117,8 +116,6 @@ pub fn parse_url(raw: &str) -> Result<Url> {
 
 pub struct Entry {
     pub label: Option<String>,
-    /// Set while the page loads through a sandbox forwarder. Its URLs are shown as the
-    /// container's, and its view closes whenever it is not attached.
     pub alias: Option<super::route::Alias>,
     pub state: PreviewState,
     pub navigation: u64,
@@ -152,7 +149,6 @@ pub struct Model {
 }
 
 impl Entry {
-    /// How the URL field shows an address the page reports.
     pub fn shown(&self, url: &str) -> String {
         match &self.alias {
             Some(alias) => alias.shown(url),

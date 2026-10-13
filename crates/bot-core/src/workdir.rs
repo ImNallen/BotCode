@@ -1,8 +1,3 @@
-//! Where a checkout's authoritative files and its agent live. `Owner::workdir` resolves a
-//! thread to one [`Workdir`], and every host-versus-sandbox difference below the runtime
-//! dispatches on it: reads sync the mirror first, mutations run inside a write session, and
-//! agent paths map both ways. `root()` is always the Mac path, so leases, holds, Files, Diff,
-//! search and cleanup key on it unchanged.
 use crate::{
     domain::*,
     log::RotatingLog,
@@ -32,8 +27,6 @@ pub(crate) use idle::{Activity, Limits};
 
 const COPY: Duration = Duration::from_secs(60);
 const DESKTOP_START: Duration = Duration::from_secs(30);
-/// Bounds a file fetched out of the container for display, which is also the largest image
-/// the preview tools produce.
 pub(crate) const FETCH_LIMIT: u64 = 4_400_000;
 
 #[derive(Clone)]
@@ -47,10 +40,6 @@ pub(crate) enum Workdir {
     },
 }
 
-/// What this process last made of the container. Docker stays the authority; this is what
-/// the strip label shows and what decides whether reads pull and whether the idle rule
-/// probes. `Stopped` is also the state of a container this process has not touched, and
-/// `Starting` is a `ready` in flight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
     Starting,
@@ -68,39 +57,22 @@ impl Phase {
     }
 }
 
-/// One per sandbox id, shared by every thread on the same checkout. It serializes the
-/// lifecycle steps that must not interleave: readying, retiring and reconciling.
 pub(crate) struct SandboxHandle {
     pub id: SandboxId,
     pub container: Container,
     pub mirror: Mirror,
     docker: Docker,
     log: RotatingLog,
-    /// The checkout's branch, which the mirror may move freely. `Owner::workdir` refreshes
-    /// it from the checkout each time the handle is used.
     branch: Mutex<String>,
     flight: tokio::sync::Mutex<()>,
-    /// `Running` only after a completed `ready`, until a `retire`. Otherwise the container is
-    /// not running on this process's account, so the mirror is exact and reads skip the pull.
     phase: Mutex<Phase>,
-    /// Every change of `phase`, for the owner, which tells each of the sandbox's threads to
-    /// read `sandbox_state` again. Whoever changes the phase, a wake, a `ready` or a retire,
-    /// the strip label follows.
     changed: mpsc::UnboundedSender<SandboxId>,
-    /// What the idle rule reads. Entry points touch it; the owner tick folds in turns and
-    /// probes and decides.
     activity: Mutex<Activity>,
-    /// A settle or archive asked for a stop. The tick stops the container as soon as no
-    /// thread of the sandbox is busy, with this reason; any use before that withdraws it.
     stop_requested: Mutex<Option<&'static str>>,
-    /// The owner tick runs one piece of lifecycle work per sandbox at a time.
     working: AtomicBool,
     probe_due: Mutex<Instant>,
     probe_every: Duration,
-    /// Made for each handle and kept only in memory. Every desktop start sets it again, so it
-    /// also replaces the secret of a desktop that the agent or an earlier run started.
     desktop_secret: String,
-    /// The gateway's token, made and kept like `desktop_secret`.
     gateway_secret: String,
     forwards: forward::Forwards,
 }
@@ -135,7 +107,6 @@ impl SandboxHandle {
             forwards: Default::default(),
         })
     }
-    /// Claims the handle for one piece of lifecycle work. `false` while another is in flight.
     pub(crate) fn begin_work(&self) -> bool {
         self.working
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -144,7 +115,6 @@ impl SandboxHandle {
     pub(crate) fn end_work(&self) {
         self.working.store(false, Ordering::Release);
     }
-    /// Whether the next probe is due, scheduling the one after it.
     pub(crate) fn probe_due(&self, now: Instant) -> bool {
         let mut due = self.probe_due.lock().unwrap();
         if now < *due {
@@ -181,20 +151,16 @@ impl SandboxHandle {
     pub(crate) fn is_ready(&self) -> bool {
         self.phase() == Phase::Running
     }
-    /// What a completed `ready` leaves behind, for owner tests whose fake agent stands in
-    /// for a launch that readied the container.
     #[cfg(test)]
     pub(crate) fn mark_ready_for_tests(&self) {
         self.set_phase(Phase::Running);
     }
-    /// Running or paused: a container this process started and has not stopped.
     pub(crate) fn is_started(&self) -> bool {
         matches!(self.phase(), Phase::Running | Phase::Paused)
     }
     pub(crate) fn activity(&self) -> Activity {
         self.activity.lock().unwrap().clone()
     }
-    /// Someone used the sandbox through Bot Code just now, which withdraws a requested stop.
     pub(crate) fn touch(&self) {
         self.activity.lock().unwrap().touched = Instant::now();
         *self.stop_requested.lock().unwrap() = None;
@@ -205,16 +171,12 @@ impl SandboxHandle {
     pub(crate) fn stop_requested(&self) -> Option<&'static str> {
         *self.stop_requested.lock().unwrap()
     }
-    /// A thread of this sandbox is busy at this tick.
     pub(crate) fn mark_busy(&self, now: Instant) {
         self.activity.lock().unwrap().busy = now;
     }
     fn log(&self, line: &str) {
         self.log.line(&format!("sandbox[{}]", self.id), line);
     }
-    /// Converge to a running, seeded container on the current image. Idempotent, so thread
-    /// creation warms it and every launch, write, terminal and message calls it again. A
-    /// container built from an older image is pulled one last time and recreated.
     pub(crate) async fn ready(&self) -> Result<()> {
         let _flight = self.flight.lock().await;
         self.touch();
@@ -234,9 +196,6 @@ impl SandboxHandle {
         }
         readied
     }
-    /// The cheap wake for paths that run often, such as terminal input and every turn: it
-    /// takes the lock, so it waits for a pause in flight and then undoes it, and it costs no
-    /// Docker call while the container runs. `ready` re-converges every time instead.
     pub(crate) async fn wake(&self) -> Result<()> {
         let _flight = self.flight.lock().await;
         self.touch();
@@ -267,8 +226,6 @@ impl SandboxHandle {
         self.container.converge(Desired::Running).await?;
         self.mirror.seed(&own).await
     }
-    /// Readies the container, starts whatever of its desktop is not running and returns where
-    /// the Desktop tab connects.
     pub(crate) async fn desktop(&self) -> Result<SandboxDesktop> {
         self.ready().await?;
         {
@@ -300,7 +257,6 @@ impl SandboxHandle {
             secret: self.desktop_secret.clone(),
         })
     }
-    /// `ready` in the background, unless it is already running or done.
     pub(crate) fn warm(self: &Arc<Self>) {
         if self.is_ready() || self.flight.try_lock().is_err() {
             return;
@@ -312,17 +268,10 @@ impl SandboxHandle {
             }
         });
     }
-    /// Every transition away from running goes through here, so the mirror is exact whenever
-    /// the container is not running. A paused or stopped container is started to pull before
-    /// removal, because Docker Desktop can stop containers behind Bot Code's back. A failed
-    /// pull leaves the container as it is, running if the pull started it, and never removes
-    /// work that did not reach the Mac.
     pub(crate) async fn retire(&self, desired: Desired) -> Result<()> {
         let _flight = self.flight.lock().await;
         self.retire_locked(desired).await
     }
-    /// The idle rule's retire. Under the lock it checks that nothing used the sandbox since
-    /// the rule decided, because a wake that landed in between must win.
     pub(crate) async fn idle_retire(&self, desired: Desired, decided_at: Instant) -> Result<bool> {
         let _flight = self.flight.lock().await;
         if self.activity().touched > decided_at || !self.is_started() {
@@ -350,8 +299,6 @@ impl SandboxHandle {
         }
         Ok(())
     }
-    /// Reads the container's CPU time and desktop state into the activity record. Returns
-    /// the interval's CPU share when there is one, for the log.
     pub(crate) async fn probe(&self) -> Result<Option<f64>> {
         let probe = self.container.probe().await?;
         self.observe_network(&probe).await;
@@ -361,7 +308,6 @@ impl SandboxHandle {
             .unwrap()
             .observe(Instant::now(), &probe))
     }
-    /// Stops the desktop and its windows. The Desktop tab or the agent's browser restarts it.
     pub(crate) async fn stop_desktop(&self) -> Result<()> {
         self.container.stop_desktop().await?;
         self.activity.lock().unwrap().desktop_running = false;
@@ -369,32 +315,24 @@ impl SandboxHandle {
     }
 }
 
-/// Paths as the agent sees them. Outbound mapping is total. Inbound mapping is the boundary:
-/// an agent-supplied absolute path outside `/workspace` is never resolved on the Mac.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AgentPaths {
     Mac { root: PathBuf },
     Sandbox { mirror: PathBuf },
 }
-/// Where a path the agent named is read from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Inbound {
-    /// A Mac thread's path, resolved as before: absolute as is, relative inside the checkout.
     Host(String),
-    /// A path inside `/workspace`, relative to the mirror.
     Mirror(String),
-    /// A container path outside `/workspace`, fetched out of the container with a size cap.
     Container(String),
 }
 impl AgentPaths {
-    /// `cwd` for thread/start, thread/resume and thread/fork.
     pub(crate) fn cwd(&self) -> String {
         match self {
             Self::Mac { root } => root.to_string_lossy().into_owned(),
             Self::Sandbox { .. } => WORKSPACE.into(),
         }
     }
-    /// An attachment as the agent reads it: the Mac file, or its copy in the container.
     pub(crate) fn attachment(&self, host: &Path) -> String {
         match self {
             Self::Mac { .. } => host.to_string_lossy().into_owned(),
@@ -427,7 +365,6 @@ impl AgentPaths {
     }
 }
 
-/// The handle a mutation holds. Mac: the root itself.
 pub(crate) enum Write {
     Mac(WriteRoot),
     Sandbox(WriteSession),
@@ -439,7 +376,6 @@ impl Write {
             Self::Sandbox(session) => session.root(),
         }
     }
-    /// Mac: nothing. Sandbox: push the mirror into the container, refusing on drift.
     pub(crate) async fn finish(self) -> Result<()> {
         match self {
             Self::Mac(_) => Ok(()),
@@ -474,9 +410,6 @@ impl Workdir {
             Self::Sandbox { handle, .. } => Some(handle),
         }
     }
-    /// Where a new terminal's shell starts. A sandbox is readied first, since its container
-    /// may be paused, stopped or not yet created, and `starting` runs when that has not
-    /// happened in this process yet.
     pub(crate) async fn terminal(&self, starting: impl FnOnce()) -> Result<Launch> {
         match self {
             Self::Mac { root } => Ok(Launch::Mac { cwd: root.clone() }),
@@ -491,9 +424,6 @@ impl Workdir {
             }
         }
     }
-    /// Container to Mac. Mac: nothing. Sandbox: a pull, whose lock the caller holds while it
-    /// reads or captures the mirror. A sandbox this process has not readied is not running,
-    /// so its mirror is already exact. A `Recent` sync never waits for a busy mirror.
     pub(crate) async fn sync(&self, freshness: Freshness) -> Result<Option<Synced>> {
         match (self, freshness) {
             (Self::Mac { .. }, _) => Ok(None),
@@ -508,7 +438,6 @@ impl Workdir {
                 .map(Some),
         }
     }
-    /// Mac: the root. Sandbox: a readied container and an exactly pulled, locked mirror.
     pub(crate) async fn begin_write(&self) -> Result<Write> {
         match self {
             Self::Mac { root } => Ok(Write::Mac(WriteRoot::mac(root.clone()))),
@@ -520,8 +449,6 @@ impl Workdir {
             }
         }
     }
-    /// One blocking mutation: begin, run `op` on a blocking thread, finish. A failed `op`
-    /// still finishes, so a partial host write reaches the container and the sides agree.
     pub(crate) async fn write<T: Send + 'static>(
         &self,
         op: impl FnOnce(&WriteRoot) -> Result<T> + Send + 'static,
@@ -535,8 +462,6 @@ impl Workdir {
         let finished = write.finish().await;
         result.and_then(|value| finished.map(|()| value))
     }
-    /// Copies a turn's attachments to `/botcode/attachments` before `turn/start`. Mac: nothing.
-    /// The bytes go through the agent user's own `cat`, so the file is readable by Codex.
     pub(crate) async fn provide(&self, files: &[PathBuf]) -> Result<()> {
         let Self::Sandbox { handle, .. } = self else {
             return Ok(());
@@ -571,7 +496,6 @@ impl Workdir {
         }
         Ok(())
     }
-    /// A file outside `/workspace`, read out of the container. Larger than the cap is refused.
     pub(crate) async fn fetch(&self, container_path: &str) -> Option<Vec<u8>> {
         let Self::Sandbox { handle, .. } = self else {
             return None;

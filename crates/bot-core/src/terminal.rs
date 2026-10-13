@@ -144,23 +144,15 @@ impl CloseScope {
 
 pub(crate) type Sink = Arc<dyn Fn(TerminalEvent) + Send + Sync>;
 
-/// How a new terminal's shell starts. `Workdir::terminal` picks it for a checkout.
 pub(crate) enum Launch {
-    /// The configured shell, in `cwd`.
     Mac { cwd: PathBuf },
-    /// `bash -l` as the image's user in `/workspace`, through a `docker exec --tty` client.
     Sandbox { container: Container },
 }
 
-/// Where a running shell lives.
 #[derive(Clone)]
 enum Place {
     Mac,
-    /// The shell registered itself in `container` as `id`.
-    Sandbox {
-        container: Container,
-        id: String,
-    },
+    Sandbox { container: Container, id: String },
 }
 
 struct Output {
@@ -172,8 +164,6 @@ struct Output {
 }
 
 struct Session {
-    /// The Mac process on the PTY: the shell itself, or the `docker exec` client of a
-    /// sandbox shell. It leads its own session and process group, so this is also the group id.
     pid: i32,
     place: Place,
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -283,7 +273,6 @@ struct Registry {
     blocked: Mutex<HashSet<ThreadId>>,
     labels: Option<watch::Sender<TerminalLabels>>,
     history: Option<HistoryStore>,
-    /// Gets a sandbox terminal's key each time its shell shows a prompt.
     prompts: Option<mpsc::UnboundedSender<TerminalKey>>,
 }
 impl Registry {
@@ -296,8 +285,6 @@ impl Registry {
             .map(|(key, session)| (key.clone(), session.pid as u32))
             .collect()
     }
-    /// Each shell with the place to read its command from this poll. Sandbox shells without
-    /// a subscriber have none, so a container is read only while someone watches it.
     fn polled(&self) -> Vec<(TerminalKey, u32, Option<Place>)> {
         lock(&self.sessions)
             .iter()
@@ -314,7 +301,6 @@ impl Registry {
             })
             .collect()
     }
-    /// `kept` keys keep their current label, because their command could not be read.
     fn publish_labels(&self, found: Vec<(TerminalKey, u32, String)>, kept: &[TerminalKey]) {
         let Some(sender) = &self.labels else { return };
         let sessions = lock(&self.sessions);
@@ -416,8 +402,6 @@ impl Terminals {
     fn get(&self, key: &TerminalKey) -> Option<Arc<Session>> {
         lock(&self.0.sessions).get(key).cloned()
     }
-    /// Subscribes `sink` to a running terminal, or starts one from `launch`. Without a
-    /// launch, a missing terminal returns `None`.
     pub(crate) fn attach(
         &self,
         key: TerminalKey,
@@ -485,7 +469,6 @@ impl Terminals {
                 .retain(|(id, _)| *id != subscription);
         }
     }
-    /// The sandbox a running terminal's shell lives in.
     pub(crate) fn sandbox_of(&self, key: &TerminalKey) -> Option<SandboxId> {
         match &self.get(key)?.place {
             Place::Mac => None,
@@ -530,9 +513,6 @@ impl Terminals {
     }
 }
 
-/// Moves output from the PTY to the history and the subscribers until the process on it ends.
-/// A sandbox shell's key goes to `prompts` at each prompt, and its session in the container
-/// is stopped at the end, since the container never notices the client go.
 fn pump(
     registry: Weak<Registry>,
     store: Option<HistoryStore>,

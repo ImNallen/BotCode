@@ -260,7 +260,6 @@ export function Composer({
           onSelectWorktree: (path: string) => void;
         }
       | undefined;
-    /** What Bot Code last made of a sandbox thread's container, when it is not running. */
     sandboxState?: SandboxState;
     branch: ReactNode;
   };

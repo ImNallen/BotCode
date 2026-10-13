@@ -1,10 +1,7 @@
 #!/bin/bash
-# agent: run `codex app-server` for Bot Code over this exec's stdin and stdout.
-#
 # A previous agent whose client died without the container noticing would keep its Codex home
 # locked and its turns running, so the group of the last agent this container recorded is
-# stopped first. Codex runs in its own process group with the exec's stdin, exits when that
-# stdin closes, and everything it started goes with it.
+# stopped first.
 set -u
 record=/botcode/agent.pgid
 if [[ -f $record ]]; then
@@ -18,8 +15,6 @@ if [[ -f $record ]]; then
     kill -KILL -- "-$previous" 2>/dev/null
   fi
 fi
-# The browser tools drive a visible Chromium on the sandbox desktop. They are approved like
-# Bot Code's own tools, because the container is the boundary.
 CODEX_HOME=/codex-home setsid codex app-server \
   -c 'mcp_servers.browser.command="playwright-mcp"' \
   -c 'mcp_servers.browser.args=["--config", "/opt/botcode/playwright-mcp.json"]' \

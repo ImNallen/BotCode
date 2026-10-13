@@ -174,7 +174,6 @@ elif argv[:1] == ["exec"]:
     elif program == "/opt/botcode/bin/terminal" and command[1:2] == ["ps"]:
         pass
     elif program == "/opt/botcode/bin/agent":
-        # The peer keeps its state next to itself, so each container's agent gets a copy.
         peer_dir = state / f"peer-{name}"
         peer_dir.mkdir(exist_ok=True)
         peer = peer_dir / "codex_peer.py"

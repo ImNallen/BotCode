@@ -1,16 +1,6 @@
 #!/usr/bin/python3
-# gateway start   read a secret on stdin, make it the token, and start the relay unless it
-#                 runs, then wait until it listens
-#
 # The relay lets the Mac reach servers that listen only on the container's loopback, which
-# Docker cannot publish. Docker publishes its one port on a loopback port of the Mac. Each
-# connection starts with one line, `<token> <port>\n`. The relay checks the token, connects to
-# localhost:<port> over IPv4 and then IPv6, and pipes bytes both ways. A bad token, a bad line
-# or a refused target closes the connection.
-#
-# Nothing starts the relay with the container. Bot Code starts it on first use. The token is
-# read from a file for every connection, so a start with a new secret takes effect without a
-# restart. State lives in /dev/shm, which a container restart empties along with the relay.
+# Docker cannot publish.
 import asyncio
 import fcntl
 import hmac

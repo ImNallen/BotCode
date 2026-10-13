@@ -1,5 +1,3 @@
-//! Docker sandboxes: detection, the sandbox image, container identity and lifecycle, and
-//! exec. This module knows nothing about threads, git or the Codex protocol.
 mod docker;
 mod identity;
 mod image;
@@ -17,20 +15,13 @@ use std::{
     time::Duration,
 };
 
-/// Fixed container paths, so mapping a host path is a prefix swap.
 pub const WORKSPACE: &str = "/workspace";
 pub const ATTACHMENTS: &str = "/botcode/attachments";
 pub const CODEX_HOME: &str = "/codex-home";
 pub const DESKTOP: &str = "/opt/botcode/bin/desktop";
-/// The container port of the desktop's noVNC page and websocket. Docker publishes it on a
-/// random loopback port of the Mac.
 pub const DESKTOP_PORT: u16 = 6080;
-/// The container port of the in-image `gateway`, the relay to servers on the container's
-/// loopback. Docker publishes it like [`DESKTOP_PORT`].
 pub const GATEWAY_PORT: u16 = 6081;
-/// The desktop's VNC server, which listens on the container's loopback.
 const VNC_PORT: u16 = 5900;
-/// Listeners that are Bot Code's own, never a local server of the user's.
 const OWN_PORTS: [u16; 3] = [VNC_PORT, DESKTOP_PORT, GATEWAY_PORT];
 const RUN: &str = "/opt/botcode/bin/run";
 const PROBE: &str = "/opt/botcode/bin/probe";
@@ -50,16 +41,12 @@ pub struct SandboxConfig {
     pub data_dir: PathBuf,
     pub codex: CodexSource,
 }
-/// Where the Codex version the image installs comes from. The app names the host binary and
-/// the version is read on first use, so startup never waits for `codex --version`.
 pub enum CodexSource {
     Version(CodexVersion),
     Binary(PathBuf),
 }
 const VERSION_PROBE: Duration = Duration::from_secs(10);
 
-/// `BOT_CODE_DOCKER_BIN`, then the directories `vcs::bin_dirs` searches, then Docker
-/// Desktop's own install locations.
 pub fn docker_binary() -> PathBuf {
     if let Some(path) = std::env::var_os("BOT_CODE_DOCKER_BIN") {
         return path.into();
@@ -121,8 +108,6 @@ enum Step {
     Stop,
     Remove,
 }
-/// Every (current, desired) pair has a path, so a crash between steps re-plans from what
-/// Docker reports. A stale container is never replaced here: that needs a mirror pull first.
 fn plan(current: &ContainerState, desired: Desired) -> Vec<Step> {
     use {Desired as D, RunState as R, Step::*};
     let run = match current {
@@ -148,7 +133,6 @@ fn plan(current: &ContainerState, desired: Desired) -> Vec<Step> {
     }
 }
 
-/// A container of this instance, as `Docker::list` found it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Observed {
     pub id: SandboxId,
@@ -157,12 +141,9 @@ pub struct Observed {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reconcile {
-    /// Running or paused after a crash or a quit that skipped the stop.
     PullThenStop(SandboxId),
-    /// No checkout names it, which happens when the app crashed during a delete.
     Remove(SandboxId),
 }
-/// Startup repair. A stale image is left for the next use, which pulls before recreating.
 pub fn reconcile_plan(observed: &[Observed], referenced: &HashSet<SandboxId>) -> Vec<Reconcile> {
     observed
         .iter()
@@ -179,7 +160,6 @@ pub fn reconcile_plan(observed: &[Observed], referenced: &HashSet<SandboxId>) ->
         .collect()
 }
 
-/// Cheap to clone.
 #[derive(Clone)]
 pub struct Docker {
     inner: Arc<Inner>,
@@ -191,7 +171,6 @@ struct Inner {
     codex: CodexSource,
     versions: tokio::sync::OnceCell<(CodexVersion, ImageVersion)>,
     building: tokio::sync::Mutex<()>,
-    /// Converge inspects and then acts, so two callers must not both decide to create.
     converging: std::sync::Mutex<HashMap<SandboxId, Arc<tokio::sync::Mutex<()>>>>,
 }
 impl Docker {
@@ -211,7 +190,6 @@ impl Docker {
     pub fn instance(&self) -> &Instance {
         &self.inner.instance
     }
-    /// Never fails, because the composer shows the result.
     pub async fn status(&self) -> DockerStatus {
         let info = self
             .inner
@@ -241,7 +219,6 @@ impl Docker {
             _ => unexpected(&info),
         }
     }
-    /// The host Codex version and the image version it names.
     async fn versions(&self) -> Result<&(CodexVersion, ImageVersion)> {
         self.inner
             .versions
@@ -255,8 +232,6 @@ impl Docker {
             })
             .await
     }
-    /// Builds `botcode-sandbox:<version>` when Docker lacks it. `progress` gets each build
-    /// log line, because a first build takes minutes.
     pub async fn image(&self, progress: &(dyn Fn(&str) + Send + Sync)) -> Result<ImageVersion> {
         let (codex, version) = self.versions().await?;
         let _building = self.inner.building.lock().await;
@@ -294,9 +269,6 @@ impl Docker {
         }
         Ok(version.clone())
     }
-    /// Removes `botcode-sandbox` images other than the current one that no container of any
-    /// instance was created from. Returns the tags it removed. With one tag or none there is
-    /// nothing to remove, and the Codex version is not probed: startup pays one `image ls`.
     pub async fn prune_images(&self) -> Result<Vec<String>> {
         let cli = &self.inner.cli;
         let tags = cli
@@ -354,7 +326,6 @@ impl Docker {
             id: id.clone(),
         }
     }
-    /// This instance's containers. Only startup reconciliation needs the whole set.
     pub async fn list(&self) -> Result<Vec<Observed>> {
         let filter = identity::instance_filter(&self.inner.instance);
         let ids = self
@@ -374,7 +345,6 @@ impl Docker {
             .cli
             .run(["container", "inspect"].into_iter().chain(ids), CONTROL)
             .await?;
-        // A container removed since the listing is simply missing from the result.
         if inspected.code != Some(0) && !docker::absent(&inspected) {
             return Err(docker::failure(&inspected));
         }
@@ -390,7 +360,6 @@ impl Docker {
             .clone()
     }
 }
-/// `codex --version` on the host, so the image installs the protocol the Mac agent speaks.
 async fn probe_codex_version(binary: &Path) -> Result<CodexVersion> {
     let binary = crate::onboarding::resolve_binary(binary);
     let (_cancel, mut cancelled) = tokio::sync::watch::channel(false);
@@ -420,24 +389,18 @@ fn unexpected(info: &str) -> DockerStatus {
     }
 }
 
-/// How an exec's stdin is used by [`Container::run`].
 pub enum Input<'a> {
-    /// The command gets /dev/null, and killing the host client kills the command.
     Lifeline,
     Bytes(&'a [u8]),
 }
-/// How a caller-owned exec process from [`Container::command`] is attached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Attach {
-    /// The caller keeps stdin open. Closing it, or the client dying, kills the command.
     Lifeline,
-    /// Stdin passes through to the command. Killing the client leaves the command running.
     Stdin,
     Tty,
 }
 pub struct Exec<'a> {
     pub argv: &'a [&'a str],
-    /// A container path, usually [`WORKSPACE`].
     pub workdir: &'a str,
     pub env: &'a [(&'a str, &'a str)],
 }
@@ -448,8 +411,6 @@ pub struct Output {
     pub code: Option<i32>,
 }
 
-/// Everything about one container derives from the instance, the id and the data directory.
-/// It mounts only its Codex home: never a worktree, a `.git` directory or attachments.
 #[derive(Clone)]
 pub struct Container {
     docker: Docker,
@@ -485,7 +446,6 @@ impl Container {
             None => Ok(ContainerState::Absent),
         }
     }
-    /// Idempotent: inspect, plan, act, and return the state Docker then reports.
     pub async fn converge(&self, desired: Desired) -> Result<ContainerState> {
         let flight = self.docker.flight(&self.id);
         let _flight = flight.lock().await;
@@ -548,8 +508,6 @@ impl Container {
         ]);
         Ok(args)
     }
-    /// The Mac loopback port Docker published for a container port. Docker picks a new one each
-    /// time the container starts.
     pub async fn published(&self, port: u16) -> Result<u16> {
         let output = self
             .docker
@@ -579,8 +537,6 @@ impl Container {
             .and_then(|(_, port)| port.parse().ok())
             .ok_or_else(unpublished)
     }
-    /// Runs through `/opt/botcode/bin/run` with bounded output. A timeout or overflow stops
-    /// the client, which with [`Input::Lifeline`] also stops the work in the container.
     pub async fn run(&self, exec: &Exec<'_>, input: Input<'_>, limit: Duration) -> Result<Output> {
         let (attach, stdin) = match input {
             Input::Lifeline => (Attach::Lifeline, Stdin::Held),
@@ -593,7 +549,6 @@ impl Container {
         }
         Ok(output)
     }
-    /// The exec as a process the caller owns, such as a terminal or a setup script.
     pub fn command(&self, exec: &Exec<'_>, attach: Attach) -> std::process::Command {
         let mut command = self.docker.inner.cli.command();
         command.args(["exec", "--interactive"]);
@@ -611,8 +566,6 @@ impl Container {
         command.arg("--").args(exec.argv);
         command
     }
-    /// A remote for git's `ext::` transport. Host git exchanges only objects through it and
-    /// never reads the container repository's config.
     pub fn git_transport(&self) -> String {
         let docker = self.docker.inner.cli.program().to_string_lossy();
         format!(
@@ -621,7 +574,6 @@ impl Container {
             self.name
         )
     }
-    /// What the in-image `probe` reports: CPU time used so far and the desktop's clients.
     pub async fn probe(&self) -> Result<Probe> {
         let output = self
             .run(
@@ -645,8 +597,6 @@ impl Container {
         }
         Probe::parse(&String::from_utf8_lossy(&output.stdout))
     }
-    /// Starts the gateway unless it runs, with `secret` as its token either way, and returns
-    /// the Mac port Docker published it on.
     pub async fn start_gateway(&self, secret: &str) -> Result<u16> {
         let output = self
             .run(
@@ -670,7 +620,6 @@ impl Container {
         }
         self.published(GATEWAY_PORT).await
     }
-    /// Stops the desktop and every window on it. Nothing happens when it is not running.
     pub async fn stop_desktop(&self) -> Result<()> {
         let output = self
             .run(
@@ -711,9 +660,6 @@ impl Container {
             .map(drop)
     }
 }
-/// Opens a connection to `localhost:<port>` inside a container through its gateway, published
-/// on `gateway`. The gateway closes it without a byte when the token is wrong or nothing
-/// listens on the port.
 pub(crate) async fn dial(
     gateway: u16,
     secret: &str,
@@ -729,20 +675,15 @@ pub(crate) async fn dial(
     Ok(stream)
 }
 
-/// One `probe` reading. `cpu` only means something against an earlier reading.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Probe {
-    /// CPU time the whole container has used since it started.
     pub cpu: Duration,
-    /// Connected Desktop tabs.
     pub desktop_clients: u32,
     pub desktop_running: bool,
     pub gateway_running: bool,
-    /// Ports a server listens on that `localhost` reaches, without Bot Code's own.
     pub listeners: BTreeSet<u16>,
 }
 impl Probe {
-    /// Parses `cpu_usec=<n> clients=<n> desktop=<0|1>` and the LISTEN rows that follow it.
     pub fn parse(output: &str) -> Result<Self> {
         let (line, sockets) = output.split_once('\n').unwrap_or((output, ""));
         let invalid = || AppError::new("sandbox", format!("The sandbox probe returned {line:?}."));
@@ -764,8 +705,6 @@ impl Probe {
         })
     }
 }
-/// The ports of `/proc/net/tcp` and `/proc/net/tcp6` rows in the LISTEN state whose address
-/// `localhost` reaches: a loopback address or the unspecified one. Other rows are skipped.
 /// Each address word is printed in the kernel's byte order, which is little-endian on every
 /// host Docker Desktop runs.
 pub(crate) fn listening_ports(proc_net: &str) -> BTreeSet<u16> {

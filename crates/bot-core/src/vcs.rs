@@ -916,8 +916,6 @@ fn refuse(phase: GitPhase, code: &str, message: impl ToString) -> GitFailure {
 
 pub(crate) struct Context {
     pub root: PathBuf,
-    /// Where `root` lives. A sandbox checkout's action runs inside a write session: the
-    /// commit happens in the container, push and PR creation on the Mac mirror.
     pub workdir: crate::workdir::Workdir,
     pub gh: PathBuf,
     pub network: Duration,
@@ -1013,7 +1011,6 @@ async fn steps(
         }
         .map_err(failed(GitPhase::Commit))?;
     }
-    // The mirror is final before the network steps, which only read it.
     write.finish().await.map_err(failed(GitPhase::Commit))?;
     if let Some(target) = push_target {
         let phase = GitPhase::Push {
@@ -1143,8 +1140,6 @@ async fn commit_prepared(
             )
             .await
         }
-        // The staged index travels with the push; the repository's hooks run on the
-        // container's toolchain, and the pull afterwards brings the commit back.
         Write::Sandbox(session) => session
             .commit(message.as_str(), crate::mirror::COMMIT_LIMIT)
             .await

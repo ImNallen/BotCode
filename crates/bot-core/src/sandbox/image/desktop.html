@@ -18,8 +18,6 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
 <div id="shield"></div>
 <div id="status">Connecting…</div>
 <script type="module">
-// Bot Code opens this page with `#secret=<secret>` and adds `&control=1` while the user has
-// control. The fragment never reaches the server.
 import RFB from "./core/rfb.js";
 const screen = document.getElementById("screen");
 const shield = document.getElementById("shield");

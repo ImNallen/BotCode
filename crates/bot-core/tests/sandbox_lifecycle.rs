@@ -1,6 +1,3 @@
-//! The sandbox lifecycle through the App, against a stand-in docker CLI and the fake Codex
-//! peer as the sandbox agent: idle pause and stop, wakes, settle, delete, the storage sweep,
-//! terminal input and the desktop. The windows are overridden to a few seconds.
 #![cfg(unix)]
 #![allow(clippy::disallowed_methods)]
 use bot_core::*;
@@ -15,7 +12,6 @@ use std::{
 
 const PATIENCE: Duration = Duration::from_secs(20);
 
-/// The fake docker and the environment every App in this process shares.
 struct Harness {
     peer: PathBuf,
     state: PathBuf,
@@ -41,7 +37,6 @@ fn harness() -> &'static Harness {
             r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"access_token":"at-fixture","account_id":"acct-fixture","id_token":null}}"#,
         )
         .unwrap();
-        // Read once per App::open; every test in this process opens its App after this.
         unsafe {
             std::env::set_var("BOT_CODE_DOCKER_BIN", &docker);
             std::env::set_var("CODEX_HOME", &codex_home);
@@ -68,7 +63,6 @@ fn git(root: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-/// One App with one sandbox thread whose container the fake docker "started".
 struct Fixture {
     _dir: tempfile::TempDir,
     config: RuntimeConfig,
@@ -99,7 +93,6 @@ impl Fixture {
         git(&repository, &["commit", "-qm", "initial"]);
         let data = root.join("state");
         std::fs::create_dir_all(&data).unwrap();
-        // The peer keeps its state next to itself, so this App's Mac agent gets its own copy.
         let peer = root.join("mac-peer").join("codex_peer.py");
         std::fs::create_dir_all(peer.parent().unwrap()).unwrap();
         std::fs::copy(&h.peer, &peer).unwrap();
@@ -131,8 +124,6 @@ impl Fixture {
         else {
             panic!("not a sandbox checkout: {:?}", thread.checkout);
         };
-        // The fake's capture echoes the base it is given, so with both refs at HEAD every
-        // pull is the no-op of an unchanged container.
         let head = git(&mirror, &["rev-parse", "HEAD"]);
         for name in ["base", "outgoing"] {
             git(
@@ -164,8 +155,6 @@ impl Fixture {
         .await;
         f
     }
-    /// What the fake docker was asked to do with this container, in order: a verb such as
-    /// `start`, or `exec <program> <subcommand>`.
     fn verbs(&self) -> Vec<String> {
         let calls =
             std::fs::read_to_string(harness().state.join("calls.jsonl")).unwrap_or_default();
@@ -233,7 +222,6 @@ impl Fixture {
             .await
             .unwrap()
     }
-    /// The docker log shows a step as it starts; the state follows when the step is done.
     async fn until_state(&self, expected: SandboxState) {
         let started = Instant::now();
         while self.state().await != expected {
@@ -276,7 +264,6 @@ impl Fixture {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
-    /// The index of the first `verb` after position `from`.
     fn position(&self, verb: &str, from: usize) -> Option<usize> {
         self.verbs()
             .iter()
@@ -330,7 +317,6 @@ async fn a_message_wakes_a_paused_sandbox_through_both_launch_paths() {
     })
     .await;
     let paused = f.position("pause", 0).unwrap();
-    // No agent runs yet, so the launcher readies the container.
     let turn = f.send("req-1", "hello").await;
     assert_eq!(turn.execution, Execution::Completed, "{turn:?}");
     let woken = f
@@ -342,7 +328,6 @@ async fn a_message_wakes_a_paused_sandbox_through_both_launch_paths() {
         f.verbs()
     );
     assert_eq!(f.state().await, SandboxState::Running);
-    // The agent is live across the next pause; the turn path wakes the container itself.
     f.until("paused again with the agent live", |f| {
         f.position("pause", woken).is_some()
     })
@@ -392,7 +377,6 @@ async fn settle_stops_the_container_and_its_agent_on_purpose() {
     );
     assert_eq!(thread.diagnostic, None, "a planned stop is not a loss");
     assert_eq!(f.container_status().as_deref(), Some("exited"));
-    // Unsettle does nothing to the container; the next message starts it.
     f.app
         .arrange(f.thread.id.clone(), Arrange::Unsettle)
         .await
@@ -596,11 +580,9 @@ async fn terminal_input_to_a_paused_sandbox_sends_the_strip_a_change_hint() {
     })
     .await;
     f.until_state(SandboxState::Paused).await;
-    // The pause's own hint is on its way; let it pass before listening.
     let mut hints = f.app.subscribe();
     tokio::time::sleep(Duration::from_millis(500)).await;
     while hints.try_recv().is_ok() {}
-    // No newline: the shell shows no new prompt, so no pull after a command sends a hint.
     f.app
         .terminal_write(
             f.workspace.id.clone(),
@@ -611,7 +593,6 @@ async fn terminal_input_to_a_paused_sandbox_sends_the_strip_a_change_hint() {
         .await
         .unwrap();
     assert_eq!(f.state().await, SandboxState::Running);
-    // Well inside the pause window, so the next idle pause cannot stand in for the wake.
     let hint = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let hint = hints.recv().await.expect("the change channel stays open");
@@ -657,7 +638,6 @@ async fn the_desktop_stops_after_the_window_without_a_tab_and_a_connected_tab_ke
     })
     .await;
 
-    // A connected tab keeps the desktop and the container.
     f.steer("probe-clients", "1");
     f.send("req-1", "hello").await;
     f.app
@@ -683,7 +663,6 @@ async fn cpu_in_the_container_keeps_a_sandbox_running() {
     let f = Fixture::new().await;
     f.steer("probe-cpu-usec", "0");
     f.send("req-1", "hello").await;
-    // Half a second of CPU per second, until the file stops moving.
     let busy = {
         let (state, container) = (harness().state.clone(), f.container.clone());
         tokio::spawn(async move {

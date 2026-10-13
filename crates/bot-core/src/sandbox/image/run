@@ -1,6 +1,4 @@
 #!/bin/bash
-# run [--lifeline] -- command [args...]
-#
 # Killing a `docker exec` client leaves the processes it started running. With --lifeline the
 # command runs in its own process group with /dev/null as stdin, and the group is stopped
 # when this exec's stdin closes, which is what happens when the host client exits or dies.

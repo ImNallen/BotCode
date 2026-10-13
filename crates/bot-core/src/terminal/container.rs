@@ -1,4 +1,3 @@
-//! Terminals whose shell runs in a sandbox container, through the in-image `terminal` script.
 use crate::sandbox::{Attach, Container, Exec, WORKSPACE};
 use portable_pty::CommandBuilder;
 use std::{
@@ -11,11 +10,8 @@ use std::{
 const TERMINAL: &str = "/opt/botcode/bin/terminal";
 const CONTROL: Duration = Duration::from_secs(10);
 const OUTPUT_LIMIT: u64 = 1024 * 1024;
-/// OSC 133;A, which the container shell prints before each prompt.
 const PROMPT_MARK: &str = "\u{1b}]133;A\u{7}";
 
-/// The `docker exec --tty` client for a login shell registered as `id`. The client runs with
-/// the Mac terminal environment, but only the terminal type crosses into the container.
 pub(super) fn command(
     container: &Container,
     id: &str,
@@ -58,20 +54,14 @@ pub(super) fn command(
     command
 }
 
-/// Hangs up the shell registered as `id` and every job in its session, then kills what is
-/// left. Best effort: a stopped container has already ended them.
 pub(super) fn stop(container: &Container, id: &str) {
     let _ = run(container, &[TERMINAL, "stop", id]);
 }
 
-/// `terminal <id> <pid>` for each registered shell, then `<pid> <ppid> <comm>` for every
-/// process in the container.
 pub(super) fn processes(container: &Container) -> io::Result<String> {
     run(container, &[TERMINAL, "ps"]).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
-/// A short exec from a blocking thread. Killing the client at the deadline also ends the
-/// command, because the lifeline stays open until then.
 fn run(container: &Container, argv: &[&str]) -> io::Result<Vec<u8>> {
     let mut client = container
         .command(
@@ -119,13 +109,11 @@ fn run(container: &Container, argv: &[&str]) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Finds prompt marks in output that arrives in arbitrary pieces.
 #[derive(Default)]
 pub(super) struct PromptMarks {
     tail: String,
 }
 impl PromptMarks {
-    /// Whether `data`, continuing what came before, contains a whole mark.
     pub(super) fn feed(&mut self, data: &str) -> bool {
         let text = std::mem::take(&mut self.tail) + data;
         let found = text.contains(PROMPT_MARK);
@@ -217,8 +205,6 @@ mod tests {
         assert!(!marks.feed("plain ]133;A\u{7} text"));
     }
 
-    // ---- Docker: `cargo test -p bot-core --lib terminal -- --include-ignored` ----------
-
     use super::super::{
         CloseScope, Launch, Sink, TerminalEvent, TerminalKey, TerminalLabels, TerminalSize,
         Terminals,
@@ -275,7 +261,6 @@ mod tests {
                 .write(&self.key, format!("{line}\r").as_bytes())
                 .unwrap();
         }
-        /// Waits for `pattern` in output that arrives after `from`, and returns where it ends.
         async fn expect(&self, from: usize, pattern: &str) -> usize {
             let started = Instant::now();
             loop {

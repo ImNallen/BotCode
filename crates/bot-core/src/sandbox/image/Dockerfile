@@ -15,10 +15,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 
-# The desktop: Xvnc resizes to the Desktop tab, matchbox fills the screen with the focused
-# window, and websockify serves noVNC. Ubuntu's chromium is a snap and Google Chrome has no
-# arm64 Linux build, so the browser is Playwright's Chromium. This layer comes before Codex so
-# a Codex update does not download Chromium again.
+# Ubuntu's chromium is a snap and Google Chrome has no arm64 Linux build, so the browser is
+# Playwright's Chromium. This layer comes before Codex so a Codex update does not download
+# Chromium again.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/botcode/playwright
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

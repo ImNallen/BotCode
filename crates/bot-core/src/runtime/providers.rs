@@ -1,4 +1,3 @@
-//! One app-server slot per execution environment.
 use super::{
     Prepare,
     collaboration::{self, ModePreset, ProviderSession},
@@ -22,8 +21,6 @@ use tokio::sync::mpsc;
 
 const AGENT: &str = "/opt/botcode/bin/agent";
 
-/// Which app-server a thread talks to. Derived from the checkout, never stored. Threads that
-/// share a sandbox checkout share its agent.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum EnvKey {
     Mac,
@@ -66,9 +63,6 @@ struct Slot {
     pending: Vec<Prepare>,
 }
 
-/// Epochs come from one counter shared by every slot, so an epoch names exactly one process
-/// generation of one slot. Signals, completions and callback routes keep a bare epoch, and an
-/// epoch that no slot holds any more is stale.
 #[derive(Default)]
 pub(super) struct Providers {
     next_epoch: u64,
@@ -80,14 +74,12 @@ pub(super) struct Launch {
     pub failures: u32,
 }
 impl Providers {
-    /// The live process for `key` and its epoch.
     pub(super) fn client(&self, key: &EnvKey) -> Option<(u64, Codex)> {
         match &self.slots.get(key)?.state {
             SlotState::Live { epoch, codex, .. } => Some((*epoch, codex.clone())),
             _ => None,
         }
     }
-    /// The slot that is launching or live under `epoch`.
     pub(super) fn key(&self, epoch: u64) -> Option<&EnvKey> {
         self.slots
             .iter()
@@ -97,7 +89,6 @@ impl Providers {
     pub(super) fn current(&self, epoch: u64) -> bool {
         self.key(epoch).is_some()
     }
-    /// The process live under `epoch`, with its slot.
     pub(super) fn live(&self, epoch: u64) -> Option<(&EnvKey, &Codex)> {
         self.slots.iter().find_map(|(key, slot)| match &slot.state {
             SlotState::Live {
@@ -112,7 +103,6 @@ impl Providers {
             _ => &[],
         }
     }
-    /// `None` while the slot is already launching or live.
     pub(super) fn begin_launch(&mut self, key: &EnvKey, now: Instant) -> Option<Launch> {
         let slot = self.slots.entry(key.clone()).or_default();
         if !matches!(slot.state, SlotState::Idle) {
@@ -128,7 +118,6 @@ impl Providers {
             failures: slot.restarts.failures(),
         })
     }
-    /// Makes the launching slot live and returns the jobs that waited for it.
     pub(super) fn launched(
         &mut self,
         key: &EnvKey,
@@ -165,8 +154,6 @@ impl Providers {
             .get(key)
             .is_some_and(|slot| slot.state.epoch().is_some())
     }
-    /// Retires the slot's epoch and drops its queued jobs. A launching or live slot counts a
-    /// failure toward its own backoff unless Bot Code is closing.
     pub(super) fn lose(&mut self, key: &EnvKey, now: Instant, closing: bool) -> Option<Codex> {
         let slot = self.slots.get_mut(key)?;
         slot.pending.clear();
@@ -179,8 +166,6 @@ impl Providers {
             _ => None,
         }
     }
-    /// A deliberate stop retires the epoch without counting a failure. The process's later
-    /// `Exited` carries the retired epoch, so it is dropped like any stale signal.
     pub(super) fn stop(&mut self, key: &EnvKey) -> Option<Codex> {
         let slot = self.slots.get_mut(key)?;
         match std::mem::take(&mut slot.state) {
@@ -193,13 +178,10 @@ impl Providers {
     }
 }
 
-/// The one place an agent process starts.
 pub(super) enum Launcher {
     Mac {
         binary: PathBuf,
     },
-    /// Credentials are read before any Docker work, so a signed-out Mac fails fast. The
-    /// container's `agent` script runs `codex app-server` over the exec's stdio.
     Sandbox {
         handle: Arc<SandboxHandle>,
         broker: TokenBroker,

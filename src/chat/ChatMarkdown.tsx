@@ -39,7 +39,6 @@ import { useAppearance } from "../appearance/AppearanceRoot";
 export type FileLinks = {
   resolve: (target: string, source: "code" | "href") => ChatFileLink | null;
   openInPanel: (path: string) => void;
-  // Null when editors and the file manager must not open the checkout, as for a sandbox mirror.
   target: ((link: ChatFileLink) => OpenTarget) | null;
   absolutePath: (link: ChatFileLink) => string;
   previewScope?: PreviewScope;

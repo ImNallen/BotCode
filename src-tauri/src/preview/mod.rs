@@ -398,7 +398,6 @@ impl PreviewManager {
         }
     }
 
-    /// How the URL field shows an address the scope's page reports.
     fn shown(&self, scope: &PreviewScope, url: &str) -> String {
         self.lock()
             .ok()
@@ -689,9 +688,6 @@ impl PreviewManager {
         Ok(result)
     }
 
-    /// Closes a forwarded page's view when it stops being shown, which ends its hot-reload
-    /// socket so the sandbox's idle rule can apply. Its state stays, and the next attach
-    /// loads the URL again, waking the sandbox.
     fn suspend(&self, scope: &PreviewScope) -> Result<()> {
         let label = {
             let mut model = self.lock()?;
@@ -745,7 +741,6 @@ impl PreviewManager {
         .await
     }
 
-    /// Closes the scope's view and forgets its state, which ends whatever the page streams.
     pub async fn close(&self, scope: PreviewScope) -> Result<()> {
         self.on_main(move |manager| {
             let label = manager

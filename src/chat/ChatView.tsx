@@ -665,7 +665,6 @@ export function ChatView({
       ? view.workspace.root
       : undefined;
   const skills = useCheckoutSkills(skillsRoot);
-  // A sandbox mirror's next sync would overwrite edits made in an editor.
   const sandboxed = inSandbox(thread?.checkout);
   const sandboxState = useQuery({
     queryKey: ["sandbox-state", threadId],

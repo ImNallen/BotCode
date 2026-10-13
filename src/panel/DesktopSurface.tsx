@@ -28,10 +28,6 @@ type Phase =
 const message = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
 
-/**
- * A sandbox thread's Linux desktop over noVNC in the native child webview that Preview uses.
- * It connects on mount and closes the view on unmount, so it streams only while shown.
- */
 export function DesktopSurface({
   workspaceId,
   threadId,

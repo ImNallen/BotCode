@@ -1,5 +1,3 @@
-//! Docker tests are ignored by default. Run them against a running Docker with
-//! `cargo test -p bot-core --lib sandbox -- --include-ignored --nocapture`.
 use super::*;
 use std::time::Instant;
 use tokio::process::Command as TokioCommand;
@@ -60,7 +58,6 @@ fn every_state_has_a_plan_to_every_desired_state() {
     }
 }
 
-/// What Docker does with each step, refusing the transitions Docker refuses.
 fn apply(step: Step, state: ContainerState) -> ContainerState {
     use RunState as R;
     let run = match &state {
@@ -213,10 +210,6 @@ fn the_image_version_names_the_build_context_and_codex() {
     assert!(!ContainerState::Absent.stale(&a));
 }
 
-/// Rows read from the image with servers bound to `0.0.0.0:8003`, `127.0.0.1:8002`, an
-/// ephemeral port on `0.0.0.0`, one established connection, `[::]:8004` and `[::1]:8001`,
-/// plus rows for an address on the bridge network, an IPv4-mapped loopback, and the
-/// desktop's and the gateway's own listeners.
 const PROC_NET: &str = "\
   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000:1F43 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 10323 1 000000006fab99df 100 0 0 10 0
@@ -332,19 +325,14 @@ async fn status_reports_a_missing_cli_and_an_unreachable_daemon() {
     );
 }
 
-// ---- Docker -------------------------------------------------------------------------------
-
-/// Concurrent tests share one image build.
 static IMAGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// An isolated instance whose containers are removed on drop, including after a failure.
 pub(crate) struct Fixture {
     pub(crate) docker: Docker,
     data: tempfile::TempDir,
 }
 impl Fixture {
     pub(crate) async fn new() -> Self {
-        // A space and a comma in the path exercise the CSV quoting of the mount.
         let data = tempfile::Builder::new()
             .prefix("botcode sandbox,test-")
             .tempdir()
@@ -759,8 +747,6 @@ async fn start_desktop(container: &Container, secret: Option<&str>) -> Output {
         .unwrap()
 }
 
-/// Opens a websocket to the published desktop port with `token` and returns the first binary
-/// frame, which is the RFB banner when the proxy reached VNC, or `None` when it closed first.
 async fn first_frame(port: u16, token: Option<&str>) -> Option<Vec<u8>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", port))

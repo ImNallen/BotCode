@@ -1,15 +1,3 @@
-//! Git-level sync between a sandbox container's `/workspace` and its Mac mirror worktree.
-//!
-//! The container is authoritative. Only git objects cross the boundary, over the `ext::`
-//! transport, so host git never reads the container repository's config or hooks. A
-//! [`SyncPoint`] is one commit with the same shape on both sides (see the in-image `sync`
-//! script), which makes pull and push mirror images of each other, and the last state both
-//! sides agreed on lives in git refs that are written last.
-//!
-//! One [`Mirror`] per sandbox is the single writer of the mirror worktree, its HEAD and index,
-//! and the sync refs. Every operation holds the mirror's own lock; there is no cross-sandbox
-//! lock. Host functions that mutate the mirror take a [`WriteRoot`], which only a
-//! [`WriteSession`] can produce, so a mutation that forgets the push does not compile.
 mod host;
 #[cfg(test)]
 mod tests;
@@ -29,17 +17,14 @@ const SEED_BUNDLE: &str = "/botcode/seed.bundle";
 const SEEDED: &str = "/workspace/.git/botcode-seeded";
 const CONTAINER_OUTGOING: &str = "refs/botcode/sync/outgoing";
 const CONTAINER_INCOMING: &str = "refs/botcode/sync/incoming";
-/// A pull that started this recently satisfies [`Freshness::Recent`].
 pub(crate) const RECENT: Duration = Duration::from_secs(1);
 const CAPTURE: Duration = Duration::from_secs(120);
 const SEED: Duration = Duration::from_secs(600);
 const MARK: Duration = Duration::from_secs(30);
-/// Commit hooks run the repository's own toolchain inside the container.
 pub const COMMIT_LIMIT: Duration = Duration::from_secs(600);
 const DIVERGED_EXIT: i32 = 3;
 const BLOCKED_EXIT: i32 = 4;
 
-/// The complete Bot Code-visible state of a checkout, as one commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncPoint {
     pub commit: String,
@@ -61,7 +46,6 @@ impl Head {
             Self::Unborn { .. } => None,
         }
     }
-    /// The `head:` line of a sync commit message.
     fn spec(&self) -> String {
         match self {
             Self::Branch { name, .. } => format!("branch {name}"),
@@ -69,7 +53,6 @@ impl Head {
             Self::Unborn { name } => format!("unborn {name}"),
         }
     }
-    /// Inverse of [`Head::spec`], given the sync commit's parent.
     fn parse(spec: &str, parent: Option<&str>) -> Option<Self> {
         match (spec.split_once(' '), spec, parent) {
             (Some(("branch", name)), _, Some(commit)) => Some(Self::Branch {
@@ -87,32 +70,22 @@ impl Head {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Freshness {
-    /// UI reads. A pull that started within the last second satisfies it.
     Recent,
-    /// Checkpoints and writes. A pull that starts after this call.
     Exact,
 }
 
-/// Branches on the Mac that constrain where the mirror's HEAD may go.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MacBranches {
-    /// Every local branch and its commit.
     pub existing: BTreeMap<String, String>,
-    /// Checked out by a Mac worktree other than this mirror. Moving one would corrupt that
-    /// checkout.
     pub elsewhere: BTreeSet<String>,
 }
 
-/// What the host does with the container's HEAD.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostHead {
     Branch {
         name: String,
         commit: String,
     },
-    /// `refused_branch` names a Mac branch the container may not move: one another Mac
-    /// worktree has checked out, or one the pull would rewrite without fast-forwarding. The
-    /// mirror detaches at the commit instead and the thread shows a diagnostic.
     Detached {
         commit: String,
         refused_branch: Option<String>,
@@ -120,8 +93,6 @@ pub enum HostHead {
     Unborn {
         name: String,
     },
-    /// The container is on an unborn branch whose name a Mac branch already has. The mirror
-    /// keeps its HEAD.
     Unmoved {
         refused_branch: String,
     },
@@ -135,9 +106,6 @@ impl HostHead {
         }
     }
 }
-/// HEAD policy. The thread's own sandbox branch, `own`, follows the container anywhere. Any
-/// other Mac branch moves only by fast-forward, judged by `is_ancestor(old, new)`, and never
-/// while another Mac worktree has it checked out.
 pub fn host_head(
     container: &Head,
     mac: &MacBranches,
@@ -191,19 +159,15 @@ pub struct Pulled {
     pub timing: Timing,
 }
 
-/// Why a push did not happen. The mirror has been pulled back to the container's state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushRefusal {
-    /// The container moved on since the base: it changed a worktree path the host also
-    /// changed, staged something, or moved HEAD. The caller reports "Files changed in the
-    /// sandbox. Try again."
     Diverged {
         paths: Vec<String>,
         head_moved: bool,
     },
-    /// An ignored file in the container is in the way of a path the host wrote. Mirrors the
-    /// collision rule of `checkpoints::restore`.
-    Blocked { path: String },
+    Blocked {
+        path: String,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushError {
@@ -230,8 +194,6 @@ impl From<PushError> for AppError {
         }
     }
 }
-/// The `sync apply` script's exit 3 output: `<kind>\t<path>\0` records. A path in the way
-/// outranks divergence, because moving it is the user's only remedy.
 fn refusal(stdout: &[u8]) -> PushRefusal {
     let mut paths = Vec::new();
     let mut head_moved = false;
@@ -248,7 +210,6 @@ fn refusal(stdout: &[u8]) -> PushRefusal {
     paths.dedup();
     PushRefusal::Diverged { paths, head_moved }
 }
-/// Git's `read-tree -m -u` refusal, quoted from the container's stderr.
 fn blocked(stderr: &str) -> Option<PushRefusal> {
     stderr.lines().find_map(|line| {
         let path = line.split('\'').nth(1)?.to_owned();
@@ -265,11 +226,9 @@ fn blocked(stderr: &str) -> Option<PushRefusal> {
 
 #[derive(Default)]
 struct SyncState {
-    /// When the last successful pull started.
     pulled_at: Option<Instant>,
 }
 
-/// Cheap to clone. Clones share the lock.
 #[derive(Clone)]
 pub struct Mirror {
     container: Container,
@@ -277,14 +236,11 @@ pub struct Mirror {
     state: Arc<Mutex<SyncState>>,
 }
 
-/// The mirror lock, held until dropped. A checkpoint capture or a revert restore on the mirror
-/// runs under it, so a UI read's pull cannot rewrite the worktree underneath.
 pub struct Synced {
     pub pulled: Option<Pulled>,
     _hold: OwnedMutexGuard<SyncState>,
 }
 
-/// Proof that the mirror was freshly pulled and is held for writing.
 pub struct WriteRoot(PathBuf);
 impl std::ops::Deref for WriteRoot {
     type Target = Path;
@@ -293,13 +249,10 @@ impl std::ops::Deref for WriteRoot {
     }
 }
 impl WriteRoot {
-    /// Mac checkouts: no sync, the root is the authority. The Mac `Workdir` is its caller.
     pub fn mac(root: PathBuf) -> Self {
         Self(root)
     }
 }
-/// A clone is still proof: it only exists while the session that produced it does, and the
-/// blocking thread that runs a mutation needs an owned value.
 impl Clone for WriteRoot {
     fn clone(&self) -> Self {
         Self(self.0.clone())
@@ -337,9 +290,6 @@ impl Mirror {
         self.container.id()
     }
 
-    /// Make `/workspace` a clone of the mirror if it is not one yet, then push the mirror's
-    /// uncommitted state so a recreated container matches it. Idempotent through a marker
-    /// written last: a crash mid-seed leaves no marker and the next call starts over.
     pub async fn seed(&self, own: &str) -> Result<()> {
         let mut hold = self.state.clone().lock_owned().await;
         if self.exec(&["test", "-f", SEEDED], MARK).await?.code == Some(0) {
@@ -405,18 +355,10 @@ impl Mirror {
         Ok(())
     }
 
-    /// Container to Mac. Mac-side drift in the mirror is overwritten. `own` is the thread's
-    /// sandbox branch, which [`host_head`] lets the container move freely. Returns the lock,
-    /// which the caller holds while it reads or captures the mirror. A pull while the
-    /// container is not running does nothing, because every transition away from running
-    /// pulls first.
     pub async fn sync(&self, freshness: Freshness, own: &str) -> Result<Synced> {
         let hold = self.state.clone().lock_owned().await;
         self.synced(hold, freshness, own).await
     }
-    /// A recent pull that does not wait: `None` while a session, a capture or another pull
-    /// holds the mirror, so a UI read during a long commit serves the stale mirror instead
-    /// of blocking on it.
     pub async fn try_sync_recent(&self, own: &str) -> Result<Option<Synced>> {
         match self.state.clone().try_lock_owned() {
             Ok(hold) => self.synced(hold, Freshness::Recent, own).await.map(Some),
@@ -443,8 +385,6 @@ impl Mirror {
     pub async fn pull(&self, freshness: Freshness, own: &str) -> Result<Option<Pulled>> {
         Ok(self.sync(freshness, own).await?.pulled)
     }
-    /// Pull exactly, then hand out the mirror for host-side mutation. While the session lives,
-    /// no pull or other session runs for this sandbox.
     pub async fn begin_write(&self, own: &str) -> Result<WriteSession> {
         let mut hold = self.state.clone().lock_owned().await;
         self.pull_locked(&mut hold, own).await?;
@@ -476,8 +416,6 @@ impl Mirror {
         state.pulled_at = Some(started);
         Ok(pulled)
     }
-    /// Fetches the container's sync point, checks it, and applies it to the mirror. Only the
-    /// base ref moving last makes this restartable.
     async fn adopt(
         &self,
         captured: String,
@@ -516,8 +454,6 @@ impl Mirror {
         .await
     }
 
-    /// Mac to container, fast-forward only. On refusal the mirror is pulled back to the
-    /// container's state, so the two sides never stay apart.
     async fn push_locked(
         &self,
         state: &mut SyncState,
@@ -625,9 +561,6 @@ impl WriteSession {
     pub fn root(&self) -> &WriteRoot {
         &self.root
     }
-    /// Push, run `git commit -m <message>` in the container (repository hooks need the
-    /// container toolchain), then pull, all under the same lock. The pushed index is exactly
-    /// what host-side staging selected.
     pub async fn commit(
         &mut self,
         message: &str,
@@ -654,13 +587,9 @@ impl WriteSession {
             code: output.code,
         })
     }
-    /// Mac to container. Fast-forward only: never overwrites container changes.
     pub async fn finish(mut self) -> std::result::Result<(), PushError> {
         self.mirror.push_locked(&mut self.hold, &self.own).await
     }
-    /// `git branch -m <old> <new>` in the container, matching the same rename on the mirror.
-    /// The session then ends with [`WriteSession::pull`], because a push would see the
-    /// container's own HEAD move as divergence.
     pub async fn rename_branch(&mut self, old: &str, new: &str) -> Result<()> {
         let output = self
             .mirror
@@ -675,7 +604,6 @@ impl WriteSession {
         self.own = new.to_owned();
         Ok(())
     }
-    /// Ends the session by adopting the container's state, for a change made on both sides.
     pub async fn pull(mut self) -> Result<()> {
         self.mirror
             .pull_locked(&mut self.hold, &self.own)

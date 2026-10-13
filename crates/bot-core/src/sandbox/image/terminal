@@ -1,14 +1,6 @@
 #!/bin/bash
-# terminal shell <id>   a login shell for Bot Code terminal <id> on this exec's TTY
-# terminal stop <id>    hang up everything in that shell's session, then kill what is left
-# terminal ps           `terminal <id> <pid>` for each shell, then `<pid> <ppid> <comm>` rows
-#
 # Killing a `docker exec --tty` client leaves its shell, the foreground job and background
-# jobs running, and nothing in the container sees the client go. So each shell records its
-# pid, which is also its session id, and Bot Code runs `stop` when the client ends. Records
-# live in /dev/shm, which a container restart empties along with the shells.
-#
-# The shell prints OSC 133;A before each prompt, which tells Bot Code a command finished.
+# jobs running, and nothing in the container sees the client go.
 set -u
 records=/dev/shm/botcode-terminals
 valid_id() { [[ ${1-} =~ ^[A-Za-z0-9-]+$ ]] || { echo "terminal: invalid id" >&2; exit 2; }; }

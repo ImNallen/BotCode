@@ -34,7 +34,6 @@ impl Owner {
                     .or_insert_with(|| workspace.id.clone());
             }
         }
-        // A sandbox mirror is written only through its write session, never by a Mac pull.
         for thread in self.threads.values() {
             if let Checkout::Worktree {
                 path,

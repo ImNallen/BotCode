@@ -118,7 +118,6 @@ impl Location {
     fn in_sandbox(&self) -> bool {
         matches!(self, Self::Repository(Workdir::Sandbox { .. }))
     }
-    /// The Mac directory a repository's or folder's files are read from.
     fn files(&self) -> Option<PathBuf> {
         match self {
             Self::Repository(workdir) => Some(workdir.root().to_path_buf()),
@@ -269,7 +268,6 @@ enum Command {
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
     LocalNetwork(ThreadId, Reply<crate::LocalNetwork>),
-    /// The thread's mirror was pulled outside a turn, so the renderer should read it again.
     CheckoutPulled(ThreadId),
     PrRead(PrAccess, PullRequestKey, Reply<PrReviewDetail>),
     PrStackRead(PrAccess, PullRequestKey, Reply<Option<crate::PrStack>>),
@@ -355,7 +353,6 @@ enum Command {
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
     CleanupCandidates(Reply<(Vec<Candidate>, Vec<PathBuf>)>),
-    /// Replies with the candidate's sandbox, which the sweeper retires before the removal.
     ClaimCleanup(Candidate, Reply<Option<Arc<SandboxHandle>>>),
     ReleaseCleanup(Candidate, bool, Reply<()>),
     ClaimRestore(ThreadId, Reply<Option<Restore>>),
@@ -892,8 +889,6 @@ impl App {
             .await?;
         self.close_terminals(CloseScope::Workspace(id)).await
     }
-    /// Resolves a checkout and, for a sandbox, pulls its mirror first. Reads are best effort:
-    /// a failed pull serves the stale mirror.
     async fn checkout(
         &self,
         id: WorkspaceId,
@@ -908,8 +903,6 @@ impl App {
     pub async fn sandbox_availability(&self) -> SandboxAvailability {
         self.sandboxes.availability().await
     }
-    /// Starts a sandbox thread's desktop when it is not running and returns where its Desktop
-    /// tab connects.
     pub async fn sandbox_desktop(
         &self,
         workspace: WorkspaceId,
@@ -927,16 +920,12 @@ impl App {
             Location::Folder(_) | Location::Unassigned => Err(not_a_sandbox()),
         }
     }
-    /// The Mac ports that forward to sandbox servers. Mac discovery leaves them out, because
-    /// they are a sandbox's servers and a probe through one would keep the sandbox awake.
     pub fn forwarder_ports(&self) -> std::collections::BTreeSet<u16> {
         self.sandboxes.forwarder_ports()
     }
-    /// Where a thread's local servers run: in its sandbox's container, or on the Mac.
     pub async fn local_network(&self, thread: ThreadId) -> Result<crate::LocalNetwork> {
         self.call(|r| Command::LocalNetwork(thread, r)).await
     }
-    /// What Bot Code last made of a sandbox thread's container, for the composer strip.
     pub async fn sandbox_state(
         &self,
         workspace: WorkspaceId,
@@ -1725,7 +1714,6 @@ impl App {
         let thread = self
             .call(|r| Command::Create(id, checkout, SessionSettings::default(), config, r))
             .await?;
-        // The first message should not wait for the image build and the seed.
         if let Workdir::Sandbox { handle, .. } =
             self.sandboxes.workdir(&thread.checkout, thread.root(&w))
         {
@@ -1778,7 +1766,6 @@ impl App {
         }
         use crate::project::Dialect;
         let command = match (&workdir, self.script_dialect) {
-            // The container holds only the checkout, so it is also the project root there.
             (Workdir::Sandbox { .. }, _) => {
                 let workspace = Path::new(crate::sandbox::WORKSPACE);
                 crate::project::posix_script_line(
@@ -2402,8 +2389,6 @@ impl Sweeper {
                 };
             let (worktrees, roots, settings) =
                 (worktrees.clone(), roots.clone(), self.settings.clone());
-            // The container goes first, after a final pull, so the mirror holds its work
-            // before the worktree is removed. Its Codex home stays for the next message.
             let retired = match &sandbox {
                 Some(handle) => handle
                     .retire(Desired::Removed)
@@ -2532,7 +2517,6 @@ enum Completion {
         thread: ThreadId,
         result: Result<Value>,
     },
-    /// A paused or stopped sandbox was readied for `job`, or could not be.
     Woken {
         epoch: u64,
         job: Prepare,
@@ -2654,7 +2638,6 @@ struct Owner {
     sandboxes: Arc<Sandboxes>,
 }
 impl Owner {
-    /// Where a thread's files and agent live.
     fn workdir(&self, t: &ThreadSnapshot) -> Workdir {
         self.sandboxes
             .workdir(&t.checkout, t.root(&self.workspaces[&t.workspace_id]))
@@ -2986,8 +2969,6 @@ impl Owner {
         self.held.insert(candidate.path.clone(), Hold::Cleanup);
         Ok(())
     }
-    /// A claimed sandbox candidate: its agent is stopped on purpose, and the sweeper gets the
-    /// handle to retire. The thread is idle and the sole owner, so no turn is affected.
     async fn retire_sandbox_for_cleanup(
         &mut self,
         candidate: &Candidate,
@@ -3070,7 +3051,6 @@ impl Owner {
         let _ = self.changes.send(hint);
         Ok(())
     }
-    /// Signals from a retired epoch are dropped.
     async fn signal(&mut self, signal: Signal) {
         match signal {
             Signal::Frame { epoch, value } => {
@@ -3090,9 +3070,6 @@ impl Owner {
             }
         }
     }
-    /// Stops the live processes of `scope`, or of every slot, on purpose. No failure counts
-    /// toward backoff, and each process's later `Exited` carries a retired epoch, so it is
-    /// dropped. Their threads are released by the `lose` that follows.
     async fn stop_providers(&mut self, scope: Option<&EnvKey>) -> Result<()> {
         let mut result = Ok(());
         for key in self.providers.keys() {
@@ -3281,8 +3258,6 @@ impl Owner {
                         let _ = reply.send(Err(error));
                     }
                     Ok(workdir) => {
-                        // Publishing adds a remote and pushes; the checkout's files stay as
-                        // they are, so the Mac mirror of a sandbox serves it unchanged.
                         let root = workdir.root().to_path_buf();
                         let origin = thread.map(|id| {
                             let generation = self.pr_generation(&id);
@@ -3661,8 +3636,6 @@ impl Owner {
                 }
 
                 // A removed worktree is restored by the next submit, which resumes as usual.
-                // So is a sandbox whose container is paused or stopped: opening the thread
-                // is a read, and starting the container is left to the next message.
                 let should_resume = resume && self.thread(&id).is_ok_and(|t| {
                     t.native_thread_id.is_some()
                         && t.pending_revert.is_none()
@@ -4125,7 +4098,6 @@ impl Owner {
                 "Wait for the current operation to finish.",
             ));
         }
-        // Without the Mac agent the catalogs are unknown; turn start checks them after the relaunch.
         if self.providers.client(&EnvKey::Mac).is_some() && kind == TurnKind::Prompt {
             self.startable(
                 &thread.settings,
@@ -4631,8 +4603,6 @@ impl Owner {
             self.providers.queue(key, job);
             return;
         };
-        // The agent is live, but the idle rule may have paused or stopped its container, or
-        // be about to. The wake holds the container running and counts as use.
         if let Some(handle) = self
             .threads
             .get(job.thread())
@@ -4647,7 +4617,6 @@ impl Owner {
         }
         self.prepare_live(job, epoch, provider);
     }
-    /// `prepare` once the slot is live and, for a sandbox, its container is awake.
     fn prepare_live(&mut self, job: Prepare, epoch: u64, provider: Codex) {
         if let Prepare::Revert(id) = job {
             self.fork_revert(id);
@@ -4745,8 +4714,6 @@ impl Owner {
                             session.modes,
                             Instant::now(),
                         );
-                        // The catalogs come from the Mac agent. The image pins the host Codex
-                        // version, so a sandbox agent's model list stands in until it runs.
                         if key != EnvKey::Mac && self.models.is_none() {
                             self.models = session.models;
                         } else if key == EnvKey::Mac {
@@ -5114,9 +5081,6 @@ impl Owner {
     fn env(&self, thread: &ThreadId) -> EnvKey {
         EnvKey::of(&self.threads[thread].checkout)
     }
-    /// A sandbox agent's token expired. The host Codex refreshes, through the live Mac agent
-    /// or a throwaway one, off the owner loop. The Mac agent owns its own tokens, so a refresh
-    /// request from it is refused.
     async fn refresh_tokens(
         &mut self,
         key: &EnvKey,
@@ -5151,8 +5115,6 @@ impl Owner {
         });
         Ok(())
     }
-    /// The thread whose native ID is `native`, among the threads of slot `key`. A provider
-    /// can only address its own threads.
     fn thread_by_native(&self, key: &EnvKey, native: &str) -> Option<ThreadId> {
         self.threads
             .values()
@@ -5161,18 +5123,14 @@ impl Owner {
             })
             .map(|t| t.id.clone())
     }
-    /// Loses every slot.
     async fn lose(&mut self, reason: &str) {
         self.lose_in(None, reason, reason).await
     }
-    /// Loses one slot and only the work of its threads. `headline` is the short banner text;
-    /// `reason` is recorded on the work that was lost.
     async fn lose_env(&mut self, key: &EnvKey, headline: &str, reason: &str) {
         self.lose_in(Some(key), headline, reason).await
     }
     async fn lose_in(&mut self, scope: Option<&EnvKey>, headline: &str, reason: &str) {
         let covers = |key: &EnvKey| scope.is_none_or(|scope| scope == key);
-        // Work of a thread that is gone is lost with any slot.
         let spared: HashSet<ThreadId> = self
             .threads
             .values()
@@ -5287,7 +5245,6 @@ impl Owner {
             let _ = self.commit(&id);
         }
     }
-    /// A frame from slot `key`, which is launching or live under `epoch`.
     async fn frame(&mut self, key: &EnvKey, epoch: u64, value: Value) -> Result<()> {
         let method = value
             .get("method")

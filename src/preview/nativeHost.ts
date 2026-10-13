@@ -127,11 +127,7 @@ export function measurePreviewHost(host: HTMLElement): PreviewLayout {
   return { rect, visible: rect !== null };
 }
 
-/**
- * Calls `refresh` once per microtask whenever the host or anything that can cover it changes:
- * its size, application overlays, window resizes, scrolling and visibility. WKWebView can pause
- * animation frames, so microtasks rather than frames coalesce the calls.
- */
+// WKWebView can pause animation frames, so microtasks rather than frames coalesce the calls.
 export function watchPreviewHost(
   host: HTMLElement | null,
   refresh: () => void,

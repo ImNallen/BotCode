@@ -20,13 +20,9 @@ const CONTEXT: [(&str, &[u8]); 11] = [
     ),
 ];
 
-/// The host Codex version, installed in the image so the agent speaks the host's protocol.
-/// It reaches a shell inside `docker build` as a build argument, so parsing admits only
-/// version characters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodexVersion(String);
 impl CodexVersion {
-    /// Parses `codex --version` output, such as `codex-cli 0.162.0`.
     pub fn from_version_output(output: &str) -> Result<Self> {
         let output = output.trim();
         output
@@ -57,8 +53,6 @@ impl std::str::FromStr for CodexVersion {
     }
 }
 
-/// The first 12 hex digits of the SHA-256 of the build context and the Codex version, so any
-/// change to either names a new image and marks older containers stale.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageVersion(pub(super) String);
 impl ImageVersion {

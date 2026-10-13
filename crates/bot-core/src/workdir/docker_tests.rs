@@ -1,5 +1,3 @@
-//! The sandbox handle's lifecycle against real Docker. Ignored by default. Run with
-//! `cargo test -p bot-core --lib workdir::docker_tests -- --include-ignored --nocapture`.
 use super::*;
 use crate::sandbox::tests::{Fixture, gone_within, running, stdout};
 use std::{collections::BTreeSet, time::Instant};
@@ -20,7 +18,6 @@ fn git(root: &Path, args: &[&str]) -> String {
     );
     String::from_utf8(output.stdout).unwrap()
 }
-/// A readied handle on a one-commit mirror, with a 250 ms probe cadence.
 async fn readied(fixture: &Fixture, dir: &Path) -> Arc<SandboxHandle> {
     let root = dir.join("mirror");
     std::fs::create_dir_all(&root).unwrap();
@@ -100,7 +97,6 @@ async fn a_busy_container_keeps_the_rule_from_pausing_it() {
         stop_after: Duration::from_secs(60),
         desktop_idle: Duration::from_secs(60),
     };
-    // Two probes after the wake's touch has aged out of the window: quiet means pause.
     handle.probe().await.unwrap();
     tokio::time::sleep(Duration::from_millis(2500)).await;
     let quiet = handle
@@ -117,7 +113,6 @@ async fn a_busy_container_keeps_the_rule_from_pausing_it() {
         Desired::Paused
     );
 
-    // A job with no Bot Code entry point, like a build, is seen through the probe.
     stdout(
         &handle.container,
         &["sh", "-c", "setsid yes >/dev/null 2>&1 </dev/null &"],
@@ -197,7 +192,6 @@ async fn stopping_the_idle_desktop_leaves_no_xvnc_or_chromium_and_it_starts_agai
     assert!(!probe.desktop_running);
     assert!(!handle.activity().desktop_running);
 
-    // The Desktop tab, or the agent's browser, starts it again.
     handle.desktop().await.unwrap();
     assert!(running(&handle.container, "Xvnc :1.*").await);
     assert!(handle.container.probe().await.unwrap().desktop_running);
@@ -234,7 +228,6 @@ async fn old_images_are_removed_unless_a_container_of_any_instance_uses_them() {
     .unwrap();
     let built = build.wait_with_output().unwrap();
     assert!(built.status.success(), "{built:?}");
-    // A container with no Bot Code labels at all stands in for another instance's.
     let name = format!("botcode-test-user-{}", SandboxId::new());
     cli(&["create", "--name", &name, old, "sleep", "infinity"]);
     struct Removal(String);
@@ -278,7 +271,6 @@ async fn old_images_are_removed_unless_a_container_of_any_instance_uses_them() {
     assert!(!after.contains(old) && after.contains(&current), "{after}");
 }
 
-/// Starts `command` detached in the container, so it outlives the exec.
 async fn spawn(handle: &SandboxHandle, command: &str) {
     stdout(
         &handle.container,
@@ -290,7 +282,6 @@ async fn spawn(handle: &SandboxHandle, command: &str) {
     )
     .await;
 }
-/// A static server bound to exactly `address`, whose page says `body`.
 async fn serve(handle: &SandboxHandle, address: &str, port: u16, body: &str) {
     spawn(
         handle,
@@ -339,7 +330,6 @@ async fn servers_on_either_loopback_are_reachable_through_the_mac_forwarder() {
     let network = SandboxNetwork(handle.clone());
     serve(&handle, "::1", 8001, "six").await;
     serve(&handle, "127.0.0.1", 8002, "four").await;
-    // The desktop's own listeners must not show up as servers of the user's.
     handle.desktop().await.unwrap();
     let listeners = listening(&network, &[8001, 8002]).await;
     assert!(listeners.live);

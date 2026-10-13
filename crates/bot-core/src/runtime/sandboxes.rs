@@ -1,6 +1,3 @@
-//! The registry of sandbox handles, shared by the App and the owner loop, plus startup
-//! reconciliation, shutdown, the idle lifecycle tick, and mirror pulls after terminal
-//! commands.
 use super::{Command, Location, Owner, call, providers::EnvKey};
 use crate::{
     codex::auth::TokenBroker,
@@ -22,8 +19,6 @@ const LOW_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub(super) const STOPPED_IDLE: &str = "Sandbox stopped while idle. Your next message restarts it.";
 pub(super) const STOPPED_SETTLED: &str = "Sandbox stopped. Your next message restarts it.";
 
-/// What a reconciled sandbox needs besides its id: where its mirror is and which branch it
-/// may move.
 pub(crate) struct Referenced {
     pub mirror_root: PathBuf,
     pub branch: String,
@@ -36,7 +31,6 @@ pub(crate) struct Sandboxes {
     pub limits: Limits,
     next_tick: Mutex<Instant>,
     handles: Mutex<HashMap<SandboxId, Arc<SandboxHandle>>>,
-    /// Where every handle reports a phase change; the owner loop reads the other end.
     changed: mpsc::UnboundedSender<SandboxId>,
 }
 impl Sandboxes {
@@ -57,7 +51,6 @@ impl Sandboxes {
             changed,
         }
     }
-    /// A registry with no Docker and no Codex, whose `codex-home` is under `dir`.
     #[cfg(test)]
     pub(crate) fn for_tests(dir: &Path) -> Self {
         Self::new(
@@ -72,7 +65,6 @@ impl Sandboxes {
             RotatingLog::silent(),
         )
     }
-    /// The one match from a checkout to where it lives.
     pub(crate) fn workdir(&self, checkout: &Checkout, root: &Path) -> Workdir {
         match checkout {
             Checkout::Worktree {
@@ -109,12 +101,9 @@ impl Sandboxes {
         handle.set_branch(branch);
         handle
     }
-    /// A handle some thread already resolved. A sandbox nobody resolved has no container
-    /// this process started.
     pub(crate) fn existing(&self, id: &SandboxId) -> Option<Arc<SandboxHandle>> {
         self.handles.lock().unwrap().get(id).cloned()
     }
-    /// The Mac ports of every sandbox's local server forwarders.
     pub(crate) fn forwarder_ports(&self) -> std::collections::BTreeSet<u16> {
         let handles = self.handles.lock().unwrap();
         handles
@@ -122,7 +111,6 @@ impl Sandboxes {
             .flat_map(|handle| handle.forwarder_ports())
             .collect()
     }
-    /// Handles whose container this process started and has not stopped: running or paused.
     fn started(&self) -> Vec<Arc<SandboxHandle>> {
         self.handles
             .lock()
@@ -157,8 +145,6 @@ impl Sandboxes {
             low_memory: memory_bytes < LOW_MEMORY_BYTES,
         }
     }
-    /// Terminal input or a fresh attach on a sandbox terminal counts as use and wakes a
-    /// paused or stopped container before the bytes go in.
     pub(crate) async fn wake_terminal(
         &self,
         terminals: &Terminals,
@@ -170,10 +156,6 @@ impl Sandboxes {
             None => Ok(()),
         }
     }
-    /// Startup repair. A referenced container left running or paused by a crash is pulled and
-    /// stopped; a container no checkout names is removed with its Codex home; images of
-    /// older versions that no container of any instance uses are removed. Nothing here
-    /// touches a sandbox this process already readied.
     pub(crate) async fn reconcile(&self, referenced: HashMap<SandboxId, Referenced>) {
         let observed = match self.docker.list().await {
             Ok(observed) => observed,
@@ -235,7 +217,6 @@ impl Sandboxes {
             ),
         }
     }
-    /// Pulls and stops every container this process started. The agents are already gone.
     pub(crate) async fn stop_all(&self) {
         for handle in self.started() {
             if let Err(error) = handle.retire(Desired::Stopped).await {
@@ -256,19 +237,13 @@ impl Sandboxes {
     }
 }
 
-/// One step of lifecycle work for one sandbox, run off the owner loop.
 enum Work {
     Probe,
     StopDesktop,
-    /// A retire and the one-word reason the log names: `idle` or `settled`.
     Retire(Desired, &'static str),
 }
 
 impl Owner {
-    /// The idle rule, on the owner tick. For each started sandbox it folds in what only the
-    /// owner knows, whether a thread of the sandbox is busy, and asks the pure rule what the
-    /// container should be. At most one piece of work is in flight per sandbox, and none of
-    /// it runs on the loop.
     pub(super) async fn sandbox_lifecycle(&mut self) {
         let now = Instant::now();
         if self.closing || !self.sandboxes.tick_due(now) {
@@ -327,8 +302,6 @@ impl Owner {
             });
         }
     }
-    /// Settle and archive stop the container. The next tick does it once no thread of the
-    /// sandbox is busy, which covers the naming and the capture that follow a turn.
     pub(super) fn stop_sandbox_of(&self, id: &ThreadId) {
         let Some(thread) = self.threads.get(id) else {
             return;
@@ -339,8 +312,6 @@ impl Owner {
             handle.request_stop(STOPPED_SETTLED);
         }
     }
-    /// The container's phase changed, so the strip label of each of its threads reads it
-    /// again.
     pub(super) fn sandbox_changed(&self, id: &SandboxId) {
         let key = EnvKey::Sandbox(id.clone());
         for thread in self.threads.values() {
@@ -352,7 +323,6 @@ impl Owner {
 }
 
 impl SandboxHandle {
-    /// Runs one piece of lifecycle work.
     async fn lifecycle(&self, work: Work, decided_at: std::time::Instant) {
         match work {
             Work::Probe => match self.probe().await {
@@ -371,7 +341,6 @@ impl SandboxHandle {
                 Ok(false) => {}
                 Err(error) => {
                     self.note(&format!("{desired:?} ({why}) failed: {}", error.message));
-                    // A failed pull keeps the container; the next attempt waits a full window.
                     self.touch();
                 }
             },
@@ -379,10 +348,6 @@ impl SandboxHandle {
     }
 }
 
-/// Pulls a sandbox thread's mirror after a command in its terminal finishes, which the shell
-/// signals by showing a prompt, so Files and Diff show what the command changed. Each thread
-/// waits until its terminals have been quiet for `RECENT`: a pull from before the command's
-/// edits is then old enough that the Recent pull runs instead of reusing it.
 pub(super) async fn pull_after_commands(
     commands: mpsc::WeakSender<Command>,
     mut prompts: mpsc::UnboundedReceiver<TerminalKey>,
@@ -463,8 +428,6 @@ mod tests {
         assert!(!handle.is_ready(), "nothing has started the container");
         assert_eq!(handle.phase(), Phase::Stopped);
 
-        // A second thread on the same checkout, after a branch rename, shares the handle and
-        // refreshes the branch the mirror may move.
         let renamed = Checkout::Worktree {
             path: root.clone(),
             branch: "botcode/renamed".into(),

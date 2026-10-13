@@ -1,17 +1,12 @@
-//! Where a URL opened from a conversation loads. A sandbox thread's `localhost` is its
-//! container's, so its loopback URLs load through a Mac forwarder to the container, and the
-//! Preview's URL field keeps showing the container address. Everything else loads as it is.
 use bot_core::{App, LocalNetwork};
 use tauri::{AppHandle, Manager, Url};
 
 use super::{discovery::loopback, model::PreviewScope};
 
-/// The container port a sandbox thread's URL names: a loopback host with its port.
 fn container_port(url: &Url) -> Option<u16> {
     loopback(url).then(|| url.port_or_known_default()).flatten()
 }
 
-/// A forwarded page's origin and the container origin the URL field shows for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Alias {
     pub container_port: u16,
@@ -19,7 +14,6 @@ pub struct Alias {
     shown: Url,
 }
 impl Alias {
-    /// The address the user sees for a URL the page reports, which is its forwarded one.
     pub fn shown(&self, url: &str) -> String {
         match Url::parse(url) {
             Ok(url) if url.origin() == self.forwarded.origin() => {
@@ -30,8 +24,6 @@ impl Alias {
     }
 }
 
-/// What to load when a conversation opens `url`, and how to show it when it loads through a
-/// forwarder. Only a sandbox thread's loopback URLs change.
 pub fn load(network: &LocalNetwork, url: &Url) -> Result<(Url, Option<Alias>), String> {
     let LocalNetwork::Sandbox(sandbox) = network else {
         return Ok((url.clone(), None));
@@ -49,7 +41,6 @@ pub fn load(network: &LocalNetwork, url: &Url) -> Result<(Url, Option<Alias>), S
     Ok((forwarded, Some(alias)))
 }
 
-/// `url` with its origin moved to the forwarder's Mac port.
 fn forwarded(url: &Url, mac_port: u16) -> Url {
     let mut forwarded = url.clone();
     let _ = forwarded.set_host(Some("127.0.0.1"));
@@ -57,7 +48,6 @@ fn forwarded(url: &Url, mac_port: u16) -> Url {
     forwarded
 }
 
-/// `url` with the scheme, host and port of `origin`.
 fn rebase(url: &Url, origin: &Url) -> Url {
     let mut rebased = url.clone();
     let _ = rebased.set_scheme(origin.scheme());
@@ -66,7 +56,6 @@ fn rebase(url: &Url, origin: &Url) -> Url {
     rebased
 }
 
-/// The local network of a preview's conversation. Drafts and the Desktop tab are the Mac's.
 pub async fn network(app: &AppHandle, scope: &PreviewScope) -> Result<LocalNetwork, String> {
     let PreviewScope::Thread { thread_id } = scope else {
         return Ok(LocalNetwork::Mac);

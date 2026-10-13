@@ -76,8 +76,6 @@ impl Owner {
         if thread.worktree_setup.is_none() {
             return Ok(());
         }
-        // A sandbox's setup runs in its container, so it waits, still Pending, until the
-        // container is ready; `poll_setups` calls back every tick.
         let container = match self.workdir(&thread) {
             Workdir::Mac { .. } => None,
             Workdir::Sandbox { handle, .. } => {
@@ -115,8 +113,6 @@ impl Owner {
             submodules: &submodules,
             container: container.as_ref(),
         };
-        // A sandbox setup's stdin is the lifeline of its `docker exec`: Bot Code holds the
-        // pipe, so stopping the wrapper or quitting ends the work in the container too.
         let stdin = if container.is_some() {
             std::process::Stdio::piped()
         } else {
@@ -332,8 +328,6 @@ fn lock_attempt(dir: &Path) -> Result<Option<std::fs::File>> {
     }
 }
 
-/// A detached setup run that records its exit code in `receipt`. With a container, the
-/// submodule checkout and the script run inside it through a lifeline exec.
 struct SetupAttempt<'a> {
     dir: &'a Path,
     #[cfg_attr(windows, allow(dead_code))]
@@ -343,7 +337,6 @@ struct SetupAttempt<'a> {
     #[cfg_attr(windows, allow(dead_code))]
     container: Option<&'a Container>,
 }
-/// A command as one shell line: its environment, program and arguments, each quoted.
 #[cfg(unix)]
 fn shell_line(command: &std::process::Command) -> String {
     let quote = |text: &std::ffi::OsStr| project::quote(&text.to_string_lossy());

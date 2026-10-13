@@ -141,7 +141,6 @@ export type TimelineRow =
       id: string;
       startedAtMs: number | null;
       compacting: boolean;
-      // The sandbox's agent is launching, which can include building its image.
       startingSandbox: boolean;
     }
   | { kind: "thinking"; id: string; compacting: boolean }

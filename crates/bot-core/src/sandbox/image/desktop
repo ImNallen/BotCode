@@ -1,19 +1,6 @@
 #!/bin/bash
-# desktop start [--secret-stdin]   start whatever of the desktop is not running: the X server
-#                                  with VNC, the window manager and the websocket proxy for
-#                                  noVNC, then wait until they answer
-# desktop status                   exit 0 when the whole desktop is running
-# desktop clients                  print how many VNC clients are connected
-# desktop stop                     stop the desktop and every window on it
-#
-# Nothing starts the desktop with the container. The Desktop tab and the agent's browser start
-# it on first use. Each part runs in its own session, so the lifeline exec that started it
-# does not take it down. State lives in /dev/shm, which a container restart empties along with
-# the processes.
-#
 # One secret gates both the websocket, as its token, and VNC, as its password, which VNC cuts
-# to 8 characters. Bot Code passes its secret on stdin. A start without one keeps the current
-# secret or makes one nobody knows, so the desktop never runs open.
+# to 8 characters.
 set -u
 state=/dev/shm/botcode-desktop
 display=:1
@@ -78,7 +65,7 @@ case ${1-} in
     ;;
   stop)
     # Windows die with their X server, and Chromium is killed too in case it lingers while
-    # it reconnects. The lock is not taken, so a hung start cannot block the stop.
+    # it reconnects.
     pkill -u "$(id -u)" -f "^Xvnc $display"
     pkill -u "$(id -u)" -f "^matchbox-window-manager"
     pkill -u "$(id -u)" -f "websockify --web $web"

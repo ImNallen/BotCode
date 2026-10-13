@@ -364,8 +364,6 @@ pub async fn run_git_action(
     })
     .await
 }
-/// Opens a web link in the default browser. A sandbox thread's `localhost` link opens its
-/// forwarded address, because the browser runs on the Mac.
 #[tauri::command]
 pub async fn open_url(app: State<'_, App>, url: String, thread_id: Option<ThreadId>) -> Result<()> {
     if !url.starts_with("https://") && !url.starts_with("http://") {

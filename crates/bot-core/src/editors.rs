@@ -403,8 +403,6 @@ pub(crate) fn checkout_path(root: &Path, path: &str) -> Result<PathBuf> {
     repo::contained(root, path)
 }
 
-/// `paths` is the thread's agent path mapping when it has a repository checkout. A sandbox
-/// agent's link resolves on the Mac only inside `/workspace`, as the mirror.
 pub(crate) fn chat_link_path(
     thread: &ThreadSnapshot,
     paths: Option<&crate::workdir::AgentPaths>,

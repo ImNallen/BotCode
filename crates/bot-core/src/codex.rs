@@ -165,8 +165,6 @@ pub struct Codex {
     _alive: Arc<oneshot::Sender<()>>,
     pid: u32,
 }
-/// The command that starts an app-server. `Codex` pipes its stdio and stops its process group
-/// without knowing where it runs.
 pub(crate) struct AgentProcess(std::process::Command);
 impl AgentProcess {
     pub(crate) fn mac(binary: &Path) -> Self {
@@ -174,8 +172,6 @@ impl AgentProcess {
         command.arg("app-server");
         Self(command)
     }
-    /// A prebuilt command whose stdio is the app-server's, such as a `docker exec` of the
-    /// in-image `agent` script. Killing the command's group must end the agent.
     pub(crate) fn new(command: std::process::Command) -> Self {
         Self(command)
     }
@@ -324,7 +320,6 @@ impl Codex {
         self.write(json!({"id":id,"error":{"code":-32602,"message":message}}))
             .await
     }
-    /// A JSON-RPC error with the application's own code.
     pub async fn error(&self, id: Value, code: i64, message: &str) -> Result<()> {
         self.write(json!({"id":id,"error":{"code":code,"message":message}}))
             .await

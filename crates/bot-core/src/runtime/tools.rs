@@ -20,8 +20,10 @@ struct Scope {
     epoch: u64,
 }
 pub(super) enum ToolReply {
-    /// `epoch` is the process that asked, which alone may receive the result.
-    Dynamic { epoch: u64, request: Value },
+    Dynamic {
+        epoch: u64,
+        request: Value,
+    },
     Mcp {
         credential: String,
         reply: oneshot::Sender<Result<Value>>,
@@ -51,8 +53,6 @@ pub(super) struct ToolCompletion {
 pub(super) struct ToolWork {
     registry: Registry,
     registration: Registration,
-    /// Sandbox agents always get dynamic tools, declared on their first `thread/start`, and
-    /// only the PR tools: the host preview backend cannot reach into a container.
     sandbox: Registry,
     server: Option<BridgeServer>,
     pub incoming: mpsc::Receiver<Envelope>,
@@ -108,7 +108,6 @@ impl ToolWork {
             seen: HashMap::new(),
         })
     }
-    /// Whether `key`'s agents declare their tools dynamically, and the catalog they get.
     fn dynamic(&self, key: &EnvKey) -> Option<(&Registry, &str)> {
         match key {
             EnvKey::Mac => match self.registration {
@@ -118,7 +117,6 @@ impl ToolWork {
             EnvKey::Sandbox(_) => Some((&self.sandbox, &self.sandbox_fingerprint)),
         }
     }
-    /// Whether `native` was created with the current dynamic catalog of its environment.
     fn declared(&self, key: &EnvKey, native: &str) -> bool {
         self.dynamic(key).is_some_and(|(_, fingerprint)| {
             self.declarations.get(native).map(String::as_str) == Some(fingerprint)
@@ -170,7 +168,6 @@ impl ToolWork {
             },
         )
     }
-    /// Ends every tool session except those of `spared` threads.
     pub fn revoke(&mut self, spared: &HashSet<ThreadId>) {
         self.running.retain(|(thread, _, _), abort| {
             if spared.contains(thread) {
@@ -285,7 +282,6 @@ impl Owner {
             call_id: caller.call_id.clone(),
         })
     }
-    /// `item/tool/call` from the process live under `epoch`.
     pub(super) async fn dynamic_tool(
         &mut self,
         epoch: u64,
@@ -322,7 +318,6 @@ impl Owner {
                 )
                 .await,
         };
-        // A sandbox agent's catalog has no preview tools, so decoding against it refuses them.
         let registry = match key {
             Some(EnvKey::Sandbox(_)) => &self.tools.sandbox,
             Some(EnvKey::Mac) | None => &self.tools.registry,

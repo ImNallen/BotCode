@@ -70,7 +70,6 @@ export async function openLink(input: OpenLinkInput): Promise<LinkTarget> {
       );
     }
   }
-  // A sandbox thread's localhost links open its forwarded address in the system browser.
   await openExternal(
     input.url,
     scope?.kind === "thread" ? scope.threadId : null,

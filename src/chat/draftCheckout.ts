@@ -7,16 +7,13 @@ export const placementLabels = {
 } as const;
 export type Placement = keyof typeof placementLabels;
 
-/** A repository draft's choice of where its thread runs and which checkout it gets. */
 export type DraftCheckout = {
   placement: Placement;
-  // Kept while Sandbox is chosen, so choosing This Mac again restores it.
   mode: CheckoutMode;
   base: string | null;
   fromOrigin: boolean;
 };
 
-/** A sandbox always starts a new worktree, so it picks a base like a worktree draft. */
 export function picksBase(draft: DraftCheckout): boolean {
   return draft.placement === "sandbox" || draft.mode === "worktree";
 }

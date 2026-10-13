@@ -1,6 +1,3 @@
-//! A sandbox thread end to end against real Docker and the Mac's signed-in Codex. Ignored by
-//! default. Run it with
-//! `cargo test -p bot-core --test sandbox_e2e -- --include-ignored --nocapture`.
 #![allow(clippy::disallowed_methods)]
 use bot_core::*;
 use std::{
@@ -31,7 +28,6 @@ fn docker(args: &[&str]) -> String {
     assert!(output.status.success(), "docker {args:?}: {output:?}");
     String::from_utf8(output.stdout).unwrap()
 }
-/// Removes the container on drop, also after a failed assertion.
 struct Removal(String);
 impl Drop for Removal {
     fn drop(&mut self) {
@@ -194,7 +190,6 @@ async fn a_sandbox_thread_runs_codex_in_the_container_and_mirrors_to_the_mac() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // Nothing else reads the checkout here, so only the pull after the prompt brings term.txt.
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let hint = hints.recv().await.unwrap();
@@ -212,7 +207,6 @@ async fn a_sandbox_thread_runs_codex_in_the_container_and_mirrors_to_the_mac() {
         std::fs::read_to_string(mirror.join("term.txt")).unwrap(),
         "terminal\n"
     );
-    // Saved actions come from settings; import the file's actions as the UI's Import does.
     let script = app
         .project_file_config(workspace.id.clone())
         .await
@@ -259,7 +253,6 @@ async fn a_sandbox_thread_runs_codex_in_the_container_and_mirrors_to_the_mac() {
         .await
         .unwrap_err();
     assert_eq!(editor.code, "sandbox_mirror");
-    // The container is the boundary, so the agent may run its shell commands unasked.
     app.update_settings(
         thread.id.clone(),
         SessionSettings {
@@ -318,7 +311,6 @@ async fn a_sandbox_thread_runs_codex_in_the_container_and_mirrors_to_the_mac() {
     .unwrap();
     assert_eq!(in_container("cat from-mac.txt"), "MAC_WRITE\n");
 
-    // Branch naming holds the checkout for a moment after the first turn; the UI retries too.
     let started = Instant::now();
     let outcome = loop {
         let action = GitAction::CommitPush {

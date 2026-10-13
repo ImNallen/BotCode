@@ -1,5 +1,4 @@
 //! Ported from T3 Code v0.0.45 `apps/server/src/terminal/Manager.ts` (subprocess activity polling).
-//! A sandbox shell's command is read inside its container, with one exec per container.
 use super::{Place, Registry, TerminalKey, container};
 use crate::sandbox::Container;
 use std::{collections::HashMap, io, sync::Weak, time::Duration};
@@ -26,7 +25,6 @@ pub(super) fn spawn_poller(registry: Weak<Registry>) -> io::Result<()> {
         .map(drop)
 }
 
-/// A shell whose command a container read can find: its key, its Mac pid and its id there.
 type ContainerShell = (TerminalKey, u32, String);
 
 fn tick(registry: &Weak<Registry>, failures: &mut u32) -> Option<Duration> {
@@ -83,8 +81,6 @@ fn tick(registry: &Weak<Registry>, failures: &mut u32) -> Option<Duration> {
     Some(poll_delay(*failures))
 }
 
-/// Reads `terminal ps` output: the container pid of each registered shell, and the process
-/// table. Rows that do not parse are skipped.
 fn parse_container(output: &str) -> (HashMap<String, u32>, Snapshot) {
     let mut registered = HashMap::new();
     let mut rows = Vec::new();
