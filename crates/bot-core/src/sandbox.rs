@@ -32,8 +32,15 @@ const OUTPUT_LIMIT: u64 = 4 * 1024 * 1024;
 pub struct SandboxConfig {
     pub docker: PathBuf,
     pub data_dir: PathBuf,
-    pub codex_version: CodexVersion,
+    pub codex: CodexSource,
 }
+/// Where the Codex version the image installs comes from. The app names the host binary and
+/// the version is read on first use, so startup never waits for `codex --version`.
+pub enum CodexSource {
+    Version(CodexVersion),
+    Binary(PathBuf),
+}
+const VERSION_PROBE: Duration = Duration::from_secs(10);
 
 /// `BOT_CODE_DOCKER_BIN`, then the directories `vcs::bin_dirs` searches, then Docker
 /// Desktop's own install locations.
@@ -165,8 +172,8 @@ struct Inner {
     cli: Cli,
     instance: Instance,
     data_dir: PathBuf,
-    codex_version: CodexVersion,
-    image: ImageVersion,
+    codex: CodexSource,
+    versions: tokio::sync::OnceCell<(CodexVersion, ImageVersion)>,
     building: tokio::sync::Mutex<()>,
     /// Converge inspects and then acts, so two callers must not both decide to create.
     converging: std::sync::Mutex<HashMap<SandboxId, Arc<tokio::sync::Mutex<()>>>>,
@@ -177,9 +184,9 @@ impl Docker {
             inner: Arc::new(Inner {
                 cli: Cli::new(config.docker),
                 instance: Instance::of(&config.data_dir),
-                image: ImageVersion::of(&config.codex_version),
                 data_dir: config.data_dir,
-                codex_version: config.codex_version,
+                codex: config.codex,
+                versions: tokio::sync::OnceCell::new(),
                 building: tokio::sync::Mutex::new(()),
                 converging: Default::default(),
             }),
@@ -218,10 +225,24 @@ impl Docker {
             _ => unexpected(&info),
         }
     }
+    /// The host Codex version and the image version it names.
+    async fn versions(&self) -> Result<&(CodexVersion, ImageVersion)> {
+        self.inner
+            .versions
+            .get_or_try_init(|| async {
+                let codex = match &self.inner.codex {
+                    CodexSource::Version(version) => version.clone(),
+                    CodexSource::Binary(binary) => probe_codex_version(binary).await?,
+                };
+                let image = ImageVersion::of(&codex);
+                Ok((codex, image))
+            })
+            .await
+    }
     /// Builds `botcode-sandbox:<version>` when Docker lacks it. `progress` gets each build
     /// log line, because a first build takes minutes.
     pub async fn image(&self, progress: &(dyn Fn(&str) + Send + Sync)) -> Result<ImageVersion> {
-        let version = &self.inner.image;
+        let (codex, version) = self.versions().await?;
         let _building = self.inner.building.lock().await;
         let inspected = self
             .inner
@@ -247,7 +268,7 @@ impl Docker {
             "--label".into(),
             format!("{IMAGE_LABEL}={}", version.as_str()).into(),
             "--build-arg".into(),
-            format!("CODEX_VERSION={}", self.inner.codex_version.as_str()).into(),
+            format!("CODEX_VERSION={}", codex.as_str()).into(),
             context.path().into(),
         ];
         self.inner.cli.stream(args, BUILD, progress).await?;
@@ -295,6 +316,30 @@ impl Docker {
             .or_default()
             .clone()
     }
+}
+/// `codex --version` on the host, so the image installs the protocol the Mac agent speaks.
+async fn probe_codex_version(binary: &Path) -> Result<CodexVersion> {
+    let binary = crate::onboarding::resolve_binary(binary);
+    let (_cancel, mut cancelled) = tokio::sync::watch::channel(false);
+    let output = crate::vcs::Tool {
+        program: &binary,
+        cwd: Path::new("."),
+    }
+    .run_with_input(&["--version"], VERSION_PROBE, 4096, &mut cancelled, None)
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "codex_missing",
+            "Install Codex on this Mac before starting a sandbox.",
+        )
+    })?;
+    if output.code != Some(0) {
+        return Err(AppError::new(
+            "codex_missing",
+            "Install Codex on this Mac before starting a sandbox.",
+        ));
+    }
+    CodexVersion::from_version_output(&output.stdout)
 }
 fn unexpected(info: &str) -> DockerStatus {
     DockerStatus::NotRunning {

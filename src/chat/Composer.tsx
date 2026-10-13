@@ -1,4 +1,4 @@
-// Ported from T3 Code v0.0.45 components/chat/ChatComposer.tsx, ComposerControl.tsx, ComposerPrimaryActions.tsx, BranchToolbar.tsx, BranchToolbarEnvModeSelector.tsx, TraitsPicker.tsx and ui/badge.tsx (MIT).
+// Ported from T3 Code v0.0.45 components/chat/ChatComposer.tsx, ComposerControl.tsx, ComposerPrimaryActions.tsx, BranchToolbar.tsx, BranchToolbarEnvironmentSelector.tsx, BranchToolbarEnvModeSelector.tsx, TraitsPicker.tsx and ui/badge.tsx (MIT).
 import type { Thread } from "../ipc";
 import {
   useEffect,
@@ -14,7 +14,9 @@ import {
   PencilRulerIcon,
   FolderGit2Icon,
   FolderGitIcon,
+  ContainerIcon,
   FolderIcon,
+  LaptopIcon,
   XIcon,
   FileIcon,
   PaperclipIcon,
@@ -84,6 +86,11 @@ import {
   selectedModelOption,
 } from "./ModelSelectionControls";
 import { ComposerSurface } from "./ComposerSurface";
+import {
+  placementLabels,
+  type Placement,
+  type SandboxOption,
+} from "./draftCheckout";
 import { shouldHandleComposerAttachmentPaste } from "./composerAttachmentFiles";
 import {
   attachmentIdentity,
@@ -240,6 +247,10 @@ export function Composer({
       | Checkout
       | {
           kind: "draft";
+          placement: Placement;
+          sandbox: SandboxOption;
+          onSandboxMenuOpen: () => void;
+          onPlacementChange: (placement: Placement) => void;
           mode: CheckoutMode;
           onChange: (mode: CheckoutMode) => void;
           worktrees: RegisteredWorktree[];
@@ -1620,6 +1631,16 @@ export function Composer({
               <ComposerSurface.ContextStrip className="gap-1 text-xs font-normal text-muted-foreground/70">
                 <div className="min-h-7 min-w-10 items-center gap-1 sm:min-h-6 flex flex-1">
                   {checkout?.kind === "draft" ? (
+                    <PlacementMenu
+                      placement={checkout.placement}
+                      sandbox={checkout.sandbox}
+                      disabled={settingsDisabled}
+                      onOpen={checkout.onSandboxMenuOpen}
+                      onChange={checkout.onPlacementChange}
+                    />
+                  ) : null}
+                  {checkout?.kind === "draft" &&
+                  checkout.placement === "mac" ? (
                     <Menu
                       side="top"
                       trigger={(props) => (
@@ -1708,23 +1729,14 @@ export function Composer({
                         </div>
                       ) : null}
                     </Menu>
-                  ) : checkout ? (
+                  ) : checkout && checkout.kind !== "draft" ? (
                     <span
                       className={contextControl}
                       title={
                         checkout.kind === "worktree" ? checkout.path : undefined
                       }
                     >
-                      {checkout.kind === "worktree" ? (
-                        <FolderGitIcon className="size-3 shrink-0" />
-                      ) : (
-                        <FolderIcon className="size-3 shrink-0" />
-                      )}
-                      <span className="min-w-0 max-w-[240px] truncate">
-                        {checkout.kind === "worktree"
-                          ? "Worktree"
-                          : "Local checkout"}
-                      </span>
+                      <FixedCheckoutLabel checkout={checkout} />
                     </span>
                   ) : null}
                 </div>
@@ -1737,6 +1749,116 @@ export function Composer({
         </div>
       ) : null}
     </ComposerSurface.Shell>
+  );
+}
+
+function FixedCheckoutLabel({ checkout }: { checkout: Checkout }) {
+  const [Icon, label] =
+    checkout.kind !== "worktree"
+      ? [FolderIcon, "Local checkout"]
+      : checkout.sandbox
+        ? [ContainerIcon, "Sandbox"]
+        : [FolderGitIcon, "Worktree"];
+  return (
+    <>
+      <Icon className="size-3 shrink-0" />
+      <span className="min-w-0 max-w-[240px] truncate">{label}</span>
+    </>
+  );
+}
+
+function PlacementIcon({ placement }: { placement: Placement }) {
+  return placement === "sandbox" ? (
+    <ContainerIcon className="size-3" />
+  ) : (
+    <LaptopIcon className="size-3" />
+  );
+}
+
+function PlacementMenu({
+  placement,
+  sandbox,
+  disabled,
+  onOpen,
+  onChange,
+}: {
+  placement: Placement;
+  sandbox: SandboxOption;
+  disabled: boolean;
+  onOpen: () => void;
+  onChange: (placement: Placement) => void;
+}) {
+  const sandboxDetail =
+    sandbox.kind === "checking"
+      ? "Checking Docker…"
+      : sandbox.kind === "unavailable"
+        ? sandbox.reason
+        : sandbox.note;
+  return (
+    <>
+      <Menu
+        side="top"
+        onOpenChange={(open) => {
+          if (open) onOpen();
+        }}
+        trigger={(props) => (
+          <button
+            type="button"
+            {...props}
+            disabled={disabled}
+            aria-label="Run on"
+            title={
+              placement === "sandbox" ? (sandboxDetail ?? undefined) : undefined
+            }
+            className={selectTrigger({
+              variant: "ghost",
+              size: "xs",
+              className: "min-w-0 shrink",
+            })}
+          >
+            <PlacementIcon placement={placement} />
+            <span className="min-w-0 max-w-[240px] truncate">
+              {placementLabels[placement]}
+            </span>
+            <ChevronDownIcon aria-hidden className="-me-1 size-3 opacity-50" />
+          </button>
+        )}
+      >
+        <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+          Run on
+        </div>
+        {(["mac", "sandbox"] as const).map((option) => {
+          const unavailable = option === "sandbox" && sandbox.kind !== "ready";
+          const detail = option === "sandbox" ? sandboxDetail : null;
+          return (
+            <MenuItem
+              key={option}
+              role="menuitemradio"
+              aria-checked={placement === option}
+              data-selected={placement === option ? "" : undefined}
+              disabled={unavailable}
+              className={selectItem}
+              onClick={() => onChange(option)}
+            >
+              <span className="flex min-w-0 flex-col">
+                <span className="inline-flex items-center gap-1.5 [&_svg:not([class*='text-'])]:text-muted-foreground">
+                  <PlacementIcon placement={option} />
+                  {placementLabels[option]}
+                </span>
+                {detail ? (
+                  <span className="max-w-64 text-xs text-muted-foreground">
+                    {detail}
+                  </span>
+                ) : null}
+              </span>
+            </MenuItem>
+          );
+        })}
+      </Menu>
+      {placement === "mac" ? (
+        <span aria-hidden className="mx-0.5 h-3.5 w-px shrink-0 bg-border" />
+      ) : null}
+    </>
   );
 }
 

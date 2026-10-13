@@ -24,7 +24,7 @@ RUN userdel --remove ubuntu \
  && useradd --create-home --uid 1000 --shell /bin/bash botcode \
  && install -d -o botcode -g botcode /workspace /codex-home /botcode /botcode/attachments
 
-COPY --chmod=0755 run sync /opt/botcode/bin/
+COPY --chmod=0755 run sync agent /opt/botcode/bin/
 
 USER botcode
 ENV HOME=/home/botcode CODEX_HOME=/codex-home

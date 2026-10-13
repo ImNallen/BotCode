@@ -3,10 +3,11 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 pub(super) const REPOSITORY: &str = "botcode-sandbox";
-const CONTEXT: [(&str, &[u8]); 3] = [
+const CONTEXT: [(&str, &[u8]); 4] = [
     ("Dockerfile", include_bytes!("image/Dockerfile")),
     ("run", include_bytes!("image/run")),
     ("sync", include_bytes!("image/sync")),
+    ("agent", include_bytes!("image/agent")),
 ];
 
 /// The host Codex version, installed in the image so the agent speaks the host's protocol.

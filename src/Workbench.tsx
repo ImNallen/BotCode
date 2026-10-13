@@ -58,6 +58,7 @@ import { ChatView } from "./chat/ChatView";
 import { TerminalDrawerHost } from "./terminal/TerminalDrawerHost";
 import type { Surface } from "./panel/RightPanel";
 import { Button } from "./ui/controls";
+import { inSandbox } from "./lib/sandbox";
 import { storage } from "./lib/storage";
 import { useProjectScopeId } from "./lib/projectScope";
 import { topOfPinnedRunOrderKey } from "./lib/threadSort";
@@ -430,8 +431,12 @@ export function Workbench() {
     queryKey: checkoutKey("workspace", openCheckout ?? { workspaceId: "" }),
     queryFn: openCheckout ? () => ipc.workspace(openCheckout) : skipToken,
   });
+  const checkoutReadable = Boolean(
+    openCheckout && openCheckoutView.data && !openCheckoutView.data.unavailable,
+  );
+  const sandboxed = inSandbox(openSummary?.checkout);
   const checkoutTarget =
-    openCheckout && openCheckoutView.data && !openCheckoutView.data.unavailable
+    openCheckout && checkoutReadable && !sandboxed
       ? workspaceTarget(openCheckout, "")
       : null;
   const actionContext: ActionContext = {
@@ -444,8 +449,10 @@ export function Workbench() {
         : (currentView?.branch ?? ""),
     scratchAvailable,
     terminalAvailable:
-      !!workspaceId && !(scratch?.id === workspaceId && !selection.thread),
-    projectSearchAvailable: checkoutTarget !== null,
+      !!workspaceId &&
+      !(scratch?.id === workspaceId && !selection.thread) &&
+      !sandboxed,
+    projectSearchAvailable: checkoutReadable,
     renamePending,
     queued: !!selection.thread && followUps.rows(selection.thread).length > 0,
     archiveTarget: undefined,

@@ -484,9 +484,19 @@ const checkout = z.discriminatedUnion("kind", [
     kind: z.literal("worktree"),
     path: z.string(),
     branch: z.string(),
+    sandbox: z.object({ kind: z.literal("docker"), id: z.string() }).optional(),
   }),
   z.object({ kind: z.literal("folder"), path: z.string() }),
 ]);
+export const sandboxAvailability = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("ready"),
+    memoryBytes: z.number(),
+    lowMemory: z.boolean(),
+  }),
+  z.object({ kind: z.literal("unavailable"), reason: z.string() }),
+]);
+export type SandboxAvailability = z.infer<typeof sandboxAvailability>;
 const branches = z.object({
   branches: z.array(
     z.object({
@@ -925,6 +935,7 @@ export type NewCheckout =
   | { kind: "registered"; path: string }
   | { kind: "local" }
   | { kind: "worktree"; base: string; fromOrigin: boolean }
+  | { kind: "sandbox"; base: string; fromOrigin: boolean }
   | { kind: "folder"; prompt: string };
 export const registeredWorktree = z.object({
   path: z.string(),
@@ -1577,6 +1588,8 @@ export const ipc = {
   ) => call("open_in_editor", { target, editor, position }, z.null()),
   revealInFinder: (target: OpenTarget) =>
     call("reveal_in_finder", { target }, z.null()),
+  sandboxAvailability: () =>
+    call("sandbox_availability", {}, sandboxAvailability),
   create: (workspaceId: string, checkout: NewCheckout) =>
     call("create_thread", { workspaceId, checkout }, thread),
   listWorktrees: (workspaceId: string) =>

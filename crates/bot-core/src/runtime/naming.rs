@@ -1,4 +1,6 @@
 use super::*;
+use crate::mirror::WriteRoot;
+use crate::workdir::Workdir;
 use serde::Deserialize;
 use tokio::sync::watch;
 
@@ -159,16 +161,16 @@ impl Owner {
             }
             self.held.insert(job.path.clone(), Hold::Naming);
             self.naming.pending.get_mut(&job.thread).unwrap().phase = Phase::Applying;
-            let path = job.path.clone();
+            let workdir = self.workdir(&self.threads[&job.thread]);
             let temporary_branch = job.temporary_branch.clone();
             self.naming.active.spawn(async move {
                 let result =
-                    tokio::spawn(async move { rename(&path, &temporary_branch, &branch).await })
-                        .await
-                        .map_err(|_| {
-                            AppError::new("naming_worker", "Branch rename worker stopped.")
-                        })
-                        .and_then(|result| result);
+                    tokio::spawn(
+                        async move { rename_in(&workdir, &temporary_branch, &branch).await },
+                    )
+                    .await
+                    .map_err(|_| AppError::new("naming_worker", "Branch rename worker stopped."))
+                    .and_then(|result| result);
                 NameCompletion::Applied(job, result)
             });
         }
@@ -285,7 +287,24 @@ async fn generate(
     normalize(&output)
 }
 
-async fn rename(path: &Path, old: &str, requested: &str) -> Result<String> {
+/// Renames on the mirror first, with every Mac-side check, then in the container, and ends
+/// with a pull so both sides agree. A container failure undoes the Mac rename.
+async fn rename_in(workdir: &Workdir, old: &str, requested: &str) -> Result<String> {
+    let write = workdir.begin_write().await?;
+    let branch = rename(write.root(), old, requested).await?;
+    match write {
+        crate::workdir::Write::Mac(_) => Ok(branch),
+        crate::workdir::Write::Sandbox(mut session) => {
+            if let Err(error) = session.rename_branch(old, &branch).await {
+                let _ = rename(session.root(), &branch, old).await;
+                return Err(error);
+            }
+            session.pull().await?;
+            Ok(branch)
+        }
+    }
+}
+async fn rename(path: &WriteRoot, old: &str, requested: &str) -> Result<String> {
     let tool = vcs::Tool {
         program: Path::new("git"),
         cwd: path,

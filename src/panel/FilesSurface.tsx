@@ -177,7 +177,9 @@ export function FilesSurface({
               />
             </div>
           </ScrollRow>
-          <OpenInPicker target={workspaceTarget(checkout, path)} compact />
+          {fileLinks.target ? (
+            <OpenInPicker target={workspaceTarget(checkout, path)} compact />
+          ) : null}
           {toggle ? (
             <SurfaceAction
               label={toggle.label}

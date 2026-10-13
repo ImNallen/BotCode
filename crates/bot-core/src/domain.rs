@@ -975,6 +975,23 @@ impl std::fmt::Display for SandboxId {
 pub enum Sandbox {
     Docker { id: SandboxId },
 }
+/// Whether a sandbox thread can be created now, with the reason the composer shows when not.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SandboxAvailability {
+    Ready {
+        memory_bytes: u64,
+        /// Docker's memory cap is below 8 GiB.
+        low_memory: bool,
+    },
+    Unavailable {
+        reason: String,
+    },
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Checkout {
@@ -1018,10 +1035,24 @@ impl Checkout {
 )]
 pub enum NewCheckout {
     Local,
-    Worktree { base: String, from_origin: bool },
-    Folder { prompt: String },
-    Existing { thread_id: ThreadId },
-    Registered { path: PathBuf },
+    Worktree {
+        base: String,
+        from_origin: bool,
+    },
+    /// A worktree whose agent and authoritative files live in a Docker sandbox.
+    Sandbox {
+        base: String,
+        from_origin: bool,
+    },
+    Folder {
+        prompt: String,
+    },
+    Existing {
+        thread_id: ThreadId,
+    },
+    Registered {
+        path: PathBuf,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

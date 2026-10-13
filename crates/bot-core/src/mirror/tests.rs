@@ -2,11 +2,19 @@
 //! `cargo test -p bot-core --lib mirror -- --include-ignored --nocapture`.
 use super::host::{Entry, validate_entries};
 use super::*;
-use crate::sandbox::{Desired, Docker, SandboxConfig, docker_binary};
-use std::time::Instant;
+use crate::sandbox::{CodexSource, Desired, Docker, SandboxConfig, docker_binary};
+use std::{collections::BTreeMap, time::Instant};
+
+const OWN: &str = "botcode/mirror";
 
 fn set(names: &[&str]) -> BTreeSet<String> {
     names.iter().map(|name| name.to_string()).collect()
+}
+fn commits(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(name, commit)| (name.to_string(), commit.to_string()))
+        .collect()
 }
 fn branch(name: &str, commit: &str) -> Head {
     Head::Branch {
@@ -16,72 +24,95 @@ fn branch(name: &str, commit: &str) -> Head {
 }
 
 #[test]
-fn host_head_never_moves_a_branch_another_mac_worktree_has() {
+fn host_head_moves_only_the_own_branch_freely_and_other_branches_by_fast_forward() {
     let mac = MacBranches {
-        existing: set(&["main", "feature", "botcode/m"]),
+        existing: commits(&[
+            ("main", "m1"),
+            ("feature", "f1"),
+            ("botcode/m", "b1"),
+            ("topic", "t1"),
+        ]),
         elsewhere: set(&["main", "feature"]),
     };
+    // `old` is an ancestor of `new` only for the one pair the table below names.
+    let ff = |old: &str, new: &str| (old, new) == ("t1", "t2");
+    let head = |container: &Head| host_head(container, &mac, "botcode/m", ff);
+    let own = HostHead::Branch {
+        name: "botcode/m".into(),
+        commit: "b9".into(),
+    };
     assert_eq!(
-        host_head(&branch("botcode/m", "c1"), &mac),
-        HostHead::Branch {
-            name: "botcode/m".into(),
-            commit: "c1".into()
-        }
+        head(&branch("botcode/m", "b9")),
+        own,
+        "the thread's own branch follows the container to any commit"
     );
     assert_eq!(
-        host_head(&branch("new", "c1"), &mac),
+        head(&branch("new", "c1")),
         HostHead::Branch {
             name: "new".into(),
             commit: "c1".into()
         },
-        "a branch no Mac worktree has checked out follows the container"
+        "a branch the Mac does not have is created"
     );
     assert_eq!(
-        host_head(&branch("main", "c2"), &mac),
+        head(&branch("topic", "t2")),
+        HostHead::Branch {
+            name: "topic".into(),
+            commit: "t2".into()
+        },
+        "another Mac branch moves by fast-forward"
+    );
+    assert_eq!(
+        head(&branch("topic", "t1")),
+        HostHead::Branch {
+            name: "topic".into(),
+            commit: "t1".into()
+        },
+        "an unmoved branch is not a rewrite"
+    );
+    assert_eq!(
+        head(&branch("topic", "t3")),
         HostHead::Detached {
-            commit: "c2".into(),
-            refused_branch: Some("main".into())
-        }
+            commit: "t3".into(),
+            refused_branch: Some("topic".into())
+        },
+        "a non-fast-forward move of another Mac branch detaches"
     );
     assert_eq!(
-        host_head(
-            &Head::Detached {
-                commit: "c3".into()
-            },
-            &mac
-        ),
+        head(&branch("main", "m1")),
+        HostHead::Detached {
+            commit: "m1".into(),
+            refused_branch: Some("main".into())
+        },
+        "a branch another Mac worktree has checked out never moves, even in place"
+    );
+    assert_eq!(
+        head(&Head::Detached {
+            commit: "c3".into()
+        }),
         HostHead::Detached {
             commit: "c3".into(),
             refused_branch: None
         }
     );
     assert_eq!(
-        host_head(
-            &Head::Unborn {
-                name: "fresh".into()
-            },
-            &mac
-        ),
+        head(&Head::Unborn {
+            name: "fresh".into()
+        }),
         HostHead::Unborn {
             name: "fresh".into()
         }
     );
     assert_eq!(
-        host_head(
-            &Head::Unborn {
-                name: "feature".into()
-            },
-            &mac
-        ),
+        head(&Head::Unborn {
+            name: "feature".into()
+        }),
         HostHead::Unmoved {
             refused_branch: "feature".into()
         },
         "an unborn branch cannot take over an existing Mac branch"
     );
-    assert_eq!(
-        host_head(&branch("main", "c2"), &mac).refused_branch(),
-        Some("main")
-    );
+    assert_eq!(head(&branch("main", "m2")).refused_branch(), Some("main"));
 }
 
 #[test]
@@ -252,7 +283,7 @@ impl Fixture {
         let docker = Docker::new(SandboxConfig {
             docker: docker_binary(),
             data_dir: data.path().into(),
-            codex_version: "0.162.0".parse().unwrap(),
+            codex: CodexSource::Version("0.162.0".parse().unwrap()),
         });
         {
             let _build = IMAGE.lock().await;
@@ -305,7 +336,7 @@ impl Fixture {
         container.converge(Desired::Running).await.unwrap();
         let mirror = Mirror::new(container.clone(), root.clone());
         let started = Instant::now();
-        mirror.seed().await.unwrap();
+        mirror.seed(OWN).await.unwrap();
         eprintln!("seed: {:?}", started.elapsed());
         Self {
             _data: data,
@@ -422,12 +453,18 @@ async fn seed_then_pull_is_a_no_op_and_both_sides_agree() {
         "",
         "no remote and no credentials inside"
     );
-    assert_eq!(f.mirror.pull(Freshness::Exact).await.unwrap(), None);
-    assert!(f.mirror.pull(Freshness::Recent).await.unwrap().is_none());
+    assert_eq!(f.mirror.pull(Freshness::Exact, OWN).await.unwrap(), None);
+    assert!(
+        f.mirror
+            .pull(Freshness::Recent, OWN)
+            .await
+            .unwrap()
+            .is_none()
+    );
     f.assert_in_sync().await;
     assert_eq!(f.mac(&["ls-files"]), f.ctr("git ls-files").await);
     let started = Instant::now();
-    f.mirror.seed().await.unwrap();
+    f.mirror.seed(OWN).await.unwrap();
     eprintln!("second seed (no-op): {:?}", started.elapsed());
     assert!(started.elapsed() < Duration::from_secs(5));
 }
@@ -446,7 +483,7 @@ async fn agent_edits_appear_exactly_on_the_mac() {
          && mkdir -p build && echo o > build/out.o && echo l > debug.log",
     )
     .await;
-    let pulled = f.mirror.pull(Freshness::Exact).await.unwrap().unwrap();
+    let pulled = f.mirror.pull(Freshness::Exact, OWN).await.unwrap().unwrap();
     eprintln!("pull timing: {:?}", pulled.timing);
     assert!(
         matches!(pulled.host_head, HostHead::Branch { ref name, .. } if name == "botcode/mirror")
@@ -479,14 +516,14 @@ async fn agent_edits_appear_exactly_on_the_mac() {
     );
     f.assert_in_sync().await;
     assert_eq!(
-        f.mirror.pull(Freshness::Exact).await.unwrap(),
+        f.mirror.pull(Freshness::Exact, OWN).await.unwrap(),
         None,
         "nothing new"
     );
 
     f.ctr("git add new/dir/file.txt README.md && echo more >> README.md")
         .await;
-    let pulled = f.mirror.pull(Freshness::Exact).await.unwrap().unwrap();
+    let pulled = f.mirror.pull(Freshness::Exact, OWN).await.unwrap().unwrap();
     assert_ne!(pulled.point.index_tree, pulled.point.worktree_tree);
     f.assert_in_sync().await;
     assert!(
@@ -509,11 +546,11 @@ async fn untracked_files_appear_and_deleted_untracked_files_disappear() {
     let f = Fixture::new().await;
     f.ctr("echo s > scratch.txt && mkdir -p tmp/deep && echo d > tmp/deep/x")
         .await;
-    f.mirror.pull(Freshness::Exact).await.unwrap().unwrap();
+    f.mirror.pull(Freshness::Exact, OWN).await.unwrap().unwrap();
     assert_eq!(f.read("scratch.txt"), "s\n");
     assert_eq!(f.read("tmp/deep/x"), "d\n");
     f.ctr("rm -r scratch.txt tmp").await;
-    f.mirror.pull(Freshness::Exact).await.unwrap().unwrap();
+    f.mirror.pull(Freshness::Exact, OWN).await.unwrap().unwrap();
     assert!(!f.exists("scratch.txt") && !f.exists("tmp/deep/x"));
     f.assert_in_sync().await;
 }
@@ -522,7 +559,7 @@ async fn untracked_files_appear_and_deleted_untracked_files_disappear() {
 #[ignore = "needs Docker"]
 async fn a_write_sessions_changes_reach_the_container() {
     let f = Fixture::new().await;
-    let session = f.mirror.begin_write().await.unwrap();
+    let session = f.mirror.begin_write(OWN).await.unwrap();
     let root: &Path = session.root();
     std::fs::write(root.join("src/lib.txt"), "edited\n").unwrap();
     write(root, "notes/todo.md", "- sync\n");
@@ -540,14 +577,14 @@ async fn a_write_sessions_changes_reach_the_container() {
             .await
             .contains(&"A  notes/todo.md".to_string())
     );
-    assert_eq!(f.mirror.pull(Freshness::Exact).await.unwrap(), None);
+    assert_eq!(f.mirror.pull(Freshness::Exact, OWN).await.unwrap(), None);
 }
 
 #[tokio::test]
 #[ignore = "needs Docker"]
 async fn push_refuses_with_diverged_when_the_container_changed_the_same_file() {
     let f = Fixture::new().await;
-    let session = f.mirror.begin_write().await.unwrap();
+    let session = f.mirror.begin_write(OWN).await.unwrap();
     f.ctr("echo agent > src/lib.txt").await;
     std::fs::write(session.root().join("src/lib.txt"), "host\n").unwrap();
     assert_eq!(
@@ -569,7 +606,7 @@ async fn push_refuses_with_diverged_when_the_container_changed_the_same_file() {
     );
     f.assert_in_sync().await;
 
-    let session = f.mirror.begin_write().await.unwrap();
+    let session = f.mirror.begin_write(OWN).await.unwrap();
     f.ctr("echo drift > README.md").await;
     write(session.root(), "other.txt", "host\n");
     session.finish().await.unwrap();
@@ -580,7 +617,7 @@ async fn push_refuses_with_diverged_when_the_container_changed_the_same_file() {
     );
     assert_eq!(f.ctr("cat other.txt").await, "host\n");
 
-    let session = f.mirror.begin_write().await.unwrap();
+    let session = f.mirror.begin_write(OWN).await.unwrap();
     f.ctr("git commit -qam agent-commit").await;
     write(session.root(), "another.txt", "host\n");
     match session.finish().await {
@@ -598,7 +635,7 @@ async fn push_refuses_with_blocked_when_an_ignored_file_is_in_the_way() {
     let f = Fixture::new().await;
     f.ctr("mkdir -p build && echo container > build/out.txt")
         .await;
-    let session = f.mirror.begin_write().await.unwrap();
+    let session = f.mirror.begin_write(OWN).await.unwrap();
     write(session.root(), "build/out.txt", "host\n");
     git(session.root(), &["add", "-f", "build/out.txt"]);
     assert_eq!(
@@ -621,7 +658,7 @@ async fn push_refuses_with_blocked_when_an_ignored_file_is_in_the_way() {
 async fn a_commit_in_the_container_moves_the_mirror_branch() {
     let f = Fixture::new().await;
     let before = f.mac(&["rev-parse", "HEAD"]);
-    let mut session = f.mirror.begin_write().await.unwrap();
+    let mut session = f.mirror.begin_write(OWN).await.unwrap();
     write(session.root(), "src/feature.txt", "feature\n");
     std::fs::write(session.root().join("README.md"), "unstaged\n").unwrap();
     git(session.root(), &["add", "src/feature.txt"]);
@@ -660,7 +697,7 @@ async fn seed_after_a_crash_mid_seed_converges() {
     f.ctr("rm .git/botcode-seeded && rm -r src && echo junk > junk.txt")
         .await;
     write(&f.root, "uncommitted.txt", "kept\n");
-    f.mirror.seed().await.unwrap();
+    f.mirror.seed(OWN).await.unwrap();
     assert_eq!(f.ctr("cat src/lib.txt").await, "lib\n");
     assert_eq!(f.ctr("test -e junk.txt || echo gone").await, "gone\n");
     assert_eq!(
@@ -672,11 +709,11 @@ async fn seed_after_a_crash_mid_seed_converges() {
         f.ctr("test -f .git/botcode-seeded && echo yes").await,
         "yes\n"
     );
-    assert_eq!(f.mirror.pull(Freshness::Exact).await.unwrap(), None);
+    assert_eq!(f.mirror.pull(Freshness::Exact, OWN).await.unwrap(), None);
     f.assert_in_sync().await;
 
     f.ctr("rm -rf /workspace/.git").await;
-    f.mirror.seed().await.unwrap();
+    f.mirror.seed(OWN).await.unwrap();
     f.assert_in_sync().await;
 }
 
@@ -685,7 +722,7 @@ async fn seed_after_a_crash_mid_seed_converges() {
 async fn refused_trees_leave_the_mirror_untouched() {
     let f = Fixture::new().await;
     f.ctr("echo agent > README.md").await;
-    f.mirror.pull(Freshness::Exact).await.unwrap().unwrap();
+    f.mirror.pull(Freshness::Exact, OWN).await.unwrap().unwrap();
     let before = (f.mac_status(), f.mac(&["rev-parse", "HEAD"]));
     let base = f.mac(&[
         "rev-parse",
@@ -728,7 +765,7 @@ async fn refused_trees_leave_the_mirror_untouched() {
         let outgoing = f.ctr(&script).await.trim().to_owned();
         let error = f
             .mirror
-            .adopt(outgoing, Some(base.clone()), Duration::ZERO)
+            .adopt(outgoing, Some(base.clone()), Duration::ZERO, OWN)
             .await
             .unwrap_err();
         eprintln!("{why}: {} {}", error.code, error.message);
@@ -753,16 +790,16 @@ async fn refused_trees_leave_the_mirror_untouched() {
          && git -c protocol.file.allow=always submodule add -q /tmp/sub sub",
     )
     .await;
-    let error = f.mirror.pull(Freshness::Exact).await.unwrap_err();
+    let error = f.mirror.pull(Freshness::Exact, OWN).await.unwrap_err();
     assert_eq!(error.code, "mirror_refused", "{error:?}");
     assert!(!f.exists("sub") && !f.exists(".gitmodules"));
     f.ctr("git rm -qf sub && rm -rf .git/modules .gitmodules && git rm -qf --cached .gitmodules 2>/dev/null || true").await;
     f.ctr("ln -s ../../etc/passwd escape").await;
-    let error = f.mirror.pull(Freshness::Exact).await.unwrap_err();
+    let error = f.mirror.pull(Freshness::Exact, OWN).await.unwrap_err();
     assert_eq!(error.code, "mirror_refused", "{error:?}");
     assert!(!f.exists("escape"));
     f.ctr("rm escape && mkdir .GIT && echo h > .GIT/hook").await;
-    f.mirror.pull(Freshness::Exact).await.unwrap();
+    f.mirror.pull(Freshness::Exact, OWN).await.unwrap();
     assert!(
         !f.exists(".GIT/hook"),
         "git itself never indexes a .GIT path"
@@ -785,8 +822,8 @@ async fn container_config_and_hooks_never_run_on_the_mac() {
     );
     f.ctr(&plant).await;
     f.ctr("echo agent > README.md").await;
-    f.mirror.pull(Freshness::Exact).await.unwrap().unwrap();
-    let mut session = f.mirror.begin_write().await.unwrap();
+    f.mirror.pull(Freshness::Exact, OWN).await.unwrap().unwrap();
+    let mut session = f.mirror.begin_write(OWN).await.unwrap();
     write(session.root(), "host.txt", "host\n");
     git(session.root(), &["add", "host.txt"]);
     let run = session.commit("host commit", COMMIT_LIMIT).await.unwrap();
@@ -818,7 +855,7 @@ async fn host_head_refuses_to_move_a_branch_checked_out_elsewhere_on_the_mac() {
     let f = Fixture::new().await;
     let main_before = git(&f.main, &["rev-parse", "main"]);
     f.ctr("git checkout -qb main && echo m > on-main.txt && git add on-main.txt && git commit -qm on-main").await;
-    let pulled = f.mirror.pull(Freshness::Exact).await.unwrap().unwrap();
+    let pulled = f.mirror.pull(Freshness::Exact, OWN).await.unwrap().unwrap();
     let agent_commit = f.ctr("git rev-parse HEAD").await;
     assert_eq!(
         pulled.host_head,
@@ -846,7 +883,7 @@ async fn host_head_refuses_to_move_a_branch_checked_out_elsewhere_on_the_mac() {
     assert_eq!(f.mac_status(), f.ctr_status().await);
 
     f.ctr("git checkout -q botcode/mirror").await;
-    let pulled = f.mirror.pull(Freshness::Exact).await.unwrap().unwrap();
+    let pulled = f.mirror.pull(Freshness::Exact, OWN).await.unwrap().unwrap();
     assert!(
         matches!(pulled.host_head, HostHead::Branch { ref name, .. } if name == "botcode/mirror")
     );
@@ -862,9 +899,9 @@ async fn host_head_refuses_to_move_a_branch_checked_out_elsewhere_on_the_mac() {
 #[ignore = "needs Docker"]
 async fn an_exact_sync_holds_the_mirror_lock_until_dropped() {
     let f = Fixture::new().await;
-    let guard = f.mirror.sync(Freshness::Exact).await.unwrap();
+    let guard = f.mirror.sync(Freshness::Exact, OWN).await.unwrap();
     let mirror = f.mirror.clone();
-    let mut waiting = tokio::spawn(async move { mirror.pull(Freshness::Recent).await });
+    let mut waiting = tokio::spawn(async move { mirror.pull(Freshness::Recent, OWN).await });
     assert!(
         tokio::time::timeout(Duration::from_millis(500), &mut waiting)
             .await
@@ -880,9 +917,9 @@ async fn an_exact_sync_holds_the_mirror_lock_until_dropped() {
 async fn a_stopped_container_makes_pull_a_no_op() {
     let f = Fixture::new().await;
     f.container.converge(Desired::Stopped).await.unwrap();
-    assert_eq!(f.mirror.pull(Freshness::Exact).await.unwrap(), None);
+    assert_eq!(f.mirror.pull(Freshness::Exact, OWN).await.unwrap(), None);
     f.container.converge(Desired::Running).await.unwrap();
-    assert_eq!(f.mirror.pull(Freshness::Exact).await.unwrap(), None);
+    assert_eq!(f.mirror.pull(Freshness::Exact, OWN).await.unwrap(), None);
 }
 
 #[tokio::test]
@@ -903,7 +940,7 @@ async fn timing_on_a_twenty_thousand_file_repository() {
         .collect();
     let f = Fixture::with(&borrowed).await;
     let started = Instant::now();
-    assert_eq!(f.mirror.pull(Freshness::Exact).await.unwrap(), None);
+    assert_eq!(f.mirror.pull(Freshness::Exact, OWN).await.unwrap(), None);
     eprintln!("no-change pull: {:?}", started.elapsed());
     f.ctr(
         "git ls-files | head -50 | while read -r f; do echo edited >> \"$f\"; done; \
@@ -912,14 +949,14 @@ async fn timing_on_a_twenty_thousand_file_repository() {
     )
     .await;
     let started = Instant::now();
-    let pulled = f.mirror.pull(Freshness::Exact).await.unwrap().unwrap();
+    let pulled = f.mirror.pull(Freshness::Exact, OWN).await.unwrap().unwrap();
     eprintln!(
         "pull with 50 modified, 5 new, 2 deleted: total {:?}, {:?}",
         started.elapsed(),
         pulled.timing
     );
     f.assert_in_sync().await;
-    let session = f.mirror.begin_write().await.unwrap();
+    let session = f.mirror.begin_write(OWN).await.unwrap();
     write(session.root(), "src/from-host.txt", "host\n");
     let started = Instant::now();
     session.finish().await.unwrap();

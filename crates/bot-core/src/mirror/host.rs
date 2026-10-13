@@ -552,11 +552,20 @@ fn blobs(git: &Git<'_>, oids: &[&str]) -> Result<Vec<(String, Vec<u8>)>> {
 
 pub(super) fn mac_branches(root: &Path) -> Result<super::MacBranches> {
     let git = Git { root, index: None };
-    let existing = utf8(git.out(&["for-each-ref", "--format=%(refname)", "refs/heads/"])?)?
-        .lines()
-        .filter_map(|line| line.strip_prefix("refs/heads/"))
-        .map(str::to_owned)
-        .collect();
+    let existing = utf8(git.out(&[
+        "for-each-ref",
+        "--format=%(refname) %(objectname)",
+        "refs/heads/",
+    ])?)?
+    .lines()
+    .filter_map(|line| {
+        let (name, commit) = line.split_once(' ')?;
+        Some((
+            name.strip_prefix("refs/heads/")?.to_owned(),
+            commit.to_owned(),
+        ))
+    })
+    .collect();
     let own = dunce::canonicalize(root)?;
     let elsewhere = crate::repo::registered_worktrees(root)?
         .into_iter()
@@ -567,6 +576,13 @@ pub(super) fn mac_branches(root: &Path) -> Result<super::MacBranches> {
         existing,
         elsewhere,
     })
+}
+
+/// Whether moving a branch from `old` to `new` is a fast-forward.
+pub(super) fn is_ancestor(root: &Path, old: &str, new: &str) -> bool {
+    Git { root, index: None }
+        .run(&["merge-base", "--is-ancestor", old, new], &[], LOCAL)
+        .is_ok_and(|output| output.status.success())
 }
 
 /// Applies a sync point to the mirror: worktree from the sync index (which deletes files the

@@ -193,6 +193,7 @@ fn main() {
                 ipc::available_editors,
                 ipc::open_in_editor,
                 ipc::reveal_in_finder,
+                ipc::sandbox_availability,
                 ipc::create_thread,
                 ipc::thread_snapshot,
                 ipc::open_thread,

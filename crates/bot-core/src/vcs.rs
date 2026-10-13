@@ -1,7 +1,7 @@
 mod progress;
 pub(crate) mod publish;
 mod staging;
-use crate::{domain::*, repo};
+use crate::{domain::*, repo, workdir::Write};
 use staging::new_branch_name;
 pub(crate) use staging::stage;
 use std::{
@@ -916,6 +916,9 @@ fn refuse(phase: GitPhase, code: &str, message: impl ToString) -> GitFailure {
 
 pub(crate) struct Context {
     pub root: PathBuf,
+    /// Where `root` lives. A sandbox checkout's action runs inside a write session: the
+    /// commit happens in the container, push and PR creation on the Mac mirror.
+    pub workdir: crate::workdir::Workdir,
     pub gh: PathBuf,
     pub network: Duration,
     pub codex: PathBuf,
@@ -924,6 +927,7 @@ pub(crate) struct Context {
     pub progress: Box<dyn Fn(GitProgress) + Send + Sync>,
 }
 pub(crate) async fn run(cx: &Context, action: GitAction) -> Result<GitOutcome> {
+    let write = cx.workdir.begin_write().await?;
     let status = status(&cx.root).await?;
     let mut planned = plan(action.clone(), &status, None);
     if let (Ok(Plan::Stack { pr: Some(_), .. }), Some(branch)) = (&planned, &status.branch) {
@@ -932,8 +936,11 @@ pub(crate) async fn run(cx: &Context, action: GitAction) -> Result<GitOutcome> {
     }
     let mut out = GitOutcome::default();
     let ran = match planned {
-        Err(failure) => Err(failure),
-        Ok(plan) => steps(cx, plan, &mut out).await,
+        Err(failure) => {
+            let _ = write.finish().await;
+            Err(failure)
+        }
+        Ok(plan) => steps(cx, plan, &mut out, write).await,
     };
     out.failure = ran.err();
     Ok(out)
@@ -942,6 +949,7 @@ async fn steps(
     cx: &Context,
     plan: Plan,
     out: &mut GitOutcome,
+    mut write: Write,
 ) -> std::result::Result<(), GitFailure> {
     let failed = |phase: GitPhase| move |error| GitFailure { phase, error };
     let (commit_message, push_target, pr_step) = match plan {
@@ -954,6 +962,7 @@ async fn steps(
                     .await
                     .map_err(failed(GitPhase::Pull))?,
             );
+            write.finish().await.map_err(failed(GitPhase::Pull))?;
             return Ok(());
         }
         Plan::Stack { commit, push, pr } => (commit, push, pr),
@@ -999,11 +1008,13 @@ async fn steps(
             phase: GitPhase::Commit,
         });
         match message {
-            CommitStep::Requested(request) => commit(cx, *request, out).await,
-            CommitStep::Prepared(prepared) => commit_prepared(cx, prepared, out).await,
+            CommitStep::Requested(request) => commit(cx, *request, out, &mut write).await,
+            CommitStep::Prepared(prepared) => commit_prepared(cx, prepared, out, &mut write).await,
         }
         .map_err(failed(GitPhase::Commit))?;
     }
+    // The mirror is final before the network steps, which only read it.
+    write.finish().await.map_err(failed(GitPhase::Commit))?;
     if let Some(target) = push_target {
         let phase = GitPhase::Push {
             remote: target.remote.clone(),
@@ -1036,13 +1047,18 @@ fn feature_no_changes() -> GitFailure {
         "Cannot create a feature branch because there are no changes to commit.",
     )
 }
-async fn commit(cx: &Context, request: CommitRequest, out: &mut GitOutcome) -> Result<()> {
+async fn commit(
+    cx: &Context,
+    request: CommitRequest,
+    out: &mut GitOutcome,
+    write: &mut Write,
+) -> Result<()> {
     let destination = request.destination.clone();
     let prepared = prepare_commit(cx, request).await?;
     if destination == CommitDestination::NewBranch {
         checkout_feature(cx, &prepared.message, out).await?;
     }
-    commit_prepared(cx, prepared, out).await
+    commit_prepared(cx, prepared, out, write).await
 }
 async fn prepare_commit(cx: &Context, request: CommitRequest) -> Result<PreparedCommit> {
     let root = &cx.root;
@@ -1112,18 +1128,34 @@ async fn commit_prepared(
     cx: &Context,
     prepared: PreparedCommit,
     out: &mut GitOutcome,
+    write: &mut Write,
 ) -> Result<()> {
     let root = &cx.root;
     let git = git(root);
     let message = prepared.message;
     let before = head(root).await.ok();
-    let committed = git
-        .run_observed(
-            &["commit", "-m", message.as_str()],
-            COMMIT,
-            cx.progress.as_ref(),
-        )
-        .await;
+    let committed = match write {
+        Write::Mac(_) => {
+            git.run_observed(
+                &["commit", "-m", message.as_str()],
+                COMMIT,
+                cx.progress.as_ref(),
+            )
+            .await
+        }
+        // The staged index travels with the push; the repository's hooks run on the
+        // container's toolchain, and the pull afterwards brings the commit back.
+        Write::Sandbox(session) => session
+            .commit(message.as_str(), crate::mirror::COMMIT_LIMIT)
+            .await
+            .map_err(AppError::from)
+            .map(|run| Output {
+                stdout: run.stdout,
+                stderr: run.stderr,
+                code: run.code,
+                hook_warnings: Vec::new(),
+            }),
+    };
     // Hooks may fail after HEAD moved. Report that landed commit before the failure.
     if let Ok(sha) = head(root).await
         && before.as_ref() != Some(&sha)

@@ -125,7 +125,8 @@ pub fn add_worktree(
         sandbox: None,
     })
 }
-pub fn switch_branch(root: &Path, name: &str, create: bool) -> Result<String> {
+pub fn switch_branch(root: &crate::mirror::WriteRoot, name: &str, create: bool) -> Result<String> {
+    let root: &Path = root;
     branch_name(root, name)?;
     let exists = |prefix: &str| {
         git(
@@ -372,7 +373,8 @@ fn writable(root: &Path, path: &str) -> Result<PathBuf> {
         _ => Ok(real),
     }
 }
-pub fn write_file(root: &Path, path: &str, contents: &str) -> Result<()> {
+pub fn write_file(root: &crate::mirror::WriteRoot, path: &str, contents: &str) -> Result<()> {
+    let root: &Path = root;
     if contents.len() > TEXT_LIMIT {
         return Err(AppError::new(
             "file_unavailable",

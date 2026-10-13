@@ -123,6 +123,12 @@ mod owner {
                 changes: broadcast::channel(64).0,
                 provider_events,
                 done,
+                sandboxes: Arc::new(Sandboxes::new(
+                    dir.path(),
+                    Path::new("/no/codex"),
+                    &dir.path().join("codex-home"),
+                    RotatingLog::silent(),
+                )),
             };
             let mac = owner
                 .new_thread(
@@ -224,7 +230,8 @@ mod owner {
             });
             let root = t.root(&owner.workspaces[&t.workspace_id]).to_path_buf();
             owner.leases.insert(root, id.clone());
-            owner.tools_prepared(native, true).unwrap();
+            let key = owner.env(id);
+            owner.tools_prepared(&key, native, true).unwrap();
         }
         fn thread(&self, id: &ThreadId) -> &ThreadSnapshot {
             &self.owner.threads[id]
@@ -434,8 +441,9 @@ mod owner {
         assert_eq!(
             f.thread(&f.sandboxed).session,
             SessionState::Unavailable {
-                reason: "Sandbox threads are not available yet.".into()
-            }
+                reason: "Sign in to Codex on this Mac first.".into()
+            },
+            "credentials are checked before any Docker work"
         );
         f.resume(&f.sandboxed.clone()).await;
         assert_eq!(
@@ -444,6 +452,96 @@ mod owner {
         );
         assert_eq!(f.owner.providers.notice(&EnvKey::Mac, Instant::now()), None);
         f.mac_intact();
+    }
+
+    /// Lines the slot's fake app-server read that answer request `id`.
+    fn replies(f: &Fixture, name: &str, id: &str) -> Vec<Value> {
+        f.received(name)
+            .into_iter()
+            .filter(|line| line.get("id").and_then(Value::as_str) == Some(id))
+            .collect()
+    }
+    async fn reply_within(f: &Fixture, name: &str, id: &str) -> Value {
+        for _ in 0..500 {
+            if let Some(reply) = replies(f, name, id).pop() {
+                return reply;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!(
+            "{name} never received a reply to {id}: {:?}",
+            f.received(name)
+        );
+    }
+    /// `account/read { refreshToken: true }` calls the slot's fake app-server received.
+    fn host_refreshes(f: &Fixture, name: &str) -> usize {
+        f.received(name)
+            .iter()
+            .filter(|line| {
+                line["method"] == "account/read" && line["params"]["refreshToken"] == json!(true)
+            })
+            .count()
+    }
+    fn refresh_request(id: &str, previous: &str) -> Value {
+        json!({
+            "id": id,
+            "method": "account/chatgptAuthTokens/refresh",
+            "params": {"reason": "unauthorized", "previousAccountId": previous},
+        })
+    }
+    fn sign_in(f: &Fixture, account: &str) {
+        let home = f.dir.path().join("codex-home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("auth.json"),
+            json!({
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": null,
+                "tokens": {"access_token": "at-fresh", "account_id": account, "id_token": null},
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_token_refresh_is_answered_through_the_mac_agent_off_the_loop() {
+        let mut f = Fixture::new().await;
+        sign_in(&f, "acct-1");
+        f.frame(f.sandbox_epoch, refresh_request("refresh-1", "acct-1"))
+            .await;
+        let reply = reply_within(&f, "sandbox", "refresh-1").await;
+        assert_eq!(
+            reply["result"],
+            json!({"accessToken": "at-fresh", "chatgptAccountId": "acct-1", "chatgptPlanType": null}),
+            "{reply}"
+        );
+        // The usage reader also calls account/read, without a refresh.
+        assert_eq!(host_refreshes(&f, "mac"), 1, "{:?}", f.received("mac"));
+        assert_eq!(
+            host_refreshes(&f, "sandbox"),
+            0,
+            "the sandbox agent never refreshes itself"
+        );
+        f.mac_intact();
+
+        // A different host account is refused, so a Mac account switch does not leak in.
+        f.frame(f.sandbox_epoch, refresh_request("refresh-2", "acct-other"))
+            .await;
+        let refused = reply_within(&f, "sandbox", "refresh-2").await;
+        assert_eq!(refused["error"]["code"], json!(-32000), "{refused}");
+        assert!(refused["result"].is_null());
+    }
+
+    #[tokio::test]
+    async fn the_mac_agent_cannot_ask_bot_code_for_tokens() {
+        let mut f = Fixture::new().await;
+        sign_in(&f, "acct-1");
+        f.frame(f.mac_epoch, refresh_request("refresh-mac", "acct-1"))
+            .await;
+        let reply = reply_within(&f, "mac", "refresh-mac").await;
+        assert_eq!(reply["error"]["code"], json!(-32601), "{reply}");
+        assert_eq!(host_refreshes(&f, "mac"), 0, "no refresh was attempted");
     }
 
     #[tokio::test]

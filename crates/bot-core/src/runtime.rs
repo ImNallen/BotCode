@@ -7,6 +7,8 @@ mod naming;
 mod providers;
 use providers::EnvKey;
 mod restarts;
+mod sandboxes;
+use sandboxes::Sandboxes;
 mod thread_actions;
 mod titles;
 use thread_actions::DeleteCompletion;
@@ -30,6 +32,7 @@ use crate::{
     domain::*,
     editors::{self, EditorId, OpenTarget, Position},
     log::RotatingLog,
+    mirror::Freshness,
     repo, settings, skills,
     store::Store,
     terminal::{
@@ -37,7 +40,9 @@ use crate::{
         TerminalSize, Terminals,
     },
     usage::{self, ContextUsage, ResetOutcome, UsageLimits},
-    vcs, workspace_files,
+    vcs,
+    workdir::{Inbound, Workdir},
+    workspace_files,
 };
 use pr_review::ReviewWork;
 use pull_requests::PrWork;
@@ -91,7 +96,7 @@ struct SubmittedMessage<'a> {
 }
 
 enum Location {
-    Repository(PathBuf),
+    Repository(Workdir),
     Folder(PathBuf),
     Unassigned,
     /// A worktree thread whose checkout no longer exists on disk. `root` is the workspace root.
@@ -101,11 +106,22 @@ enum Location {
     },
 }
 impl Location {
-    fn repository(self) -> Result<PathBuf> {
+    fn repository(self) -> Result<Workdir> {
         match self {
-            Self::Repository(root) => Ok(root),
+            Self::Repository(workdir) => Ok(workdir),
             Self::Removed { .. } => Err(worktree_removed()),
             Self::Folder(_) | Self::Unassigned => Err(not_repository()),
+        }
+    }
+    fn in_sandbox(&self) -> bool {
+        matches!(self, Self::Repository(Workdir::Sandbox { .. }))
+    }
+    /// The Mac directory a repository's or folder's files are read from.
+    fn files(&self) -> Option<PathBuf> {
+        match self {
+            Self::Repository(workdir) => Some(workdir.root().to_path_buf()),
+            Self::Folder(root) => Some(root.clone()),
+            Self::Unassigned | Self::Removed { .. } => None,
         }
     }
 }
@@ -179,6 +195,12 @@ fn turn_running() -> AppError {
     AppError::new(
         "checkout_busy",
         "Another conversation is running in this checkout.",
+    )
+}
+fn sandbox_not_openable() -> AppError {
+    AppError::new(
+        "sandbox_mirror",
+        "Sandbox files open only in Bot Code, because the next sync from the sandbox overwrites edits made on this Mac.",
     )
 }
 fn worktree_removed() -> AppError {
@@ -279,7 +301,7 @@ enum Command {
         SetReviewDisposition,
         Reply<Option<SavedDisposition>>,
     ),
-    Claim(WorkspaceId, Option<ThreadId>, Hold, Reply<PathBuf>),
+    Claim(WorkspaceId, Option<ThreadId>, Hold, Reply<Workdir>),
     Release(PathBuf, Option<(ThreadId, String)>, Reply<()>),
     Threads(WorkspaceId, Reply<Vec<ThreadSummary>>),
     Create(
@@ -361,6 +383,7 @@ pub struct App {
     attachments: Attachments,
     project_search: crate::project_search::ProjectSearch,
     resources: crate::diagnostics::ResourceMonitor,
+    sandboxes: Arc<Sandboxes>,
 }
 impl App {
     pub async fn search_thread_messages(
@@ -541,6 +564,33 @@ impl App {
         let prs = PrWork::load(&mut store)?;
         let tools = tools::ToolWork::new(&config, agent_tools, &store)?;
         let log = RotatingLog::open(config.data_dir.join("logs").join("codex.log"));
+        let sandboxes = Arc::new(Sandboxes::new(
+            &config.data_dir,
+            &config.codex_binary,
+            &codex::auth::codex_home(),
+            log.clone(),
+        ));
+        let referenced: HashMap<SandboxId, sandboxes::Referenced> = threads
+            .values()
+            .filter_map(|t| match &t.checkout {
+                Checkout::Worktree {
+                    path,
+                    branch,
+                    sandbox: Some(Sandbox::Docker { id }),
+                } => Some((
+                    id.clone(),
+                    sandboxes::Referenced {
+                        mirror_root: path.clone(),
+                        branch: branch.clone(),
+                    },
+                )),
+                _ => None,
+            })
+            .collect();
+        tokio::spawn({
+            let sandboxes = sandboxes.clone();
+            async move { sandboxes.reconcile(referenced).await }
+        });
         let project_search = crate::project_search::ProjectSearch::default();
         let project_clones = crate::project_clone::ProjectClones::default();
         let provider_pids = crate::diagnostics::ProviderPids::default();
@@ -627,6 +677,7 @@ impl App {
                 changes: changes.clone(),
                 provider_events,
                 done,
+                sandboxes: sandboxes.clone(),
             }
             .run(rx, signals, completions),
         );
@@ -659,6 +710,7 @@ impl App {
             attachments,
             project_search,
             resources,
+            sandboxes,
         };
         tokio::spawn(Sweeper::from(&app).run(
             app.commands.downgrade(),
@@ -819,12 +871,21 @@ impl App {
             .await?;
         self.close_terminals(CloseScope::Workspace(id)).await
     }
+    /// Resolves a checkout and, for a sandbox, pulls its mirror first. Reads are best effort:
+    /// a failed pull serves the stale mirror.
     async fn checkout(
         &self,
         id: WorkspaceId,
         thread: Option<ThreadId>,
     ) -> Result<(Workspace, Location)> {
-        self.call(|r| Command::Checkout(id, thread, r)).await
+        let (w, location) = self.call(|r| Command::Checkout(id, thread, r)).await?;
+        if let Location::Repository(workdir) = &location {
+            let _ = workdir.sync(Freshness::Recent).await;
+        }
+        Ok((w, location))
+    }
+    pub async fn sandbox_availability(&self) -> SandboxAvailability {
+        self.sandboxes.availability().await
     }
     pub async fn list_thread_summaries(
         &self,
@@ -850,12 +911,15 @@ impl App {
                 unavailable: None,
             });
         }
-        let root = match &location {
-            Location::Repository(root) | Location::Folder(root) => Some(root.clone()),
-            _ => None,
-        };
+        let root = location.files();
         let mut view = tokio::task::spawn_blocking(move || match location {
-            Location::Repository(root) => repo::inspect(Workspace { root, ..w }, threads),
+            Location::Repository(workdir) => repo::inspect(
+                Workspace {
+                    root: workdir.root().to_path_buf(),
+                    ..w
+                },
+                threads,
+            ),
             Location::Folder(root) => repo::inspect_folder(Workspace { root, ..w }, threads),
             Location::Unassigned => Ok(WorkspaceView {
                 file_coverage: crate::SearchCoverage::Complete,
@@ -895,7 +959,8 @@ impl App {
     }
     async fn search_root(&self, id: WorkspaceId, thread: Option<ThreadId>) -> Result<PathBuf> {
         match self.checkout(id, thread).await?.1 {
-            Location::Repository(root) | Location::Folder(root) => Ok(root),
+            Location::Repository(workdir) => Ok(workdir.root().to_path_buf()),
+            Location::Folder(root) => Ok(root),
             Location::Removed { .. } => Err(worktree_removed()),
             Location::Unassigned => Err(AppError::new(
                 "missing_folder",
@@ -936,19 +1001,17 @@ impl App {
         thread: Option<ThreadId>,
         path: String,
     ) -> Result<FileView> {
-        let root = match self.checkout(id, thread).await?.1 {
-            Location::Repository(root) | Location::Folder(root) => root,
-            Location::Unassigned => {
-                return Err(AppError::new(
+        let location = self.checkout(id, thread).await?.1;
+        let Some(root) = location.files() else {
+            return match location {
+                Location::Removed { .. } => Ok(FileView::Unavailable {
+                    reason: WORKTREE_REMOVED.into(),
+                }),
+                _ => Err(AppError::new(
                     "missing_folder",
                     "Start a thread to see its files.",
-                ));
-            }
-            Location::Removed { .. } => {
-                return Ok(FileView::Unavailable {
-                    reason: WORKTREE_REMOVED.into(),
-                });
-            }
+                )),
+            };
         };
         tokio::task::spawn_blocking(move || repo::read_file(&root, &path))
             .await
@@ -969,8 +1032,11 @@ impl App {
             return workspace_files::FileResponse::not_found();
         };
         let root = match self.checkout(request.workspace, request.thread).await {
-            Ok((_, Location::Repository(root) | Location::Folder(root))) => root,
-            _ => return workspace_files::FileResponse::not_found(),
+            Ok((_, location)) => location.files(),
+            Err(_) => None,
+        };
+        let Some(root) = root else {
+            return workspace_files::FileResponse::not_found();
         };
         let range = range.map(str::to_owned);
         tokio::task::spawn_blocking(move || {
@@ -997,13 +1063,34 @@ impl App {
         let Some(path) = viewed else {
             return workspace_files::FileResponse::not_found();
         };
-        let root = match self.checkout(thread.workspace_id, Some(thread.id)).await {
-            Ok((_, Location::Repository(root) | Location::Folder(root))) => Some(root),
-            _ => None,
+        let location = match self.checkout(thread.workspace_id, Some(thread.id)).await {
+            Ok((_, location)) => location,
+            Err(_) => return workspace_files::FileResponse::not_found(),
         };
-        tokio::task::spawn_blocking(move || workspace_files::respond_image(root.as_deref(), &path))
+        let (root, inbound) = match &location {
+            Location::Repository(workdir) => (
+                Some(workdir.root().to_path_buf()),
+                workdir.agent_paths().inbound(&path),
+            ),
+            Location::Folder(root) => (Some(root.clone()), Inbound::Host(path)),
+            Location::Unassigned | Location::Removed { .. } => (None, Inbound::Host(path)),
+        };
+        match inbound {
+            Inbound::Host(path) | Inbound::Mirror(path) => tokio::task::spawn_blocking(move || {
+                workspace_files::respond_image(root.as_deref(), &path)
+            })
             .await
-            .unwrap_or_else(|_| workspace_files::FileResponse::not_found())
+            .unwrap_or_else(|_| workspace_files::FileResponse::not_found()),
+            Inbound::Container(path) => {
+                let Location::Repository(workdir) = location else {
+                    unreachable!("only a sandbox maps a container path");
+                };
+                match workdir.fetch(&path).await {
+                    Some(bytes) => workspace_files::respond_image_bytes(&path, bytes),
+                    None => workspace_files::FileResponse::not_found(),
+                }
+            }
+        }
     }
     pub async fn write_file(
         &self,
@@ -1012,8 +1099,9 @@ impl App {
         path: String,
         contents: String,
     ) -> Result<()> {
-        let root = match self.checkout(id, thread).await?.1 {
-            Location::Repository(root) | Location::Folder(root) => root,
+        let workdir = match self.checkout(id, thread).await?.1 {
+            Location::Repository(workdir) => workdir,
+            Location::Folder(root) => Workdir::Mac { root },
             Location::Unassigned => {
                 return Err(AppError::new(
                     "missing_folder",
@@ -1022,9 +1110,9 @@ impl App {
             }
             Location::Removed { .. } => return Err(worktree_removed()),
         };
-        tokio::task::spawn_blocking(move || repo::write_file(&root, &path, &contents))
-            .await
-            .map_err(|e| AppError::new("repository", e))??;
+        workdir
+            .write(move |root| repo::write_file(root, &path, &contents))
+            .await?;
         self.project_search.invalidate();
         Ok(())
     }
@@ -1037,21 +1125,34 @@ impl App {
                 thread_id,
                 path,
             } => {
-                let root = match self.checkout(workspace_id, thread_id).await?.1 {
-                    Location::Repository(root) | Location::Folder(root) => root,
-                    Location::Unassigned => {
-                        return Err(AppError::new(
-                            "missing_folder",
-                            "Start a thread to see its files.",
-                        ));
-                    }
-                    Location::Removed { .. } => return Err(worktree_removed()),
+                let location = self.checkout(workspace_id, thread_id).await?.1;
+                if location.in_sandbox() {
+                    return Err(sandbox_not_openable());
+                }
+                let Some(root) = location.files() else {
+                    return Err(match location {
+                        Location::Removed { .. } => worktree_removed(),
+                        _ => AppError::new("missing_folder", "Start a thread to see its files."),
+                    });
                 };
                 tokio::task::spawn_blocking(move || editors::checkout_path(&root, &path))
             }
             OpenTarget::ChatLink { thread_id, path } => {
                 let thread = self.thread(thread_id).await?;
-                tokio::task::spawn_blocking(move || editors::chat_link_path(&thread, &path))
+                let location = self
+                    .checkout(thread.workspace_id.clone(), Some(thread.id.clone()))
+                    .await?
+                    .1;
+                if location.in_sandbox() {
+                    return Err(sandbox_not_openable());
+                }
+                let paths = match location {
+                    Location::Repository(workdir) => Some(workdir.agent_paths()),
+                    _ => None,
+                };
+                tokio::task::spawn_blocking(move || {
+                    editors::chat_link_path(&thread, paths.as_ref(), &path)
+                })
             }
             OpenTarget::Logs => {
                 let logs = self.data_dir.join("logs");
@@ -1085,7 +1186,7 @@ impl App {
         basis: DiffBasis,
     ) -> Result<DiffView> {
         let root = match self.checkout(id, thread).await?.1 {
-            Location::Repository(root) => root,
+            Location::Repository(workdir) => workdir.root().to_path_buf(),
             Location::Removed { .. } => {
                 return Ok(DiffView::Unavailable {
                     reason: WORKTREE_REMOVED.into(),
@@ -1107,7 +1208,7 @@ impl App {
         thread: Option<ThreadId>,
     ) -> Result<Branches> {
         let (root, removed) = match self.checkout(id, thread).await?.1 {
-            Location::Repository(root) => (root, None),
+            Location::Repository(workdir) => (workdir.root().to_path_buf(), None),
             Location::Removed { root, branch } => (root, Some(branch)),
             Location::Folder(_) | Location::Unassigned => return Err(not_repository()),
         };
@@ -1128,23 +1229,20 @@ impl App {
         branch: String,
         create: bool,
     ) -> Result<()> {
-        let root = self
+        let workdir = self
             .call(|r| Command::Claim(id, thread.clone(), Hold::Switch, r))
             .await?;
-        let path = root.clone();
-        let switched =
-            tokio::task::spawn_blocking(move || repo::switch_branch(&path, &branch, create))
-                .await
-                .map_err(|e| AppError::new("repository", e))
-                .and_then(|r| r);
+        let switched = workdir
+            .write(move |root| repo::switch_branch(root, &branch, create))
+            .await;
         let current = switched.as_ref().ok().cloned();
-        self.call(|r| Command::Release(root, thread.zip(current), r))
+        self.call(|r| Command::Release(workdir.root().to_path_buf(), thread.zip(current), r))
             .await?;
         switched.map(drop)
     }
     pub async fn git_status(&self, id: WorkspaceId, thread: Option<ThreadId>) -> Result<GitStatus> {
-        let root = self.checkout(id, thread).await?.1.repository()?;
-        vcs::status(&root).await
+        let workdir = self.checkout(id, thread).await?.1.repository()?;
+        vcs::status(workdir.root()).await
     }
     pub async fn list_pull_requests(
         &self,
@@ -1402,7 +1500,13 @@ impl App {
         thread: Option<ThreadId>,
         branch: String,
     ) -> Result<PrLookup> {
-        let root = self.checkout(id, thread).await?.1.repository()?;
+        let root = self
+            .checkout(id, thread)
+            .await?
+            .1
+            .repository()?
+            .root()
+            .to_path_buf();
         let (path, name) = (root.clone(), branch.clone());
         tokio::task::spawn_blocking(move || repo::branch_name(&path, &name))
             .await
@@ -1415,7 +1519,13 @@ impl App {
         thread: Option<ThreadId>,
         query: String,
     ) -> Result<Vec<crate::PullRequestContextMetadata>> {
-        let root = self.checkout(workspace, thread).await?.1.repository()?;
+        let root = self
+            .checkout(workspace, thread)
+            .await?
+            .1
+            .repository()?
+            .root()
+            .to_path_buf();
         crate::composer_pull_requests::search(&self.gh, &root, &query, self.network_timeout).await
     }
     pub async fn begin_commit_message(
@@ -1494,35 +1604,63 @@ impl App {
         }
         let (w, _) = self.checkout(id.clone(), None).await?;
         let config = crate::project::resolve(&w.root, &self.settings, &id)?;
+        let repository = w.root.clone();
         let checkout = match (w.kind, checkout) {
             (WorkspaceKind::Repository, NewCheckout::Local) => Checkout::Local,
             (WorkspaceKind::Repository, NewCheckout::Worktree { base, from_origin }) => {
                 let worktrees = self.worktrees.join(&w.label);
                 tokio::task::spawn_blocking(move || {
-                    repo::add_worktree(&w.root, &worktrees, &base, from_origin)
+                    repo::add_worktree(&repository, &worktrees, &base, from_origin)
                 })
                 .await
                 .map_err(|e| AppError::new("repository", e))??
+            }
+            (WorkspaceKind::Repository, NewCheckout::Sandbox { base, from_origin }) => {
+                if let SandboxAvailability::Unavailable { reason } =
+                    self.sandboxes.availability().await
+                {
+                    return Err(AppError::new("sandbox_unavailable", reason));
+                }
+                let worktrees = self.worktrees.join(&w.label);
+                tokio::task::spawn_blocking(move || {
+                    repo::add_worktree(&repository, &worktrees, &base, from_origin)
+                })
+                .await
+                .map_err(|e| AppError::new("repository", e))??
+                .into_sandbox(Sandbox::Docker {
+                    id: SandboxId::new(),
+                })
             }
             (WorkspaceKind::Scratch, NewCheckout::Folder { prompt }) => {
                 if self.scratch.is_none() {
                     return Err(scratch_unavailable());
                 }
-                tokio::task::spawn_blocking(move || repo::add_folder(&w.root, &prompt))
+                tokio::task::spawn_blocking(move || repo::add_folder(&repository, &prompt))
                     .await
                     .map_err(|e| AppError::new("repository", e))??
             }
             (_, NewCheckout::Existing { .. } | NewCheckout::Registered { .. }) => unreachable!(),
             (WorkspaceKind::Repository, NewCheckout::Folder { .. })
-            | (WorkspaceKind::Scratch, NewCheckout::Local | NewCheckout::Worktree { .. }) => {
+            | (
+                WorkspaceKind::Scratch,
+                NewCheckout::Local | NewCheckout::Worktree { .. } | NewCheckout::Sandbox { .. },
+            ) => {
                 return Err(AppError::new(
                     "invalid_checkout",
                     "This checkout does not belong to this workspace.",
                 ));
             }
         };
-        self.call(|r| Command::Create(id, checkout, SessionSettings::default(), config, r))
-            .await
+        let thread = self
+            .call(|r| Command::Create(id, checkout, SessionSettings::default(), config, r))
+            .await?;
+        // The first message should not wait for the image build and the seed.
+        if let Workdir::Sandbox { handle, .. } =
+            self.sandboxes.workdir(&thread.checkout, thread.root(&w))
+        {
+            handle.warm();
+        }
+        Ok(thread)
     }
     pub async fn project_config(&self, id: WorkspaceId) -> Result<ProjectConfig> {
         let (workspace, _) = self.checkout(id.clone(), None).await?;
@@ -1543,7 +1681,7 @@ impl App {
         terminal: TerminalId,
     ) -> Result<()> {
         let (w, location) = self.checkout(workspace.clone(), thread.clone()).await?;
-        let cwd = location.repository()?;
+        let cwd = location.repository()?.root().to_path_buf();
         let script = crate::project::resolve(&w.root, &self.settings, &workspace)?
             .scripts
             .into_iter()
@@ -1948,15 +2086,19 @@ impl App {
         if let Some(subscription) = attach(None).await? {
             return Ok(subscription);
         }
-        let cwd = match self.checkout(workspace_id, thread_id).await?.1 {
-            Location::Repository(root) | Location::Folder(root) => root,
-            Location::Removed { .. } => return Err(worktree_removed()),
-            Location::Unassigned => {
-                return Err(AppError::new(
-                    "terminal_unavailable",
-                    "Start a thread to open a terminal.",
-                ));
-            }
+        let location = self.checkout(workspace_id, thread_id).await?.1;
+        // A Mac shell in the mirror would edit files the next pull overwrites.
+        if location.in_sandbox() {
+            return Err(AppError::new(
+                "terminal_unavailable",
+                "The sandbox terminal is not available yet.",
+            ));
+        }
+        let Some(cwd) = location.files() else {
+            return Err(match location {
+                Location::Removed { .. } => worktree_removed(),
+                _ => AppError::new("terminal_unavailable", "Start a thread to open a terminal."),
+            });
         };
         attach(Some(cwd))
             .await?
@@ -2394,8 +2536,14 @@ struct Owner {
     changes: broadcast::Sender<ChangeHint>,
     provider_events: mpsc::Sender<Signal>,
     done: mpsc::Sender<Completion>,
+    sandboxes: Arc<Sandboxes>,
 }
 impl Owner {
+    /// Where a thread's files and agent live.
+    fn workdir(&self, t: &ThreadSnapshot) -> Workdir {
+        self.sandboxes
+            .workdir(&t.checkout, t.root(&self.workspaces[&t.workspace_id]))
+    }
     fn new_thread(
         &mut self,
         workspace_id: WorkspaceId,
@@ -2522,9 +2670,10 @@ impl Owner {
         id: &WorkspaceId,
         thread: Option<ThreadId>,
         hold: Hold,
-    ) -> Result<PathBuf> {
-        let root = self.checkout(id, thread)?.1.repository()?;
-        self.claim_path(root, hold)
+    ) -> Result<Workdir> {
+        let workdir = self.checkout(id, thread)?.1.repository()?;
+        self.claim_path(workdir.root().to_path_buf(), hold)?;
+        Ok(workdir)
     }
     fn claim_path(&mut self, root: PathBuf, hold: Hold) -> Result<PathBuf> {
         if self.setup_busy(&root) {
@@ -2638,7 +2787,9 @@ impl Owner {
         let w = self.workspace(id)?;
         let location = match thread {
             None if w.kind == WorkspaceKind::Scratch => Location::Unassigned,
-            None => Location::Repository(w.root.clone()),
+            None => Location::Repository(Workdir::Mac {
+                root: w.root.clone(),
+            }),
             Some(thread) => {
                 let t = self.thread(&thread)?;
                 if &t.workspace_id != id {
@@ -2656,7 +2807,7 @@ impl Owner {
                         }
                     }
                     Checkout::Local | Checkout::Worktree { .. } => {
-                        Location::Repository(t.root(w).to_path_buf())
+                        Location::Repository(self.workdir(t))
                     }
                 }
             }
@@ -2854,6 +3005,7 @@ impl Owner {
                         commands.close();
                         let result=self.stop_providers(None).await;
                         self.lose("Bot Code closed. Native execution stopped.").await;
+                        self.sandboxes.stop_all().await;
                         shutdown=Some((reply,result));
                         break;
                     }
@@ -2918,6 +3070,7 @@ impl Owner {
             }
         }
         let _ = self.stop_providers(None).await;
+        self.sandboxes.stop_all().await;
         commands.close();
         let clone_shutdown = self.project_clones.shutdown().await;
         self.tools.revoke(&HashSet::new());
@@ -2993,7 +3146,10 @@ impl Owner {
                     Err(error) => {
                         let _ = reply.send(Err(error));
                     }
-                    Ok(root) => {
+                    Ok(workdir) => {
+                        // Publishing adds a remote and pushes; the checkout's files stay as
+                        // they are, so the Mac mirror of a sandbox serves it unchanged.
+                        let root = workdir.root().to_path_buf();
                         let origin = thread.map(|id| {
                             let generation = self.pr_generation(&id);
                             (id, generation)
@@ -3018,7 +3174,8 @@ impl Owner {
                     Err(error) => {
                         let _ = reply.send(Err(error));
                     }
-                    Ok(root) => {
+                    Ok(workdir) => {
+                        let root = workdir.root().to_path_buf();
                         let model = settings::text_generation(
                             &self.config.data_dir.join("settings.json"),
                             &id,
@@ -3029,6 +3186,7 @@ impl Owner {
                         });
                         let cx = vcs::Context {
                             root: root.clone(),
+                            workdir,
                             gh: self.config.gh_binary.clone(),
                             network: self.config.network_timeout,
                             codex: self.config.codex_binary.clone(),
@@ -4008,8 +4166,18 @@ impl Owner {
         else {
             return;
         };
-        let input =
-            crate::codex::turn_input(text, context.as_ref(), attachments, &self.attachments);
+        let workdir = self.workdir(&self.threads[id]);
+        let files: Vec<PathBuf> = attachments
+            .iter()
+            .map(|attachment| self.attachments.path(attachment))
+            .collect();
+        let input = crate::codex::turn_input(
+            text,
+            context.as_ref(),
+            attachments,
+            &self.attachments,
+            &workdir.agent_paths(),
+        );
         *delivery = Delivery::Sending;
         if let Err(error) = self.install(next) {
             let t = self.threads.get_mut(id).unwrap();
@@ -4033,7 +4201,10 @@ impl Owner {
         let turn = turn_id.clone();
         let operation = operation.to_owned();
         tokio::spawn(async move {
-            let result = provider.request("turn/steer", json!({"threadId":native,"expectedTurnId":native_turn,"clientUserMessageId":operation,"input":input})).await;
+            let result = match workdir.provide(&files).await {
+                Ok(()) => provider.request("turn/steer", json!({"threadId":native,"expectedTurnId":native_turn,"clientUserMessageId":operation,"input":input})).await,
+                Err(error) => Err(error),
+            };
             let _ = done
                 .send(Completion::Steered {
                     epoch,
@@ -4163,7 +4334,25 @@ impl Owner {
         else {
             return;
         };
-        let launcher = providers::Launcher::new(&key, self.config.codex_binary.clone());
+        let launcher = match &key {
+            EnvKey::Mac => providers::Launcher::Mac {
+                binary: self.config.codex_binary.clone(),
+            },
+            EnvKey::Sandbox(_) => {
+                let handle = self
+                    .threads
+                    .values()
+                    .find(|t| EnvKey::of(&t.checkout) == key)
+                    .and_then(|t| self.workdir(t).sandbox().cloned());
+                let Some(handle) = handle else {
+                    return;
+                };
+                providers::Launcher::Sandbox {
+                    handle,
+                    broker: self.sandboxes.broker.clone(),
+                }
+            }
+        };
         let signals = self.provider_events.clone();
         let done = self.done.clone();
         if !delay.is_zero() {
@@ -4282,16 +4471,16 @@ impl Owner {
             Ok(t) => t,
             Err(_) => return,
         };
-        let root = t.root(&self.workspaces[&t.workspace_id]).to_path_buf();
+        let workdir = self.workdir(t);
         let native = t.native_thread_id.clone();
         let settings = t.settings.clone();
         let (approval_policy, approvals_reviewer, sandbox) =
-            codex::permission_protocol(settings.permission_mode);
+            codex::permission_protocol(settings.permission_mode, workdir.environment());
         let model = self.resolve_model(&settings).map(str::to_owned);
         let done = self.done.clone();
         let creating = native.is_none();
-        let mut params = json!({"cwd":root,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandbox":sandbox,"model":model});
-        self.tools_thread_params(job.thread(), epoch, &mut params, creating);
+        let mut params = json!({"cwd":workdir.agent_paths().cwd(),"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandbox":sandbox,"model":model});
+        self.tools_thread_params(&key, job.thread(), epoch, &mut params, creating);
         tokio::spawn(async move {
             let result = if let Some(native) = native {
                 params["threadId"] = json!(native);
@@ -4353,8 +4542,11 @@ impl Owner {
                             session.modes,
                             Instant::now(),
                         );
-                        // The catalogs come from the Mac agent.
-                        if key == EnvKey::Mac {
+                        // The catalogs come from the Mac agent. The image pins the host Codex
+                        // version, so a sandbox agent's model list stands in until it runs.
+                        if key != EnvKey::Mac && self.models.is_none() {
+                            self.models = session.models;
+                        } else if key == EnvKey::Mac {
                             self.models = session.models;
                             let modes = self.mode_catalog();
                             for reply in std::mem::take(&mut self.collaboration_waiters) {
@@ -4388,7 +4580,8 @@ impl Owner {
                             })?
                             .to_owned();
                         let created = self.thread(&id)?.native_thread_id.is_none();
-                        self.tools_prepared(&native, created)?;
+                        let key = self.env(&id);
+                        self.tools_prepared(&key, &native, created)?;
                         let t = self.threads.get_mut(&id).ok_or_else(|| {
                             AppError::new("missing_thread", "Conversation not found.")
                         })?;
@@ -4398,6 +4591,7 @@ impl Owner {
                         merge_history(t, value.pointer("/thread/turns"));
                         self.commit(&id)?;
                         if let Prepare::Submit(_, turn_id) = job {
+                            let workdir = self.workdir(&self.threads[&id]);
                             let t = self.threads.get_mut(&id).unwrap();
                             t.session = SessionState::Connecting;
                             let turn = t
@@ -4411,16 +4605,25 @@ impl Owner {
                                 self.dispatch_compaction(id, turn_id, native);
                                 return Ok(());
                             }
+                            let paths = workdir.agent_paths();
+                            let files: Vec<PathBuf> = turn
+                                .attachments
+                                .iter()
+                                .map(|attachment| self.attachments.path(attachment))
+                                .collect();
                             let input = crate::codex::turn_input(
                                 &turn.prompt,
                                 turn.context.as_ref(),
                                 &turn.attachments,
                                 &self.attachments,
+                                &paths,
                             );
                             let settings = turn.settings.clone().unwrap_or_default();
+                            let environment = workdir.environment();
                             let (approval_policy, approvals_reviewer, _) =
-                                codex::permission_protocol(settings.permission_mode);
-                            let sandbox_policy = codex::sandbox_policy(settings.permission_mode);
+                                codex::permission_protocol(settings.permission_mode, environment);
+                            let sandbox_policy =
+                                codex::sandbox_policy(settings.permission_mode, environment);
                             let model = self.resolve_model(&settings).map(str::to_owned);
                             let effort = self.resolve_effort(&settings).map(str::to_owned);
                             let t = &self.threads[&id];
@@ -4441,7 +4644,7 @@ impl Owner {
                                     AppError::new("provider_lost", "Codex is unavailable.")
                                 })?;
                             let done = self.done.clone();
-                            let tool_guidance = self.tools.guidance(&native);
+                            let tool_guidance = self.tools.guidance(&key, &native);
                             tokio::spawn(async move {
                                 let result = match collaboration {
                                     Ok(mode) => {
@@ -4452,7 +4655,10 @@ impl Owner {
                                         if let Some(mode) = mode {
                                             params["collaborationMode"] = mode;
                                         }
-                                        provider.request("turn/start", params).await
+                                        match workdir.provide(&files).await {
+                                            Ok(()) => provider.request("turn/start", params).await,
+                                            Err(error) => Err(error),
+                                        }
                                     }
                                     Err(error) => Err(error),
                                 };
@@ -4705,6 +4911,43 @@ impl Owner {
     fn env(&self, thread: &ThreadId) -> EnvKey {
         EnvKey::of(&self.threads[thread].checkout)
     }
+    /// A sandbox agent's token expired. The host Codex refreshes, through the live Mac agent
+    /// or a throwaway one, off the owner loop. The Mac agent owns its own tokens, so a refresh
+    /// request from it is refused.
+    async fn refresh_tokens(
+        &mut self,
+        key: &EnvKey,
+        requester: Option<Codex>,
+        request: Value,
+        params: &Value,
+    ) -> Result<()> {
+        let Some(requester) = requester else {
+            return Ok(());
+        };
+        if *key == EnvKey::Mac {
+            return requester
+                .refuse(request, "account/chatgptAuthTokens/refresh")
+                .await;
+        }
+        let host = self.providers.client(&EnvKey::Mac).map(|(_, codex)| codex);
+        let broker = self.sandboxes.broker.clone();
+        let previous = params
+            .get("previousAccountId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        tokio::spawn(async move {
+            let reply = match broker.refresh(host, previous.as_deref()).await {
+                Ok(tokens) => {
+                    requester
+                        .respond(request, codex::auth::refresh_reply(&tokens))
+                        .await
+                }
+                Err(error) => requester.error(request, -32000, &error.message).await,
+            };
+            let _ = reply;
+        });
+        Ok(())
+    }
     /// The thread whose native ID is `native`, among the threads of slot `key`. A provider
     /// can only address its own threads.
     fn thread_by_native(&self, key: &EnvKey, native: &str) -> Option<ThreadId> {
@@ -4854,6 +5097,9 @@ impl Owner {
         if let Some(request) = value.get("id") {
             if method == "item/tool/call" {
                 return self.dynamic_tool(epoch, request.clone(), p.clone()).await;
+            }
+            if method == "account/chatgptAuthTokens/refresh" {
+                return self.refresh_tokens(key, provider, request.clone(), p).await;
             }
             let decoded = match approvals::decode(value.clone()) {
                 Ok(decoded) => decoded,
@@ -5156,7 +5402,7 @@ impl Owner {
                         if let Some(native) = restore
                             && let Some(provider) = provider
                         {
-                            self.restore_context(provider, &native);
+                            self.restore_context(key, provider, &native);
                         }
                     }
                 }

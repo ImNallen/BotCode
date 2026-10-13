@@ -113,8 +113,8 @@ impl Owner {
         self.capture_after(thread, turn.clone())
     }
     /// Compaction drops `additionalContext`, and Codex resends an entry only when its value changes.
-    pub(super) fn restore_context(&self, provider: Codex, native: &str) {
-        let Some(guidance) = self.tools.guidance(native) else {
+    pub(super) fn restore_context(&self, key: &EnvKey, provider: Codex, native: &str) {
+        let Some(guidance) = self.tools.guidance(key, native) else {
             return;
         };
         let log = self.log.clone();

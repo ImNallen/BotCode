@@ -28,6 +28,7 @@ import {
   GlobeIcon,
   HammerIcon,
   Minimize2Icon,
+  ContainerIcon,
   SquarePenIcon,
   TerminalIcon,
   TriangleAlertIcon,
@@ -691,6 +692,11 @@ function WorkingRow({
   }, []);
   const label = row.compacting ? (
     <CompactingLabel />
+  ) : row.startingSandbox ? (
+    <span className="inline-flex items-center gap-1.5">
+      <ContainerIcon aria-hidden="true" className="size-3" />
+      Starting sandbox…
+    </span>
   ) : row.startedAtMs !== null ? (
     <>
       Working for{" "}
@@ -706,10 +712,12 @@ function WorkingRow({
       <div className="flex h-6 min-w-0 items-baseline gap-2 px-1 text-sm leading-relaxed text-muted-foreground tabular-nums">
         <span
           className="relative shrink-0 overflow-hidden whitespace-nowrap"
-          style={row.compacting ? animationRunning : undefined}
+          style={
+            row.compacting || row.startingSandbox ? animationRunning : undefined
+          }
         >
           {label}
-          {row.compacting ? (
+          {row.compacting || row.startingSandbox ? (
             <ActivityShimmerOverlay>{label}</ActivityShimmerOverlay>
           ) : null}
         </span>

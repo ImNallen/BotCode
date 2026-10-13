@@ -17,7 +17,7 @@ mod tests;
 use crate::domain::{AppError, Result, SandboxId};
 use crate::sandbox::{Container, ContainerState, Exec, Input, RunState, WORKSPACE};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -96,7 +96,8 @@ pub enum Freshness {
 /// Branches on the Mac that constrain where the mirror's HEAD may go.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MacBranches {
-    pub existing: BTreeSet<String>,
+    /// Every local branch and its commit.
+    pub existing: BTreeMap<String, String>,
     /// Checked out by a Mac worktree other than this mirror. Moving one would corrupt that
     /// checkout.
     pub elsewhere: BTreeSet<String>,
@@ -109,8 +110,9 @@ pub enum HostHead {
         name: String,
         commit: String,
     },
-    /// `refused_branch` names a branch another Mac worktree has checked out; the mirror
-    /// detaches at the commit instead and the thread shows a diagnostic.
+    /// `refused_branch` names a Mac branch the container may not move: one another Mac
+    /// worktree has checked out, or one the pull would rewrite without fast-forwarding. The
+    /// mirror detaches at the commit instead and the thread shows a diagnostic.
     Detached {
         commit: String,
         refused_branch: Option<String>,
@@ -133,13 +135,34 @@ impl HostHead {
         }
     }
 }
-/// Pure HEAD policy.
-pub fn host_head(container: &Head, mac: &MacBranches) -> HostHead {
+/// HEAD policy. The thread's own sandbox branch, `own`, follows the container anywhere. Any
+/// other Mac branch moves only by fast-forward, judged by `is_ancestor(old, new)`, and never
+/// while another Mac worktree has it checked out.
+pub fn host_head(
+    container: &Head,
+    mac: &MacBranches,
+    own: &str,
+    is_ancestor: impl Fn(&str, &str) -> bool,
+) -> HostHead {
     match container {
-        Head::Branch { name, commit } if mac.elsewhere.contains(name) => HostHead::Detached {
-            commit: commit.clone(),
-            refused_branch: Some(name.clone()),
-        },
+        Head::Branch { name, commit } if name != own => {
+            let refused = mac.elsewhere.contains(name)
+                || mac
+                    .existing
+                    .get(name)
+                    .is_some_and(|old| old != commit && !is_ancestor(old, commit));
+            if refused {
+                HostHead::Detached {
+                    commit: commit.clone(),
+                    refused_branch: Some(name.clone()),
+                }
+            } else {
+                HostHead::Branch {
+                    name: name.clone(),
+                    commit: commit.clone(),
+                }
+            }
+        }
         Head::Branch { name, commit } => HostHead::Branch {
             name: name.clone(),
             commit: commit.clone(),
@@ -148,7 +171,7 @@ pub fn host_head(container: &Head, mac: &MacBranches) -> HostHead {
             commit: commit.clone(),
             refused_branch: None,
         },
-        Head::Unborn { name } if mac.existing.contains(name) => HostHead::Unmoved {
+        Head::Unborn { name } if mac.existing.contains_key(name) => HostHead::Unmoved {
             refused_branch: name.clone(),
         },
         Head::Unborn { name } => HostHead::Unborn { name: name.clone() },
@@ -271,9 +294,15 @@ impl std::ops::Deref for WriteRoot {
 }
 impl WriteRoot {
     /// Mac checkouts: no sync, the root is the authority. The Mac `Workdir` is its caller.
-    #[allow(dead_code)]
-    pub(crate) fn mac(root: PathBuf) -> Self {
+    pub fn mac(root: PathBuf) -> Self {
         Self(root)
+    }
+}
+/// A clone is still proof: it only exists while the session that produced it does, and the
+/// blocking thread that runs a mutation needs an owned value.
+impl Clone for WriteRoot {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
@@ -281,6 +310,7 @@ pub struct WriteSession {
     mirror: Mirror,
     hold: OwnedMutexGuard<SyncState>,
     root: WriteRoot,
+    own: String,
 }
 #[derive(Debug)]
 pub struct CommitRun {
@@ -310,7 +340,7 @@ impl Mirror {
     /// Make `/workspace` a clone of the mirror if it is not one yet, then push the mirror's
     /// uncommitted state so a recreated container matches it. Idempotent through a marker
     /// written last: a crash mid-seed leaves no marker and the next call starts over.
-    pub async fn seed(&self) -> Result<()> {
+    pub async fn seed(&self, own: &str) -> Result<()> {
         let mut hold = self.state.clone().lock_owned().await;
         if self.exec(&["test", "-f", SEEDED], MARK).await?.code == Some(0) {
             return Ok(());
@@ -364,7 +394,9 @@ impl Mirror {
             host::set_base(&root, &id, &outgoing)
         })
         .await?;
-        self.push_locked(&mut hold).await.map_err(AppError::from)?;
+        self.push_locked(&mut hold, own)
+            .await
+            .map_err(AppError::from)?;
         let marked = self.exec(&["touch", SEEDED], MARK).await?;
         if marked.code != Some(0) {
             return Err(failure("Seeding the sandbox failed", &marked.stderr));
@@ -373,38 +405,58 @@ impl Mirror {
         Ok(())
     }
 
-    /// Container to Mac. Mac-side drift in the mirror is overwritten. Returns the lock, which
-    /// the caller holds while it reads or captures the mirror. A pull while the container is
-    /// not running does nothing, because every transition away from running pulls first.
-    pub async fn sync(&self, freshness: Freshness) -> Result<Synced> {
-        let mut hold = self.state.clone().lock_owned().await;
+    /// Container to Mac. Mac-side drift in the mirror is overwritten. `own` is the thread's
+    /// sandbox branch, which [`host_head`] lets the container move freely. Returns the lock,
+    /// which the caller holds while it reads or captures the mirror. A pull while the
+    /// container is not running does nothing, because every transition away from running
+    /// pulls first.
+    pub async fn sync(&self, freshness: Freshness, own: &str) -> Result<Synced> {
+        let hold = self.state.clone().lock_owned().await;
+        self.synced(hold, freshness, own).await
+    }
+    /// A recent pull that does not wait: `None` while a session, a capture or another pull
+    /// holds the mirror, so a UI read during a long commit serves the stale mirror instead
+    /// of blocking on it.
+    pub async fn try_sync_recent(&self, own: &str) -> Result<Option<Synced>> {
+        match self.state.clone().try_lock_owned() {
+            Ok(hold) => self.synced(hold, Freshness::Recent, own).await.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+    async fn synced(
+        &self,
+        mut hold: OwnedMutexGuard<SyncState>,
+        freshness: Freshness,
+        own: &str,
+    ) -> Result<Synced> {
         let recent = hold.pulled_at.is_some_and(|at| at.elapsed() < RECENT);
         let pulled = if freshness == Freshness::Recent && recent {
             None
         } else {
-            self.pull_locked(&mut hold).await?
+            self.pull_locked(&mut hold, own).await?
         };
         Ok(Synced {
             pulled,
             _hold: hold,
         })
     }
-    pub async fn pull(&self, freshness: Freshness) -> Result<Option<Pulled>> {
-        Ok(self.sync(freshness).await?.pulled)
+    pub async fn pull(&self, freshness: Freshness, own: &str) -> Result<Option<Pulled>> {
+        Ok(self.sync(freshness, own).await?.pulled)
     }
     /// Pull exactly, then hand out the mirror for host-side mutation. While the session lives,
     /// no pull or other session runs for this sandbox.
-    pub async fn begin_write(&self) -> Result<WriteSession> {
+    pub async fn begin_write(&self, own: &str) -> Result<WriteSession> {
         let mut hold = self.state.clone().lock_owned().await;
-        self.pull_locked(&mut hold).await?;
+        self.pull_locked(&mut hold, own).await?;
         Ok(WriteSession {
             mirror: self.clone(),
             hold,
             root: WriteRoot(self.root.to_path_buf()),
+            own: own.to_owned(),
         })
     }
 
-    async fn pull_locked(&self, state: &mut SyncState) -> Result<Option<Pulled>> {
+    async fn pull_locked(&self, state: &mut SyncState, own: &str) -> Result<Option<Pulled>> {
         let started = Instant::now();
         let (root, id, _) = self.host();
         let (base, outgoing) = self
@@ -419,7 +471,7 @@ impl Mirror {
         let pulled = if base.as_deref() == Some(&captured) && outgoing == base {
             None
         } else {
-            self.adopt(captured, base, capture).await?
+            self.adopt(captured, base, capture, own).await?
         };
         state.pulled_at = Some(started);
         Ok(pulled)
@@ -431,8 +483,10 @@ impl Mirror {
         captured: String,
         base: Option<String>,
         capture: Duration,
+        own: &str,
     ) -> Result<Option<Pulled>> {
         let (root, id, transport) = self.host();
+        let own = own.to_owned();
         self.blocking(move || {
             let started = Instant::now();
             if base.as_deref() != Some(&captured) {
@@ -442,7 +496,12 @@ impl Mirror {
             let started = Instant::now();
             let point = host::point(&root, &captured)?;
             host::validate_tree(&root, &point.worktree_tree)?;
-            let head = host_head(&point.head, &host::mac_branches(&root)?);
+            let head = host_head(
+                &point.head,
+                &host::mac_branches(&root)?,
+                &own,
+                |old, new| host::is_ancestor(&root, old, new),
+            );
             host::apply(&root, &id, &point, &head, base.as_deref())?;
             Ok(Some(Pulled {
                 point,
@@ -459,7 +518,11 @@ impl Mirror {
 
     /// Mac to container, fast-forward only. On refusal the mirror is pulled back to the
     /// container's state, so the two sides never stay apart.
-    async fn push_locked(&self, state: &mut SyncState) -> std::result::Result<(), PushError> {
+    async fn push_locked(
+        &self,
+        state: &mut SyncState,
+        own: &str,
+    ) -> std::result::Result<(), PushError> {
         let (root, id, transport) = self.host();
         let (base, point) = self
             .blocking(move || {
@@ -499,7 +562,7 @@ impl Mirror {
                 )));
             }
         };
-        self.pull_locked(state).await?;
+        self.pull_locked(state, own).await?;
         Err(PushError::Refused(refusal))
     }
 
@@ -570,7 +633,7 @@ impl WriteSession {
         message: &str,
         limit: Duration,
     ) -> std::result::Result<CommitRun, PushError> {
-        self.mirror.push_locked(&mut self.hold).await?;
+        self.mirror.push_locked(&mut self.hold, &self.own).await?;
         let output = self
             .mirror
             .container
@@ -584,7 +647,7 @@ impl WriteSession {
                 limit,
             )
             .await?;
-        self.mirror.pull_locked(&mut self.hold).await?;
+        self.mirror.pull_locked(&mut self.hold, &self.own).await?;
         Ok(CommitRun {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -593,7 +656,31 @@ impl WriteSession {
     }
     /// Mac to container. Fast-forward only: never overwrites container changes.
     pub async fn finish(mut self) -> std::result::Result<(), PushError> {
-        self.mirror.push_locked(&mut self.hold).await
+        self.mirror.push_locked(&mut self.hold, &self.own).await
+    }
+    /// `git branch -m <old> <new>` in the container, matching the same rename on the mirror.
+    /// The session then ends with [`WriteSession::pull`], because a push would see the
+    /// container's own HEAD move as divergence.
+    pub async fn rename_branch(&mut self, old: &str, new: &str) -> Result<()> {
+        let output = self
+            .mirror
+            .exec(&["git", "branch", "-m", old, new], MARK)
+            .await?;
+        if output.code != Some(0) {
+            return Err(failure(
+                "Renaming the branch in the sandbox failed",
+                &output.stderr,
+            ));
+        }
+        self.own = new.to_owned();
+        Ok(())
+    }
+    /// Ends the session by adopting the container's state, for a change made on both sides.
+    pub async fn pull(mut self) -> Result<()> {
+        self.mirror
+            .pull_locked(&mut self.hold, &self.own)
+            .await
+            .map(drop)
     }
 }
 

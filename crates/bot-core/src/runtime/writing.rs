@@ -28,7 +28,7 @@ impl Owner {
     ) -> Result<String> {
         let t = self.thread(&thread)?;
         let (_, location) = self.checkout(&t.workspace_id, Some(thread.clone()))?;
-        let root = location.repository()?;
+        let root = location.repository()?.root().to_path_buf();
         if self.held.contains_key(&root) || self.leases.contains_key(&root) {
             return Err(AppError::new(
                 "checkout_busy",

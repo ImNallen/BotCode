@@ -77,13 +77,17 @@ impl Owner {
             return;
         }
         let reference = format!("refs/botcode/checkpoints/{id}/{turn}/before");
+        let workdir = self.workdir(t);
         self.checkpoint_work.active.spawn(async move {
             let path = root.clone();
-            let result =
+            let result = async {
+                // The mirror lock stays held through the capture, so no UI read pulls under it.
+                let _synced = workdir.sync(Freshness::Exact).await?;
                 tokio::task::spawn_blocking(move || crate::checkpoints::capture(&path, &reference))
                     .await
-                    .map_err(worker_error)
-                    .and_then(|r| r);
+                    .map_err(worker_error)?
+            }
+            .await;
             CheckpointJob::Before(id, turn, root, result)
         });
     }
@@ -96,6 +100,7 @@ impl Owner {
             .ok_or_else(|| AppError::new("missing_turn", "Turn not found."))?;
         let before = row.checkpoint.before().cloned();
         let root = t.root(&self.workspaces[&t.workspace_id]).to_path_buf();
+        let workdir = self.workdir(t);
         if self.held.get(&root) == Some(&Hold::Checkpoint) {
             return Ok(());
         }
@@ -110,14 +115,17 @@ impl Owner {
         let reference = format!("refs/botcode/checkpoints/{id}/{turn}/after");
         self.checkpoint_work.active.spawn(async move {
             let path = root.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                let after = crate::checkpoints::capture(&path, &reference)?;
-                let files = crate::checkpoints::files(&path, &before, &after)?;
-                Ok((after, files))
-            })
-            .await
-            .map_err(worker_error)
-            .and_then(|r| r);
+            let result = async {
+                let _synced = workdir.sync(Freshness::Exact).await?;
+                tokio::task::spawn_blocking(move || {
+                    let after = crate::checkpoints::capture(&path, &reference)?;
+                    let files = crate::checkpoints::files(&path, &before, &after)?;
+                    Ok((after, files))
+                })
+                .await
+                .map_err(worker_error)?
+            }
+            .await;
             CheckpointJob::After(id, turn, root, result)
         });
         Ok(())
@@ -355,14 +363,18 @@ impl Owner {
             }
             return;
         }
-        let (epoch, provider) = self.providers.client(&self.env(&id)).unwrap();
+        let key = self.env(&id);
+        let (epoch, provider) = self.providers.client(&key).unwrap();
         let cwd = if intent.checkout_root.exists() {
-            intent.checkout_root.clone()
+            self.workdir(t).agent_paths().cwd()
         } else {
-            self.workspaces[&t.workspace_id].root.clone()
+            self.workspaces[&t.workspace_id]
+                .root
+                .to_string_lossy()
+                .into_owned()
         };
         let mut params = json!({"threadId": native.unwrap(), "beforeTurnId": intent.before_native_turn_id.clone().unwrap(), "cwd": cwd, "excludeTurns": false});
-        self.tools_thread_params(&id, epoch, &mut params, false);
+        self.tools_thread_params(&key, &id, epoch, &mut params, false);
         self.checkpoint_work.active.spawn(async move {
             let result = provider.request("thread/fork", params).await.and_then(|value| {
                 let thread = value.get("thread").unwrap_or(&Value::Null);
@@ -392,14 +404,16 @@ impl Owner {
         self.install(next)?;
         self.continue_revert(id)
     }
+    /// Under the thread's `Hold::Revert`. A sandbox restore runs inside a write session, and a
+    /// push refusal fails this phase, so Retry revert runs it again.
     fn restore_revert(&mut self, id: ThreadId, intent: RevertIntent) {
+        let workdir = self.workdir(&self.threads[&id]);
         self.checkpoint_work.active.spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                crate::checkpoints::restore(&intent.checkout_root, intent.before.as_ref().unwrap())
-            })
-            .await
-            .map_err(worker_error)
-            .and_then(|r| r);
+            let result = workdir
+                .write(move |root| {
+                    crate::checkpoints::restore(root, intent.before.as_ref().unwrap())
+                })
+                .await;
             CheckpointJob::Restore(id, result)
         });
     }

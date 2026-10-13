@@ -8,6 +8,16 @@ Use the topic headings to find a workflow. Command shortcuts use Control on Wind
 
 Choose **Add project**, select a Git repository, and start a conversation. To work outside a repository, choose **Start without a project** or press Command+Option+N, and Bot Code runs that conversation in its own folder under `scratch` in the data directory. Send with Enter. Shift+Enter adds a line. The right-panel toggle in the header opens Terminal, Files, Diff, Preview, and pull request tabs. Approvals offer Approve, Decline, or Cancel turn. Stop is available after Codex acknowledges the running turn.
 
+## Run a thread in a sandbox
+
+A new repository thread runs on **This Mac** by default. Choose **Sandbox** in the **Run on** menu under the composer to run Codex inside a Docker container on this Mac instead. A sandbox always starts a new worktree, so the workspace menu disappears and the branch picker chooses the base branch, with its **Start from origin** switch. Where a thread runs is fixed once its first message is sent.
+
+Sandbox needs Docker Desktop installed and running, and this Mac signed in to Codex. When one is missing, the option is disabled and says what to do. When Docker has less than 8 GB of memory, the menu suggests raising it in Docker Desktop > Settings > Resources > Memory.
+
+The first message in a new sandbox can wait while Bot Code builds the sandbox image and starts the container. The thread shows **Starting sandbox…** until Codex is ready. If the sandbox cannot start, the thread shows the reason. The container holds the real files, and the worktree on this Mac is a copy that Bot Code refreshes from it. Files, Diff and search read that copy. Edits in the Files tab and rewinds go into the container. Commits run in the container, and push and pull requests run on this Mac with your own Git and GitHub credentials.
+
+Sandbox threads show a container icon beside the worktree icon in the sidebar, and the composer reads **Sandbox**. They have no **Open in** editor control, because the next refresh would overwrite edits made in the copy. The terminal and project scripts are not available for sandbox threads yet.
+
 ## Edit files
 
 To edit a file, open it in the Files tab and type. Bot Code saves the file 500 ms after you stop typing, and a dot on the tab shows that a save is waiting. If Codex writes the same file before your edit saves, your text replaces its change, as in T3 Code. Binary files, non-UTF-8 files, and files over 1 MB stay read-only. Bot Code refuses to write outside the thread's checkout or inside `.git`, including through symlinks.

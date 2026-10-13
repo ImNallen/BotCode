@@ -39,7 +39,8 @@ import { useAppearance } from "../appearance/AppearanceRoot";
 export type FileLinks = {
   resolve: (target: string, source: "code" | "href") => ChatFileLink | null;
   openInPanel: (path: string) => void;
-  target: (link: ChatFileLink) => OpenTarget;
+  // Null when editors and the file manager must not open the checkout, as for a sandbox mirror.
+  target: ((link: ChatFileLink) => OpenTarget) | null;
   absolutePath: (link: ChatFileLink) => string;
   previewScope?: PreviewScope;
 };
@@ -126,13 +127,17 @@ function FileChip({ links, link }: { links: FileLinks; link: ChatFileLink }) {
     link.line === undefined
       ? null
       : { line: link.line, column: link.column ?? null };
-  const openInEditor = () => editors.open(links.target(link), position);
+  const target = links.target?.(link);
+  const openInEditor = () => {
+    if (target) editors.open(target, position);
+  };
   return (
     <>
       <button
         type="button"
         title={path}
         data-slot="context-chip"
+        disabled={link.kind === "external" && !target}
         onClick={() =>
           link.kind === "workspace" ? links.openInPanel(path) : openInEditor()
         }
@@ -165,13 +170,13 @@ function FileChip({ links, link }: { links: FileLinks; link: ChatFileLink }) {
           }}
           trigger={() => null}
         >
-          {editors.preferred ? (
+          {target && editors.preferred ? (
             <MenuItem onClick={openInEditor}>
               {openInEditorMenuLabel(editors.preferred)}
             </MenuItem>
           ) : null}
-          {editors.available.includes("file-manager") ? (
-            <MenuItem onClick={() => editors.reveal(links.target(link))}>
+          {target && editors.available.includes("file-manager") ? (
+            <MenuItem onClick={() => editors.reveal(target)}>
               {revealInFileExplorerLabel()}
             </MenuItem>
           ) : null}

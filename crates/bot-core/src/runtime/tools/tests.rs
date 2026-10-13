@@ -95,6 +95,12 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
         changes: broadcast::channel(1).0,
         provider_events: mpsc::channel(1).0,
         done: mpsc::channel(1).0,
+        sandboxes: Arc::new(Sandboxes::new(
+            directory.path(),
+            Path::new("/no/codex"),
+            &directory.path().join("codex-home"),
+            RotatingLog::silent(),
+        )),
     };
     let thread = owner
         .new_thread(
@@ -129,7 +135,7 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
                     native_turn: "native-turn".into(),
                     call_id: call.name.clone(),
                 },
-                call,
+                owner.tools.registry.decode(call).unwrap(),
                 ToolReply::Mcp {
                     credential: "revoked".into(),
                     reply,

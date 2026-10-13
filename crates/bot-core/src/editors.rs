@@ -403,7 +403,13 @@ pub(crate) fn checkout_path(root: &Path, path: &str) -> Result<PathBuf> {
     repo::contained(root, path)
 }
 
-pub(crate) fn chat_link_path(thread: &ThreadSnapshot, path: &str) -> Result<PathBuf> {
+/// `paths` is the thread's agent path mapping when it has a repository checkout. A sandbox
+/// agent's link resolves on the Mac only inside `/workspace`, as the mirror.
+pub(crate) fn chat_link_path(
+    thread: &ThreadSnapshot,
+    paths: Option<&crate::workdir::AgentPaths>,
+    path: &str,
+) -> Result<PathBuf> {
     // A turn's opening message is its prompt; only steering messages become UserInput items.
     let mut texts = thread.turns.iter().flat_map(|turn| {
         let items = turn.items.iter().filter_map(|item| match item {
@@ -420,7 +426,16 @@ pub(crate) fn chat_link_path(thread: &ThreadSnapshot, path: &str) -> Result<Path
             "Only files named in this conversation can be opened.",
         ));
     }
-    repo::existing(Path::new(path))
+    match paths.map(|paths| paths.inbound(path)) {
+        None | Some(crate::workdir::Inbound::Host(_)) => repo::existing(Path::new(path)),
+        Some(crate::workdir::Inbound::Mirror(relative)) => {
+            repo::contained(paths.unwrap().mirror(), &relative)
+        }
+        Some(crate::workdir::Inbound::Container(_)) => Err(AppError::new(
+            "invalid_path",
+            "This file is inside the sandbox and has no copy on this Mac.",
+        )),
+    }
 }
 
 /// Whether `text` names `path` as a whole path, not as a prefix of a longer one, so naming

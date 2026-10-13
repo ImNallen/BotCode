@@ -1,7 +1,7 @@
 // Ported from T3 Code v0.0.45 apps/server/src/provider/Layers/ProviderService.ts and CodexAdapter.ts.
 use crate::{
     ComposerContextRecord, MessageContext, attachments::Attachments, composer_context::context_id,
-    domain::*,
+    domain::*, workdir::AgentPaths,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -12,14 +12,14 @@ pub(crate) fn turn_input(
     context: Option<&MessageContext>,
     files: &[Attachment],
     attachments: &Attachments,
+    paths: &AgentPaths,
 ) -> Vec<Value> {
     let mut text = project(
         text,
         context.map_or(&[], |context| context.records.as_slice()),
     );
     for attachment in files {
-        let path = attachments.path(attachment);
-        let path = path.to_string_lossy();
+        let path = paths.attachment(&attachments.path(attachment));
         let note = match attachment {
             Attachment::Image(image) => {
                 format!("[Attached image \"{}\" is saved at: {path}]", image.name)
@@ -45,7 +45,7 @@ pub(crate) fn turn_input(
         files
             .iter()
             .filter(|file| matches!(file, Attachment::Image(_)))
-            .map(|image| json!({"type":"localImage", "path":attachments.path(image)})),
+            .map(|image| json!({"type":"localImage", "path":paths.attachment(&attachments.path(image))})),
     );
     input
 }

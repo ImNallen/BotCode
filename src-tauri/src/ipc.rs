@@ -405,6 +405,10 @@ pub async fn reveal_in_finder(app: State<'_, App>, target: OpenTarget) -> Result
     app.reveal_in_finder(target).await
 }
 #[tauri::command]
+pub async fn sandbox_availability(app: State<'_, App>) -> Result<SandboxAvailability> {
+    Ok(app.sandbox_availability().await)
+}
+#[tauri::command]
 pub async fn create_thread(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

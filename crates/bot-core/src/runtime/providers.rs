@@ -5,17 +5,22 @@ use super::{
     restarts::Restarts,
 };
 use crate::{
-    codex::{AgentProcess, Codex, Signal},
+    codex::{AgentProcess, Codex, Signal, auth::TokenBroker},
     diagnostics::ProviderPids,
     domain::*,
     log::RotatingLog,
+    sandbox::{Attach, Exec, WORKSPACE},
+    workdir::SandboxHandle,
 };
 use std::{
     collections::HashMap,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+
+const AGENT: &str = "/opt/botcode/bin/agent";
 
 /// Which app-server a thread talks to. Derived from the checkout, never stored. Threads that
 /// share a sandbox checkout share its agent.
@@ -190,16 +195,17 @@ impl Providers {
 
 /// The one place an agent process starts.
 pub(super) enum Launcher {
-    Mac { binary: PathBuf },
-    Sandbox,
+    Mac {
+        binary: PathBuf,
+    },
+    /// Credentials are read before any Docker work, so a signed-out Mac fails fast. The
+    /// container's `agent` script runs `codex app-server` over the exec's stdio.
+    Sandbox {
+        handle: Arc<SandboxHandle>,
+        broker: TokenBroker,
+    },
 }
 impl Launcher {
-    pub(super) fn new(key: &EnvKey, binary: PathBuf) -> Self {
-        match key {
-            EnvKey::Mac => Self::Mac { binary },
-            EnvKey::Sandbox(_) => Self::Sandbox,
-        }
-    }
     pub(super) async fn start(
         self,
         epoch: u64,
@@ -207,17 +213,32 @@ impl Launcher {
         log: RotatingLog,
         pids: ProviderPids,
     ) -> Result<ProviderSession> {
-        let process = match self {
-            Self::Mac { binary } => AgentProcess::mac(&binary),
-            Self::Sandbox => {
-                return Err(AppError::new(
-                    "sandbox_unavailable",
-                    "Sandbox threads are not available yet.",
-                ));
+        let (process, credentials) = match self {
+            Self::Mac { binary } => (AgentProcess::mac(&binary), None),
+            Self::Sandbox { handle, broker } => {
+                let credentials = broker.read()?;
+                handle.ready().await?;
+                let command = handle.container.command(
+                    &Exec {
+                        argv: &[AGENT],
+                        workdir: WORKSPACE,
+                        env: &[],
+                    },
+                    Attach::Stdin,
+                );
+                (AgentProcess::new(command), Some(credentials))
             }
         };
         let provider = Codex::launch(process, epoch, events, log, pids).await?;
-        if let Err(error) = provider.initialize().await {
+        let prepared = async {
+            provider.initialize().await?;
+            match &credentials {
+                Some(credentials) => crate::codex::auth::login(&provider, credentials).await,
+                None => Ok(()),
+            }
+        }
+        .await;
+        if let Err(error) = prepared {
             let _ = provider.terminate().await;
             return Err(error);
         }

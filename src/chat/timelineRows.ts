@@ -9,6 +9,7 @@ import type {
   ToolPresentation,
 } from "../ipc";
 import { fileKind } from "../panel/filePreview";
+import { inSandbox } from "../lib/sandbox";
 import type { ComposerContextRecord } from "./composerContext";
 import { pathBasename } from "./composer-logic";
 import { formatDuration } from "../lib/time";
@@ -140,6 +141,8 @@ export type TimelineRow =
       id: string;
       startedAtMs: number | null;
       compacting: boolean;
+      // The sandbox's agent is launching, which can include building its image.
+      startingSandbox: boolean;
     }
   | { kind: "thinking"; id: string; compacting: boolean }
   | {
@@ -1055,11 +1058,16 @@ export function deriveRows(
       const compacting = lastCompaction
         ? !lastCompaction.complete
         : turn.kind === "compaction";
+      const startingSandbox =
+        !compacting &&
+        thread.session.kind === "connecting" &&
+        inSandbox(thread.checkout);
       rows.push({
         kind: "working",
         id: `working:${turn.id}`,
         startedAtMs: turn.startedAtMs,
         compacting,
+        startingSandbox,
       });
       const pending = thread.approvals.filter(
         (approval) =>
@@ -1103,7 +1111,7 @@ export function deriveRows(
           },
         });
       }
-      if (!hasActivityRow && pending.length === 0)
+      if (!hasActivityRow && pending.length === 0 && !startingSandbox)
         rows.push({ kind: "thinking", id: liveId, compacting });
     } else {
       const terminalIndex = list.findLastIndex(

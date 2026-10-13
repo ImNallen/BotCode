@@ -69,6 +69,7 @@ import { ErrorView } from "../errors/ErrorView";
 import { RenderErrorBoundary } from "../errors/RenderErrorBoundary";
 import { PreviewSurface } from "../preview/PreviewSurface";
 import { previewScopeKey, scopeForPreview } from "../preview/model";
+import type { TerminalUnavailable } from "../lib/sandbox";
 
 export type Surface =
   | { kind: "files" }
@@ -110,11 +111,6 @@ const FOLDER_TARGETS = SURFACE_TARGETS.filter(
   (target) => target.surface.kind === "files",
 );
 
-const TERMINAL_UNAVAILABLE = {
-  hint: "Available when a project is open.",
-  reason: "Terminal surfaces are only available from a project thread.",
-};
-
 export function RightPanel({
   checkout,
   git,
@@ -128,7 +124,7 @@ export function RightPanel({
   canAskCodex,
   onAskCodex,
   onCheckoutPullRequest,
-  terminalAvailable,
+  terminalUnavailable,
   fileLinks,
   thread,
   turnSelection,
@@ -147,7 +143,7 @@ export function RightPanel({
   canAskCodex: boolean;
   onAskCodex: (request: ReviewDraftRequest) => void;
   onCheckoutPullRequest: (target: PrObservation) => void;
-  terminalAvailable: boolean;
+  terminalUnavailable: TerminalUnavailable | null;
   fileLinks: FileLinks;
   thread: Thread | undefined;
   turnSelection: TurnDiffSelection | null;
@@ -210,7 +206,7 @@ export function RightPanel({
   const localAvailable = view !== undefined && view.unavailable === null;
   const open = (surface: Surface) => onChange(openSurface(state, surface));
   const openTerminal = () => {
-    if (!terminalAvailable) return;
+    if (terminalUnavailable) return;
     open({ kind: "terminal", id: createPanelTerminal(terminalScope) });
   };
   const close = (index: number) => {
@@ -251,7 +247,7 @@ export function RightPanel({
       icon: TerminalSquareIcon,
       shortcut: "T",
       onSelect: openTerminal,
-      ...(terminalAvailable ? {} : { unavailable: TERMINAL_UNAVAILABLE }),
+      ...(terminalUnavailable ? { unavailable: terminalUnavailable } : {}),
     },
     ...(!localAvailable
       ? thread?.turns.some((turn) => turn.checkpoint.kind === "complete")

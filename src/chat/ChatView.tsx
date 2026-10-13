@@ -53,11 +53,7 @@ import type {
 import { cn } from "../lib/cn";
 import { workingSessions } from "../lib/sessions";
 import { useShortcutLabel } from "../lib/shortcuts";
-import {
-  type CheckoutMode,
-  projectSetting,
-  usePreferences,
-} from "../settings/preferences";
+import { projectSetting, usePreferences } from "../settings/preferences";
 import { WorkspaceBadge } from "../ProjectBadge";
 import {
   WorkspaceBreadcrumb,
@@ -196,6 +192,13 @@ import {
 } from "../terminal/terminalStore";
 
 import { resolveThreadEnvMode } from "./projectScripts";
+import { inSandbox, terminalUnavailable } from "../lib/sandbox";
+import {
+  draftNewCheckout,
+  picksBase,
+  sandboxOption,
+  type DraftCheckout,
+} from "./draftCheckout";
 import { ProjectScriptsControl } from "./ProjectScriptsControl";
 import { ChatHeaderActions } from "./ChatHeaderActions";
 import { MenuSeparator } from "../ui/menu";
@@ -221,11 +224,6 @@ import {
 } from "./ExpandedImagePreview";
 import { makeWorkspaceFileDropHandlers } from "./workspaceFileDrop";
 
-type DraftCheckout = {
-  mode: CheckoutMode;
-  base: string | null;
-  fromOrigin: boolean;
-};
 type PullRequestHandoff = {
   preparation: PullRequestPreparation;
 } & (
@@ -379,6 +377,12 @@ export function ChatView({
     enabled: !isScratch && (!threadId || prHandoff !== null),
     retry: false,
   });
+  const sandboxAvailability = useQuery({
+    queryKey: ["sandbox-availability"],
+    queryFn: ipc.sandboxAvailability,
+    enabled: !isScratch && !threadId,
+    retry: false,
+  });
   useSyncExternalStore(
     followUps.subscribe,
     followUps.snapshot,
@@ -528,6 +532,7 @@ export function ChatView({
     "newWorktreesStartFromOrigin",
   ).value;
   const draftDefaults = (): DraftCheckout => ({
+    placement: "mac",
     mode: newThreadCheckout,
     base: null,
     fromOrigin: newWorktreesStartFromOrigin,
@@ -660,9 +665,11 @@ export function ChatView({
       ? view.workspace.root
       : undefined;
   const skills = useCheckoutSkills(skillsRoot);
-  const checkoutOpenable = Boolean(
-    view && !view.unavailable && (threadId ? thread : !isScratch),
-  );
+  // A sandbox mirror's next sync would overwrite edits made in an editor.
+  const sandboxed = inSandbox(thread?.checkout);
+  const checkoutOpenable =
+    Boolean(view && !view.unavailable && (threadId ? thread : !isScratch)) &&
+    !sandboxed;
   const gitThread = !isScratch && !view?.unavailable ? thread : undefined;
   const fileContextMenu = useFileContextMenu();
   const summary = view?.threads.find((row) => row.id === threadId);
@@ -789,13 +796,7 @@ export function ChatView({
           workspaceId,
           isScratch
             ? { kind: "folder", prompt: text }
-            : draftCheckout.mode === "worktree"
-              ? {
-                  kind: "worktree",
-                  base: base ?? "",
-                  fromOrigin: baseFromOrigin,
-                }
-              : { kind: "local" },
+            : draftNewCheckout(draftCheckout, base ?? "", baseFromOrigin),
         );
         setThreadSnapshot(client, created);
         target = created.id;
@@ -1023,19 +1024,33 @@ export function ChatView({
         setPanelOpen(true);
         setPanel((current) => openFile(current, path));
       },
-      target: (link) =>
-        link.kind === "external"
-          ? { kind: "chat_link", thread_id: link.threadId, path: link.path }
-          : workspaceTarget(
-              { workspaceId: checkoutWorkspace, threadId: checkoutThread },
-              link.path,
-            ),
+      target: sandboxed
+        ? null
+        : (link) =>
+            link.kind === "external"
+              ? { kind: "chat_link", thread_id: link.threadId, path: link.path }
+              : workspaceTarget(
+                  { workspaceId: checkoutWorkspace, threadId: checkoutThread },
+                  link.path,
+                ),
       absolutePath: (link) =>
         link.kind === "external" || !root ? link.path : `${root}/${link.path}`,
       previewScope: scopeForPreview(workspaceId, threadId),
     };
-  }, [view, workspaceId, threadId, checkoutWorkspace, checkoutThread]);
-  const terminalAvailable = !(isScratch && !threadId);
+  }, [
+    view,
+    workspaceId,
+    threadId,
+    checkoutWorkspace,
+    checkoutThread,
+    sandboxed,
+  ]);
+  const terminalToggleShown = !(isScratch && !threadId);
+  const terminalBlocked = terminalUnavailable({
+    projectDraftOrThread: terminalToggleShown,
+    checkout: thread?.checkout,
+  });
+  const terminalAvailable = terminalBlocked === null;
   const terminalScope = terminalScopeKey(workspaceId, threadId ?? null);
   const terminalState = useTerminalState(terminalScope);
   const terminalOpen = terminalState.terminalOpen;
@@ -1051,6 +1066,7 @@ export function ChatView({
     return () => cancelAnimationFrame(frame);
   }, [terminalScope, terminalOpen]);
   const runScript = (script: ProjectScript) => {
+    if (terminalBlocked) return;
     const capturedScope = previewScopeRef.current;
     const surfaceId = createPanelTerminal(terminalScope);
     setPanelOpen(true);
@@ -1676,8 +1692,7 @@ export function ChatView({
     });
   };
   const title = isDraft ? "New thread" : (thread?.title ?? "");
-  const worktreeDraft =
-    isDraft && !createdDraft && draftCheckout.mode === "worktree";
+  const worktreeDraft = isDraft && !createdDraft && picksBase(draftCheckout);
   const controlsDisabled =
     selectingWorktree ||
     prHandoff?.kind === "appending" ||
@@ -1695,6 +1710,17 @@ export function ChatView({
           isDraft && !createdDraft
             ? {
                 kind: "draft",
+                placement: draftCheckout.placement,
+                sandbox: sandboxOption(
+                  sandboxAvailability.data,
+                  sandboxAvailability.error?.message,
+                ),
+                onSandboxMenuOpen: () => void sandboxAvailability.refetch(),
+                onPlacementChange: (placement) =>
+                  setDraftCheckout((current) => ({
+                    ...current,
+                    placement,
+                  })),
                 mode: draftCheckout.mode,
                 onChange: (mode) =>
                   setDraftCheckout((current) => ({
@@ -1783,16 +1809,20 @@ export function ChatView({
             className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
             data-panel-layout-controls
           >
-            {terminalAvailable ? (
+            {terminalToggleShown ? (
               <span className="flex shrink-0">
                 <Toggle
-                  className="shrink-0 [-webkit-app-region:no-drag]"
-                  pressed={terminalOpen}
+                  className="shrink-0 [-webkit-app-region:no-drag] disabled:pointer-events-auto"
+                  pressed={terminalAvailable && terminalOpen}
+                  disabled={!terminalAvailable}
                   onClick={() =>
                     updateTerminalState(terminalScope, toggleTerminalOpen)
                   }
                   aria-label="Toggle terminal drawer"
-                  title={`Toggle terminal drawer${terminalToggleShortcut ? ` (${terminalToggleShortcut})` : ""}`}
+                  title={
+                    terminalBlocked?.reason ??
+                    `Toggle terminal drawer${terminalToggleShortcut ? ` (${terminalToggleShortcut})` : ""}`
+                  }
                   variant="ghost"
                   size="sm"
                 >
@@ -1896,7 +1926,7 @@ export function ChatView({
               className={
                 panelOpen
                   ? "pr-0"
-                  : terminalAvailable
+                  : terminalToggleShown
                     ? "pr-19.25 sm:pr-15.25 @3xl/header-actions:pr-16.25"
                     : "pr-10.25 sm:pr-7.25 @3xl/header-actions:pr-8.25"
               }
@@ -1909,6 +1939,7 @@ export function ChatView({
                       workspaceId={workspaceId}
                       scripts={configQuery.data?.scripts ?? []}
                       onRun={runScript}
+                      runUnavailable={terminalBlocked?.reason}
                       presentation={presentation}
                       onRequestMenuClose={closeMenu}
                     />
@@ -2429,7 +2460,7 @@ export function ChatView({
             canAskCodex={reviewDraftTarget.current.canAccept}
             onAskCodex={askCodex}
             onCheckoutPullRequest={(target) => startPullRequestHandoff(target)}
-            terminalAvailable={terminalAvailable}
+            terminalUnavailable={terminalBlocked}
             fileLinks={fileLinks}
             thread={thread}
             turnSelection={

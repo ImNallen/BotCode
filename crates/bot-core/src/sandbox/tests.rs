@@ -219,7 +219,7 @@ fn the_git_transport_escapes_spaces_and_percent_signs() {
     let docker = Docker::new(SandboxConfig {
         docker: "/Applications/My Docker/100%/docker".into(),
         data_dir: data.path().into(),
-        codex_version: "0.162.0".parse().unwrap(),
+        codex: CodexSource::Version("0.162.0".parse().unwrap()),
     });
     let container = docker.container(&id("0123456789ab"));
     assert_eq!(
@@ -259,7 +259,7 @@ async fn status_reports_a_missing_cli_and_an_unreachable_daemon() {
         Docker::new(SandboxConfig {
             docker,
             data_dir: dir.path().into(),
-            codex_version: "0.162.0".parse().unwrap(),
+            codex: CodexSource::Version("0.162.0".parse().unwrap()),
         })
     };
     assert_eq!(
@@ -301,7 +301,7 @@ impl Fixture {
         let docker = Docker::new(SandboxConfig {
             docker: docker_binary(),
             data_dir: data.path().into(),
-            codex_version: "0.162.0".parse().unwrap(),
+            codex: CodexSource::Version("0.162.0".parse().unwrap()),
         });
         let _build = IMAGE.lock().await;
         docker.image(&|_| {}).await.unwrap();
@@ -376,7 +376,7 @@ async fn status_reads_a_running_docker() {
     let docker = Docker::new(SandboxConfig {
         docker: docker_binary(),
         data_dir: data.path().into(),
-        codex_version: "0.162.0".parse().unwrap(),
+        codex: CodexSource::Version("0.162.0".parse().unwrap()),
     });
     let DockerStatus::Ready {
         server_version,
@@ -397,7 +397,7 @@ async fn the_image_builds_once_and_then_is_found() {
     let docker = Docker::new(SandboxConfig {
         docker: docker_binary(),
         data_dir: data.path().into(),
-        codex_version: "0.162.0".parse().unwrap(),
+        codex: CodexSource::Version("0.162.0".parse().unwrap()),
     });
     let _build = IMAGE.lock().await;
     let lines = std::sync::atomic::AtomicUsize::new(0);
