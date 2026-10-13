@@ -9,6 +9,7 @@ import {
 } from "react";
 import { isCommandPaletteOpen } from "../lib/commandPaletteBus";
 import { cn } from "../lib/cn";
+import { isPageCovered } from "../preview/nativeHost";
 import { Kbd } from "./chrome";
 import type { Surface } from "./RightPanel";
 
@@ -33,9 +34,6 @@ export function agentsAction(
     badgeCount: liveCount,
   };
 }
-
-const LAUNCHER_SHORTCUT_BLOCKING_LAYERS =
-  '[data-slot="menu-popup"],[role="dialog"],[aria-modal="true"],dialog[open]';
 
 export function actionForKey(
   event: Pick<
@@ -94,7 +92,7 @@ export function Launcher({ actions }: { actions: readonly SurfaceAction[] }) {
       if (isCommandPaletteOpen()) return;
       const action = actionForKey(event, shortcutActionsRef.current);
       if (!action) return;
-      if (document.querySelector(LAUNCHER_SHORTCUT_BLOCKING_LAYERS)) return;
+      if (isPageCovered()) return;
       if (targetsTypingContext(event.target)) return;
       event.preventDefault();
       event.stopPropagation();

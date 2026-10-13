@@ -88,12 +88,16 @@ export function attachPreviewHost({
   };
 }
 
-export const coveringLayers =
+const coveringLayers =
   '[data-slot="menu-popup"],[role="dialog"],[aria-modal="true"],dialog[open]';
+export const isPageCovered = () =>
+  Array.from(document.querySelectorAll(coveringLayers)).some((layer) =>
+    layer.checkVisibility(),
+  );
 export function measurePreviewHost(host: HTMLElement): PreviewLayout {
   if (
     !host.isConnected ||
-    document.querySelector(coveringLayers) ||
+    isPageCovered() ||
     host.closest('[inert],[aria-hidden="true"]')
   )
     return { rect: null, visible: false };
