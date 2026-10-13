@@ -42,6 +42,7 @@ mod editors;
 pub use editors::{EditorId, OpenTarget, Position, available_editors};
 mod keybindings;
 mod log;
+pub mod mirror;
 mod native_app_icon;
 pub use keybindings::KeybindingsFile;
 mod pr_inbox;
