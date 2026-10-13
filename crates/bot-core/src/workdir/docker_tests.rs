@@ -41,6 +41,7 @@ async fn readied(fixture: &Fixture, dir: &Path) -> Arc<SandboxHandle> {
         root,
         OWN.into(),
         Duration::from_millis(250),
+        tokio::sync::mpsc::unbounded_channel().0,
         RotatingLog::silent(),
     );
     handle.ready().await.unwrap();

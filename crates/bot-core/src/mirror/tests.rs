@@ -1010,6 +1010,7 @@ async fn a_stale_container_without_the_desktop_port_is_pulled_then_recreated_wit
         f.root.clone(),
         OWN.into(),
         std::time::Duration::from_secs(30),
+        tokio::sync::mpsc::unbounded_channel().0,
         crate::log::RotatingLog::silent(),
     );
     handle.ready().await.unwrap();

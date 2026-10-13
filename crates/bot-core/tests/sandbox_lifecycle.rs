@@ -577,6 +577,65 @@ async fn terminal_input_wakes_a_paused_sandbox_first() {
 }
 
 #[tokio::test]
+async fn terminal_input_to_a_paused_sandbox_sends_the_strip_a_change_hint() {
+    let f = Fixture::new().await;
+    let term = TerminalId::try_from("term-hint".to_string()).unwrap();
+    f.app
+        .terminal_attach(
+            f.workspace.id.clone(),
+            Some(f.thread.id.clone()),
+            term.clone(),
+            80,
+            24,
+            |_| {},
+        )
+        .await
+        .unwrap();
+    f.until("paused with an idle shell attached", |f| {
+        f.position("pause", 0).is_some()
+    })
+    .await;
+    f.until_state(SandboxState::Paused).await;
+    // The pause's own hint is on its way; let it pass before listening.
+    let mut hints = f.app.subscribe();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    while hints.try_recv().is_ok() {}
+    // No newline: the shell shows no new prompt, so no pull after a command sends a hint.
+    f.app
+        .terminal_write(
+            f.workspace.id.clone(),
+            Some(f.thread.id.clone()),
+            term.clone(),
+            "ls".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.state().await, SandboxState::Running);
+    // Well inside the pause window, so the next idle pause cannot stand in for the wake.
+    let hint = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let hint = hints.recv().await.expect("the change channel stays open");
+            if hint.thread_id == f.thread.id {
+                break hint;
+            }
+        }
+    })
+    .await
+    .expect("the wake sent the renderer a change hint for the thread");
+    assert_eq!(hint.workspace_id, f.workspace.id);
+    assert_eq!(
+        f.state().await,
+        SandboxState::Running,
+        "the hint arrived while the container runs, so the strip reads Running"
+    );
+    f.app
+        .terminal_close(f.workspace.id.clone(), Some(f.thread.id.clone()), term)
+        .await
+        .unwrap();
+    f.app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn the_desktop_stops_after_the_window_without_a_tab_and_a_connected_tab_keeps_everything() {
     let f = Fixture::new().await;
     f.app

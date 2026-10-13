@@ -144,7 +144,14 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
     let (commands, requests) = mpsc::channel(1);
     let (reply, shutdown) = oneshot::channel();
     commands.send(Command::Shutdown(reply)).await.unwrap();
-    owner.run(requests, signals, completions).await;
+    owner
+        .run(
+            requests,
+            signals,
+            completions,
+            tokio::sync::mpsc::unbounded_channel().1,
+        )
+        .await;
     assert_eq!(shutdown.await.unwrap().unwrap_err().code, "process_cleanup");
     let store = Store::open(dir.path()).unwrap();
     assert!(matches!(

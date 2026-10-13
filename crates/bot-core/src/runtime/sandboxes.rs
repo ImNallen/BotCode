@@ -1,7 +1,7 @@
 //! The registry of sandbox handles, shared by the App and the owner loop, plus startup
 //! reconciliation, shutdown, the idle lifecycle tick, and mirror pulls after terminal
 //! commands.
-use super::{Command, Completion, Location, Owner, call, providers::EnvKey};
+use super::{Command, Location, Owner, call, providers::EnvKey};
 use crate::{
     codex::auth::TokenBroker,
     domain::*,
@@ -36,12 +36,15 @@ pub(crate) struct Sandboxes {
     pub limits: Limits,
     next_tick: Mutex<Instant>,
     handles: Mutex<HashMap<SandboxId, Arc<SandboxHandle>>>,
+    /// Where every handle reports a phase change; the owner loop reads the other end.
+    changed: mpsc::UnboundedSender<SandboxId>,
 }
 impl Sandboxes {
     pub(crate) fn new(
         config: SandboxConfig,
         broker: TokenBroker,
         limits: Limits,
+        changed: mpsc::UnboundedSender<SandboxId>,
         log: RotatingLog,
     ) -> Self {
         Self {
@@ -51,6 +54,7 @@ impl Sandboxes {
             limits,
             next_tick: Mutex::new(Instant::now()),
             handles: Mutex::new(HashMap::new()),
+            changed,
         }
     }
     /// A registry with no Docker and no Codex, whose `codex-home` is under `dir`.
@@ -64,6 +68,7 @@ impl Sandboxes {
             },
             TokenBroker::new(&dir.join("codex-home"), "/no/codex".into()),
             Limits::DEFAULT,
+            mpsc::unbounded_channel().0,
             RotatingLog::silent(),
         )
     }
@@ -96,6 +101,7 @@ impl Sandboxes {
                     mirror_root.to_path_buf(),
                     branch.to_owned(),
                     self.limits.probe_every(),
+                    self.changed.clone(),
                     self.log.clone(),
                 )
             })
@@ -315,15 +321,9 @@ impl Owner {
                 let _ = self.stop_providers(Some(&key)).await;
                 self.lose_env(&key, reason, reason).await;
             }
-            let done = self.done.clone();
             tokio::spawn(async move {
-                let changed = handle.lifecycle(work, now.into_std()).await;
+                handle.lifecycle(work, now.into_std()).await;
                 handle.end_work();
-                if changed {
-                    let _ = done
-                        .send(Completion::SandboxChanged(handle.id.clone()))
-                        .await;
-                }
             });
         }
     }
@@ -339,8 +339,8 @@ impl Owner {
             handle.request_stop(STOPPED_SETTLED);
         }
     }
-    /// The container changed state outside a turn, so the strip label of each of its threads
-    /// reads it again.
+    /// The container's phase changed, so the strip label of each of its threads reads it
+    /// again.
     pub(super) fn sandbox_changed(&self, id: &SandboxId) {
         let key = EnvKey::Sandbox(id.clone());
         for thread in self.threads.values() {
@@ -352,38 +352,27 @@ impl Owner {
 }
 
 impl SandboxHandle {
-    /// Runs one piece of lifecycle work. Returns whether the container's state changed.
-    async fn lifecycle(&self, work: Work, decided_at: std::time::Instant) -> bool {
+    /// Runs one piece of lifecycle work.
+    async fn lifecycle(&self, work: Work, decided_at: std::time::Instant) {
         match work {
-            Work::Probe => {
-                match self.probe().await {
-                    Ok(Some(percent)) if percent >= CPU_BUSY_PERCENT => {
-                        self.note(&format!("busy: {percent:.1}% CPU"));
-                    }
-                    Ok(_) => {}
-                    Err(error) => self.note(&format!("probe failed: {}", error.message)),
+            Work::Probe => match self.probe().await {
+                Ok(Some(percent)) if percent >= CPU_BUSY_PERCENT => {
+                    self.note(&format!("busy: {percent:.1}% CPU"));
                 }
-                false
-            }
-            Work::StopDesktop => {
-                match self.stop_desktop().await {
-                    Ok(()) => self.note("desktop stopped: no Desktop tab and no turn"),
-                    Err(error) => self.note(&format!("desktop stop failed: {}", error.message)),
-                }
-                false
-            }
+                Ok(_) => {}
+                Err(error) => self.note(&format!("probe failed: {}", error.message)),
+            },
+            Work::StopDesktop => match self.stop_desktop().await {
+                Ok(()) => self.note("desktop stopped: no Desktop tab and no turn"),
+                Err(error) => self.note(&format!("desktop stop failed: {}", error.message)),
+            },
             Work::Retire(desired, why) => match self.idle_retire(desired, decided_at).await {
-                Ok(changed) => {
-                    if changed {
-                        self.note(&format!("{desired:?}: {why}").to_lowercase());
-                    }
-                    changed
-                }
+                Ok(true) => self.note(&format!("{desired:?}: {why}").to_lowercase()),
+                Ok(false) => {}
                 Err(error) => {
                     self.note(&format!("{desired:?} ({why}) failed: {}", error.message));
                     // A failed pull keeps the container; the next attempt waits a full window.
                     self.touch();
-                    false
                 }
             },
         }

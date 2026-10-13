@@ -21,6 +21,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use tokio::sync::mpsc;
 
 #[cfg(test)]
 mod docker_tests;
@@ -82,6 +83,10 @@ pub(crate) struct SandboxHandle {
     /// `Running` only after a completed `ready`, until a `retire`. Otherwise the container is
     /// not running on this process's account, so the mirror is exact and reads skip the pull.
     phase: Mutex<Phase>,
+    /// Every change of `phase`, for the owner, which tells each of the sandbox's threads to
+    /// read `sandbox_state` again. Whoever changes the phase, a wake, a `ready` or a retire,
+    /// the strip label follows.
+    changed: mpsc::UnboundedSender<SandboxId>,
     /// What the idle rule reads. Entry points touch it; the owner tick folds in turns and
     /// probes and decides.
     activity: Mutex<Activity>,
@@ -106,6 +111,7 @@ impl SandboxHandle {
         mirror_root: PathBuf,
         branch: String,
         probe_every: Duration,
+        changed: mpsc::UnboundedSender<SandboxId>,
         log: RotatingLog,
     ) -> Arc<Self> {
         let container = docker.container(&id);
@@ -118,6 +124,7 @@ impl SandboxHandle {
             branch: Mutex::new(branch),
             flight: tokio::sync::Mutex::new(()),
             phase: Mutex::new(Phase::Stopped),
+            changed,
             activity: Mutex::new(Activity::new(Instant::now())),
             stop_requested: Mutex::new(None),
             working: AtomicBool::new(false),
@@ -162,7 +169,14 @@ impl SandboxHandle {
         *self.phase.lock().unwrap()
     }
     fn set_phase(&self, phase: Phase) {
-        *self.phase.lock().unwrap() = phase;
+        {
+            let mut current = self.phase.lock().unwrap();
+            if *current == phase {
+                return;
+            }
+            *current = phase;
+        }
+        let _ = self.changed.send(self.id.clone());
     }
     pub(crate) fn is_ready(&self) -> bool {
         self.phase() == Phase::Running

@@ -572,6 +572,7 @@ impl App {
         let (limits, limits_rx) = watch::channel(None);
         let (provider_events, signals) = mpsc::channel(512);
         let (done, completions) = mpsc::channel(128);
+        let (sandbox_changes, sandbox_changed) = mpsc::unbounded_channel();
         let prs = PrWork::load(&mut store)?;
         let tools = tools::ToolWork::new(&config, agent_tools, &store)?;
         let log = RotatingLog::open(config.data_dir.join("logs").join("codex.log"));
@@ -583,6 +584,7 @@ impl App {
             },
             codex::auth::TokenBroker::new(&codex::auth::codex_home(), config.codex_binary.clone()),
             crate::workdir::Limits::from_environment(),
+            sandbox_changes,
             log.clone(),
         ));
         let referenced: HashMap<SandboxId, sandboxes::Referenced> = threads
@@ -694,7 +696,7 @@ impl App {
                 done,
                 sandboxes: sandboxes.clone(),
             }
-            .run(rx, signals, completions),
+            .run(rx, signals, completions, sandbox_changed),
         );
         let app = Self {
             project_favicons: crate::project_icon::FaviconResolver::default(),
@@ -2536,13 +2538,11 @@ enum Completion {
         job: Prepare,
         result: Result<()>,
     },
-    /// The idle rule or a settle changed a container's state.
-    SandboxChanged(SandboxId),
 }
 impl Completion {
     fn epoch(&self) -> Option<u64> {
         match self {
-            Self::StackProgress { .. } | Self::SandboxChanged(_) => None,
+            Self::StackProgress { .. } => None,
             Self::Woken { epoch, .. } => Some(*epoch),
             Self::Models { epoch, .. }
             | Self::Limits { epoch, .. }
@@ -2562,8 +2562,7 @@ impl Completion {
             Self::StackProgress { .. }
             | Self::CompactionExpired { .. }
             | Self::ResetConsumed { .. }
-            | Self::Woken { .. }
-            | Self::SandboxChanged(_) => None,
+            | Self::Woken { .. } => None,
             Self::Models { result, .. } => result.as_ref().err(),
             Self::Limits { result, .. } => result.as_ref().err(),
             Self::Launched { result, .. } => result.as_ref().err(),
@@ -3110,6 +3109,7 @@ impl Owner {
         mut commands: mpsc::Receiver<Command>,
         mut signals: mpsc::Receiver<Signal>,
         mut completions: mpsc::Receiver<Completion>,
+        mut sandbox_changed: mpsc::UnboundedReceiver<SandboxId>,
     ) {
         let ids: Vec<_> = self.threads.keys().cloned().collect();
         for thread in self.threads.values() {
@@ -3184,6 +3184,7 @@ impl Owner {
                     let key=done.epoch().and_then(|epoch| self.providers.key(epoch).cloned());
                     if let Err(error)=self.complete(done).await {self.lose_in(key.as_ref(),&error.message,&error.message).await;}
                 }
+                Some(id)=sandbox_changed.recv()=>self.sandbox_changed(&id),
                 _=tick.tick()=>{
                     self.sandbox_lifecycle().await;
                     self.poll_source_control();
@@ -4706,7 +4707,6 @@ impl Owner {
             Completion::Limits { epoch, result } if self.providers.current(epoch) => {
                 self.settle_limits(result);
             }
-            Completion::SandboxChanged(id) => self.sandbox_changed(&id),
             Completion::Woken { epoch, job, result } if self.providers.current(epoch) => {
                 let key = self.providers.key(epoch).cloned();
                 match (result, key) {
