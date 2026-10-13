@@ -42,15 +42,12 @@ export function ProjectScriptsControl({
   workspaceId,
   scripts,
   onRun,
-  runUnavailable,
   presentation = "toolbar",
   onRequestMenuClose,
 }: {
   workspaceId: string;
   scripts: readonly ProjectScript[];
   onRun: (script: ProjectScript) => void;
-  // Why scripts cannot run here. Editing them stays available.
-  runUnavailable?: string;
   presentation?: HeaderActionsPresentation;
   onRequestMenuClose?: () => void;
 }) {
@@ -113,7 +110,6 @@ export function ProjectScriptsControl({
         event.repeat ||
         event.isComposing ||
         request ||
-        runUnavailable ||
         isCommandPaletteOpen() ||
         document.querySelector("dialog[open]")
       )
@@ -130,16 +126,14 @@ export function ProjectScriptsControl({
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
-  }, [scripts, onRun, request, runUnavailable]);
+  }, [scripts, onRun, request]);
   const scriptItems = (
     <>
       {scripts.map((script) => (
         <div key={script.id} className="group relative flex items-center">
           <MenuItem
             density={density}
-            className="pr-9 disabled:pointer-events-auto"
-            disabled={Boolean(runUnavailable)}
-            title={runUnavailable}
+            className="pr-9"
             onClick={() => {
               setOpen(false);
               onRun(script);
@@ -238,12 +232,7 @@ export function ProjectScriptsControl({
       {presentation === "menu" ? (
         <>
           {primary ? (
-            <MenuItem
-              density="touch"
-              disabled={Boolean(runUnavailable)}
-              title={runUnavailable}
-              onClick={() => onRun(primary)}
-            >
+            <MenuItem density="touch" onClick={() => onRun(primary)}>
               <ScriptIcon icon={primary.icon} className="size-4" />
               <MenuItemLabel>Run {primary.name}</MenuItemLabel>
               <MenuShortcut>
@@ -275,10 +264,9 @@ export function ProjectScriptsControl({
             <Button
               size="xs"
               variant="outline"
-              className="w-7 sm:w-6 @3xl/header-actions:w-auto! disabled:pointer-events-auto"
+              className="w-7 sm:w-6 @3xl/header-actions:w-auto!"
               aria-label={`Run ${primary.name}`}
-              title={runUnavailable ?? `Run ${primary.name}`}
-              disabled={Boolean(runUnavailable)}
+              title={`Run ${primary.name}`}
               onClick={() => onRun(primary)}
             >
               <ScriptIcon icon={primary.icon} />

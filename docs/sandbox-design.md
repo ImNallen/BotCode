@@ -96,7 +96,9 @@ Inbound mapping is partial on purpose. A path a sandbox agent names is never res
 5. Tool registration forces dynamic tools for a sandbox and leaves out the host preview backend.
 6. Background source-control refresh skips sandbox checkouts, because a Mac-side fast-forward would bypass the write session.
 
-The renderer reads `checkout.sandbox` for the composer's Run on choice, the sidebar indicator, hiding Open in, and disabling the terminal until slice 3.
+The renderer reads `checkout.sandbox` for the composer's Run on choice, the sidebar indicator, and hiding Open in.
+
+`Workdir::terminal` picks a terminal's launch, so the terminal module dispatches on `Launch` and never on the checkout.
 
 ## Tradeoffs accepted
 
@@ -133,6 +135,6 @@ Each slice ends verified in the real Tauri app.
 
 1. **Done.** The domain field and variant, `sandbox.rs` and `reconcile_plan`, tested against real Docker: status, image build, every `plan` pair, converge idempotence, labels and instance scoping, and lifeline cleanup.
 2. **Done.** `workdir.rs`, `mirror.rs`, `providers.rs`, `codex/auth.rs`, the agent process and the `WriteRoot` signatures, then the composer's Run on choice and `App::sandbox_availability`. Worktree setup runs in the container. Shutdown stops every agent and then stops every running sandbox, which pulls first.
-3. The terminal runs a shell inside the container through `docker exec -it`, with process labels from the container.
+3. **Done.** The terminal runs `bash -l` inside the container through `docker exec --tty` and the in-image `terminal` script, which records each shell so Bot Code stops its whole session when the client ends. Labels come from one `ps` exec per watched container, and a prompt mark from the shell pulls the mirror after each command. Project scripts run there with container paths.
 4. A Desktop tab shows noVNC on a published loopback port. Preview reaches the container's dev server, and agent browser tools run in the container.
 5. Idle sandboxes pause after about 10 minutes and stop after about 2 hours. Settle and archive stop the container. Cleanup and delete do a final sync and remove it, and delete also removes the sandbox's Codex home. The next message after removal recreates the container from the Mac worktree and the kept Codex home.

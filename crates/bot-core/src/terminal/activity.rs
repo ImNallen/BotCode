@@ -1,6 +1,8 @@
 //! Ported from T3 Code v0.0.45 `apps/server/src/terminal/Manager.ts` (subprocess activity polling).
-use super::Registry;
-use std::{io, sync::Weak, time::Duration};
+//! A sandbox shell's command is read inside its container, with one exec per container.
+use super::{Place, Registry, TerminalKey, container};
+use crate::sandbox::Container;
+use std::{collections::HashMap, io, sync::Weak, time::Duration};
 
 const POLL: Duration = Duration::from_secs(1);
 const MAX_POLL: Duration = Duration::from_secs(60);
@@ -24,28 +26,85 @@ pub(super) fn spawn_poller(registry: Weak<Registry>) -> io::Result<()> {
         .map(drop)
 }
 
+/// A shell whose command a container read can find: its key, its Mac pid and its id there.
+type ContainerShell = (TerminalKey, u32, String);
+
 fn tick(registry: &Weak<Registry>, failures: &mut u32) -> Option<Duration> {
-    let shells = registry.upgrade()?.shells();
-    if shells.is_empty() {
-        *failures = 0;
-        registry.upgrade()?.publish_labels(Vec::new());
-        return Some(POLL);
-    }
-    match capture() {
-        Ok(table) => {
-            *failures = 0;
-            let found = shells
-                .into_iter()
-                .filter_map(|(key, pid)| {
-                    let label = derive_label(table.as_ref(), pid, cfg!(windows))?;
-                    Some((key, pid, label))
-                })
-                .collect();
-            registry.upgrade()?.publish_labels(found);
+    let shells = registry.upgrade()?.polled();
+    let mut mac = Vec::new();
+    let mut containers: HashMap<String, (Container, Vec<ContainerShell>)> = HashMap::new();
+    let mut kept = Vec::new();
+    for (key, pid, place) in shells {
+        match place {
+            Some(Place::Mac) => mac.push((key, pid)),
+            Some(Place::Sandbox { container, id }) => containers
+                .entry(container.name().to_owned())
+                .or_insert_with(|| (container, Vec::new()))
+                .1
+                .push((key, pid, id)),
+            None => kept.push(key),
         }
-        Err(_) => *failures = (*failures + 1).min(MAX_FAILURES),
     }
+    let mut found = Vec::new();
+    let mut failed = false;
+    if !mac.is_empty() {
+        match capture() {
+            Ok(table) => found.extend(mac.into_iter().filter_map(|(key, pid)| {
+                let label = derive_label(table.as_ref(), pid, cfg!(windows))?;
+                Some((key, pid, label))
+            })),
+            Err(_) => {
+                failed = true;
+                kept.extend(mac.into_iter().map(|(key, _)| key));
+            }
+        }
+    }
+    for (container, shells) in containers.into_values() {
+        match container::processes(&container) {
+            Ok(output) => {
+                let (registered, table) = parse_container(&output);
+                found.extend(shells.into_iter().filter_map(|(key, pid, id)| {
+                    let label = derive_label(&table, *registered.get(&id)?, false)?;
+                    Some((key, pid, label))
+                }));
+            }
+            Err(_) => {
+                failed = true;
+                kept.extend(shells.into_iter().map(|(key, ..)| key));
+            }
+        }
+    }
+    registry.upgrade()?.publish_labels(found, &kept);
+    *failures = if failed {
+        (*failures + 1).min(MAX_FAILURES)
+    } else {
+        0
+    };
     Some(poll_delay(*failures))
+}
+
+/// Reads `terminal ps` output: the container pid of each registered shell, and the process
+/// table. Rows that do not parse are skipped.
+fn parse_container(output: &str) -> (HashMap<String, u32>, Snapshot) {
+    let mut registered = HashMap::new();
+    let mut rows = Vec::new();
+    for line in output.lines() {
+        let mut fields = line.split_whitespace();
+        match fields.next() {
+            Some("terminal") => {
+                if let (Some(id), Some(Ok(pid))) = (fields.next(), fields.next().map(str::parse)) {
+                    registered.insert(id.to_owned(), pid);
+                }
+            }
+            Some(pid) => {
+                if let (Ok(pid), Some(Ok(parent))) = (pid.parse(), fields.next().map(str::parse)) {
+                    rows.push((pid, parent, fields.collect::<Vec<_>>().join(" ")));
+                }
+            }
+            None => {}
+        }
+    }
+    (registered, Snapshot::from_rows(rows))
 }
 
 fn poll_delay(failures: u32) -> Duration {
@@ -88,13 +147,11 @@ fn derive_label(table: &dyn ProcessTable, shell: u32, windows: bool) -> Option<S
     Some(name(child)?.chars().take(MAX_LABEL_CHARS).collect())
 }
 
-#[cfg(any(windows, test))]
 #[derive(Default)]
 struct Snapshot {
     children: std::collections::HashMap<u32, Vec<u32>>,
     commands: std::collections::HashMap<u32, String>,
 }
-#[cfg(any(windows, test))]
 impl Snapshot {
     fn from_rows(rows: impl IntoIterator<Item = (u32, u32, String)>) -> Self {
         let mut snapshot = Self::default();
@@ -108,7 +165,6 @@ impl Snapshot {
         snapshot
     }
 }
-#[cfg(any(windows, test))]
 impl ProcessTable for Snapshot {
     fn children(&self, pid: u32) -> Vec<u32> {
         self.children.get(&pid).cloned().unwrap_or_default()
@@ -285,6 +341,18 @@ mod tests {
             .as_deref(),
             Some("PING")
         );
+    }
+
+    #[test]
+    fn a_container_table_names_each_registered_shell_and_its_children() {
+        let (registered, table) = parse_container(
+            "terminal 9f2c 14\nterminal stale 99\n      1       0 docker-init\n     14       0 bash\n     24      14 sleep\n     30       0 npm run dev\n     31      30 node\ngarbage\n",
+        );
+        assert_eq!(registered.len(), 2);
+        assert_eq!(registered["9f2c"], 14);
+        assert_eq!(derive_label(&table, 14, false).as_deref(), Some("sleep"));
+        assert_eq!(table.command(30).as_deref(), Some("npm run dev"));
+        assert_eq!(derive_label(&table, 99, false), None);
     }
 
     #[test]

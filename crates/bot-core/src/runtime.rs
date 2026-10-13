@@ -36,8 +36,8 @@ use crate::{
     repo, settings, skills,
     store::Store,
     terminal::{
-        CloseScope, MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey, TerminalLabels,
-        TerminalSize, Terminals,
+        CloseScope, Launch, MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey,
+        TerminalLabels, TerminalSize, Terminals,
     },
     usage::{self, ContextUsage, ResetOutcome, UsageLimits},
     vcs,
@@ -263,6 +263,8 @@ enum Command {
     ),
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
+    /// The thread's mirror was pulled outside a turn, so the renderer should read it again.
+    CheckoutPulled(ThreadId),
     PrRead(PrAccess, PullRequestKey, Reply<PrReviewDetail>),
     PrStackRead(PrAccess, PullRequestKey, Reply<Option<crate::PrStack>>),
     PrStackChange(
@@ -543,12 +545,14 @@ impl App {
                 crate::project::Dialect::of(&shell)
             });
         let (labels, terminal_labels) = watch::channel(TerminalLabels::default());
+        let (prompts, prompted) = mpsc::unbounded_channel();
         let terminals = Terminals::new(
             config.shell.clone(),
             Some(labels),
             Some(config.data_dir.join("logs").join("terminals")),
+            Some(prompts),
         );
-        let setup_terminals = Terminals::new(config.shell.clone(), None, None);
+        let setup_terminals = Terminals::new(config.shell.clone(), None, None, None);
         let settings = config.data_dir.join("settings.json");
         crate::project::fold_saved_scripts(&settings, &workspaces, false)?;
         let keybindings = Arc::new(crate::keybindings::Keybindings::new(
@@ -716,6 +720,10 @@ impl App {
             app.commands.downgrade(),
             app.sweeps.clone(),
             app.wake.clone(),
+        ));
+        tokio::spawn(sandboxes::pull_after_commands(
+            app.commands.downgrade(),
+            prompted,
         ));
         Ok(app)
     }
@@ -1681,7 +1689,8 @@ impl App {
         terminal: TerminalId,
     ) -> Result<()> {
         let (w, location) = self.checkout(workspace.clone(), thread.clone()).await?;
-        let cwd = location.repository()?.root().to_path_buf();
+        let workdir = location.repository()?;
+        let cwd = workdir.root().to_path_buf();
         let script = crate::project::resolve(&w.root, &self.settings, &workspace)?
             .scripts
             .into_iter()
@@ -1705,11 +1714,23 @@ impl App {
             env.push(("T3CODE_WORKTREE_PATH", cwd.as_path()));
         }
         use crate::project::Dialect;
-        let command = match self.script_dialect {
-            Dialect::Posix => {
+        let command = match (&workdir, self.script_dialect) {
+            // The container holds only the checkout, so it is also the project root there.
+            (Workdir::Sandbox { .. }, _) => {
+                let workspace = Path::new(crate::sandbox::WORKSPACE);
+                crate::project::posix_script_line(
+                    Path::new("bash"),
+                    &[
+                        ("T3CODE_PROJECT_ROOT", workspace),
+                        ("T3CODE_WORKTREE_PATH", workspace),
+                    ],
+                    &script.command,
+                )
+            }
+            (Workdir::Mac { .. }, Dialect::Posix) => {
                 crate::project::posix_script_line(&self.script_shell, &env, &script.command)
             }
-            dialect => {
+            (Workdir::Mac { .. }, dialect) => {
                 let batch = std::env::temp_dir()
                     .join(format!("bot-code-script-{}.cmd", uuid::Uuid::new_v4()));
                 std::fs::write(&batch, crate::project::batch_script(&script.command))?;
@@ -1989,7 +2010,7 @@ impl App {
             let subscription = terminals
                 .attach(
                     key.clone(),
-                    Some(&cwd),
+                    Some(&Launch::Mac { cwd }),
                     TerminalSize::new(80, 24)?,
                     Arc::new(|_| {}),
                 )?
@@ -2073,11 +2094,11 @@ impl App {
         };
         let sink: Sink = Arc::new(on_event);
         let terminals = self.terminals.clone();
-        let attach = move |cwd: Option<PathBuf>| {
+        let attach = |launch: Option<Launch>| {
             let (terminals, key, sink) = (terminals.clone(), key.clone(), sink.clone());
             async move {
                 tokio::task::spawn_blocking(move || {
-                    terminals.attach(key, cwd.as_deref(), size, sink)
+                    terminals.attach(key, launch.as_ref(), size, sink)
                 })
                 .await
                 .map_err(|e| AppError::new("terminal", e))?
@@ -2086,21 +2107,26 @@ impl App {
         if let Some(subscription) = attach(None).await? {
             return Ok(subscription);
         }
-        let location = self.checkout(workspace_id, thread_id).await?.1;
-        // A Mac shell in the mirror would edit files the next pull overwrites.
-        if location.in_sandbox() {
-            return Err(AppError::new(
-                "terminal_unavailable",
-                "The sandbox terminal is not available yet.",
-            ));
-        }
-        let Some(cwd) = location.files() else {
-            return Err(match location {
-                Location::Removed { .. } => worktree_removed(),
-                _ => AppError::new("terminal_unavailable", "Start a thread to open a terminal."),
-            });
+        let launch = match self.checkout(workspace_id, thread_id).await?.1 {
+            Location::Repository(workdir) => {
+                workdir
+                    .terminal(|| {
+                        sink(TerminalEvent::Output {
+                            data: "Starting sandbox…\r\n".into(),
+                        })
+                    })
+                    .await?
+            }
+            Location::Folder(cwd) => Launch::Mac { cwd },
+            Location::Removed { .. } => return Err(worktree_removed()),
+            Location::Unassigned => {
+                return Err(AppError::new(
+                    "terminal_unavailable",
+                    "Start a thread to open a terminal.",
+                ));
+            }
         };
-        attach(Some(cwd))
+        attach(Some(launch))
             .await?
             .ok_or_else(|| AppError::new("terminal", "The terminal did not start."))
     }
@@ -3331,6 +3357,15 @@ impl Owner {
             }
             Command::Checkout(id, thread, reply) => {
                 let _ = reply.send(self.checkout(&id, thread));
+            }
+            Command::CheckoutPulled(id) => {
+                if let Some(thread) = self.threads.get(&id) {
+                    self.project_search.invalidate();
+                    let _ = self.changes.send(ChangeHint {
+                        refresh_workspace: true,
+                        ..self.thread_hint(thread)
+                    });
+                }
             }
             Command::PrRead(thread, key, reply) => self.read_review(thread, key, reply),
             Command::PrStackRead(access, key, reply) => self.read_pr_stack(access, key, reply),

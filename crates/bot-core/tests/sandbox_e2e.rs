@@ -110,7 +110,12 @@ async fn a_sandbox_thread_runs_codex_in_the_container_and_mirrors_to_the_mac() {
         git(&repository, &["config", key, value]);
     }
     std::fs::write(repository.join("README.md"), "# sandbox e2e\n").unwrap();
-    git(&repository, &["add", "README.md"]);
+    std::fs::write(
+        repository.join("t3.json"),
+        r#"{"scripts":[{"name":"Env","command":"printf '%s %s\\n' \"$T3CODE_PROJECT_ROOT\" \"$T3CODE_WORKTREE_PATH\" > script-env.txt"}]}"#,
+    )
+    .unwrap();
+    git(&repository, &["add", "README.md", "t3.json"]);
     git(&repository, &["commit", "-qm", "initial"]);
     git(&repository, &["push", "-q", "-u", "origin", "main"]);
 
@@ -148,21 +153,102 @@ async fn a_sandbox_thread_runs_codex_in_the_container_and_mirrors_to_the_mac() {
         sandbox::Instance::of(&config.data_dir).as_str()
     );
     let _removal = Removal(container.clone());
-    let terminal = app
-        .terminal_attach(
-            workspace.id.clone(),
-            Some(thread.id.clone()),
-            TerminalId::try_from("term-1".to_string()).unwrap(),
-            80,
-            24,
-            |_| {},
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(terminal.code, "terminal_unavailable");
+    let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let term = TerminalId::try_from("term-1".to_string()).unwrap();
+    app.terminal_attach(
+        workspace.id.clone(),
+        Some(thread.id.clone()),
+        term.clone(),
+        80,
+        24,
+        {
+            let output = output.clone();
+            move |event| {
+                if let TerminalEvent::Output { data } = event {
+                    output.lock().unwrap().push_str(&data);
+                }
+            }
+        },
+    )
+    .await
+    .unwrap();
+    let mut hints = app.subscribe();
+    app.terminal_write(
+        workspace.id.clone(),
+        Some(thread.id.clone()),
+        term.clone(),
+        "whoami; pwd; uname -s; echo terminal > term.txt\r".into(),
+    )
+    .await
+    .unwrap();
+    let started = Instant::now();
+    while !output
+        .lock()
+        .unwrap()
+        .contains("botcode\r\n/workspace\r\nLinux\r\n")
+    {
+        assert!(
+            started.elapsed() < Duration::from_secs(600),
+            "{:?}",
+            output.lock().unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Nothing else reads the checkout here, so only the pull after the prompt brings term.txt.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let hint = hints.recv().await.unwrap();
+            if hint.thread_id == thread.id
+                && hint.refresh_workspace
+                && mirror.join("term.txt").exists()
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the finished command pulls the mirror and refreshes the checkout");
     assert_eq!(
-        terminal.message,
-        "The sandbox terminal is not available yet."
+        std::fs::read_to_string(mirror.join("term.txt")).unwrap(),
+        "terminal\n"
+    );
+    // Saved actions come from settings; import the file's actions as the UI's Import does.
+    let script = app
+        .project_file_config(workspace.id.clone())
+        .await
+        .unwrap()
+        .scripts
+        .remove(0);
+    app.save_settings(
+        &serde_json::json!({
+            "projectSettingsOverrides": {
+                workspace.id.to_string(): {"defaultProjectScripts": [&script]}
+            }
+        })
+        .to_string(),
+    )
+    .await
+    .unwrap();
+    app.run_project_script(
+        workspace.id.clone(),
+        Some(thread.id.clone()),
+        script.id,
+        TerminalId::try_from("term-2".to_string()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let started = Instant::now();
+    while !mirror.join("script-env.txt").exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the script never ran"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        std::fs::read_to_string(mirror.join("script-env.txt")).unwrap(),
+        "/workspace /workspace\n",
+        "scripts see container paths"
     );
     let editor = app
         .open_target_path(OpenTarget::Workspace {

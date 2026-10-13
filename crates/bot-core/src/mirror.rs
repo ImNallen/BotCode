@@ -30,7 +30,7 @@ const SEEDED: &str = "/workspace/.git/botcode-seeded";
 const CONTAINER_OUTGOING: &str = "refs/botcode/sync/outgoing";
 const CONTAINER_INCOMING: &str = "refs/botcode/sync/incoming";
 /// A pull that started this recently satisfies [`Freshness::Recent`].
-const RECENT: Duration = Duration::from_secs(1);
+pub(crate) const RECENT: Duration = Duration::from_secs(1);
 const CAPTURE: Duration = Duration::from_secs(120);
 const SEED: Duration = Duration::from_secs(600);
 const MARK: Duration = Duration::from_secs(30);

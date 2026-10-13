@@ -1,7 +1,8 @@
 mod activity;
+mod container;
 mod history;
 mod persist;
-use crate::{domain::*, process::Kill};
+use crate::{domain::*, process::Kill, sandbox::Container};
 use history::History;
 use persist::HistoryStore;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -17,7 +18,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 /// A client-chosen terminal name such as `term-1`, unique within its thread.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +144,25 @@ impl CloseScope {
 
 pub(crate) type Sink = Arc<dyn Fn(TerminalEvent) + Send + Sync>;
 
+/// How a new terminal's shell starts. `Workdir::terminal` picks it for a checkout.
+pub(crate) enum Launch {
+    /// The configured shell, in `cwd`.
+    Mac { cwd: PathBuf },
+    /// `bash -l` as the image's user in `/workspace`, through a `docker exec --tty` client.
+    Sandbox { container: Container },
+}
+
+/// Where a running shell lives.
+#[derive(Clone)]
+enum Place {
+    Mac,
+    /// The shell registered itself in `container` as `id`.
+    Sandbox {
+        container: Container,
+        id: String,
+    },
+}
+
 struct Output {
     history: History,
     unfinished_sequence: String,
@@ -152,8 +172,10 @@ struct Output {
 }
 
 struct Session {
-    /// The shell leads its own session and process group, so this is also the group id.
+    /// The Mac process on the PTY: the shell itself, or the `docker exec` client of a
+    /// sandbox shell. It leads its own session and process group, so this is also the group id.
     pid: i32,
+    place: Place,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
@@ -261,6 +283,8 @@ struct Registry {
     blocked: Mutex<HashSet<ThreadId>>,
     labels: Option<watch::Sender<TerminalLabels>>,
     history: Option<HistoryStore>,
+    /// Gets a sandbox terminal's key each time its shell shows a prompt.
+    prompts: Option<mpsc::UnboundedSender<TerminalKey>>,
 }
 impl Registry {
     fn drain(&self) -> Vec<Arc<Session>> {
@@ -272,7 +296,26 @@ impl Registry {
             .map(|(key, session)| (key.clone(), session.pid as u32))
             .collect()
     }
-    fn publish_labels(&self, found: Vec<(TerminalKey, u32, String)>) {
+    /// Each shell with the place to read its command from this poll. Sandbox shells without
+    /// a subscriber have none, so a container is read only while someone watches it.
+    fn polled(&self) -> Vec<(TerminalKey, u32, Option<Place>)> {
+        lock(&self.sessions)
+            .iter()
+            .map(|(key, session)| {
+                let watched = match session.place {
+                    Place::Mac => true,
+                    Place::Sandbox { .. } => !lock(&session.output).subscribers.is_empty(),
+                };
+                (
+                    key.clone(),
+                    session.pid as u32,
+                    watched.then(|| session.place.clone()),
+                )
+            })
+            .collect()
+    }
+    /// `kept` keys keep their current label, because their command could not be read.
+    fn publish_labels(&self, found: Vec<(TerminalKey, u32, String)>, kept: &[TerminalKey]) {
         let Some(sender) = &self.labels else { return };
         let sessions = lock(&self.sessions);
         let mut labels: Vec<TerminalLabel> = found
@@ -285,17 +328,25 @@ impl Registry {
                 label,
             })
             .collect();
-        labels.sort_by(|a, b| {
-            let order = |l: &TerminalLabel| (l.workspace_id.0, l.thread_id.as_ref().map(|t| t.0));
-            order(a)
-                .cmp(&order(b))
-                .then_with(|| a.terminal_id.0.cmp(&b.terminal_id.0))
-        });
         sender.send_if_modified(|current| {
+            labels.extend(
+                current
+                    .labels
+                    .iter()
+                    .filter(|label| kept.iter().any(|key| names(key, label)))
+                    .cloned(),
+            );
+            labels.sort_by(|a, b| {
+                let order =
+                    |l: &TerminalLabel| (l.workspace_id.0, l.thread_id.as_ref().map(|t| t.0));
+                order(a)
+                    .cmp(&order(b))
+                    .then_with(|| a.terminal_id.0.cmp(&b.terminal_id.0))
+            });
             if current.labels == labels {
                 return false;
             }
-            current.labels = labels;
+            current.labels = std::mem::take(&mut labels);
             current.sequence += 1;
             true
         });
@@ -304,13 +355,9 @@ impl Registry {
         let Some(sender) = &self.labels else { return };
         sender.send_if_modified(|current| {
             let before = current.labels.len();
-            current.labels.retain(|label| {
-                !keys.iter().any(|key| {
-                    key.workspace == label.workspace_id
-                        && key.thread == label.thread_id
-                        && key.terminal == label.terminal_id
-                })
-            });
+            current
+                .labels
+                .retain(|label| !keys.iter().any(|key| names(key, label)));
             let changed = current.labels.len() != before;
             if changed {
                 current.sequence += 1;
@@ -318,6 +365,11 @@ impl Registry {
             changed
         });
     }
+}
+fn names(key: &TerminalKey, label: &TerminalLabel) -> bool {
+    key.workspace == label.workspace_id
+        && key.thread == label.thread_id
+        && key.terminal == label.terminal_id
 }
 impl Drop for Registry {
     fn drop(&mut self) {
@@ -339,6 +391,7 @@ impl Terminals {
         shell: Option<PathBuf>,
         labels: Option<watch::Sender<TerminalLabels>>,
         history_dir: Option<PathBuf>,
+        prompts: Option<mpsc::UnboundedSender<TerminalKey>>,
     ) -> Self {
         let polled = labels.is_some();
         let history = history_dir.and_then(|dir| {
@@ -353,6 +406,7 @@ impl Terminals {
             blocked: Mutex::new(HashSet::new()),
             labels,
             history,
+            prompts,
         });
         if polled && let Err(error) = activity::spawn_poller(Arc::downgrade(&registry)) {
             eprintln!("Terminal labels are off: {error}");
@@ -362,10 +416,12 @@ impl Terminals {
     fn get(&self, key: &TerminalKey) -> Option<Arc<Session>> {
         lock(&self.0.sessions).get(key).cloned()
     }
+    /// Subscribes `sink` to a running terminal, or starts one from `launch`. Without a
+    /// launch, a missing terminal returns `None`.
     pub(crate) fn attach(
         &self,
         key: TerminalKey,
-        cwd: Option<&Path>,
+        launch: Option<&Launch>,
         size: TerminalSize,
         sink: Sink,
     ) -> Result<Option<u64>> {
@@ -379,18 +435,20 @@ impl Terminals {
             }
             let session = {
                 let mut sessions = lock(&self.0.sessions);
-                match (sessions.get(&key), cwd) {
+                match (sessions.get(&key), launch) {
                     (Some(session), _) => session.clone(),
                     (None, None) => return Ok(None),
-                    (None, Some(cwd)) => {
+                    (None, Some(launch)) => {
                         let store = self.0.history.clone();
                         let history = store.as_ref().map(|store| store.restore(&key));
-                        let (session, reader) = spawn(self.0.shell.as_deref(), cwd, size, history)?;
+                        let (session, reader) =
+                            spawn(self.0.shell.as_deref(), launch, size, history)?;
                         let registry = Arc::downgrade(&self.0);
                         let (pumped, pump_key) = (session.clone(), key.clone());
+                        let prompts = self.0.prompts.clone();
                         if let Err(error) = std::thread::Builder::new()
                             .name("bot-code-terminal".into())
-                            .spawn(move || pump(registry, store, pump_key, pumped, reader))
+                            .spawn(move || pump(registry, store, prompts, pump_key, pumped, reader))
                         {
                             terminate(&[session]);
                             return Err(error.into());
@@ -465,20 +523,30 @@ impl Terminals {
     }
 }
 
+/// Moves output from the PTY to the history and the subscribers until the process on it ends.
+/// A sandbox shell's key goes to `prompts` at each prompt, and its session in the container
+/// is stopped at the end, since the container never notices the client go.
 fn pump(
     registry: Weak<Registry>,
     store: Option<HistoryStore>,
+    prompts: Option<mpsc::UnboundedSender<TerminalKey>>,
     key: TerminalKey,
     session: Arc<Session>,
     mut reader: Box<dyn Read + Send>,
 ) {
     let mut buffer = vec![0u8; 64 * 1024];
     let mut carry = Vec::new();
+    let mut marks = container::PromptMarks::default();
     loop {
         match reader.read(&mut buffer) {
             Ok(0) => break,
             Ok(n) => {
                 let data = history::decode(&mut carry, &buffer[..n]);
+                if let (Place::Sandbox { .. }, Some(prompts)) = (&session.place, &prompts)
+                    && marks.feed(&data)
+                {
+                    let _ = prompts.send(key.clone());
+                }
                 if !data.is_empty()
                     && session.publish(data)
                     && let Some(store) = &store
@@ -509,37 +577,40 @@ fn pump(
             registry.forget(std::slice::from_ref(&key));
         }
     }
-    let mut output = lock(&session.output);
-    output.exited = true;
-    for (_, sink) in output.subscribers.drain(..) {
-        sink(TerminalEvent::Exited { exit_code });
+    {
+        let mut output = lock(&session.output);
+        output.exited = true;
+        for (_, sink) in output.subscribers.drain(..) {
+            sink(TerminalEvent::Exited { exit_code });
+        }
+    }
+    if let Place::Sandbox { container, id } = &session.place {
+        container::stop(container, id);
     }
 }
 
 /// A `history` restored from disk makes the session save its own.
 fn spawn(
     pinned: Option<&Path>,
-    cwd: &Path,
+    launch: &Launch,
     size: TerminalSize,
     history: Option<History>,
 ) -> Result<(Arc<Session>, Box<dyn Read + Send>)> {
-    if !cwd.is_dir() {
-        return Err(AppError::new(
-            "terminal_unavailable",
-            format!("{} is not a directory.", cwd.display()),
-        ));
-    }
-    let pair = native_pty_system().openpty(size.pty()).map_err(pty_error)?;
     let environment = shell_environment(std::env::vars_os());
-    let (program, args) = resolve_shell(pinned)
-        .ok_or_else(|| AppError::new("terminal_unavailable", "No shell was found."))?;
-    let mut command = CommandBuilder::new(&program);
-    command.args(args);
-    command.cwd(cwd);
-    command.env_clear();
-    for (key, value) in environment {
-        command.env(key, value);
-    }
+    let (command, place) = match launch {
+        Launch::Mac { cwd } => (mac_command(pinned, cwd, environment)?, Place::Mac),
+        Launch::Sandbox { container } => {
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            (
+                container::command(container, &id, &environment),
+                Place::Sandbox {
+                    container: container.clone(),
+                    id,
+                },
+            )
+        }
+    };
+    let pair = native_pty_system().openpty(size.pty()).map_err(pty_error)?;
     let child = pair.slave.spawn_command(command).map_err(pty_error)?;
     // The shell holds the only slave descriptor, so its exit closes the PTY.
     drop(pair.slave);
@@ -550,6 +621,7 @@ fn spawn(
     let writer = pair.master.take_writer().map_err(pty_error)?;
     let session = Arc::new(Session {
         pid,
+        place,
         master: Mutex::new(pair.master),
         writer: Mutex::new(writer),
         child: Mutex::new(child),
@@ -562,6 +634,29 @@ fn spawn(
         }),
     });
     Ok((session, reader))
+}
+
+fn mac_command(
+    pinned: Option<&Path>,
+    cwd: &Path,
+    environment: Vec<(OsString, OsString)>,
+) -> Result<CommandBuilder> {
+    if !cwd.is_dir() {
+        return Err(AppError::new(
+            "terminal_unavailable",
+            format!("{} is not a directory.", cwd.display()),
+        ));
+    }
+    let (program, args) = resolve_shell(pinned)
+        .ok_or_else(|| AppError::new("terminal_unavailable", "No shell was found."))?;
+    let mut command = CommandBuilder::new(&program);
+    command.args(args);
+    command.cwd(cwd);
+    command.env_clear();
+    for (key, value) in environment {
+        command.env(key, value);
+    }
+    Ok(command)
 }
 
 pub(crate) fn resolve_shell(pinned: Option<&Path>) -> Option<(PathBuf, Vec<&'static str>)> {
@@ -656,7 +751,10 @@ mod tests {
     #[test]
     fn deleted_thread_gate_prevents_stale_checkout_attach() {
         let directory = tempfile::tempdir().unwrap();
-        let terminals = Terminals::new(cfg!(unix).then(|| "/bin/sh".into()), None, None);
+        let terminals = Terminals::new(cfg!(unix).then(|| "/bin/sh".into()), None, None, None);
+        let launch = Launch::Mac {
+            cwd: directory.path().into(),
+        };
         let id = ThreadId::default();
         let key = TerminalKey {
             workspace: WorkspaceId::default(),
@@ -667,7 +765,7 @@ mod tests {
         let size = TerminalSize::new(80, 24).unwrap();
         assert!(
             terminals
-                .attach(key.clone(), Some(directory.path()), size, sink.clone())
+                .attach(key.clone(), Some(&launch), size, sink.clone())
                 .unwrap()
                 .is_some()
         );
@@ -679,14 +777,14 @@ mod tests {
         assert!(terminals.get(&key).is_none());
         assert!(
             terminals
-                .attach(key.clone(), Some(directory.path()), size, sink.clone())
+                .attach(key.clone(), Some(&launch), size, sink.clone())
                 .is_err()
         );
         assert!(terminals.get(&key).is_none());
         terminals.unblock_thread(&id);
         assert!(
             terminals
-                .attach(key.clone(), Some(directory.path()), size, sink)
+                .attach(key.clone(), Some(&launch), size, sink)
                 .unwrap()
                 .is_some()
         );
@@ -721,6 +819,35 @@ mod tests {
         assert_eq!(
             shell_environment(env(&[("COLORTERM", "24bit")]).into_iter()),
             env(&[("COLORTERM", "24bit"), ("TERM", "xterm-256color")])
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_mac_terminal_runs_the_pinned_login_shell_in_the_checkout_with_the_app_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        let environment = env(&[("PATH", "/usr/bin"), ("TERM", "xterm-256color")]);
+        let command =
+            mac_command(Some(Path::new("/bin/sh")), directory.path(), environment).unwrap();
+        let login: &[&str] = if cfg!(target_os = "macos") {
+            &["/bin/sh", "-l"]
+        } else {
+            &["/bin/sh"]
+        };
+        assert_eq!(
+            command.get_argv(),
+            &login.iter().map(OsString::from).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            command.get_cwd(),
+            Some(&directory.path().as_os_str().to_owned())
+        );
+        assert_eq!(
+            command.iter_full_env_as_str().collect::<Vec<_>>(),
+            [("PATH", "/usr/bin"), ("TERM", "xterm-256color")]
+        );
+        assert!(
+            mac_command(None, &directory.path().join("missing"), Vec::new())
+                .is_err_and(|error| error.code == "terminal_unavailable")
         );
     }
     #[cfg(unix)]

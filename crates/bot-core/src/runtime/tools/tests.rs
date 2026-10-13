@@ -69,7 +69,7 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
         attachments: Attachments::new(directory.path()),
         delete_jobs: JoinSet::new(),
         deleting: HashSet::new(),
-        terminals: Terminals::new(None, None, None),
+        terminals: Terminals::new(None, None, None, None),
         config,
         store,
         workspaces: HashMap::from([(workspace.id.clone(), workspace.clone())]),

@@ -4,7 +4,7 @@ mod docker;
 mod identity;
 mod image;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::domain::{AppError, Result, SandboxId};
 use docker::{Cli, Stdin};

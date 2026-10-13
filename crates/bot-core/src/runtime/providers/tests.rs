@@ -95,7 +95,7 @@ mod owner {
                 attachments: Attachments::new(dir.path()),
                 delete_jobs: tokio::task::JoinSet::new(),
                 deleting: HashSet::new(),
-                terminals: Terminals::new(None, None, None),
+                terminals: Terminals::new(None, None, None, None),
                 config,
                 store,
                 workspaces: HashMap::from([(workspace.id.clone(), workspace.clone())]),

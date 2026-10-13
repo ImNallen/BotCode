@@ -1,10 +1,13 @@
 //! The registry of sandbox handles, shared by the App and the owner loop, plus startup
-//! reconciliation and shutdown.
+//! reconciliation, shutdown, and mirror pulls after terminal commands.
+use super::{Command, Location, call};
 use crate::{
     codex::auth::TokenBroker,
     domain::*,
     log::RotatingLog,
+    mirror::{Freshness, RECENT},
     sandbox::{self, CodexSource, Desired, Docker, DockerStatus, Reconcile, SandboxConfig},
+    terminal::TerminalKey,
     workdir::{SandboxHandle, Workdir},
 };
 use std::{
@@ -12,6 +15,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+use tokio::{sync::mpsc, time::Instant};
 
 const LOW_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
@@ -176,6 +180,52 @@ impl Sandboxes {
                     &format!("sandbox[{}]", handle.id),
                     &format!("stop at shutdown failed: {}", error.message),
                 );
+            }
+        }
+    }
+}
+
+/// Pulls a sandbox thread's mirror after a command in its terminal finishes, which the shell
+/// signals by showing a prompt, so Files and Diff show what the command changed. Each thread
+/// waits until its terminals have been quiet for `RECENT`: a pull from before the command's
+/// edits is then old enough that the Recent pull runs instead of reusing it.
+pub(super) async fn pull_after_commands(
+    commands: mpsc::WeakSender<Command>,
+    mut prompts: mpsc::UnboundedReceiver<TerminalKey>,
+) {
+    let mut due: HashMap<(WorkspaceId, ThreadId), Instant> = HashMap::new();
+    loop {
+        let next = due.values().min().copied();
+        tokio::select! {
+            key = prompts.recv() => {
+                let Some(key) = key else { return };
+                if let Some(thread) = key.thread {
+                    due.insert((key.workspace, thread), Instant::now() + RECENT);
+                }
+            }
+            () = tokio::time::sleep_until(next.unwrap_or_else(Instant::now)), if next.is_some() => {
+                let now = Instant::now();
+                let mut settled = Vec::new();
+                due.retain(|thread, at| {
+                    let waiting = *at > now;
+                    if !waiting {
+                        settled.push(thread.clone());
+                    }
+                    waiting
+                });
+                for (workspace, thread) in settled {
+                    let Some(commands) = commands.upgrade() else { return };
+                    tokio::spawn(async move {
+                        let location = call(&commands, |r| {
+                            Command::Checkout(workspace, Some(thread.clone()), r)
+                        })
+                        .await;
+                        let Ok((_, Location::Repository(workdir))) = location else { return };
+                        if matches!(workdir.sync(Freshness::Recent).await, Ok(Some(_))) {
+                            let _ = commands.send(Command::CheckoutPulled(thread)).await;
+                        }
+                    });
+                }
             }
         }
     }

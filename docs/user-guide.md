@@ -16,7 +16,9 @@ Sandbox needs Docker Desktop installed and running, and this Mac signed in to Co
 
 The first message in a new sandbox can wait while Bot Code builds the sandbox image and starts the container. The thread shows **Starting sandbox…** until Codex is ready. If the sandbox cannot start, the thread shows the reason. The container holds the real files, and the worktree on this Mac is a copy that Bot Code refreshes from it. Files, Diff and search read that copy. Edits in the Files tab and rewinds go into the container. Commits run in the container, and push and pull requests run on this Mac with your own Git and GitHub credentials.
 
-Sandbox threads show a container icon beside the worktree icon in the sidebar, and the composer reads **Sandbox**. They have no **Open in** editor control, because the next refresh would overwrite edits made in the copy. The terminal and project scripts are not available for sandbox threads yet.
+Sandbox threads show a container icon beside the worktree icon in the sidebar, and the composer reads **Sandbox**. They have no **Open in** editor control, because the next refresh would overwrite edits made in the copy.
+
+A sandbox thread's terminal and project scripts run in the container, in a login `bash` shell in `/workspace`. The shell gets the container's own `PATH` and `HOME`, not this Mac's. If the container is stopped, the terminal shows **Starting sandbox…** until the shell starts. After a command finishes, Files and Diff show its changes about a second later. Closing a terminal, deleting the thread, or quitting Bot Code stops the shell and every job it started in the container. Project scripts there see `/workspace` in both `T3CODE_PROJECT_ROOT` and `T3CODE_WORKTREE_PATH`.
 
 ## Edit files
 

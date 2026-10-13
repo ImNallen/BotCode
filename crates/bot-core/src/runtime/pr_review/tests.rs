@@ -53,7 +53,7 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
         attachments: Attachments::new(dir.path()),
         delete_jobs: JoinSet::new(),
         deleting: HashSet::new(),
-        terminals: Terminals::new(None, None, None),
+        terminals: Terminals::new(None, None, None, None),
         config: RuntimeConfig {
             data_dir: dir.path().into(),
             gh_binary: "/no/gh".into(),
@@ -235,7 +235,7 @@ async fn late_lifecycle_completion_preserves_supersession_and_cleanup_latch() {
         attachments: Attachments::new(dir.path()),
         delete_jobs: JoinSet::new(),
         deleting: HashSet::new(),
-        terminals: Terminals::new(None, None, None),
+        terminals: Terminals::new(None, None, None, None),
         config: RuntimeConfig {
             data_dir: dir.path().into(),
             gh_binary: "/no/gh".into(),

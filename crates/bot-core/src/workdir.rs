@@ -10,6 +10,7 @@ use crate::{
     sandbox::{
         ATTACHMENTS, Container, ContainerState, Desired, Docker, Exec, Input, RunState, WORKSPACE,
     },
+    terminal::Launch,
 };
 use std::{
     path::{Path, PathBuf},
@@ -242,6 +243,23 @@ impl Workdir {
         match self {
             Self::Mac { .. } => None,
             Self::Sandbox { handle, .. } => Some(handle),
+        }
+    }
+    /// Where a new terminal's shell starts. A sandbox is readied first, since its container
+    /// may be paused, stopped or not yet created, and `starting` runs when that has not
+    /// happened in this process yet.
+    pub(crate) async fn terminal(&self, starting: impl FnOnce()) -> Result<Launch> {
+        match self {
+            Self::Mac { root } => Ok(Launch::Mac { cwd: root.clone() }),
+            Self::Sandbox { handle, .. } => {
+                if !handle.is_ready() {
+                    starting();
+                }
+                handle.ready().await?;
+                Ok(Launch::Sandbox {
+                    container: handle.container.clone(),
+                })
+            }
         }
     }
     /// Container to Mac. Mac: nothing. Sandbox: a pull, whose lock the caller holds while it

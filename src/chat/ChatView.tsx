@@ -192,7 +192,7 @@ import {
 } from "../terminal/terminalStore";
 
 import { resolveThreadEnvMode } from "./projectScripts";
-import { inSandbox, terminalUnavailable } from "../lib/sandbox";
+import { inSandbox } from "../lib/sandbox";
 import {
   draftNewCheckout,
   picksBase,
@@ -1045,12 +1045,7 @@ export function ChatView({
     checkoutThread,
     sandboxed,
   ]);
-  const terminalToggleShown = !(isScratch && !threadId);
-  const terminalBlocked = terminalUnavailable({
-    projectDraftOrThread: terminalToggleShown,
-    checkout: thread?.checkout,
-  });
-  const terminalAvailable = terminalBlocked === null;
+  const terminalAvailable = !(isScratch && !threadId);
   const terminalScope = terminalScopeKey(workspaceId, threadId ?? null);
   const terminalState = useTerminalState(terminalScope);
   const terminalOpen = terminalState.terminalOpen;
@@ -1066,7 +1061,6 @@ export function ChatView({
     return () => cancelAnimationFrame(frame);
   }, [terminalScope, terminalOpen]);
   const runScript = (script: ProjectScript) => {
-    if (terminalBlocked) return;
     const capturedScope = previewScopeRef.current;
     const surfaceId = createPanelTerminal(terminalScope);
     setPanelOpen(true);
@@ -1809,20 +1803,16 @@ export function ChatView({
             className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
             data-panel-layout-controls
           >
-            {terminalToggleShown ? (
+            {terminalAvailable ? (
               <span className="flex shrink-0">
                 <Toggle
-                  className="shrink-0 [-webkit-app-region:no-drag] disabled:pointer-events-auto"
-                  pressed={terminalAvailable && terminalOpen}
-                  disabled={!terminalAvailable}
+                  className="shrink-0 [-webkit-app-region:no-drag]"
+                  pressed={terminalOpen}
                   onClick={() =>
                     updateTerminalState(terminalScope, toggleTerminalOpen)
                   }
                   aria-label="Toggle terminal drawer"
-                  title={
-                    terminalBlocked?.reason ??
-                    `Toggle terminal drawer${terminalToggleShortcut ? ` (${terminalToggleShortcut})` : ""}`
-                  }
+                  title={`Toggle terminal drawer${terminalToggleShortcut ? ` (${terminalToggleShortcut})` : ""}`}
                   variant="ghost"
                   size="sm"
                 >
@@ -1926,7 +1916,7 @@ export function ChatView({
               className={
                 panelOpen
                   ? "pr-0"
-                  : terminalToggleShown
+                  : terminalAvailable
                     ? "pr-19.25 sm:pr-15.25 @3xl/header-actions:pr-16.25"
                     : "pr-10.25 sm:pr-7.25 @3xl/header-actions:pr-8.25"
               }
@@ -1939,7 +1929,6 @@ export function ChatView({
                       workspaceId={workspaceId}
                       scripts={configQuery.data?.scripts ?? []}
                       onRun={runScript}
-                      runUnavailable={terminalBlocked?.reason}
                       presentation={presentation}
                       onRequestMenuClose={closeMenu}
                     />
@@ -2460,7 +2449,7 @@ export function ChatView({
             canAskCodex={reviewDraftTarget.current.canAccept}
             onAskCodex={askCodex}
             onCheckoutPullRequest={(target) => startPullRequestHandoff(target)}
-            terminalUnavailable={terminalBlocked}
+            terminalAvailable={terminalAvailable}
             fileLinks={fileLinks}
             thread={thread}
             turnSelection={

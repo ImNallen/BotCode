@@ -449,9 +449,7 @@ export function Workbench() {
         : (currentView?.branch ?? ""),
     scratchAvailable,
     terminalAvailable:
-      !!workspaceId &&
-      !(scratch?.id === workspaceId && !selection.thread) &&
-      !sandboxed,
+      !!workspaceId && !(scratch?.id === workspaceId && !selection.thread),
     projectSearchAvailable: checkoutReadable,
     renamePending,
     queued: !!selection.thread && followUps.rows(selection.thread).length > 0,

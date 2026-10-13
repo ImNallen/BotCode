@@ -287,12 +287,12 @@ async fn status_reports_a_missing_cli_and_an_unreachable_daemon() {
 static IMAGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// An isolated instance whose containers are removed on drop, including after a failure.
-struct Fixture {
+pub(crate) struct Fixture {
     docker: Docker,
     data: tempfile::TempDir,
 }
 impl Fixture {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         // A space and a comma in the path exercise the CSV quoting of the mount.
         let data = tempfile::Builder::new()
             .prefix("botcode sandbox,test-")
@@ -307,7 +307,7 @@ impl Fixture {
         docker.image(&|_| {}).await.unwrap();
         Self { docker, data }
     }
-    fn container(&self) -> Container {
+    pub(crate) fn container(&self) -> Container {
         self.docker.container(&SandboxId::new())
     }
 }
@@ -337,20 +337,20 @@ fn exec<'a>(argv: &'a [&'a str]) -> Exec<'a> {
         env: &[],
     }
 }
-async fn stdout(container: &Container, argv: &[&str]) -> String {
+pub(crate) async fn stdout(container: &Container, argv: &[&str]) -> String {
     let output = container
         .run(&exec(argv), Input::Lifeline, Duration::from_secs(30))
         .await
         .unwrap();
     String::from_utf8(output.stdout).unwrap()
 }
-async fn running(container: &Container, pattern: &str) -> bool {
+pub(crate) async fn running(container: &Container, pattern: &str) -> bool {
     !stdout(container, &["pgrep", "-fx", pattern])
         .await
         .trim()
         .is_empty()
 }
-async fn gone_within(container: &Container, pattern: &str, limit: Duration) -> bool {
+pub(crate) async fn gone_within(container: &Container, pattern: &str, limit: Duration) -> bool {
     let started = Instant::now();
     while started.elapsed() < limit {
         if !running(container, pattern).await {
