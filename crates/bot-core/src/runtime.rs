@@ -943,7 +943,7 @@ impl App {
             Some(Phase::Starting) => Ok(SandboxState::Starting),
             Some(Phase::Running) => Ok(SandboxState::Running),
             Some(Phase::Paused) => Ok(SandboxState::Paused),
-            Some(Phase::Unstarted | Phase::Stopped) => Ok(SandboxState::Stopped),
+            Some(Phase::Unstarted | Phase::Stopped | Phase::Removed) => Ok(SandboxState::Stopped),
             None => Err(not_a_sandbox()),
         }
     }
@@ -3151,12 +3151,8 @@ impl Owner {
                         Err(error) => { eprintln!("Pull request worker stopped: {error}"); }
                     }
                 }
-                Some(envelope)=self.tools.incoming.recv(), if !self.closing=>{
-                    if let Err(error)=self.mcp_tool(envelope).await {self.lose(&error.message).await;}
-                }
-                Some(done)=self.tools.jobs.join_next(), if !self.tools.jobs.is_empty()=>{
-                    if let Err(error)=self.finish_tool(done).await {self.lose(&error.message).await;}
-                }
+                Some(envelope)=self.tools.incoming.recv(), if !self.closing=>self.mcp_tool(envelope).await,
+                Some(done)=self.tools.jobs.join_next(), if !self.tools.jobs.is_empty()=>self.finish_tool(done).await,
                 Some(done)=completions.recv()=>{
                     let key=done.epoch().and_then(|epoch| self.providers.key(epoch).cloned());
                     if let Err(error)=self.complete(done).await {self.lose_in(key.as_ref(),&error.message,&error.message).await;}
@@ -4712,6 +4708,7 @@ impl Owner {
                             &key,
                             session.provider,
                             session.modes,
+                            session.account,
                             Instant::now(),
                         );
                         if key != EnvKey::Mac && self.models.is_none() {
@@ -5086,7 +5083,6 @@ impl Owner {
         key: &EnvKey,
         requester: Option<Codex>,
         request: Value,
-        params: &Value,
     ) -> Result<()> {
         let Some(requester) = requester else {
             return Ok(());
@@ -5098,12 +5094,11 @@ impl Owner {
         }
         let host = self.providers.client(&EnvKey::Mac).map(|(_, codex)| codex);
         let broker = self.sandboxes.broker.clone();
-        let previous = params
-            .get("previousAccountId")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        // The request's `previousAccountId` is the sandbox's word; the account the host
+        // signed this slot in with is the one that decides.
+        let account = self.providers.account(key).map(str::to_owned);
         tokio::spawn(async move {
-            let reply = match broker.refresh(host, previous.as_deref()).await {
+            let reply = match broker.refresh(host, account.as_deref()).await {
                 Ok(tokens) => {
                     requester
                         .respond(request, codex::auth::refresh_reply(&tokens))
@@ -5259,7 +5254,7 @@ impl Owner {
                 return self.dynamic_tool(epoch, request.clone(), p.clone()).await;
             }
             if method == "account/chatgptAuthTokens/refresh" {
-                return self.refresh_tokens(key, provider, request.clone(), p).await;
+                return self.refresh_tokens(key, provider, request.clone()).await;
             }
             let decoded = match approvals::decode(value.clone()) {
                 Ok(decoded) => decoded,

@@ -167,7 +167,7 @@ impl Owner {
                     }
                     let codex_home = handle.container.codex_home();
                     handle
-                        .retire(Desired::Removed)
+                        .delete()
                         .await
                         .map(|()| {
                             if let Some(dir) = codex_home.parent() {

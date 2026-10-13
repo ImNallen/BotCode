@@ -44,6 +44,9 @@ mod owner {
     use crate::codex::AgentProcess;
     use std::os::unix::fs::PermissionsExt;
 
+    /// The ChatGPT account the fixture's sandbox agent was signed in with.
+    const SANDBOX_ACCOUNT: &str = "acct-1";
+
     struct Fixture {
         dir: tempfile::TempDir,
         owner: Owner,
@@ -177,26 +180,16 @@ mod owner {
                     .unwrap()
                     .mark_ready_for_tests();
             }
-            let peer = self.dir.path().join(name).join("peer.py");
-            std::fs::create_dir(peer.parent().unwrap()).unwrap();
-            std::fs::write(&peer, include_str!("../../../tests/support/codex_peer.py")).unwrap();
-            std::fs::set_permissions(&peer, std::fs::Permissions::from_mode(0o755)).unwrap();
             let launch = self
                 .owner
                 .providers
                 .begin_launch(key, Instant::now())
                 .unwrap();
-            let codex = Codex::launch(
-                AgentProcess::mac(&peer),
-                launch.epoch,
-                self.owner.provider_events.clone(),
-                self.owner.log.clone(),
-                Default::default(),
-            )
-            .await
-            .unwrap();
-            codex.initialize().await.unwrap();
-            let session = collaboration::discover(codex).await;
+            let codex = self.peer_for(name, launch.epoch).await;
+            let mut session = collaboration::discover(codex).await;
+            if let EnvKey::Sandbox(_) = key {
+                session.account = Some(SANDBOX_ACCOUNT.into());
+            }
             self.owner
                 .complete(Completion::Launched {
                     epoch: launch.epoch,
@@ -205,6 +198,23 @@ mod owner {
                 .await
                 .unwrap();
             launch.epoch
+        }
+        async fn peer_for(&self, name: &str, epoch: u64) -> Codex {
+            let peer = self.dir.path().join(name).join("peer.py");
+            std::fs::create_dir(peer.parent().unwrap()).unwrap();
+            std::fs::write(&peer, include_str!("../../../tests/support/codex_peer.py")).unwrap();
+            std::fs::set_permissions(&peer, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let codex = Codex::launch(
+                AgentProcess::mac(&peer),
+                epoch,
+                self.owner.provider_events.clone(),
+                self.owner.log.clone(),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+            codex.initialize().await.unwrap();
+            codex
         }
         fn running(&mut self, id: &ThreadId, native: &str) {
             let owner = &mut self.owner;
@@ -475,7 +485,7 @@ mod owner {
             })
             .count()
     }
-    fn refresh_request(id: &str, previous: &str) -> Value {
+    fn refresh_request(id: &str, previous: Option<&str>) -> Value {
         json!({
             "id": id,
             "method": "account/chatgptAuthTokens/refresh",
@@ -500,13 +510,13 @@ mod owner {
     #[tokio::test]
     async fn a_sandbox_token_refresh_is_answered_through_the_mac_agent_off_the_loop() {
         let mut f = Fixture::new().await;
-        sign_in(&f, "acct-1");
-        f.frame(f.sandbox_epoch, refresh_request("refresh-1", "acct-1"))
+        sign_in(&f, SANDBOX_ACCOUNT);
+        f.frame(f.sandbox_epoch, refresh_request("refresh-1", None))
             .await;
         let reply = reply_within(&f, "sandbox", "refresh-1").await;
         assert_eq!(
             reply["result"],
-            json!({"accessToken": "at-fresh", "chatgptAccountId": "acct-1", "chatgptPlanType": null}),
+            json!({"accessToken": "at-fresh", "chatgptAccountId": SANDBOX_ACCOUNT, "chatgptPlanType": null}),
             "{reply}"
         );
         assert_eq!(host_refreshes(&f, "mac"), 1, "{:?}", f.received("mac"));
@@ -516,23 +526,110 @@ mod owner {
             "the sandbox agent never refreshes itself"
         );
         f.mac_intact();
+    }
 
-        f.frame(f.sandbox_epoch, refresh_request("refresh-2", "acct-other"))
-            .await;
-        let refused = reply_within(&f, "sandbox", "refresh-2").await;
-        assert_eq!(refused["error"]["code"], json!(-32000), "{refused}");
-        assert!(refused["result"].is_null());
+    #[tokio::test]
+    async fn a_refresh_after_a_mac_account_switch_is_refused_whatever_the_request_says() {
+        let mut f = Fixture::new().await;
+        sign_in(&f, "acct-2");
+        for (id, previous) in [("omitted", None), ("lying", Some("acct-2"))] {
+            f.frame(f.sandbox_epoch, refresh_request(id, previous))
+                .await;
+            let refused = reply_within(&f, "sandbox", id).await;
+            assert_eq!(refused["error"]["code"], json!(-32000), "{id}: {refused}");
+            assert!(refused["result"].is_null(), "{id}: {refused}");
+            assert!(
+                !refused.to_string().contains("at-fresh"),
+                "{id}: the other account's token left the Mac: {refused}"
+            );
+        }
+        f.mac_intact();
     }
 
     #[tokio::test]
     async fn the_mac_agent_cannot_ask_bot_code_for_tokens() {
         let mut f = Fixture::new().await;
-        sign_in(&f, "acct-1");
-        f.frame(f.mac_epoch, refresh_request("refresh-mac", "acct-1"))
-            .await;
+        sign_in(&f, SANDBOX_ACCOUNT);
+        f.frame(
+            f.mac_epoch,
+            refresh_request("refresh-mac", Some(SANDBOX_ACCOUNT)),
+        )
+        .await;
         let reply = reply_within(&f, "mac", "refresh-mac").await;
         assert_eq!(reply["error"]["code"], json!(-32601), "{reply}");
         assert_eq!(host_refreshes(&f, "mac"), 0, "no refresh was attempted");
+    }
+
+    #[tokio::test]
+    async fn a_failed_tool_reply_loses_only_the_slot_it_answers() {
+        let mut f = Fixture::new().await;
+        f.frame(f.mac_epoch, approval("mac-approval", "mac")).await;
+        assert_eq!(f.owner.callbacks.len(), 1);
+        let (_, agent) = f.owner.providers.client(&sandbox()).unwrap();
+        agent.terminate().await.unwrap();
+
+        let turn = f.thread(&f.sandboxed).turns[0].id.clone();
+        let completion = tools::ToolCompletion {
+            context: crate::tools::ToolContext {
+                thread_id: f.sandboxed.clone(),
+                turn_id: turn,
+                session_epoch: f.sandbox_epoch,
+                call_id: "sandbox-call".into(),
+            },
+            caller: crate::codex::tools::Caller {
+                native_thread: "sandbox".into(),
+                native_turn: "sandbox-turn".into(),
+                call_id: "sandbox-call".into(),
+            },
+            reply: tools::ToolReply::Dynamic {
+                epoch: f.sandbox_epoch,
+                request: json!("sandbox-call"),
+            },
+            result: crate::tools::ToolResult::text("done"),
+        };
+        f.owner.finish_tool(Ok(completion)).await;
+
+        f.mac_intact();
+        assert_eq!(f.owner.callbacks.len(), 1, "the Mac approval route stays");
+        let sandboxed = f.thread(&f.sandboxed);
+        assert!(matches!(
+            sandboxed.session,
+            SessionState::Unavailable { .. }
+        ));
+        assert!(matches!(
+            sandboxed.turns[0].execution,
+            Execution::Lost { .. }
+        ));
+        assert!(f.owner.providers.client(&sandbox()).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stop_during_a_launch_drops_the_launch_and_terminates_its_agent() {
+        let mut f = Fixture::new().await;
+        f.owner.stop_providers(Some(&sandbox())).await.unwrap();
+        f.until_exited(f.sandbox_epoch).await;
+        let launch = f
+            .owner
+            .providers
+            .begin_launch(&sandbox(), Instant::now())
+            .unwrap();
+        assert!(f.owner.providers.stop(&sandbox()).is_none());
+
+        let late = f.peer_for("late", launch.epoch).await;
+        let session = collaboration::discover(late).await;
+        f.owner
+            .complete(Completion::Launched {
+                epoch: launch.epoch,
+                result: Ok(session),
+            })
+            .await
+            .unwrap();
+        assert!(
+            f.owner.providers.client(&sandbox()).is_none(),
+            "a launch stopped before it completed never goes live"
+        );
+        f.until_exited(launch.epoch).await;
+        f.mac_intact();
     }
 
     #[tokio::test]

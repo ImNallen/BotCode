@@ -47,6 +47,11 @@ pub(crate) enum Phase {
     Running,
     Paused,
     Stopped,
+    /// The thread deletion removed the container; nothing brings this handle back.
+    Removed,
+}
+fn removed() -> AppError {
+    AppError::new("sandbox_removed", "This sandbox was deleted.")
 }
 impl Phase {
     fn after(desired: Desired) -> Self {
@@ -182,6 +187,9 @@ impl SandboxHandle {
         let _flight = self.flight.lock().await;
         self.touch();
         let was = self.phase();
+        if was == Phase::Removed {
+            return Err(removed());
+        }
         if was != Phase::Running {
             self.set_phase(Phase::Starting);
         }
@@ -200,10 +208,12 @@ impl SandboxHandle {
     pub(crate) async fn wake(&self) -> Result<()> {
         let _flight = self.flight.lock().await;
         self.touch();
-        if self.phase() == Phase::Running {
-            return Ok(());
-        }
         let was = self.phase();
+        match was {
+            Phase::Running => return Ok(()),
+            Phase::Removed => return Err(removed()),
+            _ => {}
+        }
         self.set_phase(Phase::Starting);
         let readied = self.start().await;
         match &readied {
@@ -272,6 +282,14 @@ impl SandboxHandle {
     pub(crate) async fn retire(&self, desired: Desired) -> Result<()> {
         let _flight = self.flight.lock().await;
         self.retire_locked(desired).await
+    }
+    /// Removes the container for good, as thread deletion does. The storage sweep's
+    /// `retire(Removed)` is different: its handle serves the next message again.
+    pub(crate) async fn delete(&self) -> Result<()> {
+        let _flight = self.flight.lock().await;
+        self.retire_locked(Desired::Removed).await?;
+        self.set_phase(Phase::Removed);
+        Ok(())
     }
     pub(crate) async fn idle_retire(&self, desired: Desired, decided_at: Instant) -> Result<bool> {
         let _flight = self.flight.lock().await;
@@ -559,6 +577,55 @@ mod tests {
             "a Mac path from a sandbox agent never resolves on the Mac"
         );
         assert_eq!(paths.mirror(), mirror.as_path());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deleted_sandbox_is_not_recreated_by_a_later_ready() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let docker = dir.path().join("docker");
+        std::fs::write(&docker, include_str!("../tests/support/docker_fake.py")).unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let state = dir.path().join("docker-state");
+        std::fs::write(
+            dir.path().join("state_dir"),
+            state.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        let docker = crate::sandbox::Docker::new(crate::sandbox::SandboxConfig {
+            docker,
+            data_dir: dir.path().join("data"),
+            codex: crate::sandbox::CodexSource::Version("0.0.0".parse().unwrap()),
+        });
+        let handle = SandboxHandle::new(
+            docker,
+            "0123456789ab".parse().unwrap(),
+            dir.path().join("mirror"),
+            "botcode/deleted".into(),
+            Duration::from_millis(250),
+            tokio::sync::mpsc::unbounded_channel().0,
+            RotatingLog::silent(),
+        );
+        handle.delete().await.unwrap();
+
+        let readied = handle.ready().await;
+        let verbs: Vec<String> = std::fs::read_to_string(state.join("calls.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["argv"][0]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert!(
+            !verbs.iter().any(|verb| verb == "create" || verb == "start"),
+            "a deleted sandbox came back: {verbs:?}"
+        );
+        assert_eq!(readied.unwrap_err().code, "sandbox_removed");
+        assert_eq!(handle.phase(), Phase::Removed);
     }
 
     #[test]

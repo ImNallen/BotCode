@@ -41,6 +41,14 @@ pub(crate) enum Credentials {
     Chatgpt(ChatgptTokens),
     ApiKey(Secret),
 }
+impl Credentials {
+    pub(crate) fn account_id(&self) -> Option<&str> {
+        match self {
+            Self::Chatgpt(tokens) => Some(&tokens.account_id),
+            Self::ApiKey(_) => None,
+        }
+    }
+}
 
 pub(crate) fn sign_in_required() -> AppError {
     AppError::new("sandbox_auth", "Sign in to Codex on this Mac first.")
@@ -125,15 +133,17 @@ impl TokenBroker {
             Err(error) => Err(error.into()),
         }
     }
+    /// Refreshes the host's ChatGPT tokens for a sandbox signed in as `account`, the id the
+    /// host recorded at login. A different host account is refused rather than handed over.
     pub(crate) async fn refresh(
         &self,
         host: Option<Codex>,
-        previous_account: Option<&str>,
+        account: Option<&str>,
     ) -> Result<ChatgptTokens> {
         let mut last = self.last.lock().await;
         if let Some((at, tokens)) = &*last
             && at.elapsed() < COALESCE
-            && previous_account.is_none_or(|previous| previous == tokens.account_id)
+            && account.is_none_or(|account| account == tokens.account_id)
         {
             return Ok(tokens.clone());
         }
@@ -144,7 +154,7 @@ impl TokenBroker {
         let Credentials::Chatgpt(tokens) = self.read()? else {
             return Err(sign_in_required());
         };
-        if previous_account.is_some_and(|previous| previous != tokens.account_id) {
+        if account.is_some_and(|account| account != tokens.account_id) {
             return Err(AppError::new(
                 "sandbox_account_changed",
                 "The Codex account on this Mac changed. Start a new sandbox thread to use it.",

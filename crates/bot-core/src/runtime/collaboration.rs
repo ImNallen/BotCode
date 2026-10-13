@@ -17,6 +17,8 @@ pub(super) struct ProviderSession {
     pub provider: Codex,
     pub modes: Vec<ModePreset>,
     pub models: Option<Vec<ModelOption>>,
+    /// The ChatGPT account the agent was signed in with, for a sandbox agent on ChatGPT tokens.
+    pub account: Option<String>,
 }
 pub(super) async fn discover(provider: Codex) -> ProviderSession {
     let modes = match provider
@@ -41,6 +43,7 @@ pub(super) async fn discover(provider: Codex) -> ProviderSession {
         provider,
         modes,
         models,
+        account: None,
     }
 }
 pub(super) async fn read_models(provider: &Codex) -> Result<Vec<ModelOption>> {

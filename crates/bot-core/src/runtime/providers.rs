@@ -4,7 +4,10 @@ use super::{
     restarts::Restarts,
 };
 use crate::{
-    codex::{AgentProcess, Codex, Signal, auth::TokenBroker},
+    codex::{
+        AgentProcess, Codex, Signal,
+        auth::{Credentials, TokenBroker},
+    },
     diagnostics::ProviderPids,
     domain::*,
     log::RotatingLog,
@@ -46,6 +49,7 @@ enum SlotState {
         epoch: u64,
         codex: Codex,
         modes: Vec<ModePreset>,
+        account: Option<String>,
     },
 }
 impl SlotState {
@@ -103,6 +107,12 @@ impl Providers {
             _ => &[],
         }
     }
+    pub(super) fn account(&self, key: &EnvKey) -> Option<&str> {
+        match self.slots.get(key).map(|slot| &slot.state) {
+            Some(SlotState::Live { account, .. }) => account.as_deref(),
+            _ => None,
+        }
+    }
     pub(super) fn begin_launch(&mut self, key: &EnvKey, now: Instant) -> Option<Launch> {
         let slot = self.slots.entry(key.clone()).or_default();
         if !matches!(slot.state, SlotState::Idle) {
@@ -123,6 +133,7 @@ impl Providers {
         key: &EnvKey,
         codex: Codex,
         modes: Vec<ModePreset>,
+        account: Option<String>,
         now: Instant,
     ) -> Vec<Prepare> {
         let slot = self.slots.get_mut(key).unwrap();
@@ -133,6 +144,7 @@ impl Providers {
             epoch,
             codex,
             modes,
+            account,
         };
         slot.restarts.ready(now);
         std::mem::take(&mut slot.pending)
@@ -166,14 +178,13 @@ impl Providers {
             _ => None,
         }
     }
+    /// Retires the slot's epoch, so a launch still in flight completes as stale and its
+    /// process is terminated on arrival. Returns the live agent for the caller to terminate.
     pub(super) fn stop(&mut self, key: &EnvKey) -> Option<Codex> {
         let slot = self.slots.get_mut(key)?;
         match std::mem::take(&mut slot.state) {
             SlotState::Live { codex, .. } => Some(codex),
-            launching => {
-                slot.state = launching;
-                None
-            }
+            SlotState::Idle | SlotState::Launching { .. } => None,
         }
     }
 }
@@ -224,7 +235,12 @@ impl Launcher {
             let _ = provider.terminate().await;
             return Err(error);
         }
-        Ok(collaboration::discover(provider).await)
+        let mut session = collaboration::discover(provider).await;
+        session.account = credentials
+            .as_ref()
+            .and_then(Credentials::account_id)
+            .map(str::to_owned);
+        Ok(session)
     }
 }
 

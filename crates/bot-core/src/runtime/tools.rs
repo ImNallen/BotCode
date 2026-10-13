@@ -45,10 +45,10 @@ impl ToolReply {
 }
 type CallKey = (ThreadId, TurnId, String);
 pub(super) struct ToolCompletion {
-    context: ToolContext,
-    caller: Caller,
-    reply: ToolReply,
-    result: ToolResult,
+    pub(super) context: ToolContext,
+    pub(super) caller: Caller,
+    pub(super) reply: ToolReply,
+    pub(super) result: ToolResult,
 }
 pub(super) struct ToolWork {
     registry: Registry,
@@ -332,7 +332,7 @@ impl Owner {
         };
         self.dispatch_tool(context, caller, action, reply).await
     }
-    pub(super) async fn mcp_tool(&mut self, envelope: Envelope) -> Result<()> {
+    pub(super) async fn mcp_tool(&mut self, envelope: Envelope) {
         let Envelope { request, reply } = envelope;
         let Some(scope) = self
             .tools
@@ -344,11 +344,11 @@ impl Owner {
                 "tool_expired",
                 "Agent tool credential expired or is unknown.",
             )));
-            return Ok(());
+            return;
         };
         let thread = scope.thread.clone();
         let epoch = scope.epoch;
-        match request.operation {
+        let sent = match request.operation {
             BridgeOperation::List => {
                 let result = self
                     .thread(&thread)
@@ -374,6 +374,16 @@ impl Owner {
                     }
                 }
             }
+        };
+        if let Err(error) = sent {
+            self.lose_tool_slot(epoch, &error).await;
+        }
+    }
+    /// A tool reply that could not be delivered means the agent it was for is broken. Only
+    /// that agent's slot is lost; the other environments keep their work.
+    async fn lose_tool_slot(&mut self, epoch: u64, error: &AppError) {
+        if let Some(key) = self.providers.key(epoch).cloned() {
+            self.lose_env(&key, &error.message, &error.message).await;
         }
     }
     async fn dispatch_tool(
@@ -485,7 +495,7 @@ impl Owner {
     pub(super) async fn finish_tool(
         &mut self,
         completion: std::result::Result<ToolCompletion, tokio::task::JoinError>,
-    ) -> Result<()> {
+    ) {
         let Ok(ToolCompletion {
             context,
             caller,
@@ -493,7 +503,7 @@ impl Owner {
             result,
         }) = completion
         else {
-            return Ok(());
+            return;
         };
         self.tools.running.remove(&(
             context.thread_id.clone(),
@@ -511,10 +521,11 @@ impl Owner {
                 })
             }
         };
-        if current && scope_current {
-            self.send_tool_result(reply, result).await
-        } else {
-            Ok(())
+        if current
+            && scope_current
+            && let Err(error) = self.send_tool_result(reply, result).await
+        {
+            self.lose_tool_slot(context.session_epoch, &error).await;
         }
     }
     async fn send_tool_result(&mut self, reply: ToolReply, result: ToolResult) -> Result<()> {
