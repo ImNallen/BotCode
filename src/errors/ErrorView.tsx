@@ -43,7 +43,7 @@ export function ErrorView({
   const content = (
     <>
       <p className="text-[11px] font-semibold tracking-[0.18em] text-muted-foreground uppercase">
-        {contained ? area : "Bot Code"}
+        {contained ? area : "L1 Code"}
       </p>
       <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
         Something went wrong.

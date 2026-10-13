@@ -17,8 +17,8 @@ pub struct PermissionStatus {
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
-    fn bot_permission_granted(permission: i32) -> bool;
-    fn bot_permission_open(permission: i32, owner: *mut std::ffi::c_void) -> i32;
+    fn l1_permission_granted(permission: i32) -> bool;
+    fn l1_permission_open(permission: i32, owner: *mut std::ffi::c_void) -> i32;
 }
 
 #[tauri::command]
@@ -26,8 +26,8 @@ pub fn mac_permission_status() -> Result<PermissionStatus, String> {
     #[cfg(target_os = "macos")]
     unsafe {
         Ok(PermissionStatus {
-            screen_recording: bot_permission_granted(0),
-            accessibility: bot_permission_granted(1),
+            screen_recording: l1_permission_granted(0),
+            accessibility: l1_permission_granted(1),
         })
     }
     #[cfg(not(target_os = "macos"))]
@@ -62,7 +62,7 @@ pub async fn mac_permission_open(
                             Permission::ScreenRecording => 0,
                             Permission::Accessibility => 1,
                         };
-                        match unsafe { bot_permission_open(permission, pointer) } {
+                        match unsafe { l1_permission_open(permission, pointer) } {
                             0 => Ok(SettingsOpened::Unpackaged),
                             1 => Ok(SettingsOpened::Helper),
                             _ => Err("Could not open System Settings. Try again.".into()),
@@ -92,8 +92,8 @@ mod tests {
         height: f64,
     }
     unsafe extern "C" {
-        fn bot_helper_frame(x: f64, y: f64, width: f64, height: f64, primary_top: f64) -> Frame;
-        fn bot_helper_action(
+        fn l1_helper_frame(x: f64, y: f64, width: f64, height: f64, primary_top: f64) -> Frame;
+        fn l1_helper_action(
             owner: bool,
             granted: bool,
             tracking: bool,
@@ -122,7 +122,7 @@ mod tests {
     fn helper_follows_settings_and_converts_secondary_display_coordinates() {
         unsafe {
             assert_eq!(
-                bot_helper_frame(100., 100., 800., 600., 1080.),
+                l1_helper_frame(100., 100., 800., 600., 1080.),
                 Frame {
                     x: 332.,
                     y: 396.,
@@ -131,7 +131,7 @@ mod tests {
                 }
             );
             assert_eq!(
-                bot_helper_frame(-1400., -900., 1000., 700., 1080.),
+                l1_helper_frame(-1400., -900., 1000., 700., 1080.),
                 Frame {
                     x: -1072.,
                     y: 1296.,
@@ -145,35 +145,35 @@ mod tests {
     fn helper_hides_returns_or_disposes_from_observed_lifecycle() {
         unsafe {
             assert_eq!(
-                bot_helper_action(true, false, true, false, false, false, false),
+                l1_helper_action(true, false, true, false, false, false, false),
                 0
             );
             assert_eq!(
-                bot_helper_action(true, false, true, true, true, true, false),
+                l1_helper_action(true, false, true, true, true, true, false),
                 1
             );
             assert_eq!(
-                bot_helper_action(true, false, true, true, true, false, true),
+                l1_helper_action(true, false, true, true, true, false, true),
                 1
             );
             assert_eq!(
-                bot_helper_action(true, false, true, true, true, false, false),
+                l1_helper_action(true, false, true, true, true, false, false),
                 0
             );
             assert_eq!(
-                bot_helper_action(true, false, false, true, false, false, false),
+                l1_helper_action(true, false, false, true, false, false, false),
                 0
             );
             assert_eq!(
-                bot_helper_action(true, false, true, true, false, false, false),
+                l1_helper_action(true, false, true, true, false, false, false),
                 2
             );
             assert_eq!(
-                bot_helper_action(true, true, false, false, false, false, false),
+                l1_helper_action(true, true, false, false, false, false, false),
                 2
             );
             assert_eq!(
-                bot_helper_action(false, true, true, true, true, true, true),
+                l1_helper_action(false, true, true, true, true, true, true),
                 3
             );
         }

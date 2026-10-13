@@ -411,7 +411,7 @@ function PreferredEditorControl() {
 
 const LINK_TARGET_LABELS: Readonly<Record<LinkTarget, string>> = {
   system: "Your default browser",
-  app: "Bot Code",
+  app: "L1 Code",
 };
 
 function LinkTargetControl() {

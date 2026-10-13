@@ -1,0 +1,885 @@
+mod activity;
+mod container;
+mod history;
+mod persist;
+use crate::{domain::*, process::Kill, sandbox::Container};
+use history::History;
+use persist::HistoryStore;
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsString,
+    io::{ErrorKind, Read, Write},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use tokio::sync::{mpsc, watch};
+
+/// A client-chosen terminal name such as `term-1`, unique within its thread.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct TerminalId(String);
+impl TryFrom<String> for TerminalId {
+    type Error = AppError;
+    fn try_from(value: String) -> Result<Self> {
+        let id = value.trim();
+        if id.is_empty() || id.chars().count() > 128 {
+            return Err(AppError::new(
+                "invalid_terminal",
+                "Terminal ids are 1 to 128 characters.",
+            ));
+        }
+        Ok(Self(id.into()))
+    }
+}
+impl From<TerminalId> for String {
+    fn from(id: TerminalId) -> Self {
+        id.0
+    }
+}
+impl std::str::FromStr for TerminalId {
+    type Err = AppError;
+    fn from_str(s: &str) -> Result<Self> {
+        s.to_owned().try_into()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum TerminalEvent {
+    Snapshot {
+        history: String,
+    },
+    Output {
+        data: String,
+    },
+    /// `None` when a signal ended the shell.
+    Exited {
+        exit_code: Option<i32>,
+    },
+}
+
+/// A terminal whose shell is running a command, named after that command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalLabel {
+    pub workspace_id: WorkspaceId,
+    pub thread_id: Option<ThreadId>,
+    pub terminal_id: TerminalId,
+    pub label: String,
+}
+
+/// Every labeled terminal. An idle terminal is absent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct TerminalLabels {
+    /// Bumped on every change so a client can drop a snapshot older than the one it holds.
+    pub sequence: u64,
+    pub labels: Vec<TerminalLabel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TerminalSize {
+    cols: u16,
+    rows: u16,
+}
+impl TerminalSize {
+    pub(crate) fn new(cols: u16, rows: u16) -> Result<Self> {
+        if !(1..=1000).contains(&cols) || !(1..=500).contains(&rows) {
+            return Err(AppError::new(
+                "invalid_terminal_size",
+                "Terminals are 1 to 1000 columns and 1 to 500 rows.",
+            ));
+        }
+        Ok(Self { cols, rows })
+    }
+    fn pty(self) -> PtySize {
+        PtySize {
+            rows: self.rows,
+            cols: self.cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        }
+    }
+}
+
+pub(crate) const MAX_WRITE_BYTES: usize = 65_536;
+const KILL_GRACE: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub(crate) struct TerminalKey {
+    pub workspace: WorkspaceId,
+    pub thread: Option<ThreadId>,
+    pub terminal: TerminalId,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum CloseScope {
+    Terminal(TerminalKey),
+    Thread {
+        workspace: WorkspaceId,
+        thread: ThreadId,
+    },
+    Workspace(WorkspaceId),
+}
+impl CloseScope {
+    fn matches(&self, key: &TerminalKey) -> bool {
+        match self {
+            Self::Terminal(target) => target == key,
+            Self::Thread { workspace, thread } => {
+                key.workspace == *workspace && key.thread.as_ref() == Some(thread)
+            }
+            Self::Workspace(workspace) => key.workspace == *workspace,
+        }
+    }
+}
+
+pub(crate) type Sink = Arc<dyn Fn(TerminalEvent) + Send + Sync>;
+
+pub(crate) enum Launch {
+    Mac { cwd: PathBuf },
+    Sandbox { container: Container },
+}
+
+#[derive(Clone)]
+enum Place {
+    Mac,
+    Sandbox { container: Container, id: String },
+}
+
+struct Output {
+    history: History,
+    unfinished_sequence: String,
+    subscribers: Vec<(u64, Sink)>,
+    exited: bool,
+    persist: bool,
+}
+
+struct Session {
+    pid: i32,
+    place: Place,
+    master: Mutex<Box<dyn MasterPty + Send>>,
+    writer: Mutex<Box<dyn Write + Send>>,
+    child: Mutex<Box<dyn Child + Send + Sync>>,
+    output: Mutex<Output>,
+}
+impl Session {
+    fn resize(&self, size: TerminalSize) -> Result<()> {
+        lock(&self.master).resize(size.pty()).map_err(pty_error)
+    }
+    fn write(&self, data: &[u8]) -> Result<()> {
+        let mut writer = lock(&self.writer);
+        writer.write_all(data)?;
+        writer.flush()?;
+        Ok(())
+    }
+    fn publish(&self, data: String) -> bool {
+        let mut output = lock(&self.output);
+        let (visible, unfinished) = history::sanitize(&output.unfinished_sequence, &data);
+        output.unfinished_sequence = unfinished;
+        output.history.append(&visible);
+        for (_, sink) in &output.subscribers {
+            sink(TerminalEvent::Output { data: data.clone() });
+        }
+        output.persist
+    }
+    fn saved_history(&self) -> Option<String> {
+        let output = lock(&self.output);
+        output.persist.then(|| output.history.value())
+    }
+    fn running(&self) -> bool {
+        matches!(lock(&self.child).try_wait(), Ok(None))
+    }
+    /// A polite stop hangs up, since interactive shells ignore SIGTERM.
+    fn signal(&self, kill: Kill) {
+        #[cfg(unix)]
+        unsafe {
+            let signal = match kill {
+                Kill::Polite => libc::SIGHUP,
+                Kill::Force => libc::SIGKILL,
+            };
+            libc::kill(-self.pid, signal);
+        }
+        #[cfg(windows)]
+        crate::process::kill_tree(self.pid as u32, kill);
+    }
+    fn reap(&self) -> Option<i32> {
+        loop {
+            match lock(&self.child).try_wait() {
+                Ok(Some(status)) if status.signal().is_none() => {
+                    return Some(status.exit_code() as i32);
+                }
+                Ok(Some(_)) | Err(_) => return None,
+                Ok(None) => {}
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+fn retire(sessions: &[Arc<Session>], store: Option<&HistoryStore>) {
+    for session in sessions {
+        lock(&session.output).subscribers.clear();
+    }
+    if let Some(store) = store {
+        store.flush();
+    }
+    for session in sessions {
+        lock(&session.output).persist = false;
+    }
+    terminate(sessions);
+}
+
+/// Each group gets a hangup and, a second later, a kill.
+fn terminate(sessions: &[Arc<Session>]) {
+    let live: Vec<&Arc<Session>> = sessions.iter().filter(|s| s.running()).collect();
+    for session in &live {
+        session.signal(Kill::Polite);
+    }
+    let deadline = Instant::now() + KILL_GRACE;
+    while live.iter().any(|s| s.running()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for session in &live {
+        if session.running() {
+            session.signal(Kill::Force);
+        }
+        session.reap();
+        session.signal(Kill::Force);
+    }
+}
+
+fn pty_error(e: impl ToString) -> AppError {
+    AppError::new("terminal", e)
+}
+fn lock<T: ?Sized>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct Registry {
+    shell: Option<PathBuf>,
+    sessions: Mutex<HashMap<TerminalKey, Arc<Session>>>,
+    subscriptions: AtomicU64,
+    blocked: Mutex<HashSet<ThreadId>>,
+    labels: Option<watch::Sender<TerminalLabels>>,
+    history: Option<HistoryStore>,
+    prompts: Option<mpsc::UnboundedSender<TerminalKey>>,
+}
+impl Registry {
+    fn drain(&self) -> Vec<Arc<Session>> {
+        lock(&self.sessions).drain().map(|(_, s)| s).collect()
+    }
+    fn shells(&self) -> Vec<(TerminalKey, u32)> {
+        lock(&self.sessions)
+            .iter()
+            .map(|(key, session)| (key.clone(), session.pid as u32))
+            .collect()
+    }
+    fn polled(&self) -> Vec<(TerminalKey, u32, Option<Place>)> {
+        lock(&self.sessions)
+            .iter()
+            .map(|(key, session)| {
+                let watched = match session.place {
+                    Place::Mac => true,
+                    Place::Sandbox { .. } => !lock(&session.output).subscribers.is_empty(),
+                };
+                (
+                    key.clone(),
+                    session.pid as u32,
+                    watched.then(|| session.place.clone()),
+                )
+            })
+            .collect()
+    }
+    fn publish_labels(&self, found: Vec<(TerminalKey, u32, String)>, unreadable: &[TerminalKey]) {
+        let Some(sender) = &self.labels else { return };
+        let sessions = lock(&self.sessions);
+        let mut labels: Vec<TerminalLabel> = found
+            .into_iter()
+            .filter(|(key, pid, _)| sessions.get(key).is_some_and(|s| s.pid as u32 == *pid))
+            .map(|(key, _, label)| TerminalLabel {
+                workspace_id: key.workspace,
+                thread_id: key.thread,
+                terminal_id: key.terminal,
+                label,
+            })
+            .collect();
+        sender.send_if_modified(|current| {
+            labels.extend(
+                current
+                    .labels
+                    .iter()
+                    .filter(|label| unreadable.iter().any(|key| names(key, label)))
+                    .cloned(),
+            );
+            labels.sort_by(|a, b| {
+                let order =
+                    |l: &TerminalLabel| (l.workspace_id.0, l.thread_id.as_ref().map(|t| t.0));
+                order(a)
+                    .cmp(&order(b))
+                    .then_with(|| a.terminal_id.0.cmp(&b.terminal_id.0))
+            });
+            if current.labels == labels {
+                return false;
+            }
+            current.labels = std::mem::take(&mut labels);
+            current.sequence += 1;
+            true
+        });
+    }
+    fn forget(&self, keys: &[TerminalKey]) {
+        let Some(sender) = &self.labels else { return };
+        sender.send_if_modified(|current| {
+            let before = current.labels.len();
+            current
+                .labels
+                .retain(|label| !keys.iter().any(|key| names(key, label)));
+            let changed = current.labels.len() != before;
+            if changed {
+                current.sequence += 1;
+            }
+            changed
+        });
+    }
+}
+fn names(key: &TerminalKey, label: &TerminalLabel) -> bool {
+    key.workspace == label.workspace_id
+        && key.thread == label.thread_id
+        && key.terminal == label.terminal_id
+}
+impl Drop for Registry {
+    fn drop(&mut self) {
+        let sessions = self.drain();
+        if !sessions.is_empty() {
+            let store = self.history.clone();
+            std::thread::spawn(move || retire(&sessions, store.as_ref()));
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Terminals(Arc<Registry>);
+impl Terminals {
+    pub(crate) fn shells(&self) -> Vec<(TerminalKey, u32)> {
+        self.0.shells()
+    }
+    pub(crate) fn new(
+        shell: Option<PathBuf>,
+        labels: Option<watch::Sender<TerminalLabels>>,
+        history_dir: Option<PathBuf>,
+        prompts: Option<mpsc::UnboundedSender<TerminalKey>>,
+    ) -> Self {
+        let polled = labels.is_some();
+        let history = history_dir.and_then(|dir| {
+            HistoryStore::open(dir)
+                .inspect_err(|error| eprintln!("Terminal history is off: {error}"))
+                .ok()
+        });
+        let registry = Arc::new(Registry {
+            shell,
+            sessions: Mutex::new(HashMap::new()),
+            subscriptions: AtomicU64::new(1),
+            blocked: Mutex::new(HashSet::new()),
+            labels,
+            history,
+            prompts,
+        });
+        if polled && let Err(error) = activity::spawn_poller(Arc::downgrade(&registry)) {
+            eprintln!("Terminal labels are off: {error}");
+        }
+        Self(registry)
+    }
+    fn get(&self, key: &TerminalKey) -> Option<Arc<Session>> {
+        lock(&self.0.sessions).get(key).cloned()
+    }
+    pub(crate) fn attach(
+        &self,
+        key: TerminalKey,
+        launch: Option<&Launch>,
+        size: TerminalSize,
+        sink: Sink,
+    ) -> Result<Option<u64>> {
+        loop {
+            let blocked = lock(&self.0.blocked);
+            if key.thread.as_ref().is_some_and(|id| blocked.contains(id)) {
+                return Err(AppError::new(
+                    "missing_thread",
+                    "This thread is being deleted.",
+                ));
+            }
+            let session = {
+                let mut sessions = lock(&self.0.sessions);
+                match (sessions.get(&key), launch) {
+                    (Some(session), _) => session.clone(),
+                    (None, None) => return Ok(None),
+                    (None, Some(launch)) => {
+                        let store = self.0.history.clone();
+                        let history = store.as_ref().map(|store| store.restore(&key));
+                        let (session, reader) =
+                            spawn(self.0.shell.as_deref(), launch, size, history)?;
+                        let registry = Arc::downgrade(&self.0);
+                        let (pumped, pump_key) = (session.clone(), key.clone());
+                        let prompts = self.0.prompts.clone();
+                        if let Err(error) = std::thread::Builder::new()
+                            .name("l1code-terminal".into())
+                            .spawn(move || pump(registry, store, prompts, pump_key, pumped, reader))
+                        {
+                            terminate(&[session]);
+                            return Err(error.into());
+                        }
+                        sessions.insert(key.clone(), session.clone());
+                        session
+                    }
+                }
+            };
+            drop(blocked);
+            session.resize(size)?;
+            let mut output = lock(&session.output);
+            if output.exited {
+                continue;
+            }
+            let id = self.0.subscriptions.fetch_add(1, Ordering::Relaxed);
+            sink(TerminalEvent::Snapshot {
+                history: output.history.value(),
+            });
+            output.subscribers.push((id, sink));
+            return Ok(Some(id));
+        }
+    }
+    pub(crate) fn block_thread(&self, id: &ThreadId) {
+        lock(&self.0.blocked).insert(id.clone());
+    }
+    pub(crate) fn unblock_thread(&self, id: &ThreadId) {
+        lock(&self.0.blocked).remove(id);
+    }
+    pub(crate) fn detach(&self, subscription: u64) {
+        for session in lock(&self.0.sessions).values() {
+            lock(&session.output)
+                .subscribers
+                .retain(|(id, _)| *id != subscription);
+        }
+    }
+    pub(crate) fn sandbox_of(&self, key: &TerminalKey) -> Option<SandboxId> {
+        match &self.get(key)?.place {
+            Place::Mac => None,
+            Place::Sandbox { container, .. } => Some(container.id().clone()),
+        }
+    }
+    pub(crate) fn write(&self, key: &TerminalKey, data: &[u8]) -> Result<()> {
+        match self.get(key) {
+            Some(session) => session.write(data),
+            None => Ok(()),
+        }
+    }
+    pub(crate) fn resize(&self, key: &TerminalKey, size: TerminalSize) -> Result<()> {
+        match self.get(key) {
+            Some(session) => session.resize(size),
+            None => Ok(()),
+        }
+    }
+    pub(crate) fn close(&self, scope: &CloseScope) {
+        let (keys, closed): (Vec<TerminalKey>, Vec<Arc<Session>>) = {
+            let mut sessions = lock(&self.0.sessions);
+            let keys: Vec<TerminalKey> = sessions
+                .keys()
+                .filter(|k| scope.matches(k))
+                .cloned()
+                .collect();
+            let closed: Vec<Arc<Session>> =
+                keys.iter().filter_map(|k| sessions.remove(k)).collect();
+            for session in &closed {
+                lock(&session.output).persist = false;
+            }
+            if let Some(store) = &self.0.history {
+                store.forget(scope);
+            }
+            (keys, closed)
+        };
+        self.0.forget(&keys);
+        terminate(&closed);
+    }
+    pub(crate) fn shutdown(&self) {
+        retire(&self.0.drain(), self.0.history.as_ref());
+    }
+}
+
+fn pump(
+    registry: Weak<Registry>,
+    store: Option<HistoryStore>,
+    prompts: Option<mpsc::UnboundedSender<TerminalKey>>,
+    key: TerminalKey,
+    session: Arc<Session>,
+    mut reader: Box<dyn Read + Send>,
+) {
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut carry = Vec::new();
+    let mut marks = container::PromptMarks::default();
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                let data = history::decode(&mut carry, &buffer[..n]);
+                if let (Place::Sandbox { .. }, Some(prompts)) = (&session.place, &prompts)
+                    && marks.feed(&data)
+                {
+                    let _ = prompts.send(key.clone());
+                }
+                if !data.is_empty()
+                    && session.publish(data)
+                    && let Some(store) = &store
+                {
+                    store.save(&key, Arc::downgrade(&session));
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            // macOS reports a closed PTY as EIO rather than end of file.
+            Err(_) => break,
+        }
+    }
+    let exit_code = session.reap();
+    if let Some(registry) = registry.upgrade() {
+        let removed = {
+            let mut sessions = lock(&registry.sessions);
+            let current = sessions.get(&key).is_some_and(|s| Arc::ptr_eq(s, &session));
+            if current {
+                lock(&session.output).persist = false;
+                if let Some(store) = &store {
+                    store.forget(&CloseScope::Terminal(key.clone()));
+                }
+                sessions.remove(&key);
+            }
+            current
+        };
+        if removed {
+            registry.forget(std::slice::from_ref(&key));
+        }
+    }
+    {
+        let mut output = lock(&session.output);
+        output.exited = true;
+        for (_, sink) in output.subscribers.drain(..) {
+            sink(TerminalEvent::Exited { exit_code });
+        }
+    }
+    if let Place::Sandbox { container, id } = &session.place {
+        container::stop(container, id);
+    }
+}
+
+/// A `history` restored from disk makes the session save its own.
+fn spawn(
+    pinned: Option<&Path>,
+    launch: &Launch,
+    size: TerminalSize,
+    history: Option<History>,
+) -> Result<(Arc<Session>, Box<dyn Read + Send>)> {
+    let environment = shell_environment(std::env::vars_os());
+    let (command, place) = match launch {
+        Launch::Mac { cwd } => (mac_command(pinned, cwd, environment)?, Place::Mac),
+        Launch::Sandbox { container } => {
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            (
+                container::command(container, &id, &environment),
+                Place::Sandbox {
+                    container: container.clone(),
+                    id,
+                },
+            )
+        }
+    };
+    let pair = native_pty_system().openpty(size.pty()).map_err(pty_error)?;
+    let child = pair.slave.spawn_command(command).map_err(pty_error)?;
+    // The shell holds the only slave descriptor, so its exit closes the PTY.
+    drop(pair.slave);
+    let pid = child
+        .process_id()
+        .ok_or_else(|| AppError::new("terminal", "The shell did not start."))? as i32;
+    let reader = pair.master.try_clone_reader().map_err(pty_error)?;
+    let writer = pair.master.take_writer().map_err(pty_error)?;
+    let session = Arc::new(Session {
+        pid,
+        place,
+        master: Mutex::new(pair.master),
+        writer: Mutex::new(writer),
+        child: Mutex::new(child),
+        output: Mutex::new(Output {
+            persist: history.is_some(),
+            history: history.unwrap_or_default(),
+            unfinished_sequence: String::new(),
+            subscribers: Vec::new(),
+            exited: false,
+        }),
+    });
+    Ok((session, reader))
+}
+
+fn mac_command(
+    pinned: Option<&Path>,
+    cwd: &Path,
+    environment: Vec<(OsString, OsString)>,
+) -> Result<CommandBuilder> {
+    if !cwd.is_dir() {
+        return Err(AppError::new(
+            "terminal_unavailable",
+            format!("{} is not a directory.", cwd.display()),
+        ));
+    }
+    let (program, args) = resolve_shell(pinned)
+        .ok_or_else(|| AppError::new("terminal_unavailable", "No shell was found."))?;
+    let mut command = CommandBuilder::new(&program);
+    command.args(args);
+    command.cwd(cwd);
+    command.env_clear();
+    for (key, value) in environment {
+        command.env(key, value);
+    }
+    Ok(command)
+}
+
+pub(crate) fn resolve_shell(pinned: Option<&Path>) -> Option<(PathBuf, Vec<&'static str>)> {
+    #[cfg(windows)]
+    let candidates = windows_shell_candidates(pinned);
+    #[cfg(not(windows))]
+    let candidates = shell_candidates(pinned, std::env::var_os("SHELL"), cfg!(target_os = "macos"));
+    candidates.into_iter().find(|(program, _)| program.exists())
+}
+
+/// PowerShell 7 when installed, then the Windows PowerShell every Windows ships, then cmd.exe.
+#[cfg(windows)]
+fn windows_shell_candidates(pinned: Option<&Path>) -> Vec<(PathBuf, Vec<&'static str>)> {
+    let system =
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("System32");
+    let paths: Vec<PathBuf> = match pinned {
+        Some(shell) => vec![shell.to_path_buf()],
+        None => crate::vcs::bin_dirs()
+            .into_iter()
+            .find_map(|dir| crate::vcs::executable(dir.join("pwsh")))
+            .into_iter()
+            .chain([
+                system.join("WindowsPowerShell\\v1.0\\powershell.exe"),
+                std::env::var_os("ComSpec").map_or_else(|| system.join("cmd.exe"), PathBuf::from),
+            ])
+            .collect(),
+    };
+    paths
+        .into_iter()
+        .map(|path| {
+            let args = match crate::project::Dialect::of(&path) {
+                crate::project::Dialect::PowerShell => vec!["-NoLogo"],
+                _ => vec![],
+            };
+            (path, args)
+        })
+        .collect()
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn shell_candidates(
+    pinned: Option<&Path>,
+    env_shell: Option<OsString>,
+    login: bool,
+) -> Vec<(PathBuf, Vec<&'static str>)> {
+    let paths: Vec<PathBuf> = match pinned {
+        Some(shell) => vec![shell.to_path_buf()],
+        None => env_shell
+            .map(PathBuf::from)
+            .filter(|shell| shell.is_absolute())
+            .into_iter()
+            .chain(["/bin/zsh", "/bin/bash", "/bin/sh"].map(PathBuf::from))
+            .collect(),
+    };
+    let mut candidates: Vec<(PathBuf, Vec<&'static str>)> = Vec::new();
+    for path in paths {
+        if candidates.iter().any(|(seen, _)| *seen == path) {
+            continue;
+        }
+        // A Finder-launched app inherits launchd's minimal PATH; Terminal.app runs login shells.
+        let mut args = if login { vec!["-l"] } else { vec![] };
+        if path.file_name().is_some_and(|name| name == "zsh") {
+            args.extend(["-o", "nopromptsp"]);
+        }
+        candidates.push((path, args));
+    }
+    candidates
+}
+
+fn shell_environment(
+    base: impl Iterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    let mut environment: Vec<(OsString, OsString)> = base
+        .filter(|(key, value)| {
+            !key.to_string_lossy().starts_with("L1_CODE_")
+                && key != "TERM"
+                && (key != "COLORTERM" || !value.is_empty())
+        })
+        .collect();
+    environment.push(("TERM".into(), "xterm-256color".into()));
+    if !environment.iter().any(|(key, _)| key == "COLORTERM") {
+        environment.push(("COLORTERM".into(), "truecolor".into()));
+    }
+    environment
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleted_thread_gate_prevents_stale_checkout_attach() {
+        let directory = tempfile::tempdir().unwrap();
+        let terminals = Terminals::new(cfg!(unix).then(|| "/bin/sh".into()), None, None, None);
+        let launch = Launch::Mac {
+            cwd: directory.path().into(),
+        };
+        let id = ThreadId::default();
+        let key = TerminalKey {
+            workspace: WorkspaceId::default(),
+            thread: Some(id.clone()),
+            terminal: "term-1".parse().unwrap(),
+        };
+        let sink: Sink = Arc::new(|_| {});
+        let size = TerminalSize::new(80, 24).unwrap();
+        assert!(
+            terminals
+                .attach(key.clone(), Some(&launch), size, sink.clone())
+                .unwrap()
+                .is_some()
+        );
+        terminals.block_thread(&id);
+        terminals.close(&CloseScope::Thread {
+            workspace: key.workspace.clone(),
+            thread: id.clone(),
+        });
+        assert!(terminals.get(&key).is_none());
+        assert!(
+            terminals
+                .attach(key.clone(), Some(&launch), size, sink.clone())
+                .is_err()
+        );
+        assert!(terminals.get(&key).is_none());
+        terminals.unblock_thread(&id);
+        assert!(
+            terminals
+                .attach(key.clone(), Some(&launch), size, sink)
+                .unwrap()
+                .is_some()
+        );
+        terminals.shutdown();
+    }
+    fn env(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect()
+    }
+
+    #[test]
+    fn environment_drops_l1_code_variables_and_sets_terminal_type() {
+        assert_eq!(
+            shell_environment(
+                env(&[
+                    ("PATH", "/usr/bin"),
+                    ("L1_CODE_DATA_DIR", "/state"),
+                    ("L1_CODE_SHELL", "/bin/sh"),
+                    ("TERM", "dumb"),
+                    ("COLORTERM", ""),
+                ])
+                .into_iter()
+            ),
+            env(&[
+                ("PATH", "/usr/bin"),
+                ("TERM", "xterm-256color"),
+                ("COLORTERM", "truecolor"),
+            ])
+        );
+        assert_eq!(
+            shell_environment(env(&[("COLORTERM", "24bit")]).into_iter()),
+            env(&[("COLORTERM", "24bit"), ("TERM", "xterm-256color")])
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_mac_terminal_runs_the_pinned_login_shell_in_the_checkout_with_the_app_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        let environment = env(&[("PATH", "/usr/bin"), ("TERM", "xterm-256color")]);
+        let command =
+            mac_command(Some(Path::new("/bin/sh")), directory.path(), environment).unwrap();
+        let login: &[&str] = if cfg!(target_os = "macos") {
+            &["/bin/sh", "-l"]
+        } else {
+            &["/bin/sh"]
+        };
+        assert_eq!(
+            command.get_argv(),
+            &login.iter().map(OsString::from).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            command.get_cwd(),
+            Some(&directory.path().as_os_str().to_owned())
+        );
+        assert_eq!(
+            command.iter_full_env_as_str().collect::<Vec<_>>(),
+            [("PATH", "/usr/bin"), ("TERM", "xterm-256color")]
+        );
+        assert!(
+            mac_command(None, &directory.path().join("missing"), Vec::new())
+                .is_err_and(|error| error.code == "terminal_unavailable")
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn shell_candidates_prefer_shell_then_system_shells() {
+        let paths = |c: Vec<(PathBuf, Vec<&str>)>| {
+            c.into_iter()
+                .map(|(p, a)| format!("{} {}", p.display(), a.join(" ")))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            paths(shell_candidates(
+                None,
+                Some("/opt/homebrew/bin/fish".into()),
+                true
+            )),
+            [
+                "/opt/homebrew/bin/fish -l",
+                "/bin/zsh -l -o nopromptsp",
+                "/bin/bash -l",
+                "/bin/sh -l"
+            ]
+        );
+        assert_eq!(
+            paths(shell_candidates(None, Some("/bin/zsh".into()), false)),
+            ["/bin/zsh -o nopromptsp", "/bin/bash ", "/bin/sh "]
+        );
+        assert_eq!(
+            paths(shell_candidates(None, Some("fish".into()), false)),
+            ["/bin/zsh -o nopromptsp", "/bin/bash ", "/bin/sh "]
+        );
+        assert_eq!(
+            paths(shell_candidates(
+                Some(Path::new("/bin/sh")),
+                Some("/bin/zsh".into()),
+                true
+            )),
+            ["/bin/sh -l"]
+        );
+    }
+    #[test]
+    fn terminal_ids_are_trimmed_and_bounded() {
+        assert_eq!("  term-1 ".parse::<TerminalId>().unwrap().0, "term-1");
+        assert!("   ".parse::<TerminalId>().is_err());
+        assert!("x".repeat(129).parse::<TerminalId>().is_err());
+        assert!("名".repeat(128).parse::<TerminalId>().is_ok());
+    }
+}

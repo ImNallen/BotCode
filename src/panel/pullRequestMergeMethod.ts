@@ -5,7 +5,7 @@ export function readPullRequestMergeMethod(): MergeMethod {
   try {
     return mergeMethod.parse(
       JSON.parse(
-        localStorage.getItem("bot.pullRequests.mergeMethod") ?? '"merge"',
+        localStorage.getItem("l1code:pullRequests.mergeMethod") ?? '"merge"',
       ),
     );
   } catch {
@@ -16,7 +16,7 @@ export function readPullRequestMergeMethod(): MergeMethod {
 export function savePullRequestMergeMethod(method: MergeMethod) {
   try {
     localStorage.setItem(
-      "bot.pullRequests.mergeMethod",
+      "l1code:pullRequests.mergeMethod",
       JSON.stringify(method),
     );
   } catch {}

@@ -168,9 +168,9 @@ type Row = {
   thread: WorkspaceView["threads"][number];
 };
 
-const WORKING_EXPANDED_KEY = "z1:sidebar:working-expanded";
-const SNOOZED_EXPANDED_KEY = "z1:sidebar:snoozed-expanded";
-const SETTLED_EXPANDED_KEY = "z1:sidebar:settled-expanded";
+const WORKING_EXPANDED_KEY = "l1code:sidebar:working-expanded";
+const SNOOZED_EXPANDED_KEY = "l1code:sidebar:snoozed-expanded";
+const SETTLED_EXPANDED_KEY = "l1code:sidebar:settled-expanded";
 const SETTLED_TAIL_INITIAL_COUNT = 10;
 const SETTLED_TAIL_PAGE_COUNT = 25;
 
@@ -2421,7 +2421,7 @@ export function SidebarBrand({ onNewThread }: { onNewThread: () => void }) {
         className="relative z-10 ml-[var(--workspace-titlebar-content-left)] hidden h-7 w-fit min-w-0 shrink-0 cursor-pointer items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 md:flex text-foreground"
       >
         <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
-          <span className="shrink-0 font-bold">Bot</span>
+          <span className="shrink-0 font-bold">L1</span>
           <span className="truncate [text-box:trim-both_cap_alphabetic] text-muted-foreground">
             Code
           </span>

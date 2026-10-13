@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="src-tauri/icons/icon.png" alt="Bot Code logo" width="120" height="120" />
+  <img src="src-tauri/icons/icon.png" alt="L1 Code logo" width="120" height="120" />
 </p>
 
-# Bot Code
+# L1 Code
 
 A desktop workspace for coding with Codex.
 
-Bot Code brings your conversations, files, Git diffs, terminals, and browser preview into one app. It runs on macOS and Windows and uses your installed Codex CLI and account. The interface follows T3 Code's layout, with conversations in the sidebar, chat in the center, and tools in an optional right panel.
+L1 Code brings your conversations, files, Git diffs, terminals, and browser preview into one app. It runs on macOS and Windows and uses your installed Codex CLI and account. The interface follows T3 Code's layout, with conversations in the sidebar, chat in the center, and tools in an optional right panel.
 
 ## What you can do
 
@@ -69,13 +69,13 @@ Change these in **Settings > Keyboard shortcuts**. A focused terminal keeps its 
 
 ## Your data
 
-Bot Code stores conversation history, settings, worktrees, and attachments in `~/.z1`, retained from its earlier name. Set `BOT_CODE_DATA_DIR` to use another directory.
+L1 Code stores conversation history, settings, worktrees, and attachments in `~/.l1code`. Set `L1_CODE_DATA_DIR` to use another directory.
 
 Your Codex account and credentials stay with the Codex CLI. See [storage and recovery](docs/user-guide.md#state-and-recovery) for cleanup options and what survives a restart.
 
 ## For contributors
 
-Bot Code is built with Rust, Tauri 2, React, and SQLite. The [architecture notes](docs/architecture.md) explain how the app fits together. The [UI baseline](docs/ui-baseline.md) describes its layout and interaction conventions.
+L1 Code is built with Rust, Tauri 2, React, and SQLite. The [architecture notes](docs/architecture.md) explain how the app fits together. The [UI baseline](docs/ui-baseline.md) describes its layout and interaction conventions.
 
 See [builds and checks](docs/user-guide.md#build-and-check-the-app) for development commands and [verification records](docs/verification.md) for native app checks.
 

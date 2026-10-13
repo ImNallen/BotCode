@@ -11,7 +11,7 @@ import {
 } from "./GitActionsControl.logic.ts";
 
 function status(overrides: Partial<VcsStatus> = {}): VcsStatus {
-  // Bot Code: no isRepo; the control renders only inside a repository.
+  // L1 Code: no isRepo; the control renders only inside a repository.
   return {
     hasPrimaryRemote: true,
     isDefaultRef: false,

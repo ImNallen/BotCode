@@ -49,7 +49,7 @@ def usage(at, input_tokens, cached, output):
 def prepare():
     fixture.mkdir(parents=True)
     provider.mkdir()
-    shutil.copyfile(root / 'crates/bot-core/tests/support/codex_peer.py', provider / 'codex')
+    shutil.copyfile(root / 'crates/l1-core/tests/support/codex_peer.py', provider / 'codex')
     (provider / 'codex').chmod(0o755)
     now = time.time()
     (provider / 'reset_credits').write_text(json.dumps({'availableCount': 2, 'credits': [
@@ -82,7 +82,7 @@ def prepare():
     subprocess.check_call(['git', '-C', str(repo), 'add', '.'])
     subprocess.check_call(['git', '-C', str(repo), '-c', 'commit.gpgSign=false', 'commit', '-qm', 'Fixture main'])
     workspace = {'id': str(uuid.uuid4()), 'root': str(repo), 'label': 'Usage fixture', 'kind': 'repository'}
-    with sqlite3.connect(data / 'z1.sqlite') as db:
+    with sqlite3.connect(data / 'l1code.sqlite') as db:
         db.executescript('''
             CREATE TABLE workspaces(id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
             CREATE TABLE threads(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), data TEXT NOT NULL, pr_generation INTEGER NOT NULL DEFAULT 0);
@@ -104,7 +104,7 @@ if args.check:
     raise SystemExit
 manifest = prepare()
 if args.app:
-    environment = dict(os.environ, BOT_CODE_DATA_DIR=str(data), BOT_CODE_CODEX_BIN=manifest['provider'],
+    environment = dict(os.environ, L1_CODE_DATA_DIR=str(data), L1_CODE_CODEX_BIN=manifest['provider'],
                        CODEX_HOME=str(codex_home))
     binary = next((args.app.resolve() / 'Contents/MacOS').iterdir())
     process = subprocess.Popen([str(binary)], env=environment, stdout=(fixture / 'app.log').open('w'),

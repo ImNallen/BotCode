@@ -34,7 +34,9 @@ export type PrInboxSearch = z.infer<typeof prInboxSearchSchema>;
 export function readPrInboxPreferences() {
   try {
     return prInboxSearchSchema.parse(
-      JSON.parse(localStorage.getItem("bot.pullRequests.preferences") ?? "{}"),
+      JSON.parse(
+        localStorage.getItem("l1code:pullRequests.preferences") ?? "{}",
+      ),
     );
   } catch {
     return prInboxSearchSchema.parse({});
@@ -60,7 +62,7 @@ export function savePrInboxPreferences({
 }: PrInboxSearch) {
   try {
     localStorage.setItem(
-      "bot.pullRequests.preferences",
+      "l1code:pullRequests.preferences",
       JSON.stringify(preferences),
     );
   } catch {}

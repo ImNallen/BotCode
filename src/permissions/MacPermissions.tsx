@@ -34,7 +34,7 @@ export function MacPermissions() {
       );
       if (result === "unpackaged")
         setNotice(
-          "System Settings is open. The app drag helper is available in an installed Bot Code app.",
+          "System Settings is open. The app drag helper is available in an installed L1 Code app.",
         );
     } catch {
       setNotice("Could not open System Settings. Try again.");

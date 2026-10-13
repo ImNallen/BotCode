@@ -231,7 +231,7 @@ describe("buildThreadActionMenuItems", () => {
     );
   });
 
-  it("keeps entries Bot Code cannot run yet out of the menu", () => {
+  it("keeps entries L1 Code cannot run yet out of the menu", () => {
     const withBranch = allIds({ ...sidebarState, branch: "feat/menu" });
     assert.ok(!withBranch.includes("new-thread-on-branch"));
     const unsupported = allIds({

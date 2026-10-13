@@ -333,60 +333,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bot-code"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "base64 0.22.1",
- "block2",
- "bot-core",
- "cc",
- "dunce",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "objc2-web-kit",
- "percent-encoding",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "bot-core"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "chrono-tz",
- "dunce",
- "grep-matcher",
- "grep-regex",
- "grep-searcher",
- "ignore",
- "libc",
- "percent-encoding",
- "portable-pty",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "sysinfo",
- "tempfile",
- "tokio",
- "unicode-normalization",
- "unicode-segmentation",
- "uuid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "brotli"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2296,6 +2242,60 @@ checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
 dependencies = [
  "bitflags 2.13.2",
  "serde",
+]
+
+[[package]]
+name = "l1-code"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "base64 0.22.1",
+ "block2",
+ "cc",
+ "dunce",
+ "l1-core",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-notification",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "l1-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "dunce",
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "libc",
+ "percent-encoding",
+ "portable-pty",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "unicode-normalization",
+ "unicode-segmentation",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@
 
 ## Problem and caller experience
 
-Bot Code needs a browser in its existing right panel and tools bound to the conversation that invoked them. Existing native Codex conversations must gain those tools without losing history. A provider restart must cancel pending calls without repeating a click.
+L1 Code needs a browser in its existing right panel and tools bound to the conversation that invoked them. Existing native Codex conversations must gain those tools without losing history. A provider restart must cancel pending calls without repeating a click.
 
 The user opens **Preview** from the right panel, enters a URL, or runs a project script with `previewUrl` and `autoOpenPreview`. The agent calls `preview_open`, `preview_snapshot`, and `preview_click` on that conversation's browser. It registers a PR with `link_pull_request({url})`. Neither tool accepts another conversation's identity as an argument.
 
@@ -26,7 +26,7 @@ Two transport candidates were investigated independently. Dynamic tools have the
 
 Two real Tauri browser prototypes used child webviews and separate windows on WKWebView. Both returned semantic snapshots, filled inputs, clicked a button, and captured matching PNGs. Both rendered a measured 1280 by 720 CSS viewport inside a 375-pixel frame through native zoom. The child webview fits the requested right-panel workflow; a separate window offers no automation advantage.
 
-Prototype artifacts are in `/tmp/botcode-preview-prototype` and `/tmp/botcode-preview-design`. The installed Codex types were generated with `codex app-server generate-ts --experimental`. The protocol probes used isolated Codex homes and a deterministic local Responses endpoint. These observations establish feasibility; they do not replace final verification in Bot Code.
+Prototype artifacts are in `/tmp/l1code-preview-prototype` and `/tmp/l1code-preview-design`. The installed Codex types were generated with `codex app-server generate-ts --experimental`. The protocol probes used isolated Codex homes and a deterministic local Responses endpoint. These observations establish feasibility; they do not replace final verification in L1 Code.
 
 Model the Domain puts tool results and browser operations in typed variants. Sequence Work into Verifiable Units keeps each delivery boundary green before the next. Prove It Works requires the final Codex tool workflow in the real Tauri app.
 
@@ -51,7 +51,7 @@ Unit a implements the chosen shared registry and both adapters. Desktop registra
 
 The renderer and native adapter use `PreviewScope = {kind: "thread", threadId} | {kind: "draft", workspaceId}`. Agent calls always derive the thread scope from `ToolContext`. The native state reports `url`, `title`, `loading`, `error`, navigation availability, a nullable requested `viewport`, and the actual measured CSS viewport.
 
-The panel uses `preview_state`, `preview_open`, `preview_navigate`, `preview_viewport`, and `preview_discover`. Navigation is a tagged URL, back, forward, or reload operation. A `botcode-preview` event carries `{scope, state, openPanel}`; React opens the panel only for the currently selected scope.
+The panel uses `preview_state`, `preview_open`, `preview_navigate`, `preview_viewport`, and `preview_discover`. Navigation is a tagged URL, back, forward, or reload operation. A `l1code-preview` event carries `{scope, state, openPanel}`; React opens the panel only for the currently selected scope.
 
 A mount acquires a monotonic lease with `preview_attach`. `preview_layout` carries that lease, a monotonic sequence, measured logical bounds, and visibility. `preview_detach` releases only its matching lease. Renderer attachment acquisition is serialized, and disposed queued mounts are skipped. A later mount invalidates earlier geometry and cleanup calls. The manager displays at most one child view; the hidden views retain conversation browser state. A finite view limit bounds native resources. Renderer observers hide the view during covering dialogs and menus. Geometry updates use coalesced microtasks: WKWebView can report the main document hidden and pause animation frames while the containing window remains visible. Native child visibility still follows that parent window.
 

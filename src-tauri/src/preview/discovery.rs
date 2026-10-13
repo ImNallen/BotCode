@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use bot_core::{ListenerReading, SandboxNetwork};
+use l1_core::{ListenerReading, SandboxNetwork};
 use serde::Serialize;
 use tauri::Url;
 use tokio::{
@@ -20,7 +20,7 @@ const COMMON_PORTS: &[u16] = &[
     3000, 3001, 3333, 4173, 4200, 4321, 5000, 5173, 5174, 5175, 5500, 8000, 8080, 8081, 8888, 9000,
 ];
 const MAX_LISTENERS: usize = 64;
-const DISCOVERY_OPT_OUT: &str = r#"<meta name="botcode-discovery" content="none">"#;
+const DISCOVERY_OPT_OUT: &str = r#"<meta name="l1code-discovery" content="none">"#;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +85,7 @@ async fn listener_ports() -> BTreeSet<u16> {
         );
         #[cfg(windows)]
         let (program, args, parse) = ("netstat", ["-ano"].as_slice(), parse_netstat);
-        let mut child = Command::from(bot_core::process::command(program))
+        let mut child = Command::from(l1_core::process::command(program))
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -408,7 +408,7 @@ Aktive Verbindungen
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><title> Fixture page </title></html>",
                 "HTTP/1.1 302 Found\r\nLocation: http://example.com/\r\nConnection: close\r\n\r\n",
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"ok\":true}",
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><meta name=\"botcode-discovery\" content=\"none\"><title>Sandbox desktop</title></html>",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><meta name=\"l1code-discovery\" content=\"none\"><title>Sandbox desktop</title></html>",
             ] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut buffer = [0; 4096];

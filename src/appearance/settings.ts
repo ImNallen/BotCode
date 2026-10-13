@@ -82,7 +82,7 @@ export type LegacyAppearance = Readonly<{
   wordWrap?: string | null;
 }>;
 
-export const LEGACY_WORD_WRAP_KEY = "z1.wordWrap";
+export const LEGACY_WORD_WRAP_KEY = "l1code:wordWrap";
 
 const legacyCodeFontSize = z.number().int().min(11).max(20);
 

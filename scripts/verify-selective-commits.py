@@ -25,12 +25,12 @@ def prepare(root):
     peers = root / "peers"
     peers.mkdir()
     source = pathlib.Path(__file__).resolve().parents[1]
-    shutil.copy(source / "crates/bot-core/tests/support/codex_peer.py", peers / "codex")
+    shutil.copy(source / "crates/l1-core/tests/support/codex_peer.py", peers / "codex")
     (peers / "codex").chmod(0o755)
     (peers / "commit_output").write_text(
         json.dumps({"subject": "Commit selected files", "body": ""})
     )
-    database = sqlite3.connect(state / "z1.sqlite")
+    database = sqlite3.connect(state / "l1code.sqlite")
     database.executescript(
         "CREATE TABLE workspaces(id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, data TEXT NOT NULL);"
         "CREATE TABLE threads(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, data TEXT NOT NULL);"
@@ -168,7 +168,7 @@ def main():
     check_parser.add_argument("scenario", choices=("selection", "hooks", "hooks-success", "partial"))
     args = parser.parse_args()
     if args.command == "prepare":
-        root = args.root or pathlib.Path(tempfile.mkdtemp(prefix="bot-commit-native-")) / "fixtures"
+        root = args.root or pathlib.Path(tempfile.mkdtemp(prefix="l1code-commit-native-")) / "fixtures"
         prepare(root.resolve())
     else:
         check(args.root.resolve(), args.scenario)

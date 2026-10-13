@@ -89,7 +89,7 @@ const extensions: Record<ImageAttachment["mimeType"], string> = {
 export const attachmentUrl = (attachment: Attachment) =>
   convertFileSrc(
     `${attachment.id}.${attachment.kind === "image" ? extensions[attachment.mimeType] : attachment.extension}`,
-    "botcode-attachment",
+    "l1code-attachment",
   );
 
 export function attachmentMediaKind(

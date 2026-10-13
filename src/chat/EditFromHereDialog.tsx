@@ -44,7 +44,7 @@ export function EditFromHereDialog({
         <DialogTitle>Edit from here?</DialogTitle>
         <DialogDescription>
           Rewind chat to before this message. Your prompt returns to the
-          composer. Bot Code continues from a new Codex thread containing the
+          composer. L1 Code continues from a new Codex thread containing the
           earlier conversation.
         </DialogDescription>
         {canRestoreFiles ? (

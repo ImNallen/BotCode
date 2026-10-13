@@ -19,7 +19,7 @@ use tauri::{
     webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder},
 };
 
-use bot_core::LocalNetwork;
+use l1_core::LocalNetwork;
 use model::{Model, Result, geometry, parse_url};
 pub use model::{Navigation, PreviewScope, PreviewState, Rect, Viewport};
 
@@ -121,7 +121,7 @@ impl PreviewManager {
             let _ = self
                 .0
                 .app
-                .emit_to(EventTarget::webview("main"), "botcode-preview", event);
+                .emit_to(EventTarget::webview("main"), "l1code-preview", event);
         }
     }
 
@@ -934,7 +934,7 @@ pub async fn preview_discover(
     match route::network(&app, &scope).await? {
         LocalNetwork::Mac => {
             let forwarders = app
-                .try_state::<bot_core::App>()
+                .try_state::<l1_core::App>()
                 .map(|runtime| runtime.forwarder_ports())
                 .unwrap_or_default();
             Ok(discovery::discover(&forwarders).await)

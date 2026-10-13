@@ -62,15 +62,18 @@ function collapseIconClass(fileDiff: FileDiffMetadata): string {
 }
 
 export function useDiffViewPreferences() {
-  const [split, setSplit] = useStoredState("z1.diffSplit", storedFlag(false));
+  const [split, setSplit] = useStoredState(
+    "l1code:diffSplit",
+    storedFlag(false),
+  );
   const { appearance } = useAppearance();
   const [wordWrap, setWordWrap] = useState(appearance.wordWrap);
   const [ignoreWhitespace, setIgnoreWhitespace] = useStoredState(
-    "z1.diffIgnoreWhitespace",
+    "l1code:diffIgnoreWhitespace",
     storedFlag(true),
   );
   const [fileTreeOpen, setFileTreeOpen] = useStoredState(
-    "z1.diffFileTreeOpen",
+    "l1code:diffFileTreeOpen",
     storedFlag(false),
   );
   return {

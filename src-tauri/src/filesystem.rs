@@ -1,5 +1,5 @@
 // Read-only local adaptation of T3 Code v0.0.45 filesystem browse (MIT).
-use bot_core::{AppError, Result};
+use l1_core::{AppError, Result};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -98,8 +98,7 @@ mod tests {
     struct Directory(PathBuf);
     impl Directory {
         fn new() -> Self {
-            let path =
-                std::env::temp_dir().join(format!("bot-code-browse-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!("l1code-browse-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&path).unwrap();
             Self(path)
         }

@@ -6,7 +6,7 @@ use std::{path::PathBuf, time::Duration};
 pub(super) use arguments::ColorScheme;
 use arguments::Operation;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use bot_core::{ToolBackend, ToolCall, ToolContent, ToolContext, ToolFuture, ToolResult, ToolSpec};
+use l1_core::{ToolBackend, ToolCall, ToolContent, ToolContext, ToolFuture, ToolResult, ToolSpec};
 use serde_json::{Value, json};
 
 use super::{
@@ -315,7 +315,7 @@ fn write_png(
     }
     let root = dunce::canonicalize(data_dir).map_err(|error| error.to_string())?;
     let mut directory = root.clone();
-    for component in bot_core::PREVIEW_SCREENSHOTS {
+    for component in l1_core::PREVIEW_SCREENSHOTS {
         directory.push(component);
         match std::fs::create_dir(&directory) {
             Ok(()) => {}
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn cancelled_saves_write_nothing_and_success_uses_generated_data_directory_path() {
         let directory =
-            std::env::temp_dir().join(format!("botcode-screenshot-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("l1code-screenshot-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         assert!(write_png(&directory, b"png", || true).is_err());
         assert!(!directory.join("preview").exists());
@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn screenshot_directory_cannot_redirect_outside_app_data() {
         let directory =
-            std::env::temp_dir().join(format!("botcode-screenshot-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("l1code-screenshot-test-{}", uuid::Uuid::new_v4()));
         let outside = directory.with_extension("outside");
         std::fs::create_dir(&directory).unwrap();
         std::fs::create_dir(&outside).unwrap();

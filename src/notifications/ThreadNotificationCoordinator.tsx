@@ -152,7 +152,7 @@ export function ThreadNotificationCoordinator({
       for (const target of pending)
         current.current.openThread(target.workspaceId, target.threadId);
     };
-    const clickOff = listen("bot:notification-open", () => {
+    const clickOff = listen("l1code:notification-open", () => {
       void drain();
     }).then(async (off) => {
       if (active) await drain();
@@ -175,7 +175,7 @@ export function ThreadNotificationCoordinator({
     closeNotifications(pending.setMode(preferences.notificationMode));
     setNotificationBadge(0);
     if (!hasDesktopNotifications(preferences.notificationMode)) return;
-    const off = listen("bot:notification-badge-clear", clear);
+    const off = listen("l1code:notification-badge-clear", clear);
     return () => {
       void off.then((off) => off());
       clear();

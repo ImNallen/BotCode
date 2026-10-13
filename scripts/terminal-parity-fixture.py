@@ -42,14 +42,14 @@ def prepare():
     })
     beta = create_repository('beta', {'README.md': 'Second disposable repository.\n'})
     provider.mkdir()
-    shutil.copyfile(root / 'crates/bot-core/tests/support/codex_peer.py', provider / 'codex')
+    shutil.copyfile(root / 'crates/l1-core/tests/support/codex_peer.py', provider / 'codex')
     (provider / 'codex').chmod(0o755)
     data.mkdir()
     now = int(time.time() * 1000)
     minute = 60_000
     workspaces = []
     threads = {}
-    with sqlite3.connect(data / 'z1.sqlite') as db:
+    with sqlite3.connect(data / 'l1code.sqlite') as db:
         db.executescript('''
             CREATE TABLE workspaces(id TEXT PRIMARY KEY, root TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
             CREATE TABLE threads(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), data TEXT NOT NULL, pr_generation INTEGER NOT NULL DEFAULT 0);
@@ -87,7 +87,7 @@ def prepare():
 manifest = json.loads((fixture / 'manifest.json').read_text()) if args.relaunch else prepare()
 if args.app:
     app = args.app.resolve()
-    environment = dict(os.environ, BOT_CODE_DATA_DIR=str(data), BOT_CODE_CODEX_BIN=str(provider / 'codex'))
+    environment = dict(os.environ, L1_CODE_DATA_DIR=str(data), L1_CODE_CODEX_BIN=str(provider / 'codex'))
     binary = next((app / 'Contents/MacOS').iterdir())
     with (fixture / 'app.log').open('a') as log:
         process = subprocess.Popen([str(binary)], env=environment, stdout=log, stderr=subprocess.STDOUT,

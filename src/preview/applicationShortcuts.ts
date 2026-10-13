@@ -142,7 +142,7 @@ export function usePreviewApplicationShortcuts(
         "data-model-picker-open",
       ],
     });
-    void listen<unknown>("botcode-preview-shortcut", ({ payload }) => {
+    void listen<unknown>("l1code-preview-shortcut", ({ payload }) => {
       if (!disposed) receive(payload);
     })
       .then((stop) => {

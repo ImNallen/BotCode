@@ -282,7 +282,7 @@ function mcpCall(item: McpItem): McpCall {
   };
 }
 
-const BOTCODE_TOOL_LABELS: Record<
+const L1_CODE_TOOL_LABELS: Record<
   string,
   readonly [action: string, running: string, completed: string, detail: string]
 > = {
@@ -361,16 +361,16 @@ function pullRequestNumber(args: McpItem["arguments"]): number | null {
     : null;
 }
 
-function botcodeToolPresentation(
+function l1codeToolPresentation(
   call: Pick<McpCall, "server" | "tool" | "arguments">,
   status: ToolStatus,
 ): { displayName: string; icon: WorkIcon; action: WorkAction } | null {
   if (
-    call.server !== "botcode" ||
-    !Object.hasOwn(BOTCODE_TOOL_LABELS, call.tool)
+    call.server !== "l1code" ||
+    !Object.hasOwn(L1_CODE_TOOL_LABELS, call.tool)
   )
     return null;
-  const labels = BOTCODE_TOOL_LABELS[call.tool];
+  const labels = L1_CODE_TOOL_LABELS[call.tool];
   if (!labels) return null;
   const [action, running, completed, detail] = labels;
   const verb = {
@@ -517,7 +517,7 @@ function present(item: Item, turnId: string): ItemEntry[] {
       });
     }
     case "mcp_tool_call": {
-      const tool = botcodeToolPresentation(item, item.status);
+      const tool = l1codeToolPresentation(item, item.status);
       return work(
         toolEntry(item.id, item.status, {
           action: tool?.action ?? "other",
@@ -696,7 +696,7 @@ function liveActivityToolStatus(
 
 export function liveWorkEntryLabel(entry: WorkEntry, active: boolean): string {
   const status = liveActivityToolStatus(entry.status, active);
-  const tool = entry.mcpCall && botcodeToolPresentation(entry.mcpCall, status);
+  const tool = entry.mcpCall && l1codeToolPresentation(entry.mcpCall, status);
   if (tool) return tool.displayName;
   const command = entry.command?.trim();
   if (!command) return entry.label;

@@ -125,7 +125,7 @@ export function createKeybindings(
     reportError: report,
   };
 }
-const browserKey = "bot-code:keybindings";
+const browserKey = "l1code:keybindings";
 export const keybindings = createKeybindings({
   read: () =>
     native

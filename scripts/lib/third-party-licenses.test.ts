@@ -65,7 +65,7 @@ async function realT3CodeNotice(): Promise<unknown> {
 
 async function createFixture() {
   const root = await NodeFSP.mkdtemp(
-    NodePath.join(NodeOS.tmpdir(), "bot-code-licenses-"),
+    NodePath.join(NodeOS.tmpdir(), "l1code-licenses-"),
   );
   tempDirectories.push(root);
   const appManifest = NodePath.join(root, "package.json");
@@ -111,7 +111,7 @@ async function createFixture() {
   );
   const devRoot = await writeCrate(root, "dev-crate", "Dev crate text");
   const buildRoot = await writeCrate(root, "build-crate", "Build crate text");
-  const member = "path+file:///app#bot-code@0.1.0";
+  const member = "path+file:///app#l1-code@0.1.0";
   const normal = crate("normal-crate", normalRoot);
   const dev = crate("dev-crate", devRoot);
   const build = crate("build-crate", buildRoot);
@@ -119,7 +119,7 @@ async function createFixture() {
     packages: [
       {
         id: member,
-        name: "bot-code",
+        name: "l1-code",
         version: "0.1.0",
         license: null,
         repository: null,

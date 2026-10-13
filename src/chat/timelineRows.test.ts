@@ -336,7 +336,7 @@ it("shows Starting sandbox in place of Thinking while a sandbox agent connects",
   const sandbox = connecting({
     kind: "worktree",
     path: "/mirror",
-    branch: "botcode/abc",
+    branch: "l1code/abc",
     sandbox: { kind: "docker", id: "0123456789ab" },
   });
   assert.deepEqual(kinds(sandbox), ["user", "working"]);
@@ -347,7 +347,7 @@ it("shows Starting sandbox in place of Thinking while a sandbox agent connects",
     checkout: {
       kind: "worktree",
       path: "/mirror",
-      branch: "botcode/abc",
+      branch: "l1code/abc",
       sandbox: { kind: "docker", id: "0123456789ab" },
     },
   };
@@ -432,24 +432,24 @@ const computerUse: Item = {
   title: "Inspect isolated baseline Tauri app",
   status: "completed",
   arguments: { title: "Inspect isolated baseline Tauri app" },
-  result: "Bot Code window",
+  result: "L1 Code window",
   error: null,
   durationMs: 752,
   appContext: null,
   presentation: {
     surface: "computer",
     source: {
-      key: "native-app:dev.bot.code.previewverify",
+      key: "native-app:dev.l1.code.previewverify",
       name: "Computer Use",
       kind: "computer",
       icon: {
         kind: "native_app",
-        app: { kind: "app_id", appId: "dev.bot.code.previewverify" },
+        app: { kind: "app_id", appId: "dev.l1.code.previewverify" },
       },
     },
     icon: {
       kind: "native_app",
-      app: { kind: "app_id", appId: "dev.bot.code.previewverify" },
+      app: { kind: "app_id", appId: "dev.l1.code.previewverify" },
     },
   },
 };
@@ -645,7 +645,7 @@ it("previews image views but not image generations, without repeating the path",
   assert.equal(workEntryViewedImagePath(generation), null);
 });
 
-const botcode = (
+const l1code = (
   id: string,
   tool: string,
   status: "inProgress" | "completed" | "failed",
@@ -653,9 +653,9 @@ const botcode = (
 ): Extract<Item, { kind: "mcp_tool_call" }> => ({
   kind: "mcp_tool_call",
   id,
-  server: "botcode",
+  server: "l1code",
   tool,
-  title: `botcode · ${tool}`,
+  title: `l1code · ${tool}`,
   status,
   arguments: args,
   result: null,
@@ -665,7 +665,7 @@ const botcode = (
   presentation: null,
 });
 
-it("labels Bot Code's own MCP tools with T3's tool labels and icons", () => {
+it("labels L1 Code's own MCP tools with T3's tool labels and icons", () => {
   const single = (item: Item) => {
     const { entry } = only(
       deriveRows(thread([item, answer]), new Set([turnId]), new Set()),
@@ -673,17 +673,17 @@ it("labels Bot Code's own MCP tools with T3's tool labels and icons", () => {
     );
     return { heading: entry.heading, icon: entry.icon };
   };
-  assert.deepEqual(single(botcode("open", "preview_open", "completed")), {
+  assert.deepEqual(single(l1code("open", "preview_open", "completed")), {
     heading: "Opened a page in the preview browser",
     icon: "browser",
   });
-  assert.deepEqual(single(botcode("snap", "preview_snapshot", "failed")), {
+  assert.deepEqual(single(l1code("snap", "preview_snapshot", "failed")), {
     heading: "Failed to take a snapshot of the preview page",
     icon: "browser",
   });
   assert.deepEqual(
     single(
-      botcode("link", "link_pull_request", "completed", {
+      l1code("link", "link_pull_request", "completed", {
         url: "https://github.com/pingdotgg/t3code/pull/12",
       }),
     ),
@@ -691,7 +691,7 @@ it("labels Bot Code's own MCP tools with T3's tool labels and icons", () => {
   );
   assert.deepEqual(
     single(
-      botcode("unlink", "unlink_pull_request", "completed", {
+      l1code("unlink", "unlink_pull_request", "completed", {
         repository: "pingdotgg/t3code",
         number: 7,
       }),
@@ -700,7 +700,7 @@ it("labels Bot Code's own MCP tools with T3's tool labels and icons", () => {
   );
   assert.deepEqual(
     single({
-      ...botcode("other", "preview_open", "completed"),
+      ...l1code("other", "preview_open", "completed"),
       server: "x",
       title: "x · preview_open",
     }),
@@ -708,10 +708,10 @@ it("labels Bot Code's own MCP tools with T3's tool labels and icons", () => {
   );
 });
 
-it("keeps a Bot Code preview tool live in present tense and summarizes groups by T3's kinds", () => {
+it("keeps a L1 Code preview tool live in present tense and summarizes groups by T3's kinds", () => {
   const live = only(
     deriveRows(
-      thread([botcode("open", "preview_open", "completed")], true),
+      thread([l1code("open", "preview_open", "completed")], true),
       new Set(),
       new Set(),
     ),
@@ -728,14 +728,14 @@ it("keeps a Bot Code preview tool live in present tense and summarizes groups by
       "work-group",
     );
   const browser = groupOf([
-    botcode("open", "preview_open", "completed"),
-    botcode("click", "preview_click", "completed"),
+    l1code("open", "preview_open", "completed"),
+    l1code("click", "preview_click", "completed"),
   ]);
   assert.equal(browser.label, "Used browser 2 times");
   assert.equal(browser.icon, "browser");
   const prs = groupOf([
-    botcode("link", "link_pull_request", "completed", { number: 3 }),
-    botcode("list", "list_thread_pull_requests", "completed"),
+    l1code("link", "link_pull_request", "completed", { number: 3 }),
+    l1code("list", "list_thread_pull_requests", "completed"),
   ]);
   assert.equal(
     prs.label,
@@ -744,10 +744,7 @@ it("keeps a Bot Code preview tool live in present tense and summarizes groups by
   assert.equal(prs.icon, "pull-request");
   assert.ok(
     markup(
-      thread(
-        [botcode("list", "list_thread_pull_requests", "inProgress")],
-        true,
-      ),
+      thread([l1code("list", "list_thread_pull_requests", "inProgress")], true),
     ).includes(">Checking linked pull requests<"),
   );
 });

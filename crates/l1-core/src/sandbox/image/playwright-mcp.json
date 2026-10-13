@@ -1,0 +1,9 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "launchOptions": { "executablePath": "/opt/l1code/bin/browser", "headless": false },
+    "contextOptions": { "viewport": null }
+  },
+  "outputDir": "/home/l1code/.cache/playwright-mcp",
+  "filePaths": "absolute"
+}

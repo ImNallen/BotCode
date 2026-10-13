@@ -20,7 +20,7 @@ export function QuitHoldOverlay() {
     });
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<unknown>("bot:quit-shortcut", ({ payload }) => {
+    void listen<unknown>("l1code:quit-shortcut", ({ payload }) => {
       const hint = quitShortcutHint.safeParse(payload);
       if (hint.success) receiver.receive(hint.data);
     }).then((stop) => {

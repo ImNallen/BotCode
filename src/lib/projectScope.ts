@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { storage, type Storage } from "./storage";
 
-export const PROJECT_SCOPE_KEY = "z1:sidebar-project-scope";
+export const PROJECT_SCOPE_KEY = "l1code:sidebar-project-scope";
 
 export function createProjectScopeStore(persistence: Storage) {
   const listeners = new Set<() => void>();

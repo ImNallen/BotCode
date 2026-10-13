@@ -1,4 +1,4 @@
-use bot_core::{App, LocalNetwork};
+use l1_core::{App, LocalNetwork};
 use tauri::{AppHandle, Manager, Url};
 
 use super::{discovery::loopback, model::PreviewScope};

@@ -137,7 +137,7 @@ function render<T>(read: () => T): T {
 
 const savedAppearance = (values: Map<string, string>) =>
   (
-    JSON.parse(values.get("z1:preferences:v1") ?? "{}") as {
+    JSON.parse(values.get("l1code:preferences:v1") ?? "{}") as {
       appearance: AppearanceSettings;
     }
   ).appearance;
@@ -145,7 +145,7 @@ const savedAppearance = (values: Map<string, string>) =>
 it("chooses a whole theme without changing the mode and lets two changes in one handler both land", () => {
   withLocalStorage(
     {
-      "z1:preferences:v1": {
+      "l1code:preferences:v1": {
         appearance: {
           theme: "light",
           themeAppearanceMode: "dark",
@@ -178,7 +178,7 @@ it("restores the theme selection with the rest of appearance and keeps the theme
   const library = [theme("dusk")];
   withLocalStorage(
     {
-      "z1:preferences:v1": {
+      "l1code:preferences:v1": {
         appearance: {
           theme: "dusk",
           themeAppearanceMode: "dark",

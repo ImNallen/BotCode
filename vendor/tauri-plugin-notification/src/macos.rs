@@ -1,4 +1,4 @@
-// Bot Code macOS backend patch for tauri-plugin-notification 2.3.3 (MIT OR Apache-2.0).
+// L1 Code macOS backend patch for tauri-plugin-notification 2.3.3 (MIT OR Apache-2.0).
 use crate::{Error, NotificationBuilder, NotificationData, Result};
 use block2::RcBlock;
 use futures_channel::oneshot;
@@ -90,7 +90,7 @@ fn bundled() -> bool {
 }
 fn center() -> Result<Retained<UNUserNotificationCenter>> {
     if !bundled() {
-        return Err(Error::Native("Notifications require launching the bundled Bot Code.app. Sound only is still available.".into()));
+        return Err(Error::Native("Notifications require launching the bundled L1 Code.app. Sound only is still available.".into()));
     }
     Ok(UNUserNotificationCenter::currentNotificationCenter())
 }
@@ -247,7 +247,7 @@ fn begin_show(data: NotificationData) -> Result<oneshot::Receiver<Result<()>>> {
     let center = center()?;
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str(
-        data.title.as_deref().unwrap_or("Bot Code"),
+        data.title.as_deref().unwrap_or("L1 Code"),
     ));
     content.setBody(&NSString::from_str(data.body.as_deref().unwrap_or("")));
     content.setSound(None);

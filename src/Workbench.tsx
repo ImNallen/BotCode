@@ -90,7 +90,7 @@ import {
 const SIDEBAR_DEFAULT = 256;
 const SIDEBAR_MIN = 208;
 const MAIN_MIN = 640;
-const SIDEBAR_KEY = "z1:sidebar-width";
+const SIDEBAR_KEY = "l1code:sidebar-width";
 
 function clampSidebar(width: number) {
   const max = Math.max(SIDEBAR_MIN, Math.floor(window.innerWidth) - MAIN_MIN);
@@ -632,7 +632,7 @@ export function Workbench() {
   if (!native)
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm text-muted-foreground">
-        <div className="font-semibold text-2xl text-foreground">Bot Code</div>
+        <div className="font-semibold text-2xl text-foreground">L1 Code</div>
         <p>This workbench runs in its native macOS window.</p>
         <code className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-foreground">
           pnpm tauri dev

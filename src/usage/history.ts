@@ -34,7 +34,7 @@ const DEFAULT_PREFERENCES: UsagePreferences = {
   period: "thirtyDays",
   breakdown: "model",
 };
-const STORAGE_KEY = "bot-code:usage-page-preferences:v1";
+const STORAGE_KEY = "l1code:usage-page-preferences:v1";
 type PreferenceStorage = Pick<Storage, "getItem" | "setItem">;
 export function readUsagePreferences(storage?: PreferenceStorage): {
   preferences: UsagePreferences;

@@ -68,10 +68,10 @@ if 'inboxRows' not in state:
     state_path.write_text(json.dumps(state, indent=2))
 if args.app:
     app = args.app.resolve()
-    environment = dict(os.environ, BOT_CODE_DATA_DIR=str(fixture / 'data'),
-        BOT_CODE_GH_BIN=str(root / 'crates/bot-core/tests/fixtures/gh-lifecycle.py'),
-        BOT_CODE_PR_FIXTURE_STATE=str(state_path), BOT_CODE_CODEX_BIN=str(fixture / 'provider/codex'))
-    process = subprocess.Popen([str(app / 'Contents/MacOS/bot-code')], env=environment,
+    environment = dict(os.environ, L1_CODE_DATA_DIR=str(fixture / 'data'),
+        L1_CODE_GH_BIN=str(root / 'crates/l1-core/tests/fixtures/gh-lifecycle.py'),
+        L1_CODE_PR_FIXTURE_STATE=str(state_path), L1_CODE_CODEX_BIN=str(fixture / 'provider/codex'))
+    process = subprocess.Popen([str(app / 'Contents/MacOS/l1-code')], env=environment,
         stdout=(fixture / 'app.log').open('w'), stderr=subprocess.STDOUT, start_new_session=True)
     (fixture / 'app.pid').write_text(str(process.pid))
     manifest['pid'] = process.pid

@@ -79,14 +79,14 @@ export function WelcomeWizard({ onDone }: { readonly onDone: () => void }) {
         bottomStickOnMobile={false}
       >
         <WizardHeader
-          title="Set up Bot Code"
+          title="Set up L1 Code"
           identity={
             <div
               className="flex items-baseline gap-1.5"
               role="img"
-              aria-label="Bot Code"
+              aria-label="L1 Code"
             >
-              <span className="text-2xl font-medium tracking-tight">Bot</span>
+              <span className="text-2xl font-medium tracking-tight">L1</span>
               <span className="text-2xl font-medium tracking-tight text-muted-foreground">
                 Code
               </span>

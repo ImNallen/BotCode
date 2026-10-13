@@ -112,7 +112,7 @@ export function FilesSurface({
   fileLinks: FileLinks;
 }) {
   const [explorerOpen, setExplorerOpen] = useStoredState(
-    "z1.fileExplorerOpen",
+    "l1code:fileExplorerOpen",
     storedFlag(true),
   );
   const { appearance, update } = useAppearance();

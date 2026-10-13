@@ -1,7 +1,7 @@
 // Ported from T3 v0.0.45 apps/desktop/src/preview/Manager.ts; native scope and lease adaptation.
 use std::{collections::HashMap, sync::Arc};
 
-use bot_core::{ThreadId, WorkspaceId};
+use l1_core::{ThreadId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use tauri::Url;
 
@@ -207,7 +207,7 @@ impl Model {
                 pending_url: None,
                 initial_commit: tokio::sync::watch::channel(false).0,
                 automation: Arc::new(tokio::sync::Mutex::new(())),
-                automation_key: format!("__botcode_{}", uuid::Uuid::new_v4().simple()),
+                automation_key: format!("__l1code_{}", uuid::Uuid::new_v4().simple()),
                 touched: self.clock,
             },
         );

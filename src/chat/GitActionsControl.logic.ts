@@ -1,7 +1,7 @@
 // Ported from pingdotgg/t3code v0.0.45 apps/web/src/components/GitActionsControl.logic.ts (MIT).
-// Bot Code handles progress in gitProgress.ts and branch naming and checkout metadata in the core.
+// L1 Code handles progress in gitProgress.ts and branch naming and checkout metadata in the core.
 
-// Bot Code: the fields of T3's VcsStatusResult that the rules read, built by gitActions.ts `toVcsStatus`.
+// L1 Code: the fields of T3's VcsStatusResult that the rules read, built by gitActions.ts `toVcsStatus`.
 export interface VcsStatus {
   refName: string | null;
   isDefaultRef: boolean;
@@ -66,7 +66,7 @@ export type DefaultBranchConfirmableAction =
   | "commit_push"
   | "commit_push_pr";
 
-// Bot Code: GitHub only, so the change-request terminology is T3's default rather than per provider.
+// L1 Code: GitHub only, so the change-request terminology is T3's default rather than per provider.
 const terminology = { shortLabel: "PR", singular: "pull request" } as const;
 
 export function buildMenuItems(
@@ -323,7 +323,7 @@ export function resolveQuickAction(
   };
 }
 
-// Bot Code: moved here from GitActionsControl.tsx so the ported test covers it.
+// L1 Code: moved here from GitActionsControl.tsx so the ported test covers it.
 export function getMenuActionDisabledReason({
   item,
   gitStatus,

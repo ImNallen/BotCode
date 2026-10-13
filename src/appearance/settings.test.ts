@@ -163,8 +163,8 @@ it("seeds wordWrap from the ui_state flag only while settings lack it", () => {
 it("reads the legacy word wrap flag from ui_state and saves it into settings", () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   const values = new Map<string, string>([
-    ["z1:preferences:v1", JSON.stringify({ appearance: "system" })],
-    ["z1.wordWrap", "false"],
+    ["l1code:preferences:v1", JSON.stringify({ appearance: "system" })],
+    ["l1code:wordWrap", "false"],
   ]);
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -176,11 +176,11 @@ it("reads the legacy word wrap flag from ui_state and saves it into settings", (
   try {
     assert.equal(readPreferences().preferences.appearance.wordWrap, false);
     saveUnrelatedChange();
-    const saved = JSON.parse(values.get("z1:preferences:v1") ?? "{}") as {
+    const saved = JSON.parse(values.get("l1code:preferences:v1") ?? "{}") as {
       appearance: AppearanceSettings;
     };
     assert.equal(saved.appearance.wordWrap, false);
-    values.set("z1.wordWrap", "true");
+    values.set("l1code:wordWrap", "true");
     assert.equal(readPreferences().preferences.appearance.wordWrap, false);
   } finally {
     if (previous) Object.defineProperty(globalThis, "localStorage", previous);

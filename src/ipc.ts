@@ -969,7 +969,7 @@ export const preparePullRequestInput = z.object({
 export type PreparePullRequestInput = z.infer<typeof preparePullRequestInput>;
 export type CheckoutRef = { workspaceId: string; threadId?: string };
 
-export const WORKSPACE_FILE_SCHEME = "botcode-workspace";
+export const WORKSPACE_FILE_SCHEME = "l1code-workspace";
 export function workspaceFileUrlFrom(
   base: string,
   { workspaceId, threadId }: CheckoutRef,
@@ -1769,7 +1769,7 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       workspaces.clear();
     }, 160);
   };
-  const offChanged = await listen<unknown>("bot:changed", (event) => {
+  const offChanged = await listen<unknown>("l1code:changed", (event) => {
     const hint = z
       .object({
         threadId: id,
@@ -1820,18 +1820,18 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
       schedule(hint.data.threadId);
     }
   });
-  const offLimits = await listen<unknown>("bot:usage-limits", (event) => {
+  const offLimits = await listen<unknown>("l1code:usage-limits", (event) => {
     const limits = usageLimits.safeParse(event.payload);
     if (limits.success) client.setQueryData(["usage-limits"], limits.data);
   });
   const offTerminalLabels = await listen<unknown>(
-    "bot:terminal-labels",
+    "l1code:terminal-labels",
     (event) => applyTerminalLabels(event.payload),
   );
   void ipc
     .terminalLabels()
     .then(applyTerminalLabels, (error: unknown) => console.error(error));
-  const offRefresh = await listen("bot:refresh", () => {
+  const offRefresh = await listen("l1code:refresh", () => {
     invalidateThreadSearch({ kind: "all" });
     void client.invalidateQueries();
   });

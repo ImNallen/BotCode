@@ -42,7 +42,7 @@ for (const type of ["dragover", "drop"] as const)
     event.dataTransfer.dropEffect = "none";
   });
 const root = document.getElementById("root");
-if (!root) throw new Error("Bot Code root element is missing.");
+if (!root) throw new Error("L1 Code root element is missing.");
 let initialization: Promise<void> | undefined;
 let unsubscribe: (() => void) | undefined;
 
@@ -114,7 +114,7 @@ function Startup() {
         role="status"
         className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground"
       >
-        Connecting to Bot Code...
+        Connecting to L1 Code...
       </div>
     );
   return (

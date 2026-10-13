@@ -206,7 +206,7 @@ export const defaults: Preferences = {
   },
   usagePriceOverrides: {},
 };
-const storageKey = "z1:preferences:v1";
+const storageKey = "l1code:preferences:v1";
 let fileText: string | null | Error = null;
 export async function loadPreferences(): Promise<void> {
   if (native)
@@ -490,7 +490,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       setState((state) => ({
         ...state,
         persistenceError:
-          "Changes apply now, but could not be saved. They may be lost when Bot Code restarts.",
+          "Changes apply now, but could not be saved. They may be lost when L1 Code restarts.",
       }));
       throw error;
     }

@@ -12,7 +12,7 @@ it("keeps the page pathname and error details without copying location query val
     area: "Startup",
   });
   assert.ok(
-    report.includes("Bot Code 0.1.0\nPath: /settings/general\nArea: Startup"),
+    report.includes("L1 Code 0.1.0\nPath: /settings/general\nArea: Startup"),
   );
   assert.ok(report.includes("Could not initialize"));
   assert.ok(report.includes("Caused by:\nError: Native connection failed"));

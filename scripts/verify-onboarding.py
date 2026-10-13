@@ -56,7 +56,7 @@ for line in sys.stdin:
 
 
 def check(root):
-    with sqlite3.connect(f"file:{root / 'data/z1.sqlite'}?mode=ro", uri=True) as database:
+    with sqlite3.connect(f"file:{root / 'data/l1code.sqlite'}?mode=ro", uri=True) as database:
         state = dict(database.execute("SELECT key, value FROM ui_state"))
         projects = [json.loads(row[0]) for row in database.execute("SELECT data FROM workspaces")]
         threads = [json.loads(row[0]) for row in database.execute("SELECT data FROM threads")]
@@ -67,7 +67,7 @@ def check(root):
 def seed_legacy(root):
     repository = root / "repository"
     workspace = {"id": str(uuid.uuid4()), "root": str(repository), "label": "Legacy onboarding fixture", "kind": "repository", "faviconPath": None, "projectIcon": None}
-    with sqlite3.connect(root / "data/z1.sqlite") as database:
+    with sqlite3.connect(root / "data/l1code.sqlite") as database:
         database.execute("INSERT INTO workspaces(id, root, data) VALUES (?, ?, ?)", (workspace["id"], workspace["root"], json.dumps(workspace)))
     print(workspace["id"])
 

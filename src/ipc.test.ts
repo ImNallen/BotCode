@@ -103,8 +103,8 @@ it("refreshes the active branch picker after a worktree naming event without ref
   const workspaceId = "67ce24cf-70e2-44b3-99f4-53bd8d155d19";
   const otherWorkspaceId = "ba2baf88-7534-4d53-947c-bc2e432a549d";
   const threadId = "058478ab-2c41-40e0-83b7-dd2c71b3c368";
-  const temporaryBranch = "botcode/1234abcd";
-  const generatedBranch = "botcode/fix-login-redirect";
+  const temporaryBranch = "l1code/1234abcd";
+  const generatedBranch = "l1code/fix-login-redirect";
   const checkout = { workspaceId, threadId };
   const otherCheckout = { workspaceId: otherWorkspaceId, threadId };
   const summary = {
@@ -117,7 +117,7 @@ it("refreshes the active branch picker after a worktree naming event without ref
     session: { kind: "ready" },
     checkout: {
       kind: "worktree",
-      path: "/fixture/botcode-1234abcd",
+      path: "/fixture/l1code-1234abcd",
       branch: temporaryBranch,
     },
     pullRequests: {
@@ -225,7 +225,7 @@ it("refreshes the active branch picker after a worktree naming event without ref
       matching.getCurrentResult().data?.branches[0]?.name,
       temporaryBranch,
     );
-    await emit("bot:changed", {
+    await emit("l1code:changed", {
       threadId,
       workspaceId,
       revision: 2,
@@ -448,10 +448,10 @@ it("caches pushed usage limits without reading them again", async () => {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     offEvents = await subscribe(client);
-    await emit("bot:usage-limits", { kind: "reported", plan: null });
+    await emit("l1code:usage-limits", { kind: "reported", plan: null });
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.deepEqual(client.getQueryData(usageLimitsQuery.queryKey), cached);
-    await emit("bot:usage-limits", pushed);
+    await emit("l1code:usage-limits", pushed);
     await Promise.race([
       received,
       new Promise<never>((_, reject) => {
@@ -801,26 +801,26 @@ it("builds path-form workspace file URLs that keep sibling paths relative", asyn
   const checkout = { workspaceId: "ws", threadId: "th" };
   assert.equal(
     workspaceFileUrlFrom(
-      "botcode-workspace://localhost/",
+      "l1code-workspace://localhost/",
       checkout,
       "docs/my pic#1?.png",
       "12:ab",
     ),
-    "botcode-workspace://localhost/ws/th/docs/my%20pic%231%3F.png?v=12%3Aab",
+    "l1code-workspace://localhost/ws/th/docs/my%20pic%231%3F.png?v=12%3Aab",
   );
   assert.equal(
     workspaceFileUrlFrom(
-      "http://botcode-workspace.localhost",
+      "http://l1code-workspace.localhost",
       { workspaceId: "ws" },
       "site/index.html",
     ),
-    "http://botcode-workspace.localhost/ws/-/site/index.html",
+    "http://l1code-workspace.localhost/ws/-/site/index.html",
   );
   assert.equal(
     new URL(
       "style.css",
       workspaceFileUrlFrom(
-        "http://botcode-workspace.localhost/",
+        "http://l1code-workspace.localhost/",
         checkout,
         "site/index.html",
       ),
@@ -863,9 +863,9 @@ it("seeds terminal labels and follows pushed snapshots", async () => {
   try {
     offEvents = await subscribe(new QueryClient());
     await until("vim");
-    await emit("bot:terminal-labels", { sequence: 6, labels: [] });
+    await emit("l1code:terminal-labels", { sequence: 6, labels: [] });
     await until("Terminal 1");
-    await emit("bot:terminal-labels", {
+    await emit("l1code:terminal-labels", {
       sequence: 7,
       labels: [{ ...vim, label: "node" }],
     });

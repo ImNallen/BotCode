@@ -54,11 +54,11 @@ it("opens the clicked image inside a gallery of every image", () => {
     {
       images: [
         {
-          src: `botcode-attachment://localhost/${hash("a")}.png`,
+          src: `l1code-attachment://localhost/${hash("a")}.png`,
           name: "first.png",
         },
         {
-          src: `botcode-attachment://localhost/${hash("b")}.png`,
+          src: `l1code-attachment://localhost/${hash("b")}.png`,
           name: "second.png",
         },
       ],
@@ -75,7 +75,7 @@ it("opens a video alone, without the images beside it", () => {
   assert.deepEqual(preview, {
     images: [
       {
-        src: `botcode-attachment://localhost/${hash("d")}.mov`,
+        src: `l1code-attachment://localhost/${hash("d")}.mov`,
         name: "Clip.MOV",
         type: "video",
       },
@@ -84,7 +84,7 @@ it("opens a video alone, without the images beside it", () => {
   });
   assert.equal(
     expandedImageKey(preview!),
-    `botcode-attachment://localhost/${hash("d")}.mov:0`,
+    `l1code-attachment://localhost/${hash("d")}.mov:0`,
   );
 });
 

@@ -11,11 +11,11 @@ mod preview;
 #[cfg(any(target_os = "macos", test))]
 mod quit_hold;
 mod workspace_files;
-use bot_core::{AgentTools, App, Registration, RuntimeConfig};
+use l1_core::{AgentTools, App, Registration, RuntimeConfig};
 use tauri::{Emitter, EventTarget, Manager};
 fn main() {
     if std::env::args().any(|argument| argument == "--agent-tools") {
-        if let Err(error) = tauri::async_runtime::block_on(bot_core::run_agent_tools_stdio()) {
+        if let Err(error) = tauri::async_runtime::block_on(l1_core::run_agent_tools_stdio()) {
             eprintln!("{}", error.message);
             std::process::exit(1);
         }
@@ -33,11 +33,11 @@ fn main() {
         ))
         .manage(notifications::NotificationActions::default())
         .register_asynchronous_uri_scheme_protocol(
-            "botcode-attachment",
+            "l1code-attachment",
             workspace_files::handle_attachment,
         )
         .register_asynchronous_uri_scheme_protocol(
-            bot_core::workspace_files::SCHEME,
+            l1_core::workspace_files::SCHEME,
             workspace_files::handle,
         )
         .setup(|app| {
@@ -64,11 +64,15 @@ fn main() {
                 loop {
                     match changes.recv().await {
                         Ok(change) => {
-                            let _ =
-                                handle.emit_to(EventTarget::webview("main"), "bot:changed", change);
+                            let _ = handle.emit_to(
+                                EventTarget::webview("main"),
+                                "l1code:changed",
+                                change,
+                            );
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            let _ = handle.emit_to(EventTarget::webview("main"), "bot:refresh", ());
+                            let _ =
+                                handle.emit_to(EventTarget::webview("main"), "l1code:refresh", ());
                         }
                         Err(_) => break,
                     }
@@ -80,8 +84,11 @@ fn main() {
                 while limits.changed().await.is_ok() {
                     let value = limits.borrow_and_update().clone();
                     if let Some(value) = value {
-                        let _ =
-                            handle.emit_to(EventTarget::webview("main"), "bot:usage-limits", value);
+                        let _ = handle.emit_to(
+                            EventTarget::webview("main"),
+                            "l1code:usage-limits",
+                            value,
+                        );
                     }
                 }
             });
@@ -90,8 +97,11 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 while labels.changed().await.is_ok() {
                     let value = labels.borrow_and_update().clone();
-                    let _ =
-                        handle.emit_to(EventTarget::webview("main"), "bot:terminal-labels", value);
+                    let _ = handle.emit_to(
+                        EventTarget::webview("main"),
+                        "l1code:terminal-labels",
+                        value,
+                    );
                 }
             });
             let mut resources = runtime.watch_resource_telemetry();
@@ -102,7 +112,7 @@ fn main() {
                     if let Some(value) = value {
                         let _ = handle.emit_to(
                             EventTarget::webview("main"),
-                            "bot:resource-telemetry",
+                            "l1code:resource-telemetry",
                             value,
                         );
                     }
@@ -258,7 +268,7 @@ fn main() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("Bot Code could not start");
+        .expect("L1 Code could not start");
     app.run(|handle, event| {
         if matches!(&event, tauri::RunEvent::Exit)
             || matches!(&event, tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } if label == "main")
