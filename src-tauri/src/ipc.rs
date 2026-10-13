@@ -364,14 +364,26 @@ pub async fn run_git_action(
     })
     .await
 }
+/// Opens a web link in the default browser. A sandbox thread's `localhost` link opens its
+/// forwarded address, because the browser runs on the Mac.
 #[tauri::command]
-pub fn open_url(url: String) -> Result<()> {
+pub async fn open_url(app: State<'_, App>, url: String, thread_id: Option<ThreadId>) -> Result<()> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err(AppError::new(
             "invalid_url",
             "Only web links can be opened.",
         ));
     }
+    let url = match (thread_id, tauri::Url::parse(&url)) {
+        (Some(thread), Ok(parsed)) => {
+            let network = app.local_network(thread).await?;
+            crate::preview::route::load(&network, &parsed)
+                .map_err(|message| AppError::new("open_failed", message))?
+                .0
+                .to_string()
+        }
+        _ => url,
+    };
     #[cfg(not(windows))]
     let mut opener = bot_core::process::command("/usr/bin/open");
     #[cfg(windows)]

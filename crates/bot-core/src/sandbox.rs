@@ -11,7 +11,7 @@ use docker::{Cli, Stdin};
 pub use identity::{IMAGE_LABEL, INSTANCE_LABEL, Instance, SANDBOX_LABEL};
 pub use image::{CodexVersion, ImageVersion};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -25,12 +25,21 @@ pub const DESKTOP: &str = "/opt/botcode/bin/desktop";
 /// The container port of the desktop's noVNC page and websocket. Docker publishes it on a
 /// random loopback port of the Mac.
 pub const DESKTOP_PORT: u16 = 6080;
+/// The container port of the in-image `gateway`, the relay to servers on the container's
+/// loopback. Docker publishes it like [`DESKTOP_PORT`].
+pub const GATEWAY_PORT: u16 = 6081;
+/// The desktop's VNC server, which listens on the container's loopback.
+const VNC_PORT: u16 = 5900;
+/// Listeners that are Bot Code's own, never a local server of the user's.
+const OWN_PORTS: [u16; 3] = [VNC_PORT, DESKTOP_PORT, GATEWAY_PORT];
 const RUN: &str = "/opt/botcode/bin/run";
 const PROBE: &str = "/opt/botcode/bin/probe";
+const GATEWAY: &str = "/opt/botcode/bin/gateway";
 
 const STATUS: Duration = Duration::from_secs(10);
 const PROBE_LIMIT: Duration = Duration::from_secs(15);
 const DESKTOP_STOP: Duration = Duration::from_secs(30);
+const GATEWAY_START: Duration = Duration::from_secs(30);
 const CONTROL: Duration = Duration::from_secs(60);
 const BUILD: Duration = Duration::from_secs(30 * 60);
 const STOP_GRACE_SECONDS: &str = "3";
@@ -533,6 +542,8 @@ impl Container {
             format!("type=bind,{source},target={CODEX_HOME}"),
             "--publish".into(),
             format!("127.0.0.1::{DESKTOP_PORT}"),
+            "--publish".into(),
+            format!("127.0.0.1::{GATEWAY_PORT}"),
             image.tag(),
         ]);
         Ok(args)
@@ -634,6 +645,31 @@ impl Container {
         }
         Probe::parse(&String::from_utf8_lossy(&output.stdout))
     }
+    /// Starts the gateway unless it runs, with `secret` as its token either way, and returns
+    /// the Mac port Docker published it on.
+    pub async fn start_gateway(&self, secret: &str) -> Result<u16> {
+        let output = self
+            .run(
+                &Exec {
+                    argv: &[GATEWAY, "start"],
+                    workdir: WORKSPACE,
+                    env: &[],
+                },
+                Input::Bytes(format!("{secret}\n").as_bytes()),
+                GATEWAY_START,
+            )
+            .await?;
+        if output.code != Some(0) {
+            return Err(AppError::new(
+                "sandbox",
+                format!(
+                    "The sandbox gateway did not start: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            ));
+        }
+        self.published(GATEWAY_PORT).await
+    }
     /// Stops the desktop and every window on it. Nothing happens when it is not running.
     pub async fn stop_desktop(&self) -> Result<()> {
         let output = self
@@ -675,18 +711,40 @@ impl Container {
             .map(drop)
     }
 }
+/// Opens a connection to `localhost:<port>` inside a container through its gateway, published
+/// on `gateway`. The gateway closes it without a byte when the token is wrong or nothing
+/// listens on the port.
+pub(crate) async fn dial(
+    gateway: u16,
+    secret: &str,
+    port: u16,
+) -> std::io::Result<tokio::net::TcpStream> {
+    use tokio::io::AsyncWriteExt;
+    let mut stream =
+        tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, gateway)).await?;
+    stream.set_nodelay(true)?;
+    stream
+        .write_all(format!("{secret} {port}\n").as_bytes())
+        .await?;
+    Ok(stream)
+}
+
 /// One `probe` reading. `cpu` only means something against an earlier reading.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Probe {
     /// CPU time the whole container has used since it started.
     pub cpu: Duration,
     /// Connected Desktop tabs.
     pub desktop_clients: u32,
     pub desktop_running: bool,
+    pub gateway_running: bool,
+    /// Ports a server listens on that `localhost` reaches, without Bot Code's own.
+    pub listeners: BTreeSet<u16>,
 }
 impl Probe {
-    /// Parses `cpu_usec=<n> clients=<n> desktop=<0|1>`.
-    pub fn parse(line: &str) -> Result<Self> {
+    /// Parses `cpu_usec=<n> clients=<n> desktop=<0|1>` and the LISTEN rows that follow it.
+    pub fn parse(output: &str) -> Result<Self> {
+        let (line, sockets) = output.split_once('\n').unwrap_or((output, ""));
         let invalid = || AppError::new("sandbox", format!("The sandbox probe returned {line:?}."));
         let field = |name: &str| -> Result<u64> {
             line.split_whitespace()
@@ -694,12 +752,48 @@ impl Probe {
                 .and_then(|value| value.parse().ok())
                 .ok_or_else(invalid)
         };
+        let mut listeners = listening_ports(sockets);
+        let gateway_running = listeners.contains(&GATEWAY_PORT);
+        listeners.retain(|port| !OWN_PORTS.contains(port));
         Ok(Self {
             cpu: Duration::from_micros(field("cpu_usec")?),
             desktop_clients: u32::try_from(field("clients")?).map_err(|_| invalid())?,
             desktop_running: field("desktop")? == 1,
+            gateway_running,
+            listeners,
         })
     }
+}
+/// The ports of `/proc/net/tcp` and `/proc/net/tcp6` rows in the LISTEN state whose address
+/// `localhost` reaches: a loopback address or the unspecified one. Other rows are skipped.
+/// Each address word is printed in the kernel's byte order, which is little-endian on every
+/// host Docker Desktop runs.
+pub(crate) fn listening_ports(proc_net: &str) -> BTreeSet<u16> {
+    proc_net
+        .lines()
+        .filter_map(|row| {
+            let mut columns = row.split_whitespace();
+            let local = columns.nth(1)?;
+            (columns.nth(1)? == "0A").then_some(())?;
+            let (address, port) = local.split_once(':')?;
+            let port = u16::from_str_radix(port, 16)
+                .ok()
+                .filter(|port| *port > 0)?;
+            let bytes: Vec<u8> = (0..address.len())
+                .step_by(8)
+                .map(|start| {
+                    let word = address.get(start..start + 8)?;
+                    u32::from_str_radix(word, 16).ok().map(u32::to_le_bytes)
+                })
+                .collect::<Option<Vec<_>>>()?
+                .concat();
+            let ip = match <[u8; 16]>::try_from(bytes.as_slice()) {
+                Ok(v6) => std::net::IpAddr::from(std::net::Ipv6Addr::from(v6)).to_canonical(),
+                Err(_) => std::net::IpAddr::from(<[u8; 4]>::try_from(bytes.as_slice()).ok()?),
+            };
+            (ip.is_loopback() || ip.is_unspecified()).then_some(port)
+        })
+        .collect()
 }
 /// `ext::` splits its command on spaces and expands `%` sequences.
 fn ext_escape(text: &str) -> String {

@@ -2,7 +2,7 @@
 //! `cargo test -p bot-core --lib workdir::docker_tests -- --include-ignored --nocapture`.
 use super::*;
 use crate::sandbox::tests::{Fixture, gone_within, running, stdout};
-use std::time::Instant;
+use std::{collections::BTreeSet, time::Instant};
 
 const OWN: &str = "botcode/lifecycle";
 
@@ -275,4 +275,285 @@ async fn old_images_are_removed_unless_a_container_of_any_instance_uses_them() {
     );
     let after = tags();
     assert!(!after.contains(old) && after.contains(&current), "{after}");
+}
+
+/// Starts `command` detached in the container, so it outlives the exec.
+async fn spawn(handle: &SandboxHandle, command: &str) {
+    stdout(
+        &handle.container,
+        &[
+            "sh",
+            "-c",
+            &format!("setsid sh -c '{command}' >/dev/null 2>&1 </dev/null &"),
+        ],
+    )
+    .await;
+}
+/// A static server bound to exactly `address`, whose page says `body`.
+async fn serve(handle: &SandboxHandle, address: &str, port: u16, body: &str) {
+    spawn(
+        handle,
+        &format!(
+            "mkdir -p /tmp/{port} && echo {body} > /tmp/{port}/index.html && cd /tmp/{port} && exec python3 -m http.server --bind {address} {port}"
+        ),
+    )
+    .await;
+}
+async fn listening(network: &SandboxNetwork, ports: &[u16]) -> Listeners {
+    let started = Instant::now();
+    loop {
+        let listeners = network.listeners().await.unwrap();
+        if ports.iter().all(|port| listeners.ports.contains(port)) {
+            return listeners;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{ports:?} never listened: {listeners:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+async fn get(port: u16) -> std::io::Result<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await?;
+    stream
+        .write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .await?;
+    let mut response = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        stream.read_to_string(&mut response),
+    )
+    .await
+    .map_err(|_| std::io::Error::other("timed out"))??;
+    Ok(response)
+}
+
+#[tokio::test]
+#[ignore = "needs Docker"]
+async fn servers_on_either_loopback_are_reachable_through_the_mac_forwarder() {
+    let fixture = Fixture::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let handle = readied(&fixture, dir.path()).await;
+    let network = SandboxNetwork(handle.clone());
+    serve(&handle, "::1", 8001, "six").await;
+    serve(&handle, "127.0.0.1", 8002, "four").await;
+    // The desktop's own listeners must not show up as servers of the user's.
+    handle.desktop().await.unwrap();
+    let listeners = listening(&network, &[8001, 8002]).await;
+    assert!(listeners.live);
+
+    let six = network.forward(8001).unwrap();
+    let four = network.forward(8002).unwrap();
+    assert_ne!(six, four);
+    assert_eq!(network.forward(8001).unwrap(), six, "one listener per port");
+    let started = Instant::now();
+    let page = get(six).await.unwrap();
+    eprintln!("first load through the forwarder: {:?}", started.elapsed());
+    assert!(
+        page.starts_with("HTTP/1.0 200") && page.ends_with("six\n"),
+        "{page}"
+    );
+    let page = get(four).await.unwrap();
+    assert!(
+        page.starts_with("HTTP/1.0 200") && page.ends_with("four\n"),
+        "{page}"
+    );
+
+    let listeners = network.listeners().await.unwrap();
+    assert_eq!(
+        listeners.ports,
+        BTreeSet::from([8001, 8002]),
+        "the gateway, VNC and noVNC are Bot Code's"
+    );
+    assert_eq!(
+        handle.activity().forwarding,
+        0,
+        "closed connections no longer count"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs Docker"]
+async fn a_websocket_echoes_through_the_forwarder_and_counts_as_use_while_open() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const ECHO: &str = r#"
+import base64, hashlib, socket, threading
+def exactly(c, n):
+    data = b""
+    while len(data) < n:
+        chunk = c.recv(n - len(data))
+        if not chunk: raise EOFError
+        data += chunk
+    return data
+def session(c):
+    request = b""
+    while b"\r\n\r\n" not in request: request += c.recv(1024)
+    key = [l.split(b":", 1)[1].strip() for l in request.split(b"\r\n") if l.lower().startswith(b"sec-websocket-key")][0]
+    accept = base64.b64encode(hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest())
+    c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + b"\r\n\r\n")
+    while True:
+        head = exactly(c, 2)
+        mask = exactly(c, 4)
+        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(exactly(c, head[1] & 127)))
+        c.sendall(bytes([head[0], len(payload)]) + payload)
+server = socket.socket(socket.AF_INET6)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("::1", 8003))
+server.listen()
+while True:
+    threading.Thread(target=session, args=(server.accept()[0],), daemon=True).start()
+"#;
+    let fixture = Fixture::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let handle = readied(&fixture, dir.path()).await;
+    let network = SandboxNetwork(handle.clone());
+    let written = handle
+        .container
+        .run(
+            &Exec {
+                argv: &["sh", "-c", "cat > /tmp/echo.py"],
+                workdir: WORKSPACE,
+                env: &[],
+            },
+            Input::Bytes(ECHO.as_bytes()),
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(written.code, Some(0));
+    spawn(&handle, "exec python3 /tmp/echo.py").await;
+    listening(&network, &[8003]).await;
+
+    let port = network.forward(8003).unwrap();
+    let mut socket = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+        .await
+        .unwrap();
+    socket
+        .write_all(
+            b"GET / HTTP/1.1\r\nHost: localhost:8003\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    while !response.ends_with(b"\r\n\r\n") {
+        response.push(socket.read_u8().await.unwrap());
+    }
+    let response = String::from_utf8(response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 101"), "{response}");
+    assert!(
+        response.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+        "{response}"
+    );
+    for text in ["hello", "again"] {
+        let mask = [1u8, 2, 3, 4];
+        let mut frame = vec![0x81, 0x80 | text.len() as u8];
+        frame.extend(mask);
+        frame.extend(text.bytes().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        socket.write_all(&frame).await.unwrap();
+        let mut echoed = vec![0; 2 + text.len()];
+        socket.read_exact(&mut echoed).await.unwrap();
+        assert_eq!(echoed[..2], [0x81, text.len() as u8]);
+        assert_eq!(&echoed[2..], text.as_bytes());
+    }
+    let limits = Limits {
+        pause_after: Duration::from_millis(500),
+        stop_after: Duration::from_secs(60),
+        desktop_idle: Duration::from_secs(60),
+    };
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(handle.activity().forwarding, 1);
+    assert_eq!(
+        handle.activity().desired(Instant::now(), &limits),
+        Desired::Running,
+        "an open hot-reload socket is use"
+    );
+    drop(socket);
+    let started = Instant::now();
+    while handle.activity().forwarding > 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the close never reached the forwarder"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        handle.activity().desired(Instant::now(), &limits),
+        Desired::Paused
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs Docker"]
+async fn the_gateway_sends_nothing_without_its_token() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let fixture = Fixture::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let handle = readied(&fixture, dir.path()).await;
+    let network = SandboxNetwork(handle.clone());
+    serve(&handle, "127.0.0.1", 8002, "four").await;
+    listening(&network, &[8002]).await;
+    let mut good = network.dial(8002).await.unwrap();
+    good.write_all(b"GET / HTTP/1.0\r\n\r\n").await.unwrap();
+    let mut page = String::new();
+    good.read_to_string(&mut page).await.unwrap();
+    assert!(page.ends_with("four\n"), "{page}");
+
+    let gateway = handle
+        .container
+        .published(crate::sandbox::GATEWAY_PORT)
+        .await
+        .unwrap();
+    for secret in ["0123456789abcdef0123456789abcdef", ""] {
+        let mut stream = crate::sandbox::dial(gateway, secret, 8002).await.unwrap();
+        stream.write_all(b"GET / HTTP/1.0\r\n\r\n").await.unwrap();
+        let mut received = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(15), stream.read_to_end(&mut received))
+            .await
+            .expect("the gateway closes a connection it refuses");
+        assert!(
+            read.is_err() || received.is_empty(),
+            "{secret:?} got {}",
+            String::from_utf8_lossy(&received)
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs Docker"]
+async fn a_connection_to_a_paused_sandbox_wakes_it_and_a_stop_closes_the_forwarders() {
+    let fixture = Fixture::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let handle = readied(&fixture, dir.path()).await;
+    let network = SandboxNetwork(handle.clone());
+    serve(&handle, "::1", 8001, "six").await;
+    listening(&network, &[8001]).await;
+    let port = network.forward(8001).unwrap();
+    assert!(get(port).await.unwrap().ends_with("six\n"));
+
+    handle.retire(Desired::Paused).await.unwrap();
+    assert_eq!(status(&handle), "paused");
+    let paused = network.listeners().await.unwrap();
+    assert!(!paused.live);
+    assert!(
+        paused.ports.contains(&8001),
+        "a paused container keeps its servers"
+    );
+    let started = Instant::now();
+    let page = get(port).await.unwrap();
+    eprintln!("load that woke a paused sandbox: {:?}", started.elapsed());
+    assert!(page.ends_with("six\n"), "{page}");
+    assert_eq!(status(&handle), "running");
+    assert_eq!(handle.phase(), Phase::Running);
+
+    handle.retire(Desired::Stopped).await.unwrap();
+    assert!(
+        tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+            .await
+            .is_err(),
+        "the forwarder closed with the container"
+    );
+    let stopped = network.listeners().await.unwrap();
+    assert!(!stopped.live && stopped.ports.is_empty());
 }

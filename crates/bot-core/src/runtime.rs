@@ -268,6 +268,7 @@ enum Command {
     ),
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
+    LocalNetwork(ThreadId, Reply<crate::LocalNetwork>),
     /// The thread's mirror was pulled outside a turn, so the renderer should read it again.
     CheckoutPulled(ThreadId),
     PrRead(PrAccess, PullRequestKey, Reply<PrReviewDetail>),
@@ -923,6 +924,15 @@ impl App {
             Location::Removed { .. } => Err(worktree_removed()),
             Location::Folder(_) | Location::Unassigned => Err(not_a_sandbox()),
         }
+    }
+    /// The Mac ports that forward to sandbox servers. Mac discovery leaves them out, because
+    /// they are a sandbox's servers and a probe through one would keep the sandbox awake.
+    pub fn forwarder_ports(&self) -> std::collections::BTreeSet<u16> {
+        self.sandboxes.forwarder_ports()
+    }
+    /// Where a thread's local servers run: in its sandbox's container, or on the Mac.
+    pub async fn local_network(&self, thread: ThreadId) -> Result<crate::LocalNetwork> {
+        self.call(|r| Command::LocalNetwork(thread, r)).await
     }
     /// What Bot Code last made of a sandbox thread's container, for the composer strip.
     pub async fn sandbox_state(
@@ -3454,6 +3464,17 @@ impl Owner {
             }
             Command::Checkout(id, thread, reply) => {
                 let _ = reply.send(self.checkout(&id, thread));
+            }
+            Command::LocalNetwork(id, reply) => {
+                let network = self
+                    .thread(&id)
+                    .map(|thread| match self.workdir(thread).sandbox() {
+                        Some(handle) => {
+                            crate::LocalNetwork::Sandbox(crate::SandboxNetwork(handle.clone()))
+                        }
+                        None => crate::LocalNetwork::Mac,
+                    });
+                let _ = reply.send(network);
             }
             Command::CheckoutPulled(id) => {
                 if let Some(thread) = self.threads.get(&id) {

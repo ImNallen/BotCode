@@ -71,6 +71,11 @@ pub(crate) struct Activity {
     /// The last probe that found a Desktop tab connected, or the last Desktop open.
     pub desktop_client: Instant,
     pub desktop_running: bool,
+    /// Open connections through the sandbox's forwarders, such as a Preview page and its
+    /// hot-reload socket. While one is open the sandbox is in use.
+    pub forwarding: u32,
+    /// The last instant a forwarded connection was open.
+    pub forwarded: Instant,
     /// The previous probe, which the next one is measured against.
     probed: Option<(Instant, Duration)>,
 }
@@ -82,16 +87,30 @@ impl Activity {
             cpu: now,
             desktop_client: now,
             desktop_running: false,
+            forwarding: 0,
+            forwarded: now,
             probed: None,
         }
     }
     pub fn idle_for(&self, now: Instant) -> Duration {
+        if self.forwarding > 0 {
+            return Duration::ZERO;
+        }
         let latest = self
             .touched
             .max(self.busy)
             .max(self.cpu)
-            .max(self.desktop_client);
+            .max(self.desktop_client)
+            .max(self.forwarded);
         now.saturating_duration_since(latest)
+    }
+    pub fn open_forward(&mut self, now: Instant) {
+        self.forwarding += 1;
+        self.forwarded = now;
+    }
+    pub fn close_forward(&mut self, now: Instant) {
+        self.forwarding = self.forwarding.saturating_sub(1);
+        self.forwarded = now;
     }
     /// What the container should be, given how long nothing has used it.
     pub fn desired(&self, now: Instant, limits: &Limits) -> Desired {
@@ -149,6 +168,8 @@ mod tests {
             cpu: Duration::from_secs_f64(cpu_secs),
             desktop_clients: clients,
             desktop_running: desktop,
+            gateway_running: false,
+            listeners: Default::default(),
         }
     }
     fn after(start: Instant, secs: u64) -> Instant {
@@ -276,6 +297,34 @@ mod tests {
             record.desired(after(start, 900), &LIMITS),
             Desired::Paused,
             "the connected tab at 300 kept the sandbox running until 900"
+        );
+    }
+
+    #[test]
+    fn an_open_forwarded_connection_keeps_the_sandbox_running_and_its_close_starts_the_window() {
+        let start = Instant::now();
+        let mut record = Activity::new(start);
+        record.open_forward(after(start, 10));
+        record.open_forward(after(start, 20));
+        assert_eq!(
+            record.desired(after(start, 9000), &LIMITS),
+            Desired::Running,
+            "a hot-reload socket open for hours"
+        );
+        record.close_forward(after(start, 9000));
+        assert_eq!(
+            record.desired(after(start, 9700), &LIMITS),
+            Desired::Running,
+            "one connection is still open"
+        );
+        record.close_forward(after(start, 9700));
+        assert_eq!(
+            record.desired(after(start, 10299), &LIMITS),
+            Desired::Running
+        );
+        assert_eq!(
+            record.desired(after(start, 10300), &LIMITS),
+            Desired::Paused
         );
     }
 

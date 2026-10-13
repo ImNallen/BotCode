@@ -40,7 +40,7 @@ RUN userdel --remove ubuntu \
  && useradd --create-home --uid 1000 --shell /bin/bash botcode \
  && install -d -o botcode -g botcode /workspace /codex-home /botcode /botcode/attachments
 
-COPY --chmod=0755 run sync agent terminal desktop browser probe /opt/botcode/bin/
+COPY --chmod=0755 run sync agent terminal desktop browser probe gateway /opt/botcode/bin/
 COPY --chmod=0644 desktop.html /opt/botcode/desktop/index.html
 COPY --chmod=0644 playwright-mcp.json /opt/botcode/
 

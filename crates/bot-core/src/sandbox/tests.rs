@@ -213,6 +213,57 @@ fn the_image_version_names_the_build_context_and_codex() {
     assert!(!ContainerState::Absent.stale(&a));
 }
 
+/// Rows read from the image with servers bound to `0.0.0.0:8003`, `127.0.0.1:8002`, an
+/// ephemeral port on `0.0.0.0`, one established connection, `[::]:8004` and `[::1]:8001`,
+/// plus rows for an address on the bridge network, an IPv4-mapped loopback, and the
+/// desktop's and the gateway's own listeners.
+const PROC_NET: &str = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:1F43 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 10323 1 000000006fab99df 100 0 0 10 0
+   1: 0100007F:1F42 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 4920 1 00000000743b16bb 100 0 0 10 0
+   2: 00000000:95DB 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 15620 1 00000000cae953a3 100 0 0 10 0
+   3: 0100007F:E8B0 0100007F:1F42 01 00000000:00000000 00:00000000 00000000  1000        0 5482 2 000000005886344d 20 0 0 10 -1
+   4: 0100007F:1F42 0100007F:E8B0 01 00000000:00000000 00:00000000 00000000  1000        0 4923 1 0000000088a75e94 20 0 0 10 -1
+   5: 020011AC:1F45 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 4924 1 0000000088a75e94 100 0 0 10 0
+   6: 0100007F:170C 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 4925 1 0000000088a75e94 100 0 0 10 0
+   7: 00000000:17C0 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 4926 1 0000000088a75e94 100 0 0 10 0
+   8: 00000000:17C1 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 4927 1 0000000088a75e94 100 0 0 10 0
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000000000000:1F44 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 223 1 00000000fb678acb 100 0 0 10 0
+   1: 00000000000000000000000001000000:1F41 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 7320 1 000000009f1a0f55 100 0 0 10 0
+   2: 0000000000000000FFFF00000100007F:1F46 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 7321 1 000000009f1a0f55 100 0 0 10 0
+   3: 000080FE00000000FF4F42020F3B11FE:1F47 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 7322 1 000000009f1a0f55 100 0 0 10 0
+";
+
+#[test]
+fn listeners_are_the_listen_rows_that_localhost_reaches() {
+    assert_eq!(
+        listening_ports(PROC_NET),
+        BTreeSet::from([8001, 8002, 8003, 8004, 8006, 38363, 5900, 6080, 6081]),
+        "8005 and 8007 listen only on the bridge and link-local addresses"
+    );
+    assert!(
+        listening_ports("   0: 0100007F:ZZ42 00000000:0000 0A\n   1: 7F:1F42 00:0000 0A\n")
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_probe_reads_its_line_and_leaves_bot_codes_own_listeners_out() {
+    let probe = Probe::parse(&format!("cpu_usec=1500 clients=2 desktop=1\n{PROC_NET}")).unwrap();
+    assert_eq!(probe.cpu, Duration::from_micros(1500));
+    assert_eq!(probe.desktop_clients, 2);
+    assert!(probe.desktop_running);
+    assert!(probe.gateway_running);
+    assert_eq!(
+        probe.listeners,
+        BTreeSet::from([8001, 8002, 8003, 8004, 8006, 38363])
+    );
+    let bare = Probe::parse("cpu_usec=1 clients=0 desktop=0\n").unwrap();
+    assert!(!bare.gateway_running && bare.listeners.is_empty());
+    assert!(Probe::parse("clients=0 desktop=0\n").is_err());
+}
+
 #[test]
 fn the_git_transport_escapes_spaces_and_percent_signs() {
     let data = tempfile::tempdir().unwrap();

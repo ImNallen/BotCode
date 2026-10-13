@@ -1,7 +1,9 @@
 #!/bin/bash
-# probe: one line for Bot Code's idle rule. `cpu_usec` is the CPU time the whole container
-# has used so far, from its cgroup, so two probes give its average load in between; `clients`
-# is how many Desktop tabs are connected; `desktop` is whether the desktop runs at all.
+# probe: one line for Bot Code's idle rule, then the container's listening TCP sockets.
+# `cpu_usec` is the CPU time the whole container has used so far, from its cgroup, so two
+# probes give its average load in between; `clients` is how many Desktop tabs are connected;
+# `desktop` is whether the desktop runs at all. The image has no `ss`, so the sockets are the
+# LISTEN rows of /proc/net/tcp and /proc/net/tcp6 as they are, which Bot Code parses.
 set -u
 cpu=$(awk '/^usage_usec/ { print $2 }' /sys/fs/cgroup/cpu.stat 2>/dev/null)
 if [[ -z $cpu ]]; then
@@ -10,3 +12,4 @@ fi
 clients=$(/opt/botcode/bin/desktop clients)
 if /opt/botcode/bin/desktop status >/dev/null 2>&1; then desktop=1; else desktop=0; fi
 printf 'cpu_usec=%s clients=%s desktop=%s\n' "$cpu" "$clients" "$desktop"
+awk 'FNR > 1 && $4 == "0A"' /proc/net/tcp /proc/net/tcp6 2>/dev/null

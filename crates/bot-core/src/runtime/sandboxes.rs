@@ -108,6 +108,14 @@ impl Sandboxes {
     pub(crate) fn existing(&self, id: &SandboxId) -> Option<Arc<SandboxHandle>> {
         self.handles.lock().unwrap().get(id).cloned()
     }
+    /// The Mac ports of every sandbox's local server forwarders.
+    pub(crate) fn forwarder_ports(&self) -> std::collections::BTreeSet<u16> {
+        let handles = self.handles.lock().unwrap();
+        handles
+            .values()
+            .flat_map(|handle| handle.forwarder_ports())
+            .collect()
+    }
     /// Handles whose container this process started and has not stopped: running or paused.
     fn started(&self) -> Vec<Arc<SandboxHandle>> {
         self.handles

@@ -47,7 +47,8 @@ export const previewIpc = {
     call("preview_layout", { lease, sequence, ...layout }, z.null()),
   detach: (lease: number) => call("preview_detach", { lease }, z.null()),
   close: (scope: PreviewScope) => call("preview_close", { scope }, z.null()),
-  discover: () => call("preview_discover", {}, discoveredServers),
+  discover: (scope: PreviewScope) =>
+    call("preview_discover", { scope }, discoveredServers),
 };
 export function subscribePreview(
   handler: (event: PreviewEvent) => void,

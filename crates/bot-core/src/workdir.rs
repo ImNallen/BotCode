@@ -24,6 +24,8 @@ use std::{
 
 #[cfg(test)]
 mod docker_tests;
+mod forward;
+pub use forward::{Listeners, LocalNetwork, SandboxNetwork};
 pub(crate) mod idle;
 pub(crate) use idle::{Activity, Limits};
 
@@ -93,6 +95,9 @@ pub(crate) struct SandboxHandle {
     /// Made for each handle and kept only in memory. Every desktop start sets it again, so it
     /// also replaces the secret of a desktop that the agent or an earlier run started.
     desktop_secret: String,
+    /// The gateway's token, made and kept like `desktop_secret`.
+    gateway_secret: String,
+    forwards: forward::Forwards,
 }
 impl SandboxHandle {
     pub(crate) fn new(
@@ -119,6 +124,8 @@ impl SandboxHandle {
             probe_due: Mutex::new(Instant::now()),
             probe_every,
             desktop_secret: uuid::Uuid::new_v4().simple().to_string(),
+            gateway_secret: uuid::Uuid::new_v4().simple().to_string(),
+            forwards: Default::default(),
         })
     }
     /// Claims the handle for one piece of lifecycle work. `false` while another is in flight.
@@ -324,12 +331,16 @@ impl SandboxHandle {
         }
         self.container.converge(desired).await?;
         self.set_phase(Phase::after(desired));
+        if Phase::after(desired) == Phase::Stopped {
+            self.close_forwards().await;
+        }
         Ok(())
     }
     /// Reads the container's CPU time and desktop state into the activity record. Returns
     /// the interval's CPU share when there is one, for the log.
     pub(crate) async fn probe(&self) -> Result<Option<f64>> {
         let probe = self.container.probe().await?;
+        self.observe_network(&probe).await;
         Ok(self
             .activity
             .lock()

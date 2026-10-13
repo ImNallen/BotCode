@@ -112,6 +112,12 @@ The desktop starts lazily, because a sandbox that never opens a browser should n
 
 The Desktop tab reuses the native Preview host with a `desktop` scope and closes its view whenever it is not shown. Closing ends the websocket, and `Xvnc` stops encoding frames.
 
+### Local servers
+
+A dev server binds the container's `localhost`, often only `::1`, and Docker can publish neither a loopback-bound server nor a port it was not told about at create. One in-image relay, the gateway, listens on 6081, which Docker publishes on a random Mac loopback port like the desktop's. A connection opens with `<token> <port>\n`, and the relay pipes it to `localhost:<port>` over IPv4 or IPv6, or closes it. The token is one more per-handle secret, passed on stdin like the desktop's. For each container port the Preview needs, the Mac binds a listener on `127.0.0.1` that opens one gateway connection per client connection. The listener keeps its port until the container stops.
+
+Discovery folds into the idle probe's exec, which prints the LISTEN rows of `/proc/net/tcp` and `/proc/net/tcp6`; the image has no `ss`. One function in the app crate maps a conversation's network and a URL to the URL to load: a sandbox thread's loopback URLs go through the forwarder, and everything else, Mac threads included, loads as is. The URL field shows the container address. A forwarded connection wakes the container and counts as use while it is open. A forwarded Preview page closes when it is not shown, so a hot-reload socket in a hidden page does not keep the sandbox running forever.
+
 ## Tradeoffs accepted
 
 - A UI write, commit or checkpoint costs 200 to 300 ms of sync. In exchange, `repo.rs`, `checkpoints.rs` and most of `vcs.rs` run unchanged on the mirror with every safety check intact.
@@ -121,11 +127,16 @@ The Desktop tab reuses the native Preview host with a `desktop` scope and closes
 - A write refuses rather than merges when the container changed the same path between pull and push. The window is short, and most writes already run under a hold that excludes turns.
 - A field on `Worktree` instead of a new variant means code that ignores the field treats a sandbox as a worktree. The `WriteRoot` type keeps that from becoming a silent bug for mutations.
 - The CPU rule reads the container's cgroup counter through one exec, together with the desktop facts, instead of `docker stats`, which samples for a second per call. Both read the same counter. Measured in the image, an idle container uses 0.02% CPU, a probe costs 12 ms including its exec, and the terminal label poll about 8 ms per second while a terminal is shown; with a live agent and a shown terminal the container reads 2.1 to 2.4%. The threshold is 5%, clear of Bot Code's own observation, while a build, a test run or `yes` read 100%.
-- A stopped container still exists, so its published desktop port and its labels survive; only a delete or the storage sweep removes it. Memory is freed at stop, CPU at pause.
+- A forwarded Preview page reloads each time its Preview is shown again, so it loses in-page state such as a React counter. In exchange, an idle hidden page never keeps a sandbox running.
+- A page in a sandbox's Preview that fetches another loopback port with an absolute URL reaches the Mac's port, because only the page's own origin is forwarded. Dev servers usually proxy such calls or use relative URLs.
+- A stopped container still exists, so its published desktop and gateway ports and its labels survive; only a delete or the storage sweep removes it. Memory is freed at stop, CPU at pause.
 - One global epoch counter couples the slots. It is what lets the existing epoch checks stay one-line edits.
 - Codex's own sandbox cannot create namespaces under Docker's default seccomp profile, so a sandbox thread sends `danger-full-access` and keeps the permission mode's approval policy. The container is the boundary.
 
 ## Alternatives considered
+
+- **A `docker exec` tunnel per connection.** It needs nothing running in the container, but a browser opens many connections, and each cost a `docker exec`. Measured on a Vite app bound to `::1`, it loaded in 201 ms and used about 29 MB on the Mac and 19 MB in the container per open connection.
+- **Fixed published ports.** A set of slots published at create loaded in 93 ms, but Docker cannot publish a loopback-bound server, and the slots cap how many servers a sandbox can show.
 
 - **Container-first execution.** Every mutation would run in the container and only reads would use the mirror. This lost because restore and file writes rely on host filesystem probes for identity, symlinks and containment. Each would need a second implementation, and the two would drift.
 - **A new `Checkout::Sandbox` variant.** The compiler would force a decision at each site, but every worktree behavior would be duplicated for something that is a worktree on the Mac.
@@ -151,5 +162,5 @@ Each slice ends verified in the real Tauri app.
 2. **Done.** `workdir.rs`, `mirror.rs`, `providers.rs`, `codex/auth.rs`, the agent process and the `WriteRoot` signatures, then the composer's Run on choice and `App::sandbox_availability`. Worktree setup runs in the container. Shutdown stops every agent and then stops every running sandbox, which pulls first.
 3. **Done.** The terminal runs `bash -l` inside the container through `docker exec --tty` and the in-image `terminal` script, which records each shell so Bot Code stops its whole session when the client ends. Labels come from one `ps` exec per watched container, and a prompt mark from the shell pulls the mirror after each command. Project scripts run there with container paths.
 4. **Done.** The image carries a desktop: TigerVNC's `Xvnc`, `matchbox-window-manager`, `websockify` with noVNC, and Playwright's Chromium. The in-image `desktop` script starts it on first use, from the Desktop tab or the agent's browser. A Desktop tab on sandbox threads shows it through noVNC on a published loopback port, gated by a per-sandbox secret, view-only until the user takes control and connected only while visible. The agent's browser tools are `@playwright/mcp`, running headed in the container.
-   - 4b, **planned.** Preview reaches the container's dev servers.
+   - 4b, **done.** Preview reaches the container's dev servers through the in-image gateway and a Mac forwarder per container port. In the spike, a Vite app bound to `::1` loaded in 104 ms with hot reload working and one 19 MB relay, against 201 ms for a `docker exec` tunnel per connection and 93 ms for fixed published ports. Through the shipped forwarder, a new Vite 8 React app's 17-request module graph loaded in 94 ms cold and 74 ms warm.
 5. **Done.** Idle sandboxes pause after about 10 minutes and stop after about 2 hours, where idle means no running turn, open approval or question, no terminal input, no connected Desktop tab and under 5% CPU inside the container for the whole window. A desktop nobody shows stops after about 3 minutes with its browser. Settle and archive stop the container. Cleanup and delete do a final sync and remove it, and delete also removes the sandbox's Codex home. The next message after removal recreates the container from the Mac worktree and the kept Codex home.

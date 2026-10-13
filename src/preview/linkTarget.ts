@@ -43,7 +43,10 @@ export interface OpenLinkInput {
   readonly preference: LinkTarget;
   readonly scope: PreviewScope | null;
   readonly openPreview?: OpenPreview;
-  readonly openExternal?: (url: string) => Promise<unknown>;
+  readonly openExternal?: (
+    url: string,
+    threadId: string | null,
+  ) => Promise<unknown>;
 }
 
 export async function openLink(input: OpenLinkInput): Promise<LinkTarget> {
@@ -67,6 +70,10 @@ export async function openLink(input: OpenLinkInput): Promise<LinkTarget> {
       );
     }
   }
-  await openExternal(input.url);
+  // A sandbox thread's localhost links open its forwarded address in the system browser.
+  await openExternal(
+    input.url,
+    scope?.kind === "thread" ? scope.threadId : null,
+  );
   return "system";
 }

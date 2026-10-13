@@ -1591,7 +1591,8 @@ export const ipc = {
       { ...identity, signal },
       z.object({ signaled: z.boolean(), message: z.string().nullable() }),
     ),
-  openUrl: (url: string) => call("open_url", { url }, z.null()),
+  openUrl: (url: string, threadId: string | null = null) =>
+    call("open_url", { url, threadId }, z.null()),
   availableEditors: () => call("available_editors", {}, z.array(editorId)),
   openInEditor: (
     target: OpenTarget,

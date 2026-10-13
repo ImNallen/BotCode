@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use bot_core::SandboxNetwork;
 use serde::Serialize;
 use tauri::Url;
 use tokio::{
@@ -159,7 +160,32 @@ pub async fn wait_local_ready(url: &Url) -> bool {
     }
 }
 
-async fn http_document(mut url: Url) -> Option<(String, Option<String>)> {
+/// A sandbox's server is listening when its container's last reading lists the port. A paused
+/// container keeps its reading, so its page loads and the load wakes it.
+pub async fn wait_sandbox_ready(network: &SandboxNetwork, port: u16) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if network
+            .listeners()
+            .await
+            .is_ok_and(|listeners| listeners.ports.contains(&port))
+        {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Fetches a loopback page's document, connecting with `open`, so a sandbox's pages are read
+/// through its gateway.
+async fn http_document<F, C>(mut url: Url, open: F) -> Option<(String, Option<String>)>
+where
+    F: Fn(Url) -> C,
+    C: Future<Output = Option<TcpStream>>,
+{
     for _ in 0..=3 {
         if url.scheme() != "http"
             || !loopback(&url)
@@ -168,7 +194,7 @@ async fn http_document(mut url: Url) -> Option<(String, Option<String>)> {
         {
             return None;
         }
-        let mut stream = connect(&url).await?;
+        let mut stream = open(url.clone()).await?;
         let path = match url.query() {
             Some(query) => format!("{}?{query}", url.path()),
             None => url.path().to_owned(),
@@ -242,9 +268,11 @@ async fn http_document(mut url: Url) -> Option<(String, Option<String>)> {
     None
 }
 
-pub async fn discover() -> Vec<LocalServer> {
+/// The Mac's servers, without `excluded`, which are Bot Code's own forwarders to sandboxes.
+pub async fn discover(excluded: &BTreeSet<u16>) -> Vec<LocalServer> {
     let mut ports = listener_ports().await;
     ports.extend(COMMON_PORTS.iter().copied());
+    ports.retain(|port| !excluded.contains(port));
     let mut candidates = ports.into_iter().take(MAX_LISTENERS);
     let mut jobs = JoinSet::new();
     let mut result = Vec::new();
@@ -257,7 +285,7 @@ pub async fn discover() -> Vec<LocalServer> {
                 let probe = async {
                     for host in ["127.0.0.1", "[::1]"] {
                         let url = Url::parse(&format!("http://{host}:{port}/")).ok()?;
-                        if let Some((url, title)) = http_document(url).await {
+                        if let Some((url, title)) = http_document(url, mac).await {
                             return Some(LocalServer { port, url, title });
                         }
                     }
@@ -277,6 +305,44 @@ pub async fn discover() -> Vec<LocalServer> {
     }
     result.sort_by_key(|server| server.port);
     result
+}
+
+async fn mac(url: Url) -> Option<TcpStream> {
+    connect(&url).await
+}
+
+/// The servers inside a sandbox's container, with the container address the Preview opens.
+/// A paused container is not read, which would block on it; its last listeners show untitled.
+pub async fn discover_sandbox(network: &SandboxNetwork) -> Result<Vec<LocalServer>, String> {
+    let listeners = network.listeners().await.map_err(|error| error.message)?;
+    let mut jobs = JoinSet::new();
+    for port in listeners.ports.into_iter().take(MAX_LISTENERS) {
+        let network = network.clone();
+        let live = listeners.live;
+        jobs.spawn(async move {
+            let url = Url::parse(&format!("http://localhost:{port}/")).ok()?;
+            if !live {
+                return Some(LocalServer {
+                    port,
+                    url: url.to_string(),
+                    title: None,
+                });
+            }
+            let open = |url: Url| {
+                let network = network.clone();
+                async move { network.dial(url.port_or_known_default()?).await.ok() }
+            };
+            let (url, title) =
+                tokio::time::timeout(Duration::from_secs(1), http_document(url, open))
+                    .await
+                    .ok()
+                    .flatten()?;
+            Some(LocalServer { port, url, title })
+        });
+    }
+    let mut result: Vec<LocalServer> = jobs.join_all().await.into_iter().flatten().collect();
+    result.sort_by_key(|server| server.port);
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -314,6 +380,32 @@ Aktive Verbindungen
         assert_eq!(ports, BTreeSet::from([3000, 5173, 8000, 8080]));
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn mac_discovery_leaves_out_sandbox_forwarders() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 4096];
+                let _ = stream.read(&mut buffer).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><title>Forwarded</title></html>")
+                    .await;
+            }
+        });
+        let listed = |servers: Vec<LocalServer>| servers.iter().any(|server| server.port == port);
+        assert!(
+            listed(discover(&BTreeSet::new()).await),
+            "a Mac server is listed"
+        );
+        assert!(
+            !listed(discover(&BTreeSet::from([port])).await),
+            "a forwarder is a sandbox's server"
+        );
+    }
+
     #[tokio::test]
     async fn probes_html_and_follows_only_local_redirects() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -334,13 +426,13 @@ Aktive Verbindungen
             }
         });
         let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
-        let document = http_document(url.clone()).await.unwrap();
+        let document = http_document(url.clone(), mac).await.unwrap();
         assert_eq!(document.0, format!("http://127.0.0.1:{port}/page"));
         assert_eq!(document.1.as_deref(), Some("Fixture page"));
-        assert!(http_document(url.clone()).await.is_none());
-        assert!(http_document(url.clone()).await.is_none());
+        assert!(http_document(url.clone(), mac).await.is_none());
+        assert!(http_document(url.clone(), mac).await.is_none());
         assert!(
-            http_document(url).await.is_none(),
+            http_document(url, mac).await.is_none(),
             "a page that opts out of discovery"
         );
         server.await.unwrap();

@@ -117,6 +117,9 @@ pub fn parse_url(raw: &str) -> Result<Url> {
 
 pub struct Entry {
     pub label: Option<String>,
+    /// Set while the page loads through a sandbox forwarder. Its URLs are shown as the
+    /// container's, and its view closes whenever it is not attached.
+    pub alias: Option<super::route::Alias>,
     pub state: PreviewState,
     pub navigation: u64,
     pub pending_url: Option<String>,
@@ -146,6 +149,16 @@ pub struct Model {
     clock: u64,
     next_lease: u32,
     next_view: u32,
+}
+
+impl Entry {
+    /// How the URL field shows an address the page reports.
+    pub fn shown(&self, url: &str) -> String {
+        match &self.alias {
+            Some(alias) => alias.shown(url),
+            None => url.to_owned(),
+        }
+    }
 }
 
 impl Model {
@@ -192,6 +205,7 @@ impl Model {
             scope.clone(),
             Entry {
                 label: None,
+                alias: None,
                 state: PreviewState::default(),
                 navigation: 0,
                 pending_url: None,

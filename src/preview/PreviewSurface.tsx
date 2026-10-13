@@ -95,7 +95,7 @@ export function PreviewSurface({ scope }: { scope: PreviewScope }) {
       busy = true;
       setDiscovering(true);
       void previewIpc
-        .discover()
+        .discover(scope)
         .then(
           (next) => {
             if (!disposed) {

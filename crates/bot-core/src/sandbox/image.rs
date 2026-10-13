@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 pub(super) const REPOSITORY: &str = "botcode-sandbox";
-const CONTEXT: [(&str, &[u8]); 10] = [
+const CONTEXT: [(&str, &[u8]); 11] = [
     ("Dockerfile", include_bytes!("image/Dockerfile")),
     ("run", include_bytes!("image/run")),
     ("sync", include_bytes!("image/sync")),
@@ -12,6 +12,7 @@ const CONTEXT: [(&str, &[u8]); 10] = [
     ("desktop", include_bytes!("image/desktop")),
     ("browser", include_bytes!("image/browser")),
     ("probe", include_bytes!("image/probe")),
+    ("gateway", include_bytes!("image/gateway")),
     ("desktop.html", include_bytes!("image/desktop.html")),
     (
         "playwright-mcp.json",
