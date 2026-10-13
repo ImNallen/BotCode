@@ -16,7 +16,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{OwnedMutexGuard, mpsc};
 
 #[cfg(test)]
 mod docker_tests;
@@ -63,6 +63,9 @@ impl Phase {
     }
 }
 
+/// The flight lock, held. While it lives no `ready`, `wake` or retire runs on the sandbox.
+pub(crate) type Flight = OwnedMutexGuard<()>;
+
 pub(crate) struct SandboxHandle {
     pub id: SandboxId,
     pub container: Container,
@@ -70,7 +73,7 @@ pub(crate) struct SandboxHandle {
     docker: Docker,
     log: RotatingLog,
     branch: Mutex<String>,
-    flight: tokio::sync::Mutex<()>,
+    flight: Arc<tokio::sync::Mutex<()>>,
     phase: Mutex<Phase>,
     changed: mpsc::UnboundedSender<SandboxId>,
     activity: Mutex<Activity>,
@@ -100,7 +103,7 @@ impl SandboxHandle {
             docker,
             log,
             branch: Mutex::new(branch),
-            flight: tokio::sync::Mutex::new(()),
+            flight: Arc::new(tokio::sync::Mutex::new(())),
             phase: Mutex::new(Phase::Unstarted),
             changed,
             activity: Mutex::new(Activity::new(Instant::now())),
@@ -156,10 +159,6 @@ impl SandboxHandle {
     }
     pub(crate) fn is_ready(&self) -> bool {
         self.phase() == Phase::Running
-    }
-    #[cfg(all(test, unix))]
-    pub(crate) fn mark_ready_for_tests(&self) {
-        self.set_phase(Phase::Running);
     }
     pub(crate) fn is_started(&self) -> bool {
         matches!(self.phase(), Phase::Running | Phase::Paused)
@@ -291,12 +290,14 @@ impl SandboxHandle {
         self.set_phase(Phase::Removed);
         Ok(())
     }
-    pub(crate) async fn idle_retire(&self, desired: Desired, decided_at: Instant) -> Result<bool> {
-        let _flight = self.flight.lock().await;
-        if self.activity().touched > decided_at || !self.is_started() {
-            return Ok(false);
-        }
-        self.retire_locked(desired).await.map(|()| true)
+    /// Claims the sandbox for the owner's lifecycle work without waiting. `None` while a `ready`,
+    /// `wake` or retire is in flight. Taken before the idle rule is read, it leaves no moment
+    /// between the decision and the retire for a wake to land in. A wake waits for the claim.
+    pub(crate) fn claim(&self) -> Option<Flight> {
+        self.flight.clone().try_lock_owned().ok()
+    }
+    pub(crate) async fn retire_claimed(&self, _flight: Flight, desired: Desired) -> Result<()> {
+        self.retire_locked(desired).await
     }
     async fn retire_locked(&self, desired: Desired) -> Result<()> {
         let state = self.container.state().await?;
@@ -401,6 +402,12 @@ impl Write {
             Self::Sandbox(session) => session.finish().await.map_err(AppError::from),
         }
     }
+    pub(crate) async fn discard(self) -> Result<()> {
+        match self {
+            Self::Mac(_) => Ok(()),
+            Self::Sandbox(session) => session.discard().await,
+        }
+    }
 }
 
 impl Workdir {
@@ -478,8 +485,18 @@ impl Workdir {
             .await
             .map_err(|error| AppError::new("repository", error))
             .and_then(|result| result);
-        let finished = write.finish().await;
-        result.and_then(|value| finished.map(|()| value))
+        match result {
+            Ok(value) => write.finish().await.map(|()| value),
+            Err(error) => {
+                if let (Err(undo), Some(handle)) = (write.discard().await, self.sandbox()) {
+                    handle.note(&format!(
+                        "the mirror was not reset after a failed write: {}",
+                        undo.message
+                    ));
+                }
+                Err(error)
+            }
+        }
     }
     pub(crate) async fn provide(&self, files: &[PathBuf]) -> Result<()> {
         let Self::Sandbox { handle, .. } = self else {
@@ -579,46 +596,70 @@ mod tests {
         assert_eq!(paths.mirror(), mirror.as_path());
     }
 
+    /// The fake Docker CLI from `tests/support`, with its call log under the returned state directory.
     #[cfg(unix)]
-    #[tokio::test]
-    async fn a_deleted_sandbox_is_not_recreated_by_a_later_ready() {
+    fn fake_docker(dir: &Path) -> (Docker, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let docker = dir.path().join("docker");
+        let docker = dir.join("docker");
         std::fs::write(&docker, include_str!("../tests/support/docker_fake.py")).unwrap();
         std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let state = dir.path().join("docker-state");
-        std::fs::write(
-            dir.path().join("state_dir"),
-            state.to_string_lossy().as_bytes(),
-        )
-        .unwrap();
-        let docker = crate::sandbox::Docker::new(crate::sandbox::SandboxConfig {
+        let state = dir.join("docker-state");
+        std::fs::write(dir.join("state_dir"), state.to_string_lossy().as_bytes()).unwrap();
+        let docker = Docker::new(crate::sandbox::SandboxConfig {
             docker,
-            data_dir: dir.path().join("data"),
+            data_dir: dir.join("data"),
             codex: crate::sandbox::CodexSource::Version("0.0.0".parse().unwrap()),
         });
-        let handle = SandboxHandle::new(
+        (docker, state)
+    }
+    #[cfg(unix)]
+    fn calls(state: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(state.join("calls.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+    #[cfg(unix)]
+    fn handle_on(docker: Docker, mirror: &Path, branch: &str) -> Arc<SandboxHandle> {
+        SandboxHandle::new(
             docker,
             "0123456789ab".parse().unwrap(),
-            dir.path().join("mirror"),
-            "botcode/deleted".into(),
+            mirror.to_path_buf(),
+            branch.into(),
             Duration::from_millis(250),
             tokio::sync::mpsc::unbounded_channel().0,
             RotatingLog::silent(),
+        )
+    }
+    #[cfg(unix)]
+    fn git(root: &Path, args: &[&str]) -> String {
+        let output = crate::process::command("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deleted_sandbox_is_not_recreated_by_a_later_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let (docker, state) = fake_docker(dir.path());
+        let handle = handle_on(docker, &dir.path().join("mirror"), "botcode/deleted");
         handle.delete().await.unwrap();
 
         let readied = handle.ready().await;
-        let verbs: Vec<String> = std::fs::read_to_string(state.join("calls.jsonl"))
-            .unwrap_or_default()
-            .lines()
-            .map(|line| {
-                serde_json::from_str::<serde_json::Value>(line).unwrap()["argv"][0]
-                    .as_str()
-                    .unwrap()
-                    .to_owned()
-            })
+        let verbs: Vec<String> = calls(&state)
+            .iter()
+            .map(|call| call["argv"][0].as_str().unwrap().to_owned())
             .collect();
         assert!(
             !verbs.iter().any(|verb| verb == "create" || verb == "start"),
@@ -626,6 +667,70 @@ mod tests {
         );
         assert_eq!(readied.unwrap_err().code, "sandbox_removed");
         assert_eq!(handle.phase(), Phase::Removed);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_mutation_is_undone_on_the_mirror_and_nothing_reaches_the_container() {
+        let dir = tempfile::tempdir().unwrap();
+        let (docker, state) = fake_docker(dir.path());
+        let mirror = dir.path().join("mirror");
+        std::fs::create_dir_all(&mirror).unwrap();
+        git(&mirror, &["init", "-q", "-b", "botcode/half"]);
+        git(&mirror, &["config", "user.name", "Fixture"]);
+        git(
+            &mirror,
+            &["config", "user.email", "fixture@example.invalid"],
+        );
+        git(&mirror, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(mirror.join("README.md"), "whole\n").unwrap();
+        git(&mirror, &["add", "README.md"]);
+        git(&mirror, &["commit", "-qm", "initial"]);
+        let handle = handle_on(docker, &mirror, "botcode/half");
+        handle.mirror.seed_from_mirror_for_tests().await.unwrap();
+        let workdir = Workdir::Sandbox {
+            root: mirror.clone(),
+            handle,
+        };
+
+        let error = workdir
+            .write(|root| {
+                std::fs::write(root.join("README.md"), "half\n")?;
+                std::fs::write(root.join("notes.txt"), "half\n")?;
+                Err::<(), _>(AppError::new("fixture", "the second step failed"))
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.code, "fixture",
+            "the mutation's own error is returned"
+        );
+        assert_eq!(
+            std::fs::read_to_string(mirror.join("README.md")).unwrap(),
+            "whole\n",
+            "the edit to a tracked file is undone"
+        );
+        assert!(
+            !mirror.join("notes.txt").exists(),
+            "the new file is removed"
+        );
+        assert_eq!(
+            git(&mirror, &["status", "--porcelain"]),
+            "",
+            "the mirror is back at the container's tree"
+        );
+        let execs: Vec<String> = calls(&state)
+            .iter()
+            .filter_map(|call| call.get("exec"))
+            .map(|exec| exec.to_string())
+            .collect();
+        assert!(
+            !execs
+                .iter()
+                .any(|exec| exec.contains("apply") || exec.contains("receive-pack")),
+            "nothing was pushed to the container: {execs:?}"
+        );
     }
 
     #[test]

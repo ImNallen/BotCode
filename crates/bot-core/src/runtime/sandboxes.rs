@@ -6,7 +6,7 @@ use crate::{
     mirror::{Freshness, RECENT},
     sandbox::{self, Desired, Docker, DockerStatus, Reconcile, SandboxConfig},
     terminal::{TerminalKey, Terminals},
-    workdir::{Limits, Phase, SandboxHandle, Workdir, idle::CPU_BUSY_PERCENT},
+    workdir::{Flight, Limits, Phase, SandboxHandle, Workdir, idle::CPU_BUSY_PERCENT},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -240,7 +240,7 @@ impl Sandboxes {
 enum Work {
     Probe,
     StopDesktop,
-    Retire(Desired, &'static str),
+    Retire(Desired, &'static str, Flight),
 }
 
 impl Owner {
@@ -262,6 +262,10 @@ impl Owner {
             if !handle.begin_work() {
                 continue;
             }
+            let Some(flight) = handle.claim() else {
+                handle.end_work();
+                continue;
+            };
             let activity = handle.activity();
             let requested = handle.stop_requested().filter(|_| !busy);
             let desired = match requested {
@@ -277,7 +281,7 @@ impl Owner {
                 (Phase::Running, Desired::Running) if handle.probe_due(now.into_std()) => {
                     Work::Probe
                 }
-                (Phase::Running, Desired::Paused) => Work::Retire(Desired::Paused, "idle"),
+                (Phase::Running, Desired::Paused) => Work::Retire(Desired::Paused, "idle", flight),
                 (Phase::Running | Phase::Paused, Desired::Stopped) => Work::Retire(
                     Desired::Stopped,
                     if requested.is_some() {
@@ -285,19 +289,20 @@ impl Owner {
                     } else {
                         "idle"
                     },
+                    flight,
                 ),
                 _ => {
                     handle.end_work();
                     continue;
                 }
             };
-            if let Work::Retire(Desired::Stopped, _) = work {
+            if let Work::Retire(Desired::Stopped, ..) = work {
                 let reason = requested.unwrap_or(STOPPED_IDLE);
                 let _ = self.stop_providers(Some(&key)).await;
                 self.lose_env(&key, reason, reason).await;
             }
             tokio::spawn(async move {
-                handle.lifecycle(work, now.into_std()).await;
+                handle.lifecycle(work).await;
                 handle.end_work();
             });
         }
@@ -323,7 +328,7 @@ impl Owner {
 }
 
 impl SandboxHandle {
-    async fn lifecycle(&self, work: Work, decided_at: std::time::Instant) {
+    async fn lifecycle(&self, work: Work) {
         match work {
             Work::Probe => match self.probe().await {
                 Ok(Some(percent)) if percent >= CPU_BUSY_PERCENT => {
@@ -336,14 +341,15 @@ impl SandboxHandle {
                 Ok(()) => self.note("desktop stopped: no Desktop tab and no turn"),
                 Err(error) => self.note(&format!("desktop stop failed: {}", error.message)),
             },
-            Work::Retire(desired, why) => match self.idle_retire(desired, decided_at).await {
-                Ok(true) => self.note(&format!("{desired:?}: {why}").to_lowercase()),
-                Ok(false) => {}
-                Err(error) => {
-                    self.note(&format!("{desired:?} ({why}) failed: {}", error.message));
-                    self.touch();
+            Work::Retire(desired, why, flight) => {
+                match self.retire_claimed(flight, desired).await {
+                    Ok(()) => self.note(&format!("{desired:?}: {why}").to_lowercase()),
+                    Err(error) => {
+                        self.note(&format!("{desired:?} ({why}) failed: {}", error.message));
+                        self.touch();
+                    }
                 }
-            },
+            }
         }
     }
 }

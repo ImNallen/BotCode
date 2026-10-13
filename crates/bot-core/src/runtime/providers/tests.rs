@@ -41,11 +41,29 @@ fn a_failing_sandbox_slot_does_not_delay_mac_launches() {
 mod owner {
     use super::super::super::*;
     use super::sandbox;
-    use crate::codex::AgentProcess;
+    use crate::codex::{AgentProcess, auth::TokenBroker};
+    use crate::runtime::sandboxes::STOPPED_SETTLED;
+    use crate::sandbox::{CodexSource, SandboxConfig};
+    use crate::workdir::{Limits, Phase, SandboxHandle};
     use std::os::unix::fs::PermissionsExt;
 
     /// The ChatGPT account the fixture's sandbox agent was signed in with.
     const SANDBOX_ACCOUNT: &str = "acct-1";
+
+    fn git(root: &Path, args: &[&str]) -> String {
+        let output = crate::process::command("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
 
     struct Fixture {
         dir: tempfile::TempDir,
@@ -60,7 +78,52 @@ mod owner {
     impl Fixture {
         async fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir(dir.path().join("worktree")).unwrap();
+            let worktree = dir.path().join("worktree");
+            std::fs::create_dir(&worktree).unwrap();
+            git(&worktree, &["init", "-q", "-b", "botcode/fixture"]);
+            git(&worktree, &["config", "user.name", "Fixture"]);
+            git(
+                &worktree,
+                &["config", "user.email", "fixture@example.invalid"],
+            );
+            git(&worktree, &["config", "commit.gpgsign", "false"]);
+            std::fs::write(worktree.join("README.md"), "fixture\n").unwrap();
+            git(&worktree, &["add", "README.md"]);
+            git(&worktree, &["commit", "-qm", "initial"]);
+            let head = git(&worktree, &["rev-parse", "HEAD"]);
+            for name in ["base", "outgoing"] {
+                git(
+                    &worktree,
+                    &[
+                        "update-ref",
+                        &format!("refs/botcode/sandbox/0123456789ab/{name}"),
+                        head.trim(),
+                    ],
+                );
+            }
+            let docker = dir.path().join("docker");
+            std::fs::write(
+                &docker,
+                include_str!("../../../tests/support/docker_fake.py"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(
+                dir.path().join("state_dir"),
+                dir.path().join("docker-state").to_string_lossy().as_bytes(),
+            )
+            .unwrap();
+            let sandboxes = Sandboxes::new(
+                SandboxConfig {
+                    docker,
+                    data_dir: dir.path().into(),
+                    codex: CodexSource::Version("0.0.0".parse().unwrap()),
+                },
+                TokenBroker::new(&dir.path().join("codex-home"), "/no/codex".into()),
+                Limits::DEFAULT,
+                mpsc::unbounded_channel().0,
+                RotatingLog::silent(),
+            );
             let config = RuntimeConfig {
                 data_dir: dir.path().into(),
                 codex_binary: "/no/codex".into(),
@@ -124,7 +187,7 @@ mod owner {
                 changes: broadcast::channel(64).0,
                 provider_events,
                 done,
-                sandboxes: Arc::new(Sandboxes::for_tests(dir.path())),
+                sandboxes: Arc::new(sandboxes),
             };
             let mac = owner
                 .new_thread(
@@ -173,12 +236,7 @@ mod owner {
                 EnvKey::Sandbox(_) => "sandbox",
             };
             if let EnvKey::Sandbox(_) = key {
-                let thread = self.owner.threads[&self.sandboxed].clone();
-                self.owner
-                    .workdir(&thread)
-                    .sandbox()
-                    .unwrap()
-                    .mark_ready_for_tests();
+                self.sandbox_handle().ready().await.unwrap();
             }
             let launch = self
                 .owner
@@ -244,6 +302,64 @@ mod owner {
         }
         fn thread(&self, id: &ThreadId) -> &ThreadSnapshot {
             &self.owner.threads[id]
+        }
+        fn sandbox_handle(&self) -> Arc<SandboxHandle> {
+            let thread = self.owner.threads[&self.sandboxed].clone();
+            self.owner.workdir(&thread).sandbox().unwrap().clone()
+        }
+        /// The sandboxed thread between turns: nothing the idle rule counts as busy.
+        fn settle_sandbox_thread(&mut self) {
+            let root = self.root(&self.sandboxed);
+            let t = self.owner.threads.get_mut(&self.sandboxed).unwrap();
+            t.session = SessionState::Ready;
+            t.turns[0].execution = Execution::Completed;
+            self.owner.leases.remove(&root);
+        }
+        /// The verbs the fake Docker CLI saw, `exec <program> <subcommand>` for execs.
+        fn docker_verbs(&self) -> Vec<String> {
+            std::fs::read_to_string(self.dir.path().join("docker-state").join("calls.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter_map(|call| {
+                    if let Some(exec) = call.get("exec") {
+                        let words: Vec<&str> = exec
+                            .as_array()?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .take(2)
+                            .map(|word| word.rsplit('/').next().unwrap_or(word))
+                            .collect();
+                        return Some(format!("exec {}", words.join(" ")));
+                    }
+                    let verb = call["argv"][0].as_str()?;
+                    (!matches!(verb, "exec" | "container" | "inspect" | "image"))
+                        .then(|| verb.to_owned())
+                })
+                .collect()
+        }
+        fn container_status(&self) -> Option<String> {
+            let name = self.sandbox_handle().container.name().to_owned();
+            let path = self
+                .dir
+                .path()
+                .join("docker-state")
+                .join(format!("container-{name}.json"));
+            let record: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+            Some(record["status"].as_str()?.to_owned())
+        }
+        /// Waits until the lifecycle work the tick spawned has ended.
+        async fn until_sandbox_work_done(&self, handle: &SandboxHandle) {
+            let started = Instant::now();
+            while !handle.begin_work() {
+                assert!(
+                    started.elapsed() < Duration::from_secs(10),
+                    "the sandbox work never ended: {:?}",
+                    self.docker_verbs()
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            handle.end_work();
         }
         fn root(&self, id: &ThreadId) -> PathBuf {
             let t = self.thread(id);
@@ -633,13 +749,82 @@ mod owner {
     }
 
     #[tokio::test]
+    async fn a_wake_during_the_agent_stop_waits_for_the_container_to_stop_too() {
+        let mut f = Fixture::new().await;
+        f.settle_sandbox_thread();
+        let handle = f.sandbox_handle();
+        handle.request_stop(STOPPED_SETTLED);
+
+        let (_, woken) = tokio::join!(f.owner.sandbox_lifecycle(), handle.wake());
+        woken.unwrap();
+        f.until_exited(f.sandbox_epoch).await;
+        f.until_sandbox_work_done(&handle).await;
+
+        let verbs = f.docker_verbs();
+        assert!(
+            f.owner.providers.client(&sandbox()).is_none(),
+            "the agent slot was stopped"
+        );
+        let stopped = verbs.iter().position(|v| v == "stop").unwrap_or_else(|| {
+            panic!("the agent was stopped but the container kept running: {verbs:?}")
+        });
+        assert!(
+            verbs[stopped..].contains(&"start".to_string()),
+            "the wake restarted the stopped container: {verbs:?}"
+        );
+        assert_eq!(handle.phase(), Phase::Running);
+        assert_eq!(f.container_status().as_deref(), Some("running"));
+        let sandboxed = f.thread(&f.sandboxed);
+        assert_eq!(
+            sandboxed.session,
+            SessionState::Unavailable {
+                reason: STOPPED_SETTLED.into()
+            },
+            "the next message relaunches the agent"
+        );
+        assert_eq!(sandboxed.diagnostic, None);
+        f.mac_intact();
+    }
+
+    #[tokio::test]
+    async fn a_requested_stop_with_no_wake_stops_the_agent_and_then_the_container() {
+        let mut f = Fixture::new().await;
+        f.settle_sandbox_thread();
+        let handle = f.sandbox_handle();
+        handle.request_stop(STOPPED_SETTLED);
+
+        f.owner.sandbox_lifecycle().await;
+        f.until_exited(f.sandbox_epoch).await;
+        f.until_sandbox_work_done(&handle).await;
+
+        assert!(f.owner.providers.client(&sandbox()).is_none());
+        let verbs = f.docker_verbs();
+        let stopped = verbs
+            .iter()
+            .position(|v| v == "stop")
+            .unwrap_or_else(|| panic!("the container was not stopped: {verbs:?}"));
+        assert!(
+            verbs[..stopped].contains(&"exec sync capture".to_string()),
+            "the mirror is pulled before the stop: {verbs:?}"
+        );
+        assert_eq!(handle.phase(), Phase::Stopped);
+        assert_eq!(f.container_status().as_deref(), Some("exited"));
+        let sandboxed = f.thread(&f.sandboxed);
+        assert_eq!(
+            sandboxed.session,
+            SessionState::Unavailable {
+                reason: STOPPED_SETTLED.into()
+            }
+        );
+        assert_eq!(sandboxed.diagnostic, None);
+        f.mac_intact();
+    }
+
+    #[tokio::test]
     async fn a_planned_stop_counts_no_failure_and_marks_no_loss() {
         let mut f = Fixture::new().await;
         let reason = "Sandbox stopped while idle. Your next message restarts it.";
-        let t = f.owner.threads.get_mut(&f.sandboxed).unwrap();
-        t.session = SessionState::Ready;
-        t.turns[0].execution = Execution::Completed;
-        f.owner.leases.remove(&f.root(&f.sandboxed));
+        f.settle_sandbox_thread();
 
         f.owner.stop_providers(Some(&sandbox())).await.unwrap();
         f.owner.lose_env(&sandbox(), reason, reason).await;

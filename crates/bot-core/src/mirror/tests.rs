@@ -572,6 +572,26 @@ async fn a_write_sessions_changes_reach_the_container() {
 
 #[tokio::test]
 #[ignore = "needs Docker"]
+async fn a_discarded_write_session_leaves_the_container_as_it_was_and_the_mirror_in_sync() {
+    let f = Fixture::new().await;
+    let session = f.mirror.begin_write(OWN).await.unwrap();
+    let root: &Path = session.root();
+    std::fs::write(root.join("src/lib.txt"), "half\n").unwrap();
+    write(root, "notes/todo.md", "- half\n");
+    std::fs::remove_file(root.join("README.md")).unwrap();
+    session.discard().await.unwrap();
+    assert_eq!(f.ctr("cat src/lib.txt").await, "lib\n");
+    assert_eq!(f.ctr("cat README.md").await, "# demo\n");
+    assert_eq!(f.ctr("test -e notes/todo.md || echo gone").await, "gone\n");
+    assert_eq!(f.read("src/lib.txt"), "lib\n", "the edit is undone");
+    assert!(f.exists("README.md"), "the deletion is undone");
+    assert!(!f.exists("notes/todo.md"), "the new file is removed");
+    f.assert_in_sync().await;
+    assert_eq!(f.mirror.pull(Freshness::Exact, OWN).await.unwrap(), None);
+}
+
+#[tokio::test]
+#[ignore = "needs Docker"]
 async fn push_refuses_with_diverged_when_the_container_changed_the_same_file() {
     let f = Fixture::new().await;
     let session = f.mirror.begin_write(OWN).await.unwrap();

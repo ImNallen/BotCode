@@ -396,6 +396,17 @@ impl Mirror {
         })
     }
 
+    /// Records the mirror's tree as the sync point both sides agree on, as a seed does, with no container.
+    #[cfg(all(test, unix))]
+    pub(crate) async fn seed_from_mirror_for_tests(&self) -> Result<()> {
+        let (root, id, _) = self.host();
+        self.blocking(move || {
+            let point = host::capture(&root, &id)?;
+            host::set_base(&root, &id, &point.commit)
+        })
+        .await
+    }
+
     async fn pull_locked(&self, state: &mut SyncState, own: &str) -> Result<Option<Pulled>> {
         let started = Instant::now();
         let (root, id, _) = self.host();
@@ -589,6 +600,19 @@ impl WriteSession {
     }
     pub async fn finish(mut self) -> std::result::Result<(), PushError> {
         self.mirror.push_locked(&mut self.hold, &self.own).await
+    }
+    /// Drops what the session changed on the mirror and puts the container's tree back, as a
+    /// refused push does. Capturing moves `outgoing` off `base`, which is what makes the pull
+    /// re-apply even when the container has not moved, now or on the next pull if this one fails.
+    pub async fn discard(mut self) -> Result<()> {
+        let (root, id, _) = self.mirror.host();
+        self.mirror
+            .blocking(move || host::capture(&root, &id))
+            .await?;
+        self.mirror
+            .pull_locked(&mut self.hold, &self.own)
+            .await
+            .map(drop)
     }
     pub async fn rename_branch(&mut self, old: &str, new: &str) -> Result<()> {
         let output = self

@@ -950,7 +950,58 @@ async fn steps(
     mut write: Write,
 ) -> std::result::Result<(), GitFailure> {
     let failed = |phase: GitPhase| move |error| GitFailure { phase, error };
-    let (commit_message, push_target, pr_step) = match plan {
+    let session_phase = match &plan {
+        Plan::Pull { .. } => GitPhase::Pull,
+        Plan::Stack { .. } | Plan::FeatureStack { .. } => GitPhase::Commit,
+    };
+    let targets = match session_steps(cx, plan, out, &mut write).await {
+        Ok(targets) => targets,
+        Err(failure) => {
+            if let Err(error) = write.discard().await {
+                out.warnings.push(format!(
+                    "The sandbox mirror was not reset after the failure: {}",
+                    error.message
+                ));
+            }
+            return Err(failure);
+        }
+    };
+    write.finish().await.map_err(failed(session_phase))?;
+    if let Some(target) = targets.push {
+        let phase = GitPhase::Push {
+            remote: target.remote.clone(),
+        };
+        (cx.progress)(GitProgress::Phase {
+            phase: phase.clone(),
+        });
+        out.push = Some(
+            push(cx, &target, &mut out.warnings)
+                .await
+                .map_err(failed(phase))?,
+        );
+    }
+    if let Some(step) = targets.pr {
+        (cx.progress)(GitProgress::Phase {
+            phase: GitPhase::Pr,
+        });
+        out.pr = Some(
+            open_pr(cx, step, &mut out.warnings)
+                .await
+                .map_err(failed(GitPhase::Pr))?,
+        );
+    }
+    Ok(())
+}
+/// The steps that change the checkout, inside the write session. A failure here leaves the
+/// session for the caller to discard. The network steps run after the session has ended.
+async fn session_steps(
+    cx: &Context,
+    plan: Plan,
+    out: &mut GitOutcome,
+    write: &mut Write,
+) -> std::result::Result<StackTargets, GitFailure> {
+    let failed = |phase: GitPhase| move |error| GitFailure { phase, error };
+    let (commit_message, push, pr) = match plan {
         Plan::Pull { upstream } => {
             (cx.progress)(GitProgress::Phase {
                 phase: GitPhase::Pull,
@@ -960,8 +1011,10 @@ async fn steps(
                     .await
                     .map_err(failed(GitPhase::Pull))?,
             );
-            write.finish().await.map_err(failed(GitPhase::Pull))?;
-            return Ok(());
+            return Ok(StackTargets {
+                push: None,
+                pr: None,
+            });
         }
         Plan::Stack { commit, push, pr } => (commit, push, pr),
         Plan::FeatureStack {
@@ -1006,36 +1059,12 @@ async fn steps(
             phase: GitPhase::Commit,
         });
         match message {
-            CommitStep::Requested(request) => commit(cx, *request, out, &mut write).await,
-            CommitStep::Prepared(prepared) => commit_prepared(cx, prepared, out, &mut write).await,
+            CommitStep::Requested(request) => commit(cx, *request, out, write).await,
+            CommitStep::Prepared(prepared) => commit_prepared(cx, prepared, out, write).await,
         }
         .map_err(failed(GitPhase::Commit))?;
     }
-    write.finish().await.map_err(failed(GitPhase::Commit))?;
-    if let Some(target) = push_target {
-        let phase = GitPhase::Push {
-            remote: target.remote.clone(),
-        };
-        (cx.progress)(GitProgress::Phase {
-            phase: phase.clone(),
-        });
-        out.push = Some(
-            push(cx, &target, &mut out.warnings)
-                .await
-                .map_err(failed(phase))?,
-        );
-    }
-    if let Some(step) = pr_step {
-        (cx.progress)(GitProgress::Phase {
-            phase: GitPhase::Pr,
-        });
-        out.pr = Some(
-            open_pr(cx, step, &mut out.warnings)
-                .await
-                .map_err(failed(GitPhase::Pr))?,
-        );
-    }
-    Ok(())
+    Ok(StackTargets { push, pr })
 }
 fn feature_no_changes() -> GitFailure {
     refuse(

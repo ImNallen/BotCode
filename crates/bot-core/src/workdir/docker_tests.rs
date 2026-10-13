@@ -59,6 +59,48 @@ fn status(handle: &SandboxHandle) -> String {
 
 #[tokio::test]
 #[ignore = "needs Docker"]
+async fn a_failed_write_keeps_the_container_as_it_was_and_the_mirror_matches_it() {
+    let fixture = Fixture::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let handle = readied(&fixture, dir.path()).await;
+    let workdir = Workdir::Sandbox {
+        root: handle.mirror.root().to_path_buf(),
+        handle: handle.clone(),
+    };
+    let error = workdir
+        .write(|root| {
+            std::fs::write(root.join("README.md"), "half\n")?;
+            std::fs::write(root.join("notes.txt"), "half\n")?;
+            Err::<(), _>(AppError::new("fixture", "the second step failed"))
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "fixture");
+    assert_eq!(
+        stdout(
+            &handle.container,
+            &["sh", "-c", "cat README.md; test -e notes.txt || echo gone"]
+        )
+        .await,
+        "lifecycle\ngone\n",
+        "the container keeps its tree"
+    );
+    let root = handle.mirror.root();
+    assert_eq!(
+        std::fs::read_to_string(root.join("README.md")).unwrap(),
+        "lifecycle\n"
+    );
+    assert!(!root.join("notes.txt").exists());
+    assert_eq!(git(root, &["status", "--porcelain"]), "");
+    assert_eq!(
+        handle.mirror.pull(Freshness::Exact, OWN).await.unwrap(),
+        None,
+        "both sides agree"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs Docker"]
 async fn a_paused_sandbox_wakes_within_a_second_without_a_turn() {
     let fixture = Fixture::new().await;
     let dir = tempfile::tempdir().unwrap();
