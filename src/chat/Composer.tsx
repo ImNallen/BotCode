@@ -1,5 +1,6 @@
 // Ported from T3 Code v0.0.45 components/chat/ChatComposer.tsx, ComposerControl.tsx, ComposerPrimaryActions.tsx, BranchToolbar.tsx, BranchToolbarEnvironmentSelector.tsx, BranchToolbarEnvModeSelector.tsx, TraitsPicker.tsx and ui/badge.tsx (MIT).
-import type { Thread } from "../ipc";
+import type { SandboxState, Thread } from "../ipc";
+import { sandboxLabel } from "../lib/sandbox";
 import {
   useEffect,
   useId,
@@ -259,6 +260,8 @@ export function Composer({
           onSelectWorktree: (path: string) => void;
         }
       | undefined;
+    /** What Bot Code last made of a sandbox thread's container, when it is not running. */
+    sandboxState?: SandboxState;
     branch: ReactNode;
   };
   autoFocus?: boolean;
@@ -1736,7 +1739,10 @@ export function Composer({
                         checkout.kind === "worktree" ? checkout.path : undefined
                       }
                     >
-                      <FixedCheckoutLabel checkout={checkout} />
+                      <FixedCheckoutLabel
+                        checkout={checkout}
+                        sandboxState={context.sandboxState}
+                      />
                     </span>
                   ) : null}
                 </div>
@@ -1752,12 +1758,18 @@ export function Composer({
   );
 }
 
-function FixedCheckoutLabel({ checkout }: { checkout: Checkout }) {
+function FixedCheckoutLabel({
+  checkout,
+  sandboxState,
+}: {
+  checkout: Checkout;
+  sandboxState: SandboxState | undefined;
+}) {
   const [Icon, label] =
     checkout.kind !== "worktree"
       ? [FolderIcon, "Local checkout"]
       : checkout.sandbox
-        ? [ContainerIcon, "Sandbox"]
+        ? [ContainerIcon, sandboxLabel(sandboxState)]
         : [FolderGitIcon, "Worktree"];
   return (
     <>

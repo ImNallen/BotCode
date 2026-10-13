@@ -667,6 +667,12 @@ export function ChatView({
   const skills = useCheckoutSkills(skillsRoot);
   // A sandbox mirror's next sync would overwrite edits made in an editor.
   const sandboxed = inSandbox(thread?.checkout);
+  const sandboxState = useQuery({
+    queryKey: ["sandbox-state", threadId],
+    queryFn: () => ipc.sandboxState(workspaceId, threadId ?? ""),
+    enabled: sandboxed && Boolean(threadId),
+    retry: false,
+  });
   const checkoutOpenable =
     Boolean(view && !view.unavailable && (threadId ? thread : !isScratch)) &&
     !sandboxed;
@@ -1727,6 +1733,7 @@ export function ChatView({
                 onSelectWorktree: (path) => void selectRegisteredWorktree(path),
               }
             : (thread ?? createdDraft)?.checkout,
+        sandboxState: sandboxState.data,
         branch: (
           <BranchPicker
             checkout={checkout}

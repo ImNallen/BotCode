@@ -992,6 +992,15 @@ pub enum SandboxAvailability {
         reason: String,
     },
 }
+/// What Bot Code last made of a sandbox's container. The composer strip shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxState {
+    Starting,
+    Running,
+    Paused,
+    Stopped,
+}
 /// Where a sandbox's Desktop tab connects: the Mac loopback port of its noVNC page and the
 /// secret that both the websocket and VNC require.
 #[derive(Clone, PartialEq, Eq, Serialize)]

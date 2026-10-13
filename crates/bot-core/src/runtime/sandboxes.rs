@@ -1,14 +1,15 @@
 //! The registry of sandbox handles, shared by the App and the owner loop, plus startup
-//! reconciliation, shutdown, and mirror pulls after terminal commands.
-use super::{Command, Location, call};
+//! reconciliation, shutdown, the idle lifecycle tick, and mirror pulls after terminal
+//! commands.
+use super::{Command, Completion, Location, Owner, call, providers::EnvKey};
 use crate::{
     codex::auth::TokenBroker,
     domain::*,
     log::RotatingLog,
     mirror::{Freshness, RECENT},
-    sandbox::{self, CodexSource, Desired, Docker, DockerStatus, Reconcile, SandboxConfig},
-    terminal::TerminalKey,
-    workdir::{SandboxHandle, Workdir},
+    sandbox::{self, Desired, Docker, DockerStatus, Reconcile, SandboxConfig},
+    terminal::{TerminalKey, Terminals},
+    workdir::{Limits, Phase, SandboxHandle, Workdir, idle::CPU_BUSY_PERCENT},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -18,6 +19,8 @@ use std::{
 use tokio::{sync::mpsc, time::Instant};
 
 const LOW_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub(super) const STOPPED_IDLE: &str = "Sandbox stopped while idle. Your next message restarts it.";
+pub(super) const STOPPED_SETTLED: &str = "Sandbox stopped. Your next message restarts it.";
 
 /// What a reconciled sandbox needs besides its id: where its mirror is and which branch it
 /// may move.
@@ -30,25 +33,39 @@ pub(crate) struct Sandboxes {
     docker: Docker,
     pub broker: TokenBroker,
     log: RotatingLog,
+    pub limits: Limits,
+    next_tick: Mutex<Instant>,
     handles: Mutex<HashMap<SandboxId, Arc<SandboxHandle>>>,
 }
 impl Sandboxes {
     pub(crate) fn new(
-        data_dir: &Path,
-        codex_binary: &Path,
-        codex_home: &Path,
+        config: SandboxConfig,
+        broker: TokenBroker,
+        limits: Limits,
         log: RotatingLog,
     ) -> Self {
         Self {
-            docker: Docker::new(SandboxConfig {
-                docker: sandbox::docker_binary(),
-                data_dir: data_dir.to_path_buf(),
-                codex: CodexSource::Binary(codex_binary.to_path_buf()),
-            }),
-            broker: TokenBroker::new(codex_home, codex_binary.to_path_buf()),
+            docker: Docker::new(config),
+            broker,
             log,
+            limits,
+            next_tick: Mutex::new(Instant::now()),
             handles: Mutex::new(HashMap::new()),
         }
+    }
+    /// A registry with no Docker and no Codex, whose `codex-home` is under `dir`.
+    #[cfg(test)]
+    pub(crate) fn for_tests(dir: &Path) -> Self {
+        Self::new(
+            SandboxConfig {
+                docker: "/no/docker".into(),
+                data_dir: dir.to_path_buf(),
+                codex: sandbox::CodexSource::Binary("/no/codex".into()),
+            },
+            TokenBroker::new(&dir.join("codex-home"), "/no/codex".into()),
+            Limits::DEFAULT,
+            RotatingLog::silent(),
+        )
     }
     /// The one match from a checkout to where it lives.
     pub(crate) fn workdir(&self, checkout: &Checkout, root: &Path) -> Workdir {
@@ -78,6 +95,7 @@ impl Sandboxes {
                     id.clone(),
                     mirror_root.to_path_buf(),
                     branch.to_owned(),
+                    self.limits.probe_every(),
                     self.log.clone(),
                 )
             })
@@ -85,13 +103,18 @@ impl Sandboxes {
         handle.set_branch(branch);
         handle
     }
-    /// Handles whose container this process started.
-    fn live(&self) -> Vec<Arc<SandboxHandle>> {
+    /// A handle some thread already resolved. A sandbox nobody resolved has no container
+    /// this process started.
+    pub(crate) fn existing(&self, id: &SandboxId) -> Option<Arc<SandboxHandle>> {
+        self.handles.lock().unwrap().get(id).cloned()
+    }
+    /// Handles whose container this process started and has not stopped: running or paused.
+    fn started(&self) -> Vec<Arc<SandboxHandle>> {
         self.handles
             .lock()
             .unwrap()
             .values()
-            .filter(|handle| handle.is_ready())
+            .filter(|handle| handle.is_started())
             .cloned()
             .collect()
     }
@@ -120,8 +143,22 @@ impl Sandboxes {
             low_memory: memory_bytes < LOW_MEMORY_BYTES,
         }
     }
+    /// Terminal input or a fresh attach on a sandbox terminal counts as use and wakes a
+    /// paused or stopped container before the bytes go in.
+    pub(crate) async fn wake_terminal(
+        &self,
+        terminals: &Terminals,
+        key: &TerminalKey,
+    ) -> Result<()> {
+        let handle = terminals.sandbox_of(key).and_then(|id| self.existing(&id));
+        match handle {
+            Some(handle) => handle.wake().await,
+            None => Ok(()),
+        }
+    }
     /// Startup repair. A referenced container left running or paused by a crash is pulled and
-    /// stopped; a container no checkout names is removed with its Codex home. Nothing here
+    /// stopped; a container no checkout names is removed with its Codex home; images of
+    /// older versions that no container of any instance uses are removed. Nothing here
     /// touches a sandbox this process already readied.
     pub(crate) async fn reconcile(&self, referenced: HashMap<SandboxId, Referenced>) {
         let observed = match self.docker.list().await {
@@ -140,7 +177,7 @@ impl Sandboxes {
                 Reconcile::PullThenStop(id) => {
                     let reference = &referenced[&id];
                     let handle = self.handle(&id, &reference.mirror_root, &reference.branch);
-                    if handle.is_ready() {
+                    if handle.is_started() {
                         continue;
                     }
                     self.log.line(
@@ -171,16 +208,176 @@ impl Sandboxes {
                 );
             }
         }
+        match self.docker.prune_images().await {
+            Ok(removed) => {
+                for tag in removed {
+                    self.log
+                        .line("sandbox", &format!("removed old image {tag}"));
+                }
+            }
+            Err(error) => self.log.line(
+                "sandbox",
+                &format!("old sandbox images kept: {}", error.message),
+            ),
+        }
     }
     /// Pulls and stops every container this process started. The agents are already gone.
     pub(crate) async fn stop_all(&self) {
-        for handle in self.live() {
+        for handle in self.started() {
             if let Err(error) = handle.retire(Desired::Stopped).await {
                 self.log.line(
                     &format!("sandbox[{}]", handle.id),
                     &format!("stop at shutdown failed: {}", error.message),
                 );
             }
+        }
+    }
+    fn tick_due(&self, now: Instant) -> bool {
+        let mut next = self.next_tick.lock().unwrap();
+        if now < *next {
+            return false;
+        }
+        *next = now + self.limits.tick();
+        true
+    }
+}
+
+/// One step of lifecycle work for one sandbox, run off the owner loop.
+enum Work {
+    Probe,
+    StopDesktop,
+    /// A retire and the one-word reason the log names: `idle` or `settled`.
+    Retire(Desired, &'static str),
+}
+
+impl Owner {
+    /// The idle rule, on the owner tick. For each started sandbox it folds in what only the
+    /// owner knows, whether a thread of the sandbox is busy, and asks the pure rule what the
+    /// container should be. At most one piece of work is in flight per sandbox, and none of
+    /// it runs on the loop.
+    pub(super) async fn sandbox_lifecycle(&mut self) {
+        let now = Instant::now();
+        if self.closing || !self.sandboxes.tick_due(now) {
+            return;
+        }
+        let limits = self.sandboxes.limits;
+        for handle in self.sandboxes.started() {
+            let key = EnvKey::Sandbox(handle.id.clone());
+            let busy = self.threads.values().any(|t| {
+                EnvKey::of(&t.checkout) == key
+                    && !self.idle(t, t.root(&self.workspaces[&t.workspace_id]))
+            });
+            if busy {
+                handle.mark_busy(now.into_std());
+            }
+            if !handle.begin_work() {
+                continue;
+            }
+            let activity = handle.activity();
+            let requested = handle.stop_requested().filter(|_| !busy);
+            let desired = match requested {
+                Some(_) => Desired::Stopped,
+                None => activity.desired(now.into_std(), &limits),
+            };
+            let work = match (handle.phase(), desired) {
+                (Phase::Running, Desired::Running)
+                    if activity.desktop_idle(now.into_std(), &limits) =>
+                {
+                    Work::StopDesktop
+                }
+                (Phase::Running, Desired::Running) if handle.probe_due(now.into_std()) => {
+                    Work::Probe
+                }
+                (Phase::Running, Desired::Paused) => Work::Retire(Desired::Paused, "idle"),
+                (Phase::Running | Phase::Paused, Desired::Stopped) => Work::Retire(
+                    Desired::Stopped,
+                    if requested.is_some() {
+                        "settled"
+                    } else {
+                        "idle"
+                    },
+                ),
+                _ => {
+                    handle.end_work();
+                    continue;
+                }
+            };
+            if let Work::Retire(Desired::Stopped, _) = work {
+                let reason = requested.unwrap_or(STOPPED_IDLE);
+                let _ = self.stop_providers(Some(&key)).await;
+                self.lose_env(&key, reason, reason).await;
+            }
+            let done = self.done.clone();
+            tokio::spawn(async move {
+                let changed = handle.lifecycle(work, now.into_std()).await;
+                handle.end_work();
+                if changed {
+                    let _ = done
+                        .send(Completion::SandboxChanged(handle.id.clone()))
+                        .await;
+                }
+            });
+        }
+    }
+    /// Settle and archive stop the container. The next tick does it once no thread of the
+    /// sandbox is busy, which covers the naming and the capture that follow a turn.
+    pub(super) fn stop_sandbox_of(&self, id: &ThreadId) {
+        let Some(thread) = self.threads.get(id) else {
+            return;
+        };
+        if let Workdir::Sandbox { handle, .. } = self.workdir(thread)
+            && handle.is_started()
+        {
+            handle.request_stop(STOPPED_SETTLED);
+        }
+    }
+    /// The container changed state outside a turn, so the strip label of each of its threads
+    /// reads it again.
+    pub(super) fn sandbox_changed(&self, id: &SandboxId) {
+        let key = EnvKey::Sandbox(id.clone());
+        for thread in self.threads.values() {
+            if EnvKey::of(&thread.checkout) == key {
+                let _ = self.changes.send(self.thread_hint(thread));
+            }
+        }
+    }
+}
+
+impl SandboxHandle {
+    /// Runs one piece of lifecycle work. Returns whether the container's state changed.
+    async fn lifecycle(&self, work: Work, decided_at: std::time::Instant) -> bool {
+        match work {
+            Work::Probe => {
+                match self.probe().await {
+                    Ok(Some(percent)) if percent >= CPU_BUSY_PERCENT => {
+                        self.note(&format!("busy: {percent:.1}% CPU"));
+                    }
+                    Ok(_) => {}
+                    Err(error) => self.note(&format!("probe failed: {}", error.message)),
+                }
+                false
+            }
+            Work::StopDesktop => {
+                match self.stop_desktop().await {
+                    Ok(()) => self.note("desktop stopped: no Desktop tab and no turn"),
+                    Err(error) => self.note(&format!("desktop stop failed: {}", error.message)),
+                }
+                false
+            }
+            Work::Retire(desired, why) => match self.idle_retire(desired, decided_at).await {
+                Ok(changed) => {
+                    if changed {
+                        self.note(&format!("{desired:?}: {why}").to_lowercase());
+                    }
+                    changed
+                }
+                Err(error) => {
+                    self.note(&format!("{desired:?} ({why}) failed: {}", error.message));
+                    // A failed pull keeps the container; the next attempt waits a full window.
+                    self.touch();
+                    false
+                }
+            },
         }
     }
 }
@@ -235,19 +432,10 @@ pub(super) async fn pull_after_commands(
 mod tests {
     use super::*;
 
-    fn sandboxes(dir: &Path) -> Sandboxes {
-        Sandboxes::new(
-            dir,
-            Path::new("/no/codex"),
-            &dir.join("codex-home"),
-            RotatingLog::silent(),
-        )
-    }
-
     #[test]
     fn only_a_sandbox_worktree_resolves_to_a_sandbox_workdir_and_threads_share_its_handle() {
         let dir = tempfile::tempdir().unwrap();
-        let sandboxes = sandboxes(dir.path());
+        let sandboxes = Sandboxes::for_tests(dir.path());
         let root = dir.path().join("mirror");
         let id: SandboxId = "0123456789ab".parse().unwrap();
         let sandboxed = Checkout::Worktree {
@@ -268,6 +456,7 @@ mod tests {
             assert!(workdir.sandbox().is_none(), "{checkout:?}");
             assert_eq!(workdir.root(), root.as_path());
         }
+        assert!(sandboxes.existing(&id).is_none());
         let first = sandboxes.workdir(&sandboxed, &root);
         let handle = first.sandbox().expect("a sandbox workdir");
         assert_eq!(handle.id, id);
@@ -275,6 +464,7 @@ mod tests {
         assert_eq!(handle.mirror.root(), root.as_path());
         assert_eq!(first.root(), root.as_path());
         assert!(!handle.is_ready(), "nothing has started the container");
+        assert_eq!(handle.phase(), Phase::Stopped);
 
         // A second thread on the same checkout, after a branch rename, shares the handle and
         // refreshes the branch the mirror may move.
@@ -285,8 +475,9 @@ mod tests {
         };
         let second = sandboxes.workdir(&renamed, &root);
         assert!(Arc::ptr_eq(handle, second.sandbox().unwrap()));
+        assert!(Arc::ptr_eq(handle, &sandboxes.existing(&id).unwrap()));
         assert_eq!(handle.branch(), "botcode/renamed");
         assert_eq!(sandboxes.handles.lock().unwrap().len(), 1);
-        assert!(sandboxes.live().is_empty());
+        assert!(sandboxes.started().is_empty());
     }
 }

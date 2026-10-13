@@ -3,6 +3,8 @@
 #                                  with VNC, the window manager and the websocket proxy for
 #                                  noVNC, then wait until they answer
 # desktop status                   exit 0 when the whole desktop is running
+# desktop clients                  print how many VNC clients are connected
+# desktop stop                     stop the desktop and every window on it
 #
 # Nothing starts the desktop with the container. The Desktop tab and the agent's browser start
 # it on first use. Each part runs in its own session, so the lifeline exec that started it
@@ -69,5 +71,25 @@ case ${1-} in
   status)
     running "^Xvnc $display" && running "^matchbox-window-manager" && listening "$web_port"
     ;;
-  *) echo "usage: desktop start [--secret-stdin] | status" >&2; exit 2 ;;
+  clients)
+    # Established connections whose local port is 5900 (0x170C): one per VNC client, which
+    # is one per connected Desktop tab, because websockify opens one for each websocket.
+    awk '$4 == "01" && $2 ~ /:170C$/ { n++ } END { print n + 0 }' /proc/net/tcp
+    ;;
+  stop)
+    # Windows die with their X server, and Chromium is killed too in case it lingers while
+    # it reconnects. The lock is not taken, so a hung start cannot block the stop.
+    pkill -u "$(id -u)" -f "^Xvnc $display"
+    pkill -u "$(id -u)" -f "^matchbox-window-manager"
+    pkill -u "$(id -u)" -f "websockify --web $web"
+    pkill -u "$(id -u)" -f "chrome-linux.*/chrome|/opt/botcode/chromium"
+    for _ in $(seq 1 100); do
+      running "^Xvnc $display|^matchbox-window-manager|websockify --web $web|chrome-linux.*/chrome" || break
+      sleep 0.05
+    done
+    pkill -KILL -u "$(id -u)" -f "^Xvnc $display|^matchbox-window-manager|websockify --web $web|chrome-linux.*/chrome" 2>/dev/null
+    rm -f "/tmp/.X${display#:}-lock" "/tmp/.X11-unix/X${display#:}"
+    exit 0
+    ;;
+  *) echo "usage: desktop start [--secret-stdin] | status | clients | stop" >&2; exit 2 ;;
 esac

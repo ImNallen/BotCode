@@ -502,6 +502,13 @@ export const sandboxDesktop = z.object({
   secret: z.string().regex(/^[A-Za-z0-9]{16,128}$/),
 });
 export type SandboxDesktop = z.infer<typeof sandboxDesktop>;
+export const sandboxState = z.enum([
+  "starting",
+  "running",
+  "paused",
+  "stopped",
+]);
+export type SandboxState = z.infer<typeof sandboxState>;
 const branches = z.object({
   branches: z.array(
     z.object({
@@ -1597,6 +1604,8 @@ export const ipc = {
     call("sandbox_availability", {}, sandboxAvailability),
   sandboxDesktop: (workspaceId: string, threadId: string) =>
     call("sandbox_desktop", { workspaceId, threadId }, sandboxDesktop),
+  sandboxState: (workspaceId: string, threadId: string) =>
+    call("sandbox_state", { workspaceId, threadId }, sandboxState),
   create: (workspaceId: string, checkout: NewCheckout) =>
     call("create_thread", { workspaceId, checkout }, thread),
   listWorktrees: (workspaceId: string) =>
@@ -1747,8 +1756,12 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
     if (timer) return;
     timer = setTimeout(() => {
       timer = undefined;
-      for (const threadId of hints)
+      for (const threadId of hints) {
         void client.invalidateQueries({ queryKey: ["thread", threadId] });
+        void client.invalidateQueries({
+          queryKey: ["sandbox-state", threadId],
+        });
+      }
       hints.clear();
       for (const workspaceId of workspaces)
         invalidateCheckouts(client, workspaceId);

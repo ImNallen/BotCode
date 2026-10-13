@@ -123,12 +123,7 @@ mod owner {
                 changes: broadcast::channel(64).0,
                 provider_events,
                 done,
-                sandboxes: Arc::new(Sandboxes::new(
-                    dir.path(),
-                    Path::new("/no/codex"),
-                    &dir.path().join("codex-home"),
-                    RotatingLog::silent(),
-                )),
+                sandboxes: Arc::new(Sandboxes::for_tests(dir.path())),
             };
             let mac = owner
                 .new_thread(
@@ -172,11 +167,20 @@ mod owner {
             fixture
         }
         /// What `Launcher::start` does, with a fake app-server in each slot's own directory.
+        /// The sandbox launch readies the container, so its handle reads running.
         async fn go_live(&mut self, key: &EnvKey) -> u64 {
             let name = match key {
                 EnvKey::Mac => "mac",
                 EnvKey::Sandbox(_) => "sandbox",
             };
+            if let EnvKey::Sandbox(_) = key {
+                let thread = self.owner.threads[&self.sandboxed].clone();
+                self.owner
+                    .workdir(&thread)
+                    .sandbox()
+                    .unwrap()
+                    .mark_ready_for_tests();
+            }
             let peer = self.dir.path().join(name).join("peer.py");
             std::fs::create_dir(peer.parent().unwrap()).unwrap();
             std::fs::write(&peer, include_str!("../../../tests/support/codex_peer.py")).unwrap();

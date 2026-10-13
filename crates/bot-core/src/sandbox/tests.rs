@@ -288,7 +288,7 @@ static IMAGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// An isolated instance whose containers are removed on drop, including after a failure.
 pub(crate) struct Fixture {
-    docker: Docker,
+    pub(crate) docker: Docker,
     data: tempfile::TempDir,
 }
 impl Fixture {

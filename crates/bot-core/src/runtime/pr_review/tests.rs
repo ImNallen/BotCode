@@ -86,12 +86,7 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
         changes: broadcast::channel(1).0,
         provider_events,
         done,
-        sandboxes: Arc::new(Sandboxes::new(
-            dir.path(),
-            Path::new("/no/codex"),
-            &dir.path().join("codex-home"),
-            RotatingLog::silent(),
-        )),
+        sandboxes: Arc::new(Sandboxes::for_tests(dir.path())),
     };
     let original = AppError::new(
         "process_cleanup",
@@ -268,12 +263,7 @@ async fn late_lifecycle_completion_preserves_supersession_and_cleanup_latch() {
         changes: broadcast::channel(1).0,
         provider_events,
         done,
-        sandboxes: Arc::new(Sandboxes::new(
-            dir.path(),
-            Path::new("/no/codex"),
-            &dir.path().join("codex-home"),
-            RotatingLog::silent(),
-        )),
+        sandboxes: Arc::new(Sandboxes::for_tests(dir.path())),
     };
 
     for result in [

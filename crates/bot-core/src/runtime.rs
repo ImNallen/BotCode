@@ -33,7 +33,9 @@ use crate::{
     editors::{self, EditorId, OpenTarget, Position},
     log::RotatingLog,
     mirror::Freshness,
-    repo, settings, skills,
+    repo,
+    sandbox::Desired,
+    settings, skills,
     store::Store,
     terminal::{
         CloseScope, Launch, MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey,
@@ -41,7 +43,7 @@ use crate::{
     },
     usage::{self, ContextUsage, ResetOutcome, UsageLimits},
     vcs,
-    workdir::{Inbound, Workdir},
+    workdir::{Inbound, Phase, SandboxHandle, Workdir},
     workspace_files,
 };
 use pr_review::ReviewWork;
@@ -352,7 +354,8 @@ enum Command {
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
     CleanupCandidates(Reply<(Vec<Candidate>, Vec<PathBuf>)>),
-    ClaimCleanup(Candidate, Reply<()>),
+    /// Replies with the candidate's sandbox, which the sweeper retires before the removal.
+    ClaimCleanup(Candidate, Reply<Option<Arc<SandboxHandle>>>),
     ReleaseCleanup(Candidate, bool, Reply<()>),
     ClaimRestore(ThreadId, Reply<Option<Restore>>),
     ReleaseRestore(PathBuf, Reply<()>),
@@ -572,9 +575,13 @@ impl App {
         let tools = tools::ToolWork::new(&config, agent_tools, &store)?;
         let log = RotatingLog::open(config.data_dir.join("logs").join("codex.log"));
         let sandboxes = Arc::new(Sandboxes::new(
-            &config.data_dir,
-            &config.codex_binary,
-            &codex::auth::codex_home(),
+            crate::sandbox::SandboxConfig {
+                docker: crate::sandbox::docker_binary(),
+                data_dir: config.data_dir.clone(),
+                codex: crate::sandbox::CodexSource::Binary(config.codex_binary.clone()),
+            },
+            codex::auth::TokenBroker::new(&codex::auth::codex_home(), config.codex_binary.clone()),
+            crate::workdir::Limits::from_environment(),
             log.clone(),
         ));
         let referenced: HashMap<SandboxId, sandboxes::Referenced> = threads
@@ -915,6 +922,28 @@ impl App {
             },
             Location::Removed { .. } => Err(worktree_removed()),
             Location::Folder(_) | Location::Unassigned => Err(not_a_sandbox()),
+        }
+    }
+    /// What Bot Code last made of a sandbox thread's container, for the composer strip.
+    pub async fn sandbox_state(
+        &self,
+        workspace: WorkspaceId,
+        thread: ThreadId,
+    ) -> Result<SandboxState> {
+        let (_, location) = self
+            .call(|r| Command::Checkout(workspace, Some(thread), r))
+            .await?;
+        let handle = match &location {
+            Location::Repository(workdir) => workdir.sandbox().cloned(),
+            Location::Removed { .. } => return Ok(SandboxState::Stopped),
+            Location::Folder(_) | Location::Unassigned => None,
+        };
+        match handle.map(|handle| handle.phase()) {
+            Some(Phase::Starting) => Ok(SandboxState::Starting),
+            Some(Phase::Running) => Ok(SandboxState::Running),
+            Some(Phase::Paused) => Ok(SandboxState::Paused),
+            Some(Phase::Stopped) => Ok(SandboxState::Stopped),
+            None => Err(not_a_sandbox()),
         }
     }
     pub async fn list_thread_summaries(
@@ -2126,6 +2155,7 @@ impl App {
                 .map_err(|e| AppError::new("terminal", e))?
             }
         };
+        self.sandboxes.wake_terminal(&self.terminals, &key).await?;
         if let Some(subscription) = attach(None).await? {
             return Ok(subscription);
         }
@@ -2215,6 +2245,7 @@ impl App {
             thread: thread_id,
             terminal: terminal_id,
         };
+        self.sandboxes.wake_terminal(&self.terminals, &key).await?;
         let terminals = self.terminals.clone();
         tokio::task::spawn_blocking(move || terminals.write(&key, data.as_bytes()))
             .await
@@ -2342,30 +2373,46 @@ impl Sweeper {
         };
         for eligible in eligible {
             let candidate = eligible.candidate.clone();
-            if let Err(e) = call(commands, |r| Command::ClaimCleanup(candidate.clone(), r)).await {
-                if e.code == "closed" {
-                    return Err(e);
-                }
-                eprintln!(
-                    "bot-code storage cleanup: skipped {} ({})",
-                    candidate.path.display(),
-                    e.message
-                );
-                continue;
-            }
+            let sandbox =
+                match call(commands, |r| Command::ClaimCleanup(candidate.clone(), r)).await {
+                    Ok(sandbox) => sandbox,
+                    Err(e) => {
+                        if e.code == "closed" {
+                            return Err(e);
+                        }
+                        eprintln!(
+                            "bot-code storage cleanup: skipped {} ({})",
+                            candidate.path.display(),
+                            e.message
+                        );
+                        continue;
+                    }
+                };
             let (worktrees, roots, settings) =
                 (worktrees.clone(), roots.clone(), self.settings.clone());
-            let removed = tokio::task::spawn_blocking(move || {
-                Sweep {
-                    worktrees: &worktrees,
-                    roots: &roots,
-                    policy: settings::storage_policy(&settings),
-                    now,
-                }
-                .remove(&eligible)
-            })
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
+            // The container goes first, after a final pull, so the mirror holds its work
+            // before the worktree is removed. Its Codex home stays for the next message.
+            let retired = match &sandbox {
+                Some(handle) => handle
+                    .retire(Desired::Removed)
+                    .await
+                    .map_err(|error| format!("sandbox not retired: {}", error.message)),
+                None => Ok(()),
+            };
+            let removed = match retired {
+                Ok(()) => tokio::task::spawn_blocking(move || {
+                    Sweep {
+                        worktrees: &worktrees,
+                        roots: &roots,
+                        policy: settings::storage_policy(&settings),
+                        now,
+                    }
+                    .remove(&eligible)
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string())),
+                Err(reason) => Err(reason),
+            };
             match &removed {
                 Ok(()) => eprintln!(
                     "bot-code storage cleanup: removed {} for thread {}",
@@ -2473,11 +2520,20 @@ enum Completion {
         thread: ThreadId,
         result: Result<Value>,
     },
+    /// A paused or stopped sandbox was readied for `job`, or could not be.
+    Woken {
+        epoch: u64,
+        job: Prepare,
+        result: Result<()>,
+    },
+    /// The idle rule or a settle changed a container's state.
+    SandboxChanged(SandboxId),
 }
 impl Completion {
     fn epoch(&self) -> Option<u64> {
         match self {
-            Self::StackProgress { .. } => None,
+            Self::StackProgress { .. } | Self::SandboxChanged(_) => None,
+            Self::Woken { epoch, .. } => Some(*epoch),
             Self::Models { epoch, .. }
             | Self::Limits { epoch, .. }
             | Self::ResetConsumed { epoch, .. }
@@ -2495,7 +2551,9 @@ impl Completion {
         let error = match self {
             Self::StackProgress { .. }
             | Self::CompactionExpired { .. }
-            | Self::ResetConsumed { .. } => None,
+            | Self::ResetConsumed { .. }
+            | Self::Woken { .. }
+            | Self::SandboxChanged(_) => None,
             Self::Models { result, .. } => result.as_ref().err(),
             Self::Limits { result, .. } => result.as_ref().err(),
             Self::Launched { result, .. } => result.as_ref().err(),
@@ -2919,6 +2977,22 @@ impl Owner {
         self.held.insert(candidate.path.clone(), Hold::Cleanup);
         Ok(())
     }
+    /// A claimed sandbox candidate: its agent is stopped on purpose, and the sweeper gets the
+    /// handle to retire. The thread is idle and the sole owner, so no turn is affected.
+    async fn retire_sandbox_for_cleanup(
+        &mut self,
+        candidate: &Candidate,
+    ) -> Result<Option<Arc<SandboxHandle>>> {
+        let thread = self.thread(&candidate.thread)?;
+        let key = EnvKey::of(&thread.checkout);
+        let Some(handle) = self.workdir(thread).sandbox().cloned() else {
+            return Ok(None);
+        };
+        let _ = self.stop_providers(Some(&key)).await;
+        self.lose_env(&key, sandboxes::STOPPED_IDLE, sandboxes::STOPPED_IDLE)
+            .await;
+        Ok(Some(handle))
+    }
     fn release_cleanup(&mut self, candidate: &Candidate, removed: bool) {
         self.held.remove(&candidate.path);
         if removed {
@@ -3101,6 +3175,7 @@ impl Owner {
                     if let Err(error)=self.complete(done).await {self.lose_in(key.as_ref(),&error.message,&error.message).await;}
                 }
                 _=tick.tick()=>{
+                    self.sandbox_lifecycle().await;
                     self.poll_source_control();
                     self.poll_setups();
                     self.expire_commit_previews();
@@ -3564,6 +3639,8 @@ impl Owner {
                 }
 
                 // A removed worktree is restored by the next submit, which resumes as usual.
+                // So is a sandbox whose container is paused or stopped: opening the thread
+                // is a read, and starting the container is left to the next message.
                 let should_resume = resume && self.thread(&id).is_ok_and(|t| {
                     t.native_thread_id.is_some()
                         && t.pending_revert.is_none()
@@ -3572,6 +3649,10 @@ impl Owner {
                             SessionState::Dormant | SessionState::Unavailable { .. }
                         )
                         && !matches!(&t.checkout, Checkout::Worktree { path, .. } if !path.exists())
+                        && self
+                            .workdir(t)
+                            .sandbox()
+                            .is_none_or(|handle| handle.is_ready())
                 });
                 if should_resume {
                     self.threads.get_mut(&id).unwrap().session = SessionState::Connecting;
@@ -3860,6 +3941,7 @@ impl Owner {
             }
             Command::RegenerateTitle(id, reply) => self.regenerate_title(id, reply),
             Command::Arrange(id, action, reply) => {
+                let stops_sandbox = matches!(action, Arrange::Settle | Arrange::Archive);
                 let result = (|| -> Result<()> {
                     let mut thread = self.thread(&id)?.clone();
                     if matches!(action, Arrange::Archive)
@@ -3882,6 +3964,9 @@ impl Owner {
                     }
                     self.install(thread)
                 })();
+                if result.is_ok() && stops_sandbox {
+                    self.stop_sandbox_of(&id);
+                }
                 let _ = reply.send(result);
             }
             Command::AutoSettle(rules, source_control, reply) => {
@@ -3917,7 +4002,11 @@ impl Owner {
                 let _ = reply.send(Ok((candidates, roots)));
             }
             Command::ClaimCleanup(candidate, reply) => {
-                let _ = reply.send(self.claim_cleanup(&candidate));
+                let claimed = match self.claim_cleanup(&candidate) {
+                    Ok(()) => self.retire_sandbox_for_cleanup(&candidate).await,
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(claimed);
             }
             Command::ReleaseCleanup(candidate, removed, reply) => {
                 self.release_cleanup(&candidate, removed);
@@ -4520,6 +4609,24 @@ impl Owner {
             self.providers.queue(key, job);
             return;
         };
+        // The agent is live, but the idle rule may have paused or stopped its container, or
+        // be about to. The wake holds the container running and counts as use.
+        if let Some(handle) = self
+            .threads
+            .get(job.thread())
+            .and_then(|t| self.workdir(t).sandbox().cloned())
+        {
+            let done = self.done.clone();
+            tokio::spawn(async move {
+                let result = handle.wake().await;
+                let _ = done.send(Completion::Woken { epoch, job, result }).await;
+            });
+            return;
+        }
+        self.prepare_live(job, epoch, provider);
+    }
+    /// `prepare` once the slot is live and, for a sandbox, its container is awake.
+    fn prepare_live(&mut self, job: Prepare, epoch: u64, provider: Codex) {
         if let Prepare::Revert(id) = job {
             self.fork_revert(id);
             return;
@@ -4528,6 +4635,7 @@ impl Owner {
             Ok(t) => t,
             Err(_) => return,
         };
+        let key = EnvKey::of(&t.checkout);
         let workdir = self.workdir(t);
         let native = t.native_thread_id.clone();
         let settings = t.settings.clone();
@@ -4576,6 +4684,23 @@ impl Owner {
             }
             Completion::Limits { epoch, result } if self.providers.current(epoch) => {
                 self.settle_limits(result);
+            }
+            Completion::SandboxChanged(id) => self.sandbox_changed(&id),
+            Completion::Woken { epoch, job, result } if self.providers.current(epoch) => {
+                let key = self.providers.key(epoch).cloned();
+                match (result, key) {
+                    (Ok(()), Some(key)) => {
+                        if let Some((epoch, provider)) = self.providers.client(&key) {
+                            self.prepare_live(job, epoch, provider);
+                        } else {
+                            self.prepare(job);
+                        }
+                    }
+                    (Err(error), Some(key)) => {
+                        self.lose_env(&key, &error.message, &error.message).await;
+                    }
+                    (_, None) => {}
+                }
             }
             Completion::ResetConsumed {
                 epoch,

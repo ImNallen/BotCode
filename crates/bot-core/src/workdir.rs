@@ -16,11 +16,16 @@ use crate::{
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+#[cfg(test)]
+mod docker_tests;
+pub(crate) mod idle;
+pub(crate) use idle::{Activity, Limits};
 
 const COPY: Duration = Duration::from_secs(60);
 const DESKTOP_START: Duration = Duration::from_secs(30);
@@ -39,6 +44,27 @@ pub(crate) enum Workdir {
     },
 }
 
+/// What this process last made of the container. Docker stays the authority; this is what
+/// the strip label shows and what decides whether reads pull and whether the idle rule
+/// probes. `Stopped` is also the state of a container this process has not touched, and
+/// `Starting` is a `ready` in flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Phase {
+    Starting,
+    Running,
+    Paused,
+    Stopped,
+}
+impl Phase {
+    fn after(desired: Desired) -> Self {
+        match desired {
+            Desired::Running => Self::Running,
+            Desired::Paused => Self::Paused,
+            Desired::Stopped | Desired::Removed => Self::Stopped,
+        }
+    }
+}
+
 /// One per sandbox id, shared by every thread on the same checkout. It serializes the
 /// lifecycle steps that must not interleave: readying, retiring and reconciling.
 pub(crate) struct SandboxHandle {
@@ -49,11 +75,21 @@ pub(crate) struct SandboxHandle {
     log: RotatingLog,
     /// The checkout's branch, which the mirror may move freely. `Owner::workdir` refreshes
     /// it from the checkout each time the handle is used.
-    branch: std::sync::Mutex<String>,
+    branch: Mutex<String>,
     flight: tokio::sync::Mutex<()>,
-    /// Set by a completed `ready`, cleared by `retire`. While clear, the container is not
-    /// running on this process's account, so the mirror is exact and reads skip the pull.
-    ready: AtomicBool,
+    /// `Running` only after a completed `ready`, until a `retire`. Otherwise the container is
+    /// not running on this process's account, so the mirror is exact and reads skip the pull.
+    phase: Mutex<Phase>,
+    /// What the idle rule reads. Entry points touch it; the owner tick folds in turns and
+    /// probes and decides.
+    activity: Mutex<Activity>,
+    /// A settle or archive asked for a stop. The tick stops the container as soon as no
+    /// thread of the sandbox is busy, with this reason; any use before that withdraws it.
+    stop_requested: Mutex<Option<&'static str>>,
+    /// The owner tick runs one piece of lifecycle work per sandbox at a time.
+    working: AtomicBool,
+    probe_due: Mutex<Instant>,
+    probe_every: Duration,
     /// Made for each handle and kept only in memory. Every desktop start sets it again, so it
     /// also replaces the secret of a desktop that the agent or an earlier run started.
     desktop_secret: String,
@@ -64,6 +100,7 @@ impl SandboxHandle {
         id: SandboxId,
         mirror_root: PathBuf,
         branch: String,
+        probe_every: Duration,
         log: RotatingLog,
     ) -> Arc<Self> {
         let container = docker.container(&id);
@@ -73,11 +110,37 @@ impl SandboxHandle {
             id,
             docker,
             log,
-            branch: std::sync::Mutex::new(branch),
+            branch: Mutex::new(branch),
             flight: tokio::sync::Mutex::new(()),
-            ready: AtomicBool::new(false),
+            phase: Mutex::new(Phase::Stopped),
+            activity: Mutex::new(Activity::new(Instant::now())),
+            stop_requested: Mutex::new(None),
+            working: AtomicBool::new(false),
+            probe_due: Mutex::new(Instant::now()),
+            probe_every,
             desktop_secret: uuid::Uuid::new_v4().simple().to_string(),
         })
+    }
+    /// Claims the handle for one piece of lifecycle work. `false` while another is in flight.
+    pub(crate) fn begin_work(&self) -> bool {
+        self.working
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+    pub(crate) fn end_work(&self) {
+        self.working.store(false, Ordering::Release);
+    }
+    /// Whether the next probe is due, scheduling the one after it.
+    pub(crate) fn probe_due(&self, now: Instant) -> bool {
+        let mut due = self.probe_due.lock().unwrap();
+        if now < *due {
+            return false;
+        }
+        *due = now + self.probe_every;
+        true
+    }
+    pub(crate) fn note(&self, line: &str) {
+        self.log(line);
     }
     pub(crate) fn set_branch(&self, branch: &str) {
         let mut current = self.branch.lock().unwrap();
@@ -88,17 +151,90 @@ impl SandboxHandle {
     pub(crate) fn branch(&self) -> String {
         self.branch.lock().unwrap().clone()
     }
+    pub(crate) fn phase(&self) -> Phase {
+        *self.phase.lock().unwrap()
+    }
+    fn set_phase(&self, phase: Phase) {
+        *self.phase.lock().unwrap() = phase;
+    }
     pub(crate) fn is_ready(&self) -> bool {
-        self.ready.load(Ordering::Acquire)
+        self.phase() == Phase::Running
+    }
+    /// What a completed `ready` leaves behind, for owner tests whose fake agent stands in
+    /// for a launch that readied the container.
+    #[cfg(test)]
+    pub(crate) fn mark_ready_for_tests(&self) {
+        self.set_phase(Phase::Running);
+    }
+    /// Running or paused: a container this process started and has not stopped.
+    pub(crate) fn is_started(&self) -> bool {
+        matches!(self.phase(), Phase::Running | Phase::Paused)
+    }
+    pub(crate) fn activity(&self) -> Activity {
+        self.activity.lock().unwrap().clone()
+    }
+    /// Someone used the sandbox through Bot Code just now, which withdraws a requested stop.
+    pub(crate) fn touch(&self) {
+        self.activity.lock().unwrap().touched = Instant::now();
+        *self.stop_requested.lock().unwrap() = None;
+    }
+    pub(crate) fn request_stop(&self, reason: &'static str) {
+        *self.stop_requested.lock().unwrap() = Some(reason);
+    }
+    pub(crate) fn stop_requested(&self) -> Option<&'static str> {
+        *self.stop_requested.lock().unwrap()
+    }
+    /// A thread of this sandbox is busy at this tick.
+    pub(crate) fn mark_busy(&self, now: Instant) {
+        self.activity.lock().unwrap().busy = now;
     }
     fn log(&self, line: &str) {
         self.log.line(&format!("sandbox[{}]", self.id), line);
     }
     /// Converge to a running, seeded container on the current image. Idempotent, so thread
-    /// creation warms it and every launch and write calls it again. A container built from an
-    /// older image is pulled one last time and recreated.
+    /// creation warms it and every launch, write, terminal and message calls it again. A
+    /// container built from an older image is pulled one last time and recreated.
     pub(crate) async fn ready(&self) -> Result<()> {
         let _flight = self.flight.lock().await;
+        self.touch();
+        let was = self.phase();
+        if was != Phase::Running {
+            self.set_phase(Phase::Starting);
+        }
+        let readied = self.start().await;
+        match &readied {
+            Ok(()) => {
+                if was != Phase::Running {
+                    self.activity.lock().unwrap().forget_probe();
+                }
+                self.set_phase(Phase::Running);
+            }
+            Err(_) => self.set_phase(was),
+        }
+        readied
+    }
+    /// The cheap wake for paths that run often, such as terminal input and every turn: it
+    /// takes the lock, so it waits for a pause in flight and then undoes it, and it costs no
+    /// Docker call while the container runs. `ready` re-converges every time instead.
+    pub(crate) async fn wake(&self) -> Result<()> {
+        let _flight = self.flight.lock().await;
+        self.touch();
+        if self.phase() == Phase::Running {
+            return Ok(());
+        }
+        let was = self.phase();
+        self.set_phase(Phase::Starting);
+        let readied = self.start().await;
+        match &readied {
+            Ok(()) => {
+                self.activity.lock().unwrap().forget_probe();
+                self.set_phase(Phase::Running);
+            }
+            Err(_) => self.set_phase(was),
+        }
+        readied
+    }
+    async fn start(&self) -> Result<()> {
         let own = self.branch();
         let image = self.docker.image(&|line| self.log(line)).await?;
         if self.container.state().await?.stale(&image) {
@@ -108,14 +244,17 @@ impl SandboxHandle {
             self.container.converge(Desired::Removed).await?;
         }
         self.container.converge(Desired::Running).await?;
-        self.mirror.seed(&own).await?;
-        self.ready.store(true, Ordering::Release);
-        Ok(())
+        self.mirror.seed(&own).await
     }
     /// Readies the container, starts whatever of its desktop is not running and returns where
     /// the Desktop tab connects.
     pub(crate) async fn desktop(&self) -> Result<SandboxDesktop> {
         self.ready().await?;
+        {
+            let mut activity = self.activity.lock().unwrap();
+            activity.desktop_client = Instant::now();
+            activity.desktop_running = true;
+        }
         let output = self
             .container
             .run(
@@ -154,10 +293,23 @@ impl SandboxHandle {
     }
     /// Every transition away from running goes through here, so the mirror is exact whenever
     /// the container is not running. A paused or stopped container is started to pull before
-    /// removal, because Docker Desktop can stop containers behind Bot Code's back.
+    /// removal, because Docker Desktop can stop containers behind Bot Code's back. A failed
+    /// pull leaves the container as it is, running if the pull started it, and never removes
+    /// work that did not reach the Mac.
     pub(crate) async fn retire(&self, desired: Desired) -> Result<()> {
         let _flight = self.flight.lock().await;
-        self.ready.store(false, Ordering::Release);
+        self.retire_locked(desired).await
+    }
+    /// The idle rule's retire. Under the lock it checks that nothing used the sandbox since
+    /// the rule decided, because a wake that landed in between must win.
+    pub(crate) async fn idle_retire(&self, desired: Desired, decided_at: Instant) -> Result<bool> {
+        let _flight = self.flight.lock().await;
+        if self.activity().touched > decided_at || !self.is_started() {
+            return Ok(false);
+        }
+        self.retire_locked(desired).await.map(|()| true)
+    }
+    async fn retire_locked(&self, desired: Desired) -> Result<()> {
         let state = self.container.state().await?;
         let pull_first = match state {
             ContainerState::Absent => false,
@@ -167,9 +319,27 @@ impl SandboxHandle {
         };
         if pull_first {
             self.container.converge(Desired::Running).await?;
+            self.set_phase(Phase::Running);
             self.mirror.pull(Freshness::Exact, &self.branch()).await?;
         }
         self.container.converge(desired).await?;
+        self.set_phase(Phase::after(desired));
+        Ok(())
+    }
+    /// Reads the container's CPU time and desktop state into the activity record. Returns
+    /// the interval's CPU share when there is one, for the log.
+    pub(crate) async fn probe(&self) -> Result<Option<f64>> {
+        let probe = self.container.probe().await?;
+        Ok(self
+            .activity
+            .lock()
+            .unwrap()
+            .observe(Instant::now(), &probe))
+    }
+    /// Stops the desktop and its windows. The Desktop tab or the agent's browser restarts it.
+    pub(crate) async fn stop_desktop(&self) -> Result<()> {
+        self.container.stop_desktop().await?;
+        self.activity.lock().unwrap().desktop_running = false;
         Ok(())
     }
 }

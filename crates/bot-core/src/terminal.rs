@@ -485,6 +485,13 @@ impl Terminals {
                 .retain(|(id, _)| *id != subscription);
         }
     }
+    /// The sandbox a running terminal's shell lives in.
+    pub(crate) fn sandbox_of(&self, key: &TerminalKey) -> Option<SandboxId> {
+        match &self.get(key)?.place {
+            Place::Mac => None,
+            Place::Sandbox { container, .. } => Some(container.id().clone()),
+        }
+    }
     pub(crate) fn write(&self, key: &TerminalKey, data: &[u8]) -> Result<()> {
         match self.get(key) {
             Some(session) => session.write(data),

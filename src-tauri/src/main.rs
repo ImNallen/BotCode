@@ -199,6 +199,7 @@ fn main() {
                 ipc::reveal_in_finder,
                 ipc::sandbox_availability,
                 ipc::sandbox_desktop,
+                ipc::sandbox_state,
                 ipc::create_thread,
                 ipc::thread_snapshot,
                 ipc::open_thread,

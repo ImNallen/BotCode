@@ -7,6 +7,11 @@ pub(super) struct DeleteCompletion {
     outcome: Result<DeletedWorktree>,
     reply: Reply<DeletedWorktree>,
 }
+/// The last thread of a sandbox is going: its agent, already stopped, and its handle.
+struct SandboxRetirement {
+    handle: Arc<SandboxHandle>,
+    agent: Option<Codex>,
+}
 
 impl Owner {
     fn commit_thread_deletion(&mut self, id: &ThreadId) -> Result<()> {
@@ -124,7 +129,17 @@ impl Owner {
                 return;
             }
         };
-        if delete_worktree && let Err(error) = self.commit_thread_deletion(&id) {
+        // The last thread of a sandbox takes its container with it, after a final pull. The
+        // deletion is committed only once that pull landed, so a failure keeps the thread.
+        let sandbox = (self.owners(&root) == 1)
+            .then(|| self.workdir(&self.threads[&id]).sandbox().cloned())
+            .flatten()
+            .map(|handle| SandboxRetirement {
+                agent: self.providers.stop(&EnvKey::Sandbox(handle.id.clone())),
+                handle,
+            });
+        let committed = delete_worktree && sandbox.is_none();
+        if committed && let Err(error) = self.commit_thread_deletion(&id) {
             let _ = reply.send(Err(error));
             return;
         }
@@ -148,6 +163,41 @@ impl Owner {
             .map(|w| w.root.clone())
             .collect::<Vec<_>>();
         self.delete_jobs.spawn(async move {
+            let retired = match sandbox {
+                Some(SandboxRetirement { handle, agent }) => {
+                    if let Some(agent) = agent {
+                        let _ = agent.terminate().await;
+                    }
+                    let codex_home = handle.container.codex_home();
+                    handle
+                        .retire(Desired::Removed)
+                        .await
+                        .map(|()| {
+                            if let Some(dir) = codex_home.parent() {
+                                let _ = std::fs::remove_dir_all(dir);
+                            }
+                        })
+                        .map_err(|error| {
+                            AppError::new(
+                                "sandbox_kept",
+                                format!(
+                                    "The sandbox was not deleted, because its work could not be synced to this Mac: {}",
+                                    error.message
+                                ),
+                            )
+                        })
+                }
+                None => Ok(()),
+            };
+            if let Err(error) = retired {
+                return DeleteCompletion {
+                    id,
+                    root,
+                    committed,
+                    outcome: Err(error),
+                    reply,
+                };
+            }
             let outcome = tokio::task::spawn_blocking(move || {
                 terminals.close(&scope);
                 if !delete_worktree && !on_delete {
@@ -182,7 +232,7 @@ impl Owner {
             DeleteCompletion {
                 id,
                 root,
-                committed: delete_worktree,
+                committed,
                 outcome,
                 reply,
             }

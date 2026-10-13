@@ -26,8 +26,11 @@ pub const DESKTOP: &str = "/opt/botcode/bin/desktop";
 /// random loopback port of the Mac.
 pub const DESKTOP_PORT: u16 = 6080;
 const RUN: &str = "/opt/botcode/bin/run";
+const PROBE: &str = "/opt/botcode/bin/probe";
 
 const STATUS: Duration = Duration::from_secs(10);
+const PROBE_LIMIT: Duration = Duration::from_secs(15);
+const DESKTOP_STOP: Duration = Duration::from_secs(30);
 const CONTROL: Duration = Duration::from_secs(60);
 const BUILD: Duration = Duration::from_secs(30 * 60);
 const STOP_GRACE_SECONDS: &str = "3";
@@ -276,7 +279,64 @@ impl Docker {
             context.path().into(),
         ];
         self.inner.cli.stream(args, BUILD, progress).await?;
+        drop(_building);
+        if let Err(error) = self.prune_images().await {
+            progress(&format!("old sandbox images kept: {}", error.message));
+        }
         Ok(version.clone())
+    }
+    /// Removes `botcode-sandbox` images other than the current one that no container of any
+    /// instance was created from. Returns the tags it removed. With one tag or none there is
+    /// nothing to remove, and the Codex version is not probed: startup pays one `image ls`.
+    pub async fn prune_images(&self) -> Result<Vec<String>> {
+        let cli = &self.inner.cli;
+        let tags = cli
+            .ok(
+                [
+                    "image",
+                    "ls",
+                    "--filter",
+                    &format!("reference={}", image::REPOSITORY),
+                    "--format",
+                    "{{.Repository}}:{{.Tag}}",
+                ],
+                CONTROL,
+            )
+            .await?;
+        let tags: Vec<&str> = tags
+            .lines()
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty() && !tag.ends_with(":<none>"))
+            .collect();
+        if tags.len() <= 1 {
+            return Ok(Vec::new());
+        }
+        let (_, current) = self.versions().await?;
+        let mut removed = Vec::new();
+        for tag in tags {
+            if tag == current.tag() {
+                continue;
+            }
+            let users = cli
+                .ok(
+                    [
+                        "container",
+                        "ls",
+                        "--all",
+                        "--quiet",
+                        "--filter",
+                        &format!("ancestor={tag}"),
+                    ],
+                    CONTROL,
+                )
+                .await?;
+            if !users.trim().is_empty() {
+                continue;
+            }
+            cli.ok(["image", "rm", tag], CONTROL).await?;
+            removed.push(tag.to_owned());
+        }
+        Ok(removed)
     }
     pub fn container(&self, id: &SandboxId) -> Container {
         Container {
@@ -550,6 +610,54 @@ impl Container {
             self.name
         )
     }
+    /// What the in-image `probe` reports: CPU time used so far and the desktop's clients.
+    pub async fn probe(&self) -> Result<Probe> {
+        let output = self
+            .run(
+                &Exec {
+                    argv: &[PROBE],
+                    workdir: WORKSPACE,
+                    env: &[],
+                },
+                Input::Lifeline,
+                PROBE_LIMIT,
+            )
+            .await?;
+        if output.code != Some(0) {
+            return Err(AppError::new(
+                "sandbox",
+                format!(
+                    "The sandbox probe failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            ));
+        }
+        Probe::parse(&String::from_utf8_lossy(&output.stdout))
+    }
+    /// Stops the desktop and every window on it. Nothing happens when it is not running.
+    pub async fn stop_desktop(&self) -> Result<()> {
+        let output = self
+            .run(
+                &Exec {
+                    argv: &[DESKTOP, "stop"],
+                    workdir: WORKSPACE,
+                    env: &[],
+                },
+                Input::Lifeline,
+                DESKTOP_STOP,
+            )
+            .await?;
+        if output.code != Some(0) {
+            return Err(AppError::new(
+                "sandbox",
+                format!(
+                    "The sandbox desktop did not stop: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            ));
+        }
+        Ok(())
+    }
     pub async fn copy_in(&self, host: &Path, container: &str) -> Result<()> {
         let target = format!("{}:{container}", self.name);
         self.docker
@@ -565,6 +673,32 @@ impl Container {
             )
             .await
             .map(drop)
+    }
+}
+/// One `probe` reading. `cpu` only means something against an earlier reading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Probe {
+    /// CPU time the whole container has used since it started.
+    pub cpu: Duration,
+    /// Connected Desktop tabs.
+    pub desktop_clients: u32,
+    pub desktop_running: bool,
+}
+impl Probe {
+    /// Parses `cpu_usec=<n> clients=<n> desktop=<0|1>`.
+    pub fn parse(line: &str) -> Result<Self> {
+        let invalid = || AppError::new("sandbox", format!("The sandbox probe returned {line:?}."));
+        let field = |name: &str| -> Result<u64> {
+            line.split_whitespace()
+                .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(invalid)
+        };
+        Ok(Self {
+            cpu: Duration::from_micros(field("cpu_usec")?),
+            desktop_clients: u32::try_from(field("clients")?).map_err(|_| invalid())?,
+            desktop_running: field("desktop")? == 1,
+        })
     }
 }
 /// `ext::` splits its command on spaces and expands `%` sequences.
