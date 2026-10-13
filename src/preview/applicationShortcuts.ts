@@ -104,10 +104,10 @@ export function usePreviewApplicationShortcuts(
     if (!parsed.success || context.pageOpen) return;
     const { scope } = parsed.data;
     if (
-      scope.kind === "thread"
-        ? scope.threadId !== context.thread?.id
-        : scope.workspaceId !== context.workspace?.id ||
+      scope.kind === "draft"
+        ? scope.workspaceId !== context.workspace?.id ||
           context.thread !== undefined
+        : scope.threadId !== context.thread?.id
     )
       return;
     const host = document.querySelector<HTMLElement>(

@@ -993,7 +993,7 @@ impl Owner {
             if !path.exists() {
                 continue;
             }
-            let queued = self.pending.iter().any(|job| {
+            let queued = self.providers.pending().any(|job| {
                 self.threads.get(job.thread()).is_some_and(|t| {
                     self.workspaces
                         .get(&t.workspace_id)

@@ -126,3 +126,40 @@ export function measurePreviewHost(host: HTMLElement): PreviewLayout {
   }
   return { rect, visible: rect !== null };
 }
+
+// WKWebView can pause animation frames, so microtasks rather than frames coalesce the calls.
+export function watchPreviewHost(
+  host: HTMLElement | null,
+  refresh: () => void,
+): () => void {
+  let disposed = false;
+  let scheduled = false;
+  const schedule = () => {
+    if (disposed || scheduled) return;
+    scheduled = true;
+    queueMicrotask(() => {
+      scheduled = false;
+      if (!disposed) refresh();
+    });
+  };
+  const size = new ResizeObserver(schedule);
+  if (host) size.observe(host);
+  const overlays = new MutationObserver(schedule);
+  overlays.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["open", "inert", "aria-hidden", "style", "class"],
+  });
+  window.addEventListener("resize", schedule);
+  window.addEventListener("scroll", schedule, true);
+  document.addEventListener("visibilitychange", schedule);
+  return () => {
+    disposed = true;
+    size.disconnect();
+    overlays.disconnect();
+    window.removeEventListener("resize", schedule);
+    window.removeEventListener("scroll", schedule, true);
+    document.removeEventListener("visibilitychange", schedule);
+  };
+}

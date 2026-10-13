@@ -28,7 +28,7 @@ impl Owner {
     ) -> Result<String> {
         let t = self.thread(&thread)?;
         let (_, location) = self.checkout(&t.workspace_id, Some(thread.clone()))?;
-        let root = location.repository()?;
+        let root = location.repository()?.root().to_path_buf();
         if self.held.contains_key(&root) || self.leases.contains_key(&root) {
             return Err(AppError::new(
                 "checkout_busy",
@@ -127,12 +127,12 @@ impl Owner {
             self.cancel_commit_preview(&id);
         }
     }
-    pub(super) fn cancel_thread_commit_previews(&mut self, threads: &HashSet<ThreadId>) {
+    pub(super) fn cancel_thread_commit_previews(&mut self, threads: impl Fn(&ThreadId) -> bool) {
         let ids: Vec<_> = self
             .writing
             .pending
             .iter()
-            .filter(|(_, preview)| threads.contains(&preview.thread))
+            .filter(|(_, preview)| threads(&preview.thread))
             .map(|(id, _)| id.clone())
             .collect();
         for id in ids {

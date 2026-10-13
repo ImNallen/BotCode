@@ -19,6 +19,10 @@ pub enum PreviewScope {
         #[serde(rename = "workspaceId")]
         workspace_id: WorkspaceId,
     },
+    Desktop {
+        #[serde(rename = "threadId")]
+        thread_id: ThreadId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -112,6 +116,7 @@ pub fn parse_url(raw: &str) -> Result<Url> {
 
 pub struct Entry {
     pub label: Option<String>,
+    pub alias: Option<super::route::Alias>,
     pub state: PreviewState,
     pub navigation: u64,
     pub pending_url: Option<String>,
@@ -141,6 +146,15 @@ pub struct Model {
     clock: u64,
     next_lease: u32,
     next_view: u32,
+}
+
+impl Entry {
+    pub fn shown(&self, url: &str) -> String {
+        match &self.alias {
+            Some(alias) => alias.shown(url),
+            None => url.to_owned(),
+        }
+    }
 }
 
 impl Model {
@@ -187,6 +201,7 @@ impl Model {
             scope.clone(),
             Entry {
                 label: None,
+                alias: None,
                 state: PreviewState::default(),
                 navigation: 0,
                 pending_url: None,

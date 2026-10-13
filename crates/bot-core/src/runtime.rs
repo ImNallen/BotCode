@@ -4,7 +4,11 @@ mod checkpoints;
 mod collaboration;
 mod compaction;
 mod naming;
+mod providers;
+use providers::EnvKey;
 mod restarts;
+mod sandboxes;
+use sandboxes::Sandboxes;
 mod thread_actions;
 mod titles;
 use thread_actions::DeleteCompletion;
@@ -28,14 +32,19 @@ use crate::{
     domain::*,
     editors::{self, EditorId, OpenTarget, Position},
     log::RotatingLog,
-    repo, settings, skills,
+    mirror::Freshness,
+    repo,
+    sandbox::Desired,
+    settings, skills,
     store::Store,
     terminal::{
-        CloseScope, MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey, TerminalLabels,
-        TerminalSize, Terminals,
+        CloseScope, Launch, MAX_WRITE_BYTES, Sink, TerminalEvent, TerminalId, TerminalKey,
+        TerminalLabels, TerminalSize, Terminals,
     },
     usage::{self, ContextUsage, ResetOutcome, UsageLimits},
-    vcs, workspace_files,
+    vcs,
+    workdir::{Inbound, Phase, SandboxHandle, Workdir},
+    workspace_files,
 };
 use pr_review::ReviewWork;
 use pull_requests::PrWork;
@@ -89,7 +98,7 @@ struct SubmittedMessage<'a> {
 }
 
 enum Location {
-    Repository(PathBuf),
+    Repository(Workdir),
     Folder(PathBuf),
     Unassigned,
     /// A worktree thread whose checkout no longer exists on disk. `root` is the workspace root.
@@ -99,11 +108,21 @@ enum Location {
     },
 }
 impl Location {
-    fn repository(self) -> Result<PathBuf> {
+    fn repository(self) -> Result<Workdir> {
         match self {
-            Self::Repository(root) => Ok(root),
+            Self::Repository(workdir) => Ok(workdir),
             Self::Removed { .. } => Err(worktree_removed()),
             Self::Folder(_) | Self::Unassigned => Err(not_repository()),
+        }
+    }
+    fn in_sandbox(&self) -> bool {
+        matches!(self, Self::Repository(Workdir::Sandbox { .. }))
+    }
+    fn files(&self) -> Option<PathBuf> {
+        match self {
+            Self::Repository(workdir) => Some(workdir.root().to_path_buf()),
+            Self::Folder(root) => Some(root.clone()),
+            Self::Unassigned | Self::Removed { .. } => None,
         }
     }
 }
@@ -179,6 +198,15 @@ fn turn_running() -> AppError {
         "Another conversation is running in this checkout.",
     )
 }
+fn sandbox_not_openable() -> AppError {
+    AppError::new(
+        "sandbox_mirror",
+        "Sandbox files open only in Bot Code, because the next sync from the sandbox overwrites edits made on this Mac.",
+    )
+}
+fn not_a_sandbox() -> AppError {
+    AppError::new("not_a_sandbox", "This thread does not run in a sandbox.")
+}
 fn worktree_removed() -> AppError {
     AppError::new(
         "worktree_removed",
@@ -239,6 +267,8 @@ enum Command {
     ),
     RemoveWorkspace(WorkspaceId, Reply<()>),
     Checkout(WorkspaceId, Option<ThreadId>, Reply<(Workspace, Location)>),
+    LocalNetwork(ThreadId, Reply<crate::LocalNetwork>),
+    CheckoutPulled(ThreadId),
     PrRead(PrAccess, PullRequestKey, Reply<PrReviewDetail>),
     PrStackRead(PrAccess, PullRequestKey, Reply<Option<crate::PrStack>>),
     PrStackChange(
@@ -277,7 +307,7 @@ enum Command {
         SetReviewDisposition,
         Reply<Option<SavedDisposition>>,
     ),
-    Claim(WorkspaceId, Option<ThreadId>, Hold, Reply<PathBuf>),
+    Claim(WorkspaceId, Option<ThreadId>, Hold, Reply<Workdir>),
     Release(PathBuf, Option<(ThreadId, String)>, Reply<()>),
     Threads(WorkspaceId, Reply<Vec<ThreadSummary>>),
     Create(
@@ -323,7 +353,7 @@ enum Command {
     UiState(Reply<BTreeMap<String, String>>),
     SetUiState(String, Option<String>, Reply<()>),
     CleanupCandidates(Reply<(Vec<Candidate>, Vec<PathBuf>)>),
-    ClaimCleanup(Candidate, Reply<()>),
+    ClaimCleanup(Candidate, Reply<Option<Arc<SandboxHandle>>>),
     ReleaseCleanup(Candidate, bool, Reply<()>),
     ClaimRestore(ThreadId, Reply<Option<Restore>>),
     ReleaseRestore(PathBuf, Reply<()>),
@@ -359,6 +389,7 @@ pub struct App {
     attachments: Attachments,
     project_search: crate::project_search::ProjectSearch,
     resources: crate::diagnostics::ResourceMonitor,
+    sandboxes: Arc<Sandboxes>,
 }
 impl App {
     pub async fn search_thread_messages(
@@ -518,12 +549,14 @@ impl App {
                 crate::project::Dialect::of(&shell)
             });
         let (labels, terminal_labels) = watch::channel(TerminalLabels::default());
+        let (prompts, prompted) = mpsc::unbounded_channel();
         let terminals = Terminals::new(
             config.shell.clone(),
             Some(labels),
             Some(config.data_dir.join("logs").join("terminals")),
+            Some(prompts),
         );
-        let setup_terminals = Terminals::new(config.shell.clone(), None, None);
+        let setup_terminals = Terminals::new(config.shell.clone(), None, None, None);
         let settings = config.data_dir.join("settings.json");
         crate::project::fold_saved_scripts(&settings, &workspaces, false)?;
         let keybindings = Arc::new(crate::keybindings::Keybindings::new(
@@ -536,9 +569,42 @@ impl App {
         let (limits, limits_rx) = watch::channel(None);
         let (provider_events, signals) = mpsc::channel(512);
         let (done, completions) = mpsc::channel(128);
+        let (sandbox_changes, sandbox_changed) = mpsc::unbounded_channel();
         let prs = PrWork::load(&mut store)?;
         let tools = tools::ToolWork::new(&config, agent_tools, &store)?;
         let log = RotatingLog::open(config.data_dir.join("logs").join("codex.log"));
+        let sandboxes = Arc::new(Sandboxes::new(
+            crate::sandbox::SandboxConfig {
+                docker: crate::sandbox::docker_binary(),
+                data_dir: config.data_dir.clone(),
+                codex: crate::sandbox::CodexSource::Binary(config.codex_binary.clone()),
+            },
+            codex::auth::TokenBroker::new(&codex::auth::codex_home(), config.codex_binary.clone()),
+            crate::workdir::Limits::from_environment(),
+            sandbox_changes,
+            log.clone(),
+        ));
+        let referenced: HashMap<SandboxId, sandboxes::Referenced> = threads
+            .values()
+            .filter_map(|t| match &t.checkout {
+                Checkout::Worktree {
+                    path,
+                    branch,
+                    sandbox: Some(Sandbox::Docker { id }),
+                } => Some((
+                    id.clone(),
+                    sandboxes::Referenced {
+                        mirror_root: path.clone(),
+                        branch: branch.clone(),
+                    },
+                )),
+                _ => None,
+            })
+            .collect();
+        tokio::spawn({
+            let sandboxes = sandboxes.clone();
+            async move { sandboxes.reconcile(referenced).await }
+        });
         let project_search = crate::project_search::ProjectSearch::default();
         let project_clones = crate::project_clone::ProjectClones::default();
         let provider_pids = crate::diagnostics::ProviderPids::default();
@@ -610,15 +676,10 @@ impl App {
                 leases: HashMap::new(),
                 held: HashMap::new(),
                 callbacks: HashMap::new(),
-                collaboration_modes: vec![],
                 collaboration_waiters: vec![],
-                provider: None,
-                epoch: 0,
-                launching: false,
-                restarts: restarts::Restarts::default(),
+                providers: Default::default(),
                 log: log.clone(),
                 provider_pids: provider_pids.clone(),
-                pending: vec![],
                 models: None,
                 model_waiters: vec![],
                 listing_models: false,
@@ -630,8 +691,9 @@ impl App {
                 changes: changes.clone(),
                 provider_events,
                 done,
+                sandboxes: sandboxes.clone(),
             }
-            .run(rx, signals, completions),
+            .run(rx, signals, completions, sandbox_changed),
         );
         let app = Self {
             project_favicons: crate::project_icon::FaviconResolver::default(),
@@ -662,11 +724,16 @@ impl App {
             attachments,
             project_search,
             resources,
+            sandboxes,
         };
         tokio::spawn(Sweeper::from(&app).run(
             app.commands.downgrade(),
             app.sweeps.clone(),
             app.wake.clone(),
+        ));
+        tokio::spawn(sandboxes::pull_after_commands(
+            app.commands.downgrade(),
+            prompted,
         ));
         Ok(app)
     }
@@ -827,7 +894,58 @@ impl App {
         id: WorkspaceId,
         thread: Option<ThreadId>,
     ) -> Result<(Workspace, Location)> {
-        self.call(|r| Command::Checkout(id, thread, r)).await
+        let (w, location) = self.call(|r| Command::Checkout(id, thread, r)).await?;
+        if let Location::Repository(workdir) = &location {
+            let _ = workdir.sync(Freshness::Recent).await;
+        }
+        Ok((w, location))
+    }
+    pub async fn sandbox_availability(&self) -> SandboxAvailability {
+        self.sandboxes.availability().await
+    }
+    pub async fn sandbox_desktop(
+        &self,
+        workspace: WorkspaceId,
+        thread: ThreadId,
+    ) -> Result<SandboxDesktop> {
+        let (_, location) = self
+            .call(|r| Command::Checkout(workspace, Some(thread), r))
+            .await?;
+        match &location {
+            Location::Repository(workdir) => match workdir.sandbox() {
+                Some(handle) => handle.desktop().await,
+                None => Err(not_a_sandbox()),
+            },
+            Location::Removed { .. } => Err(worktree_removed()),
+            Location::Folder(_) | Location::Unassigned => Err(not_a_sandbox()),
+        }
+    }
+    pub fn forwarder_ports(&self) -> std::collections::BTreeSet<u16> {
+        self.sandboxes.forwarder_ports()
+    }
+    pub async fn local_network(&self, thread: ThreadId) -> Result<crate::LocalNetwork> {
+        self.call(|r| Command::LocalNetwork(thread, r)).await
+    }
+    pub async fn sandbox_state(
+        &self,
+        workspace: WorkspaceId,
+        thread: ThreadId,
+    ) -> Result<SandboxState> {
+        let (_, location) = self
+            .call(|r| Command::Checkout(workspace, Some(thread), r))
+            .await?;
+        let handle = match &location {
+            Location::Repository(workdir) => workdir.sandbox().cloned(),
+            Location::Removed { .. } => return Ok(SandboxState::Stopped),
+            Location::Folder(_) | Location::Unassigned => None,
+        };
+        match handle.map(|handle| handle.phase()) {
+            Some(Phase::Starting) => Ok(SandboxState::Starting),
+            Some(Phase::Running) => Ok(SandboxState::Running),
+            Some(Phase::Paused) => Ok(SandboxState::Paused),
+            Some(Phase::Unstarted | Phase::Stopped | Phase::Removed) => Ok(SandboxState::Stopped),
+            None => Err(not_a_sandbox()),
+        }
     }
     pub async fn list_thread_summaries(
         &self,
@@ -853,12 +971,15 @@ impl App {
                 unavailable: None,
             });
         }
-        let root = match &location {
-            Location::Repository(root) | Location::Folder(root) => Some(root.clone()),
-            _ => None,
-        };
+        let root = location.files();
         let mut view = tokio::task::spawn_blocking(move || match location {
-            Location::Repository(root) => repo::inspect(Workspace { root, ..w }, threads),
+            Location::Repository(workdir) => repo::inspect(
+                Workspace {
+                    root: workdir.root().to_path_buf(),
+                    ..w
+                },
+                threads,
+            ),
             Location::Folder(root) => repo::inspect_folder(Workspace { root, ..w }, threads),
             Location::Unassigned => Ok(WorkspaceView {
                 file_coverage: crate::SearchCoverage::Complete,
@@ -898,7 +1019,8 @@ impl App {
     }
     async fn search_root(&self, id: WorkspaceId, thread: Option<ThreadId>) -> Result<PathBuf> {
         match self.checkout(id, thread).await?.1 {
-            Location::Repository(root) | Location::Folder(root) => Ok(root),
+            Location::Repository(workdir) => Ok(workdir.root().to_path_buf()),
+            Location::Folder(root) => Ok(root),
             Location::Removed { .. } => Err(worktree_removed()),
             Location::Unassigned => Err(AppError::new(
                 "missing_folder",
@@ -939,19 +1061,17 @@ impl App {
         thread: Option<ThreadId>,
         path: String,
     ) -> Result<FileView> {
-        let root = match self.checkout(id, thread).await?.1 {
-            Location::Repository(root) | Location::Folder(root) => root,
-            Location::Unassigned => {
-                return Err(AppError::new(
+        let location = self.checkout(id, thread).await?.1;
+        let Some(root) = location.files() else {
+            return match location {
+                Location::Removed { .. } => Ok(FileView::Unavailable {
+                    reason: WORKTREE_REMOVED.into(),
+                }),
+                _ => Err(AppError::new(
                     "missing_folder",
                     "Start a thread to see its files.",
-                ));
-            }
-            Location::Removed { .. } => {
-                return Ok(FileView::Unavailable {
-                    reason: WORKTREE_REMOVED.into(),
-                });
-            }
+                )),
+            };
         };
         tokio::task::spawn_blocking(move || repo::read_file(&root, &path))
             .await
@@ -972,8 +1092,11 @@ impl App {
             return workspace_files::FileResponse::not_found();
         };
         let root = match self.checkout(request.workspace, request.thread).await {
-            Ok((_, Location::Repository(root) | Location::Folder(root))) => root,
-            _ => return workspace_files::FileResponse::not_found(),
+            Ok((_, location)) => location.files(),
+            Err(_) => None,
+        };
+        let Some(root) = root else {
+            return workspace_files::FileResponse::not_found();
         };
         let range = range.map(str::to_owned);
         tokio::task::spawn_blocking(move || {
@@ -1000,13 +1123,34 @@ impl App {
         let Some(path) = viewed else {
             return workspace_files::FileResponse::not_found();
         };
-        let root = match self.checkout(thread.workspace_id, Some(thread.id)).await {
-            Ok((_, Location::Repository(root) | Location::Folder(root))) => Some(root),
-            _ => None,
+        let location = match self.checkout(thread.workspace_id, Some(thread.id)).await {
+            Ok((_, location)) => location,
+            Err(_) => return workspace_files::FileResponse::not_found(),
         };
-        tokio::task::spawn_blocking(move || workspace_files::respond_image(root.as_deref(), &path))
+        let (root, inbound) = match &location {
+            Location::Repository(workdir) => (
+                Some(workdir.root().to_path_buf()),
+                workdir.agent_paths().inbound(&path),
+            ),
+            Location::Folder(root) => (Some(root.clone()), Inbound::Host(path)),
+            Location::Unassigned | Location::Removed { .. } => (None, Inbound::Host(path)),
+        };
+        match inbound {
+            Inbound::Host(path) | Inbound::Mirror(path) => tokio::task::spawn_blocking(move || {
+                workspace_files::respond_image(root.as_deref(), &path)
+            })
             .await
-            .unwrap_or_else(|_| workspace_files::FileResponse::not_found())
+            .unwrap_or_else(|_| workspace_files::FileResponse::not_found()),
+            Inbound::Container(path) => {
+                let Location::Repository(workdir) = location else {
+                    unreachable!("only a sandbox maps a container path");
+                };
+                match workdir.fetch(&path).await {
+                    Some(bytes) => workspace_files::respond_image_bytes(&path, bytes),
+                    None => workspace_files::FileResponse::not_found(),
+                }
+            }
+        }
     }
     pub async fn write_file(
         &self,
@@ -1015,8 +1159,9 @@ impl App {
         path: String,
         contents: String,
     ) -> Result<()> {
-        let root = match self.checkout(id, thread).await?.1 {
-            Location::Repository(root) | Location::Folder(root) => root,
+        let workdir = match self.checkout(id, thread).await?.1 {
+            Location::Repository(workdir) => workdir,
+            Location::Folder(root) => Workdir::Mac { root },
             Location::Unassigned => {
                 return Err(AppError::new(
                     "missing_folder",
@@ -1025,9 +1170,9 @@ impl App {
             }
             Location::Removed { .. } => return Err(worktree_removed()),
         };
-        tokio::task::spawn_blocking(move || repo::write_file(&root, &path, &contents))
-            .await
-            .map_err(|e| AppError::new("repository", e))??;
+        workdir
+            .write(move |root| repo::write_file(root, &path, &contents))
+            .await?;
         self.project_search.invalidate();
         Ok(())
     }
@@ -1040,21 +1185,34 @@ impl App {
                 thread_id,
                 path,
             } => {
-                let root = match self.checkout(workspace_id, thread_id).await?.1 {
-                    Location::Repository(root) | Location::Folder(root) => root,
-                    Location::Unassigned => {
-                        return Err(AppError::new(
-                            "missing_folder",
-                            "Start a thread to see its files.",
-                        ));
-                    }
-                    Location::Removed { .. } => return Err(worktree_removed()),
+                let location = self.checkout(workspace_id, thread_id).await?.1;
+                if location.in_sandbox() {
+                    return Err(sandbox_not_openable());
+                }
+                let Some(root) = location.files() else {
+                    return Err(match location {
+                        Location::Removed { .. } => worktree_removed(),
+                        _ => AppError::new("missing_folder", "Start a thread to see its files."),
+                    });
                 };
                 tokio::task::spawn_blocking(move || editors::checkout_path(&root, &path))
             }
             OpenTarget::ChatLink { thread_id, path } => {
                 let thread = self.thread(thread_id).await?;
-                tokio::task::spawn_blocking(move || editors::chat_link_path(&thread, &path))
+                let location = self
+                    .checkout(thread.workspace_id.clone(), Some(thread.id.clone()))
+                    .await?
+                    .1;
+                if location.in_sandbox() {
+                    return Err(sandbox_not_openable());
+                }
+                let paths = match location {
+                    Location::Repository(workdir) => Some(workdir.agent_paths()),
+                    _ => None,
+                };
+                tokio::task::spawn_blocking(move || {
+                    editors::chat_link_path(&thread, paths.as_ref(), &path)
+                })
             }
             OpenTarget::Logs => {
                 let logs = self.data_dir.join("logs");
@@ -1088,7 +1246,7 @@ impl App {
         basis: DiffBasis,
     ) -> Result<DiffView> {
         let root = match self.checkout(id, thread).await?.1 {
-            Location::Repository(root) => root,
+            Location::Repository(workdir) => workdir.root().to_path_buf(),
             Location::Removed { .. } => {
                 return Ok(DiffView::Unavailable {
                     reason: WORKTREE_REMOVED.into(),
@@ -1110,7 +1268,7 @@ impl App {
         thread: Option<ThreadId>,
     ) -> Result<Branches> {
         let (root, removed) = match self.checkout(id, thread).await?.1 {
-            Location::Repository(root) => (root, None),
+            Location::Repository(workdir) => (workdir.root().to_path_buf(), None),
             Location::Removed { root, branch } => (root, Some(branch)),
             Location::Folder(_) | Location::Unassigned => return Err(not_repository()),
         };
@@ -1131,23 +1289,20 @@ impl App {
         branch: String,
         create: bool,
     ) -> Result<()> {
-        let root = self
+        let workdir = self
             .call(|r| Command::Claim(id, thread.clone(), Hold::Switch, r))
             .await?;
-        let path = root.clone();
-        let switched =
-            tokio::task::spawn_blocking(move || repo::switch_branch(&path, &branch, create))
-                .await
-                .map_err(|e| AppError::new("repository", e))
-                .and_then(|r| r);
+        let switched = workdir
+            .write(move |root| repo::switch_branch(root, &branch, create))
+            .await;
         let current = switched.as_ref().ok().cloned();
-        self.call(|r| Command::Release(root, thread.zip(current), r))
+        self.call(|r| Command::Release(workdir.root().to_path_buf(), thread.zip(current), r))
             .await?;
         switched.map(drop)
     }
     pub async fn git_status(&self, id: WorkspaceId, thread: Option<ThreadId>) -> Result<GitStatus> {
-        let root = self.checkout(id, thread).await?.1.repository()?;
-        vcs::status(&root).await
+        let workdir = self.checkout(id, thread).await?.1.repository()?;
+        vcs::status(workdir.root()).await
     }
     pub async fn list_pull_requests(
         &self,
@@ -1405,7 +1560,13 @@ impl App {
         thread: Option<ThreadId>,
         branch: String,
     ) -> Result<PrLookup> {
-        let root = self.checkout(id, thread).await?.1.repository()?;
+        let root = self
+            .checkout(id, thread)
+            .await?
+            .1
+            .repository()?
+            .root()
+            .to_path_buf();
         let (path, name) = (root.clone(), branch.clone());
         tokio::task::spawn_blocking(move || repo::branch_name(&path, &name))
             .await
@@ -1418,7 +1579,13 @@ impl App {
         thread: Option<ThreadId>,
         query: String,
     ) -> Result<Vec<crate::PullRequestContextMetadata>> {
-        let root = self.checkout(workspace, thread).await?.1.repository()?;
+        let root = self
+            .checkout(workspace, thread)
+            .await?
+            .1
+            .repository()?
+            .root()
+            .to_path_buf();
         crate::composer_pull_requests::search(&self.gh, &root, &query, self.network_timeout).await
     }
     pub async fn begin_commit_message(
@@ -1497,35 +1664,62 @@ impl App {
         }
         let (w, _) = self.checkout(id.clone(), None).await?;
         let config = crate::project::resolve(&w.root, &self.settings, &id)?;
+        let repository = w.root.clone();
         let checkout = match (w.kind, checkout) {
             (WorkspaceKind::Repository, NewCheckout::Local) => Checkout::Local,
             (WorkspaceKind::Repository, NewCheckout::Worktree { base, from_origin }) => {
                 let worktrees = self.worktrees.join(&w.label);
                 tokio::task::spawn_blocking(move || {
-                    repo::add_worktree(&w.root, &worktrees, &base, from_origin)
+                    repo::add_worktree(&repository, &worktrees, &base, from_origin)
                 })
                 .await
                 .map_err(|e| AppError::new("repository", e))??
+            }
+            (WorkspaceKind::Repository, NewCheckout::Sandbox { base, from_origin }) => {
+                if let SandboxAvailability::Unavailable { reason } =
+                    self.sandboxes.availability().await
+                {
+                    return Err(AppError::new("sandbox_unavailable", reason));
+                }
+                let worktrees = self.worktrees.join(&w.label);
+                tokio::task::spawn_blocking(move || {
+                    repo::add_worktree(&repository, &worktrees, &base, from_origin)
+                })
+                .await
+                .map_err(|e| AppError::new("repository", e))??
+                .into_sandbox(Sandbox::Docker {
+                    id: SandboxId::new(),
+                })
             }
             (WorkspaceKind::Scratch, NewCheckout::Folder { prompt }) => {
                 if self.scratch.is_none() {
                     return Err(scratch_unavailable());
                 }
-                tokio::task::spawn_blocking(move || repo::add_folder(&w.root, &prompt))
+                tokio::task::spawn_blocking(move || repo::add_folder(&repository, &prompt))
                     .await
                     .map_err(|e| AppError::new("repository", e))??
             }
             (_, NewCheckout::Existing { .. } | NewCheckout::Registered { .. }) => unreachable!(),
             (WorkspaceKind::Repository, NewCheckout::Folder { .. })
-            | (WorkspaceKind::Scratch, NewCheckout::Local | NewCheckout::Worktree { .. }) => {
+            | (
+                WorkspaceKind::Scratch,
+                NewCheckout::Local | NewCheckout::Worktree { .. } | NewCheckout::Sandbox { .. },
+            ) => {
                 return Err(AppError::new(
                     "invalid_checkout",
                     "This checkout does not belong to this workspace.",
                 ));
             }
         };
-        self.call(|r| Command::Create(id, checkout, SessionSettings::default(), config, r))
-            .await
+        let thread = self
+            .call(|r| Command::Create(id, checkout, SessionSettings::default(), config, r))
+            .await?;
+        if let Workdir::Sandbox { handle, .. } =
+            self.sandboxes.workdir(&thread.checkout, thread.root(&w))
+        {
+            handle.warm();
+        }
+        Ok(thread)
     }
     pub async fn project_config(&self, id: WorkspaceId) -> Result<ProjectConfig> {
         let (workspace, _) = self.checkout(id.clone(), None).await?;
@@ -1546,7 +1740,8 @@ impl App {
         terminal: TerminalId,
     ) -> Result<()> {
         let (w, location) = self.checkout(workspace.clone(), thread.clone()).await?;
-        let cwd = location.repository()?;
+        let workdir = location.repository()?;
+        let cwd = workdir.root().to_path_buf();
         let script = crate::project::resolve(&w.root, &self.settings, &workspace)?
             .scripts
             .into_iter()
@@ -1570,11 +1765,22 @@ impl App {
             env.push(("T3CODE_WORKTREE_PATH", cwd.as_path()));
         }
         use crate::project::Dialect;
-        let command = match self.script_dialect {
-            Dialect::Posix => {
+        let command = match (&workdir, self.script_dialect) {
+            (Workdir::Sandbox { .. }, _) => {
+                let workspace = Path::new(crate::sandbox::WORKSPACE);
+                crate::project::posix_script_line(
+                    Path::new("bash"),
+                    &[
+                        ("T3CODE_PROJECT_ROOT", workspace),
+                        ("T3CODE_WORKTREE_PATH", workspace),
+                    ],
+                    &script.command,
+                )
+            }
+            (Workdir::Mac { .. }, Dialect::Posix) => {
                 crate::project::posix_script_line(&self.script_shell, &env, &script.command)
             }
-            dialect => {
+            (Workdir::Mac { .. }, dialect) => {
                 let batch = std::env::temp_dir()
                     .join(format!("bot-code-script-{}.cmd", uuid::Uuid::new_v4()));
                 std::fs::write(&batch, crate::project::batch_script(&script.command))?;
@@ -1854,7 +2060,7 @@ impl App {
             let subscription = terminals
                 .attach(
                     key.clone(),
-                    Some(&cwd),
+                    Some(&Launch::Mac { cwd }),
                     TerminalSize::new(80, 24)?,
                     Arc::new(|_| {}),
                 )?
@@ -1938,21 +2144,31 @@ impl App {
         };
         let sink: Sink = Arc::new(on_event);
         let terminals = self.terminals.clone();
-        let attach = move |cwd: Option<PathBuf>| {
+        let attach = |launch: Option<Launch>| {
             let (terminals, key, sink) = (terminals.clone(), key.clone(), sink.clone());
             async move {
                 tokio::task::spawn_blocking(move || {
-                    terminals.attach(key, cwd.as_deref(), size, sink)
+                    terminals.attach(key, launch.as_ref(), size, sink)
                 })
                 .await
                 .map_err(|e| AppError::new("terminal", e))?
             }
         };
+        self.sandboxes.wake_terminal(&self.terminals, &key).await?;
         if let Some(subscription) = attach(None).await? {
             return Ok(subscription);
         }
-        let cwd = match self.checkout(workspace_id, thread_id).await?.1 {
-            Location::Repository(root) | Location::Folder(root) => root,
+        let launch = match self.checkout(workspace_id, thread_id).await?.1 {
+            Location::Repository(workdir) => {
+                workdir
+                    .terminal(|| {
+                        sink(TerminalEvent::Output {
+                            data: "Starting sandbox…\r\n".into(),
+                        })
+                    })
+                    .await?
+            }
+            Location::Folder(cwd) => Launch::Mac { cwd },
             Location::Removed { .. } => return Err(worktree_removed()),
             Location::Unassigned => {
                 return Err(AppError::new(
@@ -1961,7 +2177,7 @@ impl App {
                 ));
             }
         };
-        attach(Some(cwd))
+        attach(Some(launch))
             .await?
             .ok_or_else(|| AppError::new("terminal", "The terminal did not start."))
     }
@@ -2028,6 +2244,7 @@ impl App {
             thread: thread_id,
             terminal: terminal_id,
         };
+        self.sandboxes.wake_terminal(&self.terminals, &key).await?;
         let terminals = self.terminals.clone();
         tokio::task::spawn_blocking(move || terminals.write(&key, data.as_bytes()))
             .await
@@ -2155,30 +2372,44 @@ impl Sweeper {
         };
         for eligible in eligible {
             let candidate = eligible.candidate.clone();
-            if let Err(e) = call(commands, |r| Command::ClaimCleanup(candidate.clone(), r)).await {
-                if e.code == "closed" {
-                    return Err(e);
-                }
-                eprintln!(
-                    "bot-code storage cleanup: skipped {} ({})",
-                    candidate.path.display(),
-                    e.message
-                );
-                continue;
-            }
+            let sandbox =
+                match call(commands, |r| Command::ClaimCleanup(candidate.clone(), r)).await {
+                    Ok(sandbox) => sandbox,
+                    Err(e) => {
+                        if e.code == "closed" {
+                            return Err(e);
+                        }
+                        eprintln!(
+                            "bot-code storage cleanup: skipped {} ({})",
+                            candidate.path.display(),
+                            e.message
+                        );
+                        continue;
+                    }
+                };
             let (worktrees, roots, settings) =
                 (worktrees.clone(), roots.clone(), self.settings.clone());
-            let removed = tokio::task::spawn_blocking(move || {
-                Sweep {
-                    worktrees: &worktrees,
-                    roots: &roots,
-                    policy: settings::storage_policy(&settings),
-                    now,
-                }
-                .remove(&eligible)
-            })
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
+            let retired = match &sandbox {
+                Some(handle) => handle
+                    .retire(Desired::Removed)
+                    .await
+                    .map_err(|error| format!("sandbox not retired: {}", error.message)),
+                None => Ok(()),
+            };
+            let removed = match retired {
+                Ok(()) => tokio::task::spawn_blocking(move || {
+                    Sweep {
+                        worktrees: &worktrees,
+                        roots: &roots,
+                        policy: settings::storage_policy(&settings),
+                        now,
+                    }
+                    .remove(&eligible)
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string())),
+                Err(reason) => Err(reason),
+            };
             match &removed {
                 Ok(()) => eprintln!(
                     "bot-code storage cleanup: removed {} for thread {}",
@@ -2286,13 +2517,36 @@ enum Completion {
         thread: ThreadId,
         result: Result<Value>,
     },
+    Woken {
+        epoch: u64,
+        job: Prepare,
+        result: Result<()>,
+    },
 }
 impl Completion {
+    fn epoch(&self) -> Option<u64> {
+        match self {
+            Self::StackProgress { .. } => None,
+            Self::Woken { epoch, .. } => Some(*epoch),
+            Self::Models { epoch, .. }
+            | Self::Limits { epoch, .. }
+            | Self::ResetConsumed { epoch, .. }
+            | Self::Launched { epoch, .. }
+            | Self::Prepared { epoch, .. }
+            | Self::Started { epoch, .. }
+            | Self::CompactionExpired { epoch, .. }
+            | Self::Steered { epoch, .. }
+            | Self::Answered { epoch, .. }
+            | Self::UserQuestionsAnswered { epoch, .. }
+            | Self::Interrupted { epoch, .. } => Some(*epoch),
+        }
+    }
     fn process_died(&self) -> bool {
         let error = match self {
             Self::StackProgress { .. }
             | Self::CompactionExpired { .. }
-            | Self::ResetConsumed { .. } => None,
+            | Self::ResetConsumed { .. }
+            | Self::Woken { .. } => None,
             Self::Models { result, .. } => result.as_ref().err(),
             Self::Limits { result, .. } => result.as_ref().err(),
             Self::Launched { result, .. } => result.as_ref().err(),
@@ -2366,15 +2620,10 @@ struct Owner {
     leases: HashMap<PathBuf, ThreadId>,
     held: HashMap<PathBuf, Hold>,
     callbacks: HashMap<Callback, Route>,
-    collaboration_modes: Vec<collaboration::ModePreset>,
     collaboration_waiters: Vec<Reply<Vec<InteractionMode>>>,
-    provider: Option<Codex>,
-    epoch: u64,
-    launching: bool,
-    restarts: restarts::Restarts,
+    providers: providers::Providers,
     log: RotatingLog,
     provider_pids: crate::diagnostics::ProviderPids,
-    pending: Vec<Prepare>,
     models: Option<Vec<ModelOption>>,
     model_waiters: Vec<Reply<Vec<ModelOption>>>,
     listing_models: bool,
@@ -2386,8 +2635,13 @@ struct Owner {
     changes: broadcast::Sender<ChangeHint>,
     provider_events: mpsc::Sender<Signal>,
     done: mpsc::Sender<Completion>,
+    sandboxes: Arc<Sandboxes>,
 }
 impl Owner {
+    fn workdir(&self, t: &ThreadSnapshot) -> Workdir {
+        self.sandboxes
+            .workdir(&t.checkout, t.root(&self.workspaces[&t.workspace_id]))
+    }
     fn new_thread(
         &mut self,
         workspace_id: WorkspaceId,
@@ -2514,9 +2768,10 @@ impl Owner {
         id: &WorkspaceId,
         thread: Option<ThreadId>,
         hold: Hold,
-    ) -> Result<PathBuf> {
-        let root = self.checkout(id, thread)?.1.repository()?;
-        self.claim_path(root, hold)
+    ) -> Result<Workdir> {
+        let workdir = self.checkout(id, thread)?.1.repository()?;
+        self.claim_path(workdir.root().to_path_buf(), hold)?;
+        Ok(workdir)
     }
     fn claim_path(&mut self, root: PathBuf, hold: Hold) -> Result<PathBuf> {
         if self.setup_busy(&root) {
@@ -2586,7 +2841,7 @@ impl Owner {
                 || self.held.contains_key(t.root(w))
         }) || self.held.contains_key(&w.root)
             || self.leases.values().any(owns)
-            || self.pending.iter().any(|job| owns(job.thread()));
+            || self.providers.pending().any(|job| owns(job.thread()));
         if busy
             || self
                 .review_work
@@ -2601,7 +2856,7 @@ impl Owner {
         }
         let removed: HashSet<ThreadId> = threads.iter().map(|t| t.id.clone()).collect();
         self.store.remove_workspace(id)?;
-        self.cancel_thread_commit_previews(&removed);
+        self.cancel_thread_commit_previews(|id| removed.contains(id));
         for id in &removed {
             self.cancel_name(id);
             self.supersede_title(id);
@@ -2630,7 +2885,9 @@ impl Owner {
         let w = self.workspace(id)?;
         let location = match thread {
             None if w.kind == WorkspaceKind::Scratch => Location::Unassigned,
-            None => Location::Repository(w.root.clone()),
+            None => Location::Repository(Workdir::Mac {
+                root: w.root.clone(),
+            }),
             Some(thread) => {
                 let t = self.thread(&thread)?;
                 if &t.workspace_id != id {
@@ -2641,12 +2898,14 @@ impl Owner {
                 }
                 match &t.checkout {
                     Checkout::Folder { path } => Location::Folder(path.clone()),
-                    Checkout::Worktree { path, branch } if !path.exists() => Location::Removed {
-                        root: w.root.clone(),
-                        branch: branch.clone(),
-                    },
+                    Checkout::Worktree { path, branch, .. } if !path.exists() => {
+                        Location::Removed {
+                            root: w.root.clone(),
+                            branch: branch.clone(),
+                        }
+                    }
                     Checkout::Local | Checkout::Worktree { .. } => {
-                        Location::Repository(t.root(w).to_path_buf())
+                        Location::Repository(self.workdir(t))
                     }
                 }
             }
@@ -2664,7 +2923,7 @@ impl Owner {
         ) && !t.input_open()
             && t.pending_revert.is_none()
             && !self.leases.contains_key(root)
-            && !self.pending.iter().any(|job| job.thread() == &t.id)
+            && !self.providers.pending().any(|job| job.thread() == &t.id)
             && !self.held.contains_key(root)
     }
     fn owners(&self, path: &Path) -> usize {
@@ -2675,7 +2934,7 @@ impl Owner {
     }
     /// The thread as a cleanup candidate, or `None` when it is not an idle, sole-owner worktree thread.
     fn candidate(&self, t: &ThreadSnapshot) -> Option<Candidate> {
-        let Checkout::Worktree { path, branch } = &t.checkout else {
+        let Checkout::Worktree { path, branch, .. } = &t.checkout else {
             return None;
         };
         let w = &self.workspaces[&t.workspace_id];
@@ -2710,6 +2969,20 @@ impl Owner {
         self.held.insert(candidate.path.clone(), Hold::Cleanup);
         Ok(())
     }
+    async fn retire_sandbox_for_cleanup(
+        &mut self,
+        candidate: &Candidate,
+    ) -> Result<Option<Arc<SandboxHandle>>> {
+        let thread = self.thread(&candidate.thread)?;
+        let key = EnvKey::of(&thread.checkout);
+        let Some(handle) = self.workdir(thread).sandbox().cloned() else {
+            return Ok(None);
+        };
+        let _ = self.stop_providers(Some(&key)).await;
+        self.lose_env(&key, sandboxes::STOPPED_IDLE, sandboxes::STOPPED_IDLE)
+            .await;
+        Ok(Some(handle))
+    }
     fn release_cleanup(&mut self, candidate: &Candidate, removed: bool) {
         self.held.remove(&candidate.path);
         if removed {
@@ -2724,7 +2997,7 @@ impl Owner {
     }
     fn claim_restore(&mut self, id: &ThreadId) -> Result<Option<Restore>> {
         let t = self.thread(id)?;
-        let Checkout::Worktree { path, branch } = &t.checkout else {
+        let Checkout::Worktree { path, branch, .. } = &t.checkout else {
             return Ok(None);
         };
         if path.exists() {
@@ -2778,11 +3051,42 @@ impl Owner {
         let _ = self.changes.send(hint);
         Ok(())
     }
+    async fn signal(&mut self, signal: Signal) {
+        match signal {
+            Signal::Frame { epoch, value } => {
+                let Some(key) = self.providers.key(epoch).cloned() else {
+                    return;
+                };
+                if let Err(error) = self.frame(&key, epoch, value).await
+                    && error.code != "provider_lost"
+                {
+                    self.lose_env(&key, &error.message, &error.message).await;
+                }
+            }
+            Signal::Exited { epoch, exit } => {
+                if let Some(key) = self.providers.key(epoch).cloned() {
+                    self.lose_env(&key, &exit.headline(), &exit.reason()).await;
+                }
+            }
+        }
+    }
+    async fn stop_providers(&mut self, scope: Option<&EnvKey>) -> Result<()> {
+        let mut result = Ok(());
+        for key in self.providers.keys() {
+            if scope.is_none_or(|scope| *scope == key)
+                && let Some(provider) = self.providers.stop(&key)
+            {
+                result = result.and(provider.terminate().await);
+            }
+        }
+        result
+    }
     async fn run(
         mut self,
         mut commands: mpsc::Receiver<Command>,
         mut signals: mpsc::Receiver<Signal>,
         mut completions: mpsc::Receiver<Completion>,
+        mut sandbox_changed: mpsc::UnboundedReceiver<SandboxId>,
     ) {
         let ids: Vec<_> = self.threads.keys().cloned().collect();
         for thread in self.threads.values() {
@@ -2808,22 +3112,15 @@ impl Owner {
                     if let Command::Shutdown(reply)=command {
                         self.closing = true;
                         commands.close();
-                        let result=if let Some(provider)=self.provider.take(){provider.terminate().await}else{Ok(())};
+                        let result=self.stop_providers(None).await;
                         self.lose("Bot Code closed. Native execution stopped.").await;
+                        self.sandboxes.stop_all().await;
                         shutdown=Some((reply,result));
                         break;
                     }
                     self.command(command).await;
                 }
-                Some(signal)=signals.recv()=>{
-                    match signal {
-                        Signal::Frame{epoch,value} if epoch==self.epoch=>{
-                            if let Err(error)=self.frame(value).await && error.code!="provider_lost" {self.lose(&error.message).await;}
-                        }
-                        Signal::Exited{epoch,exit} if epoch==self.epoch=>self.lose_with(&exit.headline(),&exit.reason()).await,
-                        _=>{}
-                    }
-                }
+                Some(signal)=signals.recv()=>self.signal(signal).await,
                 Some(done)=self.writing.active.join_next(), if !self.writing.active.is_empty()=>{
                     self.finish_commit_preview(done);
                 }
@@ -2854,16 +3151,15 @@ impl Owner {
                         Err(error) => { eprintln!("Pull request worker stopped: {error}"); }
                     }
                 }
-                Some(envelope)=self.tools.incoming.recv(), if !self.closing=>{
-                    if let Err(error)=self.mcp_tool(envelope).await {self.lose(&error.message).await;}
-                }
-                Some(done)=self.tools.jobs.join_next(), if !self.tools.jobs.is_empty()=>{
-                    if let Err(error)=self.finish_tool(done).await {self.lose(&error.message).await;}
-                }
+                Some(envelope)=self.tools.incoming.recv(), if !self.closing=>self.mcp_tool(envelope).await,
+                Some(done)=self.tools.jobs.join_next(), if !self.tools.jobs.is_empty()=>self.finish_tool(done).await,
                 Some(done)=completions.recv()=>{
-                    if let Err(error)=self.complete(done).await {self.lose(&error.message).await;}
+                    let key=done.epoch().and_then(|epoch| self.providers.key(epoch).cloned());
+                    if let Err(error)=self.complete(done).await {self.lose_in(key.as_ref(),&error.message,&error.message).await;}
                 }
+                Some(id)=sandbox_changed.recv()=>self.sandbox_changed(&id),
                 _=tick.tick()=>{
+                    self.sandbox_lifecycle().await;
                     self.poll_source_control();
                     self.poll_setups();
                     self.expire_commit_previews();
@@ -2880,12 +3176,11 @@ impl Owner {
                 else=>break,
             }
         }
-        if let Some(provider) = self.provider.take() {
-            let _ = provider.terminate().await;
-        }
+        let _ = self.stop_providers(None).await;
+        self.sandboxes.stop_all().await;
         commands.close();
         let clone_shutdown = self.project_clones.shutdown().await;
-        self.tools.revoke();
+        self.tools.revoke(&HashSet::new());
         while self.tools.jobs.join_next().await.is_some() {}
         while let Some(Ok(done)) = self.delete_jobs.join_next().await {
             self.finish_delete(done);
@@ -2958,7 +3253,8 @@ impl Owner {
                     Err(error) => {
                         let _ = reply.send(Err(error));
                     }
-                    Ok(root) => {
+                    Ok(workdir) => {
+                        let root = workdir.root().to_path_buf();
                         let origin = thread.map(|id| {
                             let generation = self.pr_generation(&id);
                             (id, generation)
@@ -2983,7 +3279,8 @@ impl Owner {
                     Err(error) => {
                         let _ = reply.send(Err(error));
                     }
-                    Ok(root) => {
+                    Ok(workdir) => {
+                        let root = workdir.root().to_path_buf();
                         let model = settings::text_generation(
                             &self.config.data_dir.join("settings.json"),
                             &id,
@@ -2994,6 +3291,7 @@ impl Owner {
                         });
                         let cx = vcs::Context {
                             root: root.clone(),
+                            workdir,
                             gh: self.config.gh_binary.clone(),
                             network: self.config.network_timeout,
                             codex: self.config.codex_binary.clone(),
@@ -3139,6 +3437,26 @@ impl Owner {
             Command::Checkout(id, thread, reply) => {
                 let _ = reply.send(self.checkout(&id, thread));
             }
+            Command::LocalNetwork(id, reply) => {
+                let network = self
+                    .thread(&id)
+                    .map(|thread| match self.workdir(thread).sandbox() {
+                        Some(handle) => {
+                            crate::LocalNetwork::Sandbox(crate::SandboxNetwork(handle.clone()))
+                        }
+                        None => crate::LocalNetwork::Mac,
+                    });
+                let _ = reply.send(network);
+            }
+            Command::CheckoutPulled(id) => {
+                if let Some(thread) = self.threads.get(&id) {
+                    self.project_search.invalidate();
+                    let _ = self.changes.send(ChangeHint {
+                        refresh_workspace: true,
+                        ..self.thread_hint(thread)
+                    });
+                }
+            }
             Command::PrRead(thread, key, reply) => self.read_review(thread, key, reply),
             Command::PrStackRead(access, key, reply) => self.read_pr_stack(access, key, reply),
             Command::PrStackChange(access, input, reply) => {
@@ -3250,6 +3568,7 @@ impl Owner {
                         Checkout::Worktree {
                             path: row.path,
                             branch: row.branch.unwrap_or_else(|| "HEAD".into()),
+                            sandbox: None,
                         }
                     };
                     let result = self.new_thread(id, checkout, SessionSettings::default(), None);
@@ -3321,6 +3640,10 @@ impl Owner {
                             SessionState::Dormant | SessionState::Unavailable { .. }
                         )
                         && !matches!(&t.checkout, Checkout::Worktree { path, .. } if !path.exists())
+                        && self
+                            .workdir(t)
+                            .sandbox()
+                            .is_none_or(|handle| handle.is_ready())
                 });
                 if should_resume {
                     self.threads.get_mut(&id).unwrap().session = SessionState::Connecting;
@@ -3343,22 +3666,18 @@ impl Owner {
             }
             Command::Models(reply) => {
                 self.model_waiters.push(reply);
-                if self.provider.is_none() {
-                    self.launch();
+                if self.providers.client(&EnvKey::Mac).is_none() {
+                    self.launch(EnvKey::Mac);
                 } else {
                     self.list_models();
                 }
             }
             Command::CollaborationModes(reply) => {
-                if self.provider.is_some() {
-                    let _ = reply.send(Ok(self
-                        .collaboration_modes
-                        .iter()
-                        .filter_map(|preset| preset.mode)
-                        .collect()));
+                if self.providers.client(&EnvKey::Mac).is_some() {
+                    let _ = reply.send(Ok(self.mode_catalog()));
                 } else {
                     self.collaboration_waiters.push(reply);
-                    self.launch();
+                    self.launch(EnvKey::Mac);
                 }
             }
             Command::UserQuestions(id, answers, reply) => {
@@ -3371,20 +3690,19 @@ impl Owner {
                     let _ = reply.send(Ok(limits));
                 } else {
                     self.limit_waiters.push(reply);
-                    if self.provider.is_none() {
-                        self.launch();
+                    if self.providers.client(&EnvKey::Mac).is_none() {
+                        self.launch(EnvKey::Mac);
                     } else {
                         self.read_limits();
                     }
                 }
             }
             Command::ConsumeResetCredit(reply) => {
-                let Some(provider) = self.provider.clone() else {
+                let Some((epoch, provider)) = self.providers.client(&EnvKey::Mac) else {
                     let _ = reply.send(Err(AppError::new("provider", "Codex is not running.")));
                     return;
                 };
                 let redeemer = self.reset_redeemer.clone();
-                let epoch = self.epoch;
                 let done = self.done.clone();
                 tokio::spawn(async move {
                     let result = redeemer
@@ -3493,16 +3811,13 @@ impl Owner {
                             "This approval no longer has a live callback.",
                         )
                     })?;
-                    if route.epoch != self.epoch {
+                    let Some((_, provider)) = self.providers.live(route.epoch) else {
                         return Err(AppError::new(
                             "approval_expired",
                             "Codex restarted. This approval expired.",
                         ));
-                    }
-                    let provider = self
-                        .provider
-                        .clone()
-                        .ok_or_else(|| AppError::new("provider_lost", "Codex is unavailable."))?;
+                    };
+                    let provider = provider.clone();
                     let mut thread = self.threads.get(&route.thread).cloned().ok_or_else(|| {
                         AppError::new("missing_thread", "Conversation not found.")
                     })?;
@@ -3544,7 +3859,7 @@ impl Owner {
                     self.install(thread)?;
                     self.callbacks.remove(&callback);
                     let done = self.done.clone();
-                    let epoch = self.epoch;
+                    let epoch = route.epoch;
                     tokio::spawn(async move {
                         let result = provider.respond(route.request, response).await;
                         let _ = done.send(Completion::Answered { epoch, id, result }).await;
@@ -3555,11 +3870,11 @@ impl Owner {
             }
             Command::Interrupt(id, reply) => {
                 let result = (|| -> Result<()> {
-                    let provider = self
-                        .provider
-                        .clone()
-                        .ok_or_else(|| AppError::new("provider_lost", "Codex is unavailable."))?;
                     let t = self.thread(&id)?;
+                    let (epoch, provider) = self
+                        .providers
+                        .client(&EnvKey::of(&t.checkout))
+                        .ok_or_else(|| AppError::new("provider_lost", "Codex is unavailable."))?;
                     let native_thread = t.native_thread_id.clone().ok_or_else(|| {
                         AppError::new(
                             "not_started",
@@ -3583,7 +3898,6 @@ impl Owner {
                     self.install(next)?;
                     self.tools.cancel_thread(&id);
                     let done = self.done.clone();
-                    let epoch = self.epoch;
                     tokio::spawn(async move {
                         let result = provider
                             .request(
@@ -3618,6 +3932,7 @@ impl Owner {
             }
             Command::RegenerateTitle(id, reply) => self.regenerate_title(id, reply),
             Command::Arrange(id, action, reply) => {
+                let stops_sandbox = matches!(action, Arrange::Settle | Arrange::Archive);
                 let result = (|| -> Result<()> {
                     let mut thread = self.thread(&id)?.clone();
                     if matches!(action, Arrange::Archive)
@@ -3640,6 +3955,9 @@ impl Owner {
                     }
                     self.install(thread)
                 })();
+                if result.is_ok() && stops_sandbox {
+                    self.stop_sandbox_of(&id);
+                }
                 let _ = reply.send(result);
             }
             Command::AutoSettle(rules, source_control, reply) => {
@@ -3675,7 +3993,11 @@ impl Owner {
                 let _ = reply.send(Ok((candidates, roots)));
             }
             Command::ClaimCleanup(candidate, reply) => {
-                let _ = reply.send(self.claim_cleanup(&candidate));
+                let claimed = match self.claim_cleanup(&candidate) {
+                    Ok(()) => self.retire_sandbox_for_cleanup(&candidate).await,
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(claimed);
             }
             Command::ReleaseCleanup(candidate, removed, reply) => {
                 self.release_cleanup(&candidate, removed);
@@ -3772,8 +4094,7 @@ impl Owner {
                 "Wait for the current operation to finish.",
             ));
         }
-        // Without a provider the catalogs are unknown; turn start checks them after the relaunch.
-        if self.provider.is_some() && kind == TurnKind::Prompt {
+        if self.providers.client(&EnvKey::Mac).is_some() && kind == TurnKind::Prompt {
             self.startable(
                 &thread.settings,
                 thread.native_thread_id.is_some(),
@@ -3917,7 +4238,11 @@ impl Owner {
                 "A previous follow-up still needs delivery confirmation.",
             ));
         }
-        if self.provider.is_none() {
+        if self
+            .providers
+            .client(&EnvKey::of(&thread.checkout))
+            .is_none()
+        {
             return Err(AppError::new("provider_lost", "Codex is unavailable."));
         }
         let root = thread.root(&self.workspaces[&thread.workspace_id]);
@@ -3977,8 +4302,18 @@ impl Owner {
         else {
             return;
         };
-        let input =
-            crate::codex::turn_input(text, context.as_ref(), attachments, &self.attachments);
+        let workdir = self.workdir(&self.threads[id]);
+        let files: Vec<PathBuf> = attachments
+            .iter()
+            .map(|attachment| self.attachments.path(attachment))
+            .collect();
+        let input = crate::codex::turn_input(
+            text,
+            context.as_ref(),
+            attachments,
+            &self.attachments,
+            &workdir.agent_paths(),
+        );
         *delivery = Delivery::Sending;
         if let Err(error) = self.install(next) {
             let t = self.threads.get_mut(id).unwrap();
@@ -3995,15 +4330,17 @@ impl Owner {
             self.dirty.insert(id.clone());
             return;
         }
-        let provider = self.provider.clone().unwrap();
+        let (epoch, provider) = self.providers.client(&self.env(id)).unwrap();
         let native = self.threads[id].native_thread_id.clone().unwrap();
         let done = self.done.clone();
-        let epoch = self.epoch;
         let thread = id.clone();
         let turn = turn_id.clone();
         let operation = operation.to_owned();
         tokio::spawn(async move {
-            let result = provider.request("turn/steer", json!({"threadId":native,"expectedTurnId":native_turn,"clientUserMessageId":operation,"input":input})).await;
+            let result = match workdir.provide(&files).await {
+                Ok(()) => provider.request("turn/steer", json!({"threadId":native,"expectedTurnId":native_turn,"clientUserMessageId":operation,"input":input})).await,
+                Err(error) => Err(error),
+            };
             let _ = done
                 .send(Completion::Steered {
                     epoch,
@@ -4028,7 +4365,8 @@ impl Owner {
         }
         if settings.interaction_mode == InteractionMode::Plan
             && !self
-                .collaboration_modes
+                .providers
+                .modes(&EnvKey::Mac)
                 .iter()
                 .any(|preset| preset.mode == Some(InteractionMode::Plan))
         {
@@ -4116,24 +4454,49 @@ impl Owner {
                 .map(|option| option.default_reasoning_effort.as_str())
         })
     }
-    fn launch(&mut self) {
-        if self.launching || self.provider.is_some() {
+    fn mode_catalog(&self) -> Vec<InteractionMode> {
+        self.providers
+            .modes(&EnvKey::Mac)
+            .iter()
+            .filter_map(|preset| preset.mode)
+            .collect()
+    }
+    fn launch(&mut self, key: EnvKey) {
+        let Some(providers::Launch {
+            epoch,
+            delay,
+            failures,
+        }) = self.providers.begin_launch(&key, Instant::now())
+        else {
             return;
-        }
-        self.launching = true;
-        self.epoch += 1;
-        let epoch = self.epoch;
-        let binary = self.config.codex_binary.clone();
+        };
+        let launcher = match &key {
+            EnvKey::Mac => providers::Launcher::Mac {
+                binary: self.config.codex_binary.clone(),
+            },
+            EnvKey::Sandbox(_) => {
+                let handle = self
+                    .threads
+                    .values()
+                    .find(|t| EnvKey::of(&t.checkout) == key)
+                    .and_then(|t| self.workdir(t).sandbox().cloned());
+                let Some(handle) = handle else {
+                    return;
+                };
+                providers::Launcher::Sandbox {
+                    handle,
+                    broker: self.sandboxes.broker.clone(),
+                }
+            }
+        };
         let signals = self.provider_events.clone();
         let done = self.done.clone();
-        let delay = self.restarts.delay(Instant::now());
         if !delay.is_zero() {
             self.log.line(
                 "bot-code",
                 &format!(
-                    "restarting Codex in {}s after {} consecutive failures",
+                    "restarting Codex in {}s after {failures} consecutive failures",
                     restarts::whole_seconds(delay),
-                    self.restarts.failures()
                 ),
             );
         }
@@ -4144,16 +4507,7 @@ impl Owner {
             if done.is_closed() {
                 return;
             }
-            let result = match Codex::launch(binary, epoch, signals, log, providers).await {
-                Ok(provider) => match provider.initialize().await {
-                    Ok(()) => Ok(collaboration::discover(provider).await),
-                    Err(e) => {
-                        let _ = provider.terminate().await;
-                        Err(e)
-                    }
-                },
-                Err(e) => Err(e),
-            };
+            let result = launcher.start(epoch, signals, log, providers).await;
             let _ = done.send(Completion::Launched { epoch, result }).await;
         });
     }
@@ -4161,11 +4515,10 @@ impl Owner {
         if self.listing_models || self.model_waiters.is_empty() {
             return;
         }
-        let Some(provider) = self.provider.clone() else {
+        let Some((epoch, provider)) = self.providers.client(&EnvKey::Mac) else {
             return;
         };
         self.listing_models = true;
-        let epoch = self.epoch;
         let done = self.done.clone();
         tokio::spawn(async move {
             let result = collaboration::read_models(&provider).await;
@@ -4176,11 +4529,10 @@ impl Owner {
         if self.reading_limits {
             return;
         }
-        let Some(provider) = self.provider.clone() else {
+        let Some((epoch, provider)) = self.providers.client(&EnvKey::Mac) else {
             return;
         };
         self.reading_limits = true;
-        let epoch = self.epoch;
         let done = self.done.clone();
         tokio::spawn(async move {
             let result = usage::read(&provider).await;
@@ -4225,21 +4577,43 @@ impl Owner {
                 return;
             }
         }
-        if self.provider.is_none() {
+        let Some(key) = self
+            .threads
+            .get(job.thread())
+            .map(|t| EnvKey::of(&t.checkout))
+        else {
+            return;
+        };
+        let Some((epoch, provider)) = self.providers.client(&key) else {
             if let Prepare::Revert(id) = &job {
                 self.waiting_revert_provider(id.clone());
             }
-            self.launch();
+            self.launch(key.clone());
             if let Prepare::Submit(id, _) | Prepare::Resume(id) = &job
-                && let Some(notice) = self.restarts.notice(Instant::now())
+                && let Some(notice) = self.providers.notice(&key, Instant::now())
                 && let Some(t) = self.threads.get_mut(id)
             {
                 t.diagnostic = Some(notice);
                 self.dirty.insert(id.clone());
             }
-            self.pending.push(job);
+            self.providers.queue(key, job);
+            return;
+        };
+        if let Some(handle) = self
+            .threads
+            .get(job.thread())
+            .and_then(|t| self.workdir(t).sandbox().cloned())
+        {
+            let done = self.done.clone();
+            tokio::spawn(async move {
+                let result = handle.wake().await;
+                let _ = done.send(Completion::Woken { epoch, job, result }).await;
+            });
             return;
         }
+        self.prepare_live(job, epoch, provider);
+    }
+    fn prepare_live(&mut self, job: Prepare, epoch: u64, provider: Codex) {
         if let Prepare::Revert(id) = job {
             self.fork_revert(id);
             return;
@@ -4248,18 +4622,17 @@ impl Owner {
             Ok(t) => t,
             Err(_) => return,
         };
-        let root = t.root(&self.workspaces[&t.workspace_id]).to_path_buf();
+        let key = EnvKey::of(&t.checkout);
+        let workdir = self.workdir(t);
         let native = t.native_thread_id.clone();
-        let provider = self.provider.clone().unwrap();
         let settings = t.settings.clone();
         let (approval_policy, approvals_reviewer, sandbox) =
-            codex::permission_protocol(settings.permission_mode);
+            codex::permission_protocol(settings.permission_mode, workdir.environment());
         let model = self.resolve_model(&settings).map(str::to_owned);
         let done = self.done.clone();
-        let epoch = self.epoch;
         let creating = native.is_none();
-        let mut params = json!({"cwd":root,"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandbox":sandbox,"model":model});
-        self.tools_thread_params(job.thread(), &mut params, creating);
+        let mut params = json!({"cwd":workdir.agent_paths().cwd(),"approvalPolicy":approval_policy,"approvalsReviewer":approvals_reviewer,"sandbox":sandbox,"model":model});
+        self.tools_thread_params(&key, job.thread(), epoch, &mut params, creating);
         tokio::spawn(async move {
             let result = if let Some(native) = native {
                 params["threadId"] = json!(native);
@@ -4287,7 +4660,7 @@ impl Owner {
                 let result = self.persist_stack_progress(&access, generation, &operation);
                 let _ = reply.send(result);
             }
-            Completion::Models { epoch, result } if epoch == self.epoch => {
+            Completion::Models { epoch, result } if self.providers.current(epoch) => {
                 self.listing_models = false;
                 if let Ok(models) = &result {
                     self.models = Some(models.clone());
@@ -4296,8 +4669,24 @@ impl Owner {
                     let _ = reply.send(result.clone());
                 }
             }
-            Completion::Limits { epoch, result } if epoch == self.epoch => {
+            Completion::Limits { epoch, result } if self.providers.current(epoch) => {
                 self.settle_limits(result);
+            }
+            Completion::Woken { epoch, job, result } if self.providers.current(epoch) => {
+                let key = self.providers.key(epoch).cloned();
+                match (result, key) {
+                    (Ok(()), Some(key)) => {
+                        if let Some((epoch, provider)) = self.providers.client(&key) {
+                            self.prepare_live(job, epoch, provider);
+                        } else {
+                            self.prepare(job);
+                        }
+                    }
+                    (Err(error), Some(key)) => {
+                        self.lose_env(&key, &error.message, &error.message).await;
+                    }
+                    (_, None) => {}
+                }
             }
             Completion::ResetConsumed {
                 epoch,
@@ -4306,44 +4695,47 @@ impl Owner {
                 reply,
             } => {
                 if let Some(limits) = refreshed.clone()
-                    && epoch == self.epoch
+                    && self.providers.current(epoch)
                 {
                     self.publish_limits(limits);
                 }
                 let _ = reply.send(usage::confirm_reset(result, refreshed.as_ref()));
             }
-            Completion::Launched { epoch, result } if epoch == self.epoch => match result {
-                Ok(session) => {
-                    self.launching = false;
-                    self.restarts.ready(Instant::now());
-                    self.collaboration_modes = session.modes;
-                    self.models = session.models;
-                    self.provider = Some(session.provider);
-                    let modes = self
-                        .collaboration_modes
-                        .iter()
-                        .filter_map(|preset| preset.mode)
-                        .collect::<Vec<_>>();
-                    for reply in std::mem::take(&mut self.collaboration_waiters) {
-                        let _ = reply.send(Ok(modes.clone()));
+            Completion::Launched { epoch, result } => {
+                match (self.providers.key(epoch).cloned(), result) {
+                    (Some(key), Ok(session)) => {
+                        let jobs = self.providers.launched(
+                            &key,
+                            session.provider,
+                            session.modes,
+                            session.account,
+                            Instant::now(),
+                        );
+                        if key != EnvKey::Mac && self.models.is_none() {
+                            self.models = session.models;
+                        } else if key == EnvKey::Mac {
+                            self.models = session.models;
+                            let modes = self.mode_catalog();
+                            for reply in std::mem::take(&mut self.collaboration_waiters) {
+                                let _ = reply.send(Ok(modes.clone()));
+                            }
+                            self.read_limits();
+                            if !self.model_waiters.is_empty() {
+                                self.list_models();
+                            }
+                        }
+                        for job in jobs {
+                            self.prepare(job)
+                        }
                     }
-                    self.read_limits();
-                    if !self.model_waiters.is_empty() {
-                        self.list_models();
+                    (Some(key), Err(e)) => self.lose_env(&key, &e.message, &e.message).await,
+                    (None, Ok(session)) => {
+                        tokio::spawn(async move { session.provider.terminate().await });
                     }
-                    for job in std::mem::take(&mut self.pending) {
-                        self.prepare(job)
-                    }
+                    (None, Err(_)) => {}
                 }
-                Err(e) => self.lose(&e.message).await,
-            },
-            Completion::Launched {
-                result: Ok(session),
-                ..
-            } => {
-                tokio::spawn(async move { session.provider.terminate().await });
             }
-            Completion::Prepared { epoch, job, result } if epoch == self.epoch => {
+            Completion::Prepared { epoch, job, result } if self.providers.current(epoch) => {
                 let id = job.thread().clone();
                 match result {
                     Ok(value) => {
@@ -4355,7 +4747,8 @@ impl Owner {
                             })?
                             .to_owned();
                         let created = self.thread(&id)?.native_thread_id.is_none();
-                        self.tools_prepared(&native, created)?;
+                        let key = self.env(&id);
+                        self.tools_prepared(&key, &native, created)?;
                         let t = self.threads.get_mut(&id).ok_or_else(|| {
                             AppError::new("missing_thread", "Conversation not found.")
                         })?;
@@ -4365,6 +4758,7 @@ impl Owner {
                         merge_history(t, value.pointer("/thread/turns"));
                         self.commit(&id)?;
                         if let Prepare::Submit(_, turn_id) = job {
+                            let workdir = self.workdir(&self.threads[&id]);
                             let t = self.threads.get_mut(&id).unwrap();
                             t.session = SessionState::Connecting;
                             let turn = t
@@ -4378,16 +4772,25 @@ impl Owner {
                                 self.dispatch_compaction(id, turn_id, native);
                                 return Ok(());
                             }
+                            let paths = workdir.agent_paths();
+                            let files: Vec<PathBuf> = turn
+                                .attachments
+                                .iter()
+                                .map(|attachment| self.attachments.path(attachment))
+                                .collect();
                             let input = crate::codex::turn_input(
                                 &turn.prompt,
                                 turn.context.as_ref(),
                                 &turn.attachments,
                                 &self.attachments,
+                                &paths,
                             );
                             let settings = turn.settings.clone().unwrap_or_default();
+                            let environment = workdir.environment();
                             let (approval_policy, approvals_reviewer, _) =
-                                codex::permission_protocol(settings.permission_mode);
-                            let sandbox_policy = codex::sandbox_policy(settings.permission_mode);
+                                codex::permission_protocol(settings.permission_mode, environment);
+                            let sandbox_policy =
+                                codex::sandbox_policy(settings.permission_mode, environment);
                             let model = self.resolve_model(&settings).map(str::to_owned);
                             let effort = self.resolve_effort(&settings).map(str::to_owned);
                             let t = &self.threads[&id];
@@ -4396,18 +4799,19 @@ impl Owner {
                                 .startable(&settings, true, &t.turns[..previous.unwrap_or(0)])
                                 .and_then(|()| {
                                     collaboration::turn_mode(
-                                        &self.collaboration_modes,
+                                        self.providers.modes(&self.env(&id)),
                                         &settings,
                                         model.as_deref(),
                                         effort.as_deref(),
                                     )
                                 });
                             self.commit(&id)?;
-                            let provider = self.provider.clone().ok_or_else(|| {
-                                AppError::new("provider_lost", "Codex is unavailable.")
-                            })?;
+                            let (epoch, provider) =
+                                self.providers.client(&self.env(&id)).ok_or_else(|| {
+                                    AppError::new("provider_lost", "Codex is unavailable.")
+                                })?;
                             let done = self.done.clone();
-                            let tool_guidance = self.tools.guidance(&native);
+                            let tool_guidance = self.tools.guidance(&key, &native);
                             tokio::spawn(async move {
                                 let result = match collaboration {
                                     Ok(mode) => {
@@ -4418,7 +4822,10 @@ impl Owner {
                                         if let Some(mode) = mode {
                                             params["collaborationMode"] = mode;
                                         }
-                                        provider.request("turn/start", params).await
+                                        match workdir.provide(&files).await {
+                                            Ok(()) => provider.request("turn/start", params).await,
+                                            Err(error) => Err(error),
+                                        }
                                     }
                                     Err(error) => Err(error),
                                 };
@@ -4462,7 +4869,7 @@ impl Owner {
                 thread,
                 turn,
                 result,
-            } if epoch == self.epoch => {
+            } if self.providers.current(epoch) => {
                 let t = self.threads.get_mut(&thread).unwrap();
                 let row = t.turns.iter_mut().find(|r| r.id == turn).unwrap();
                 match result {
@@ -4535,7 +4942,8 @@ impl Owner {
                         row.execution=Execution::Lost{reason:"The request may have reached Codex. It will not be sent again automatically.".into()};
                         t.session = SessionState::Unavailable { reason: e.message };
                         self.commit(&thread)?;
-                        self.lose("Codex turn delivery is uncertain. Managed execution was stopped; resume native history before sending another prompt.").await;
+                        let reason = "Codex turn delivery is uncertain. Managed execution was stopped; resume native history before sending another prompt.";
+                        self.lose_env(&self.env(&thread), reason, reason).await;
                         return Ok(());
                     }
                 }
@@ -4545,14 +4953,14 @@ impl Owner {
                 epoch,
                 thread,
                 turn,
-            } if epoch == self.epoch => self.compaction_expired(&thread, &turn)?,
+            } if self.providers.current(epoch) => self.compaction_expired(&thread, &turn)?,
             Completion::Steered {
                 epoch,
                 thread,
                 turn,
                 operation,
                 result,
-            } if epoch == self.epoch => {
+            } if self.providers.current(epoch) => {
                 let Some(t) = self.threads.get_mut(&thread) else {
                     return Ok(());
                 };
@@ -4597,13 +5005,14 @@ impl Owner {
                 };
                 self.commit(&thread)?;
                 if uncertain {
-                    self.lose(
-                        "Follow-up delivery is uncertain. It will not be sent again automatically.",
-                    )
-                    .await;
+                    let reason =
+                        "Follow-up delivery is uncertain. It will not be sent again automatically.";
+                    self.lose_env(&self.env(&thread), reason, reason).await;
                 }
             }
-            Completion::UserQuestionsAnswered { epoch, id, result } if epoch == self.epoch => {
+            Completion::UserQuestionsAnswered { epoch, id, result }
+                if self.providers.current(epoch) =>
+            {
                 if let Some(t) = self
                     .threads
                     .values_mut()
@@ -4628,7 +5037,7 @@ impl Owner {
                     self.commit(&thread)?;
                 }
             }
-            Completion::Answered { epoch, id, result } if epoch == self.epoch => {
+            Completion::Answered { epoch, id, result } if self.providers.current(epoch) => {
                 if let Some(t) = self
                     .threads
                     .values_mut()
@@ -4651,65 +5060,122 @@ impl Owner {
                 epoch,
                 thread,
                 result: Err(e),
-            } if epoch == self.epoch => {
+            } if self.providers.current(epoch) => {
                 // The turn can finish before this reply arrives, and the project can be removed in between.
                 let Some(t) = self.threads.get_mut(&thread) else {
                     return Ok(());
                 };
                 t.diagnostic = Some(format!("Stop was not confirmed: {}", e.message));
                 self.commit(&thread)?;
-                self.lose(
-                    "Interruption could not be confirmed. Managed Codex execution was stopped.",
-                )
-                .await;
+                let reason =
+                    "Interruption could not be confirmed. Managed Codex execution was stopped.";
+                self.lose_env(&self.env(&thread), reason, reason).await;
             }
             _ => {}
         }
         Ok(())
     }
-    async fn lose(&mut self, reason: &str) {
-        self.lose_with(reason, reason).await
+    fn env(&self, thread: &ThreadId) -> EnvKey {
+        EnvKey::of(&self.threads[thread].checkout)
     }
-    /// `headline` is the short banner text; `reason` is recorded on the work that was lost.
-    async fn lose_with(&mut self, headline: &str, reason: &str) {
-        if self.provider.is_some() || self.launching {
-            if !self.closing {
-                self.restarts.lost(Instant::now());
-            }
-            self.log.line(
-                "bot-code",
-                &format!(
-                    "provider lost: {}",
-                    reason.lines().next().unwrap_or_default()
-                ),
-            );
+    async fn refresh_tokens(
+        &mut self,
+        key: &EnvKey,
+        requester: Option<Codex>,
+        request: Value,
+    ) -> Result<()> {
+        let Some(requester) = requester else {
+            return Ok(());
+        };
+        if *key == EnvKey::Mac {
+            return requester
+                .refuse(request, "account/chatgptAuthTokens/refresh")
+                .await;
         }
-        self.cancel_names();
-        self.cancel_commit_previews(None);
-        self.tools.revoke();
-        if let Some(provider) = self.provider.take() {
+        let host = self.providers.client(&EnvKey::Mac).map(|(_, codex)| codex);
+        let broker = self.sandboxes.broker.clone();
+        // The request's `previousAccountId` is the sandbox's word; the account the host
+        // signed this slot in with is the one that decides.
+        let account = self.providers.account(key).map(str::to_owned);
+        tokio::spawn(async move {
+            let reply = match broker.refresh(host, account.as_deref()).await {
+                Ok(tokens) => {
+                    requester
+                        .respond(request, codex::auth::refresh_reply(&tokens))
+                        .await
+                }
+                Err(error) => requester.error(request, -32000, &error.message).await,
+            };
+            let _ = reply;
+        });
+        Ok(())
+    }
+    fn thread_by_native(&self, key: &EnvKey, native: &str) -> Option<ThreadId> {
+        self.threads
+            .values()
+            .find(|t| {
+                t.native_thread_id.as_deref() == Some(native) && EnvKey::of(&t.checkout) == *key
+            })
+            .map(|t| t.id.clone())
+    }
+    async fn lose(&mut self, reason: &str) {
+        self.lose_in(None, reason, reason).await
+    }
+    async fn lose_env(&mut self, key: &EnvKey, headline: &str, reason: &str) {
+        self.lose_in(Some(key), headline, reason).await
+    }
+    async fn lose_in(&mut self, scope: Option<&EnvKey>, headline: &str, reason: &str) {
+        let covers = |key: &EnvKey| scope.is_none_or(|scope| scope == key);
+        let spared: HashSet<ThreadId> = self
+            .threads
+            .values()
+            .filter(|t| !covers(&EnvKey::of(&t.checkout)))
+            .map(|t| t.id.clone())
+            .collect();
+        let now = Instant::now();
+        let mut lost = vec![];
+        for key in self.providers.keys().into_iter().filter(|key| covers(key)) {
+            if self.providers.active(&key) {
+                self.log.line(
+                    "bot-code",
+                    &format!(
+                        "provider lost: {}",
+                        reason.lines().next().unwrap_or_default()
+                    ),
+                );
+            }
+            lost.extend(self.providers.lose(&key, now, self.closing));
+        }
+        self.cancel_names(&spared);
+        self.cancel_thread_commit_previews(|id| !spared.contains(id));
+        self.tools.revoke(&spared);
+        for provider in lost {
             let _ = provider.terminate().await;
         }
-        self.epoch += 1;
-        self.launching = false;
-        self.pending.clear();
-        self.fail_reverts(headline);
-        self.models = None;
-        self.listing_models = false;
-        for reply in std::mem::take(&mut self.model_waiters) {
-            let _ = reply.send(Err(AppError::new("provider_lost", headline)));
+        self.fail_reverts(&spared, headline);
+        if covers(&EnvKey::Mac) {
+            self.models = None;
+            self.listing_models = false;
+            for reply in std::mem::take(&mut self.model_waiters) {
+                let _ = reply.send(Err(AppError::new("provider_lost", headline)));
+            }
+            self.reading_limits = false;
+            if !self.limit_waiters.is_empty() {
+                self.settle_limits(Err(AppError::new("provider_lost", headline)));
+            }
+            for reply in std::mem::take(&mut self.collaboration_waiters) {
+                let _ = reply.send(Err(AppError::new("provider_lost", headline)));
+            }
         }
-        self.reading_limits = false;
-        if !self.limit_waiters.is_empty() {
-            self.settle_limits(Err(AppError::new("provider_lost", headline)));
-        }
-        self.callbacks.clear();
-        self.collaboration_modes.clear();
-        for reply in std::mem::take(&mut self.collaboration_waiters) {
-            let _ = reply.send(Err(AppError::new("provider_lost", headline)));
-        }
-        self.leases.clear();
-        let ids: Vec<_> = self.threads.keys().cloned().collect();
+        self.callbacks
+            .retain(|_, route| spared.contains(&route.thread));
+        self.leases.retain(|_, thread| spared.contains(thread));
+        let ids: Vec<_> = self
+            .threads
+            .keys()
+            .filter(|id| !spared.contains(id))
+            .cloned()
+            .collect();
         for id in ids {
             let t = self.threads.get_mut(&id).unwrap();
             let affected = matches!(
@@ -4774,27 +5240,26 @@ impl Owner {
             let _ = self.commit(&id);
         }
     }
-    async fn frame(&mut self, value: Value) -> Result<()> {
+    async fn frame(&mut self, key: &EnvKey, epoch: u64, value: Value) -> Result<()> {
         let method = value
             .get("method")
             .and_then(Value::as_str)
             .ok_or_else(|| AppError::new("protocol", "Codex frame has no method."))?;
         let p = value.get("params").unwrap_or(&Value::Null);
         let native = p.get("threadId").and_then(Value::as_str);
-        let id = native.and_then(|native| {
-            self.threads
-                .values()
-                .find(|t| t.native_thread_id.as_deref() == Some(native))
-                .map(|t| t.id.clone())
-        });
+        let id = native.and_then(|native| self.thread_by_native(key, native));
+        let provider = self.providers.live(epoch).map(|(_, codex)| codex.clone());
         if let Some(request) = value.get("id") {
             if method == "item/tool/call" {
-                return self.dynamic_tool(request.clone(), p.clone()).await;
+                return self.dynamic_tool(epoch, request.clone(), p.clone()).await;
+            }
+            if method == "account/chatgptAuthTokens/refresh" {
+                return self.refresh_tokens(key, provider, request.clone()).await;
             }
             let decoded = match approvals::decode(value.clone()) {
                 Ok(decoded) => decoded,
                 Err(error) => {
-                    if let Some(provider) = &self.provider {
+                    if let Some(provider) = &provider {
                         provider
                             .invalid_request(request.clone(), &error.message)
                             .await?;
@@ -4807,14 +5272,9 @@ impl Owner {
                 ProviderRequest::UserInput(pending) => Some(pending.target.thread_id.as_str()),
                 ProviderRequest::Unsupported => native,
             };
-            let id = native.and_then(|native| {
-                self.threads
-                    .values()
-                    .find(|t| t.native_thread_id.as_deref() == Some(native))
-                    .map(|t| t.id.clone())
-            });
+            let id = native.and_then(|native| self.thread_by_native(key, native));
             let Some(id) = id else {
-                if let Some(provider) = &self.provider {
+                if let Some(provider) = &provider {
                     provider.refuse(request.clone(), method).await?;
                 }
                 return Ok(());
@@ -4824,7 +5284,7 @@ impl Owner {
             });
             let t = self.threads.get_mut(&id).unwrap();
             let Some(turn) = t.turns.iter().rev().find(|turn| turn.execution.active()) else {
-                if let Some(provider) = &self.provider {
+                if let Some(provider) = &provider {
                     provider.refuse(request.clone(), method).await?;
                 }
                 return Ok(());
@@ -4835,7 +5295,7 @@ impl Owner {
                 ProviderRequest::Unsupported => None,
             };
             if native_turn.is_some() && native_turn != turn.native_turn_id.as_deref() {
-                if let Some(provider) = &self.provider {
+                if let Some(provider) = &provider {
                     provider.refuse(request.clone(), method).await?;
                 }
                 return Ok(());
@@ -4843,7 +5303,7 @@ impl Owner {
             match decoded {
                 ProviderRequest::UserInput(pending) => {
                     if let Err(error) = collaboration::validate_questions(&pending.questions) {
-                        if let Some(provider) = &self.provider {
+                        if let Some(provider) = &provider {
                             provider
                                 .invalid_request(request.clone(), &error.message)
                                 .await?;
@@ -4863,7 +5323,7 @@ impl Owner {
                             thread: id.clone(),
                             request: request.clone(),
                             item_id: pending.item_id.clone(),
-                            epoch: self.epoch,
+                            epoch,
                             kind: RouteKind::UserInput,
                         },
                     );
@@ -4873,7 +5333,7 @@ impl Owner {
                 }
                 ProviderRequest::Approval(mut pending) => {
                     if let Some(response) = pending.reply.unsupported_response() {
-                        if let Some(provider) = &self.provider {
+                        if let Some(provider) = &provider {
                             provider.respond(request.clone(), response).await?;
                         }
                         return Ok(());
@@ -4903,7 +5363,7 @@ impl Owner {
                             thread: id.clone(),
                             request: request.clone(),
                             item_id: pending.item_id,
-                            epoch: self.epoch,
+                            epoch,
                             kind: RouteKind::Approval(pending.reply),
                         },
                     );
@@ -4916,7 +5376,7 @@ impl Owner {
                         "Codex requested {method}, which this version cannot answer. The request was refused."
                     ));
                     self.commit(&id)?;
-                    if let Some(provider) = &self.provider {
+                    if let Some(provider) = &provider {
                         provider.refuse(request.clone(), method).await?;
                     }
                 }
@@ -4924,13 +5384,19 @@ impl Owner {
             return Ok(());
         }
         if method == "account/rateLimits/updated" {
+            if *key != EnvKey::Mac {
+                return Ok(());
+            }
             self.limits
                 .send_if_modified(|limits| UsageLimits::apply_update(limits, p));
             return Ok(());
         }
         let Some(id) = id else {
             if let Some(child) = native
-                && let Some(t) = self.threads.values_mut().find(|t| t.subagents.owns(child))
+                && let Some(t) = self
+                    .threads
+                    .values_mut()
+                    .find(|t| t.subagents.owns(child) && EnvKey::of(&t.checkout) == *key)
                 && let Some(event) = crate::subagents::ChildEvent::parse(method, p)
                 && t.subagents.apply(child, event, now_ms())
             {
@@ -5088,8 +5554,10 @@ impl Owner {
                         .filter(|native| p.get("threadId").and_then(Value::as_str) == Some(native));
                         let end = turn.items.len();
                         upsert(&mut turn.items, item, end);
-                        if let Some(native) = restore {
-                            self.restore_context(&native);
+                        if let Some(native) = restore
+                            && let Some(provider) = provider
+                        {
+                            self.restore_context(key, provider, &native);
                         }
                     }
                 }

@@ -365,13 +365,23 @@ pub async fn run_git_action(
     .await
 }
 #[tauri::command]
-pub fn open_url(url: String) -> Result<()> {
+pub async fn open_url(app: State<'_, App>, url: String, thread_id: Option<ThreadId>) -> Result<()> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err(AppError::new(
             "invalid_url",
             "Only web links can be opened.",
         ));
     }
+    let url = match (thread_id, tauri::Url::parse(&url)) {
+        (Some(thread), Ok(parsed)) => {
+            let network = app.local_network(thread).await?;
+            crate::preview::route::load(&network, &parsed)
+                .map_err(|message| AppError::new("open_failed", message))?
+                .0
+                .to_string()
+        }
+        _ => url,
+    };
     #[cfg(not(windows))]
     let mut opener = bot_core::process::command("/usr/bin/open");
     #[cfg(windows)]
@@ -403,6 +413,26 @@ pub async fn open_in_editor(
 #[tauri::command]
 pub async fn reveal_in_finder(app: State<'_, App>, target: OpenTarget) -> Result<()> {
     app.reveal_in_finder(target).await
+}
+#[tauri::command]
+pub async fn sandbox_availability(app: State<'_, App>) -> Result<SandboxAvailability> {
+    Ok(app.sandbox_availability().await)
+}
+#[tauri::command]
+pub async fn sandbox_state(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: ThreadId,
+) -> Result<SandboxState> {
+    app.sandbox_state(workspace_id, thread_id).await
+}
+#[tauri::command]
+pub async fn sandbox_desktop(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: ThreadId,
+) -> Result<SandboxDesktop> {
+    app.sandbox_desktop(workspace_id, thread_id).await
 }
 #[tauri::command]
 pub async fn create_thread(

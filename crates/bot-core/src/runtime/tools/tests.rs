@@ -69,7 +69,7 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
         attachments: Attachments::new(directory.path()),
         delete_jobs: JoinSet::new(),
         deleting: HashSet::new(),
-        terminals: Terminals::new(None, None, None),
+        terminals: Terminals::new(None, None, None, None),
         config,
         store,
         workspaces: HashMap::from([(workspace.id.clone(), workspace.clone())]),
@@ -80,15 +80,10 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
         leases: HashMap::new(),
         held: HashMap::new(),
         callbacks: HashMap::new(),
-        collaboration_modes: vec![],
         collaboration_waiters: vec![],
-        provider: None,
-        epoch: 1,
-        launching: false,
-        restarts: restarts::Restarts::default(),
+        providers: Default::default(),
         log: RotatingLog::open(directory.path().join("log")),
         provider_pids: Default::default(),
-        pending: vec![],
         models: None,
         model_waiters: vec![],
         listing_models: false,
@@ -100,6 +95,7 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
         changes: broadcast::channel(1).0,
         provider_events: mpsc::channel(1).0,
         done: mpsc::channel(1).0,
+        sandboxes: Arc::new(Sandboxes::for_tests(directory.path())),
     };
     let thread = owner
         .new_thread(
@@ -134,7 +130,7 @@ async fn disconnected_queued_caller_cannot_link_a_pr_or_construct_a_browser_acti
                     native_turn: "native-turn".into(),
                     call_id: call.name.clone(),
                 },
-                call,
+                owner.tools.registry.decode(call).unwrap(),
                 ToolReply::Mcp {
                     credential: "revoked".into(),
                     reply,

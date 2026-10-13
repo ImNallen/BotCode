@@ -141,7 +141,7 @@ fn commit_file(root: &Path, file: &str) {
 }
 fn worktree(checkout: &Checkout) -> (PathBuf, String) {
     match checkout {
-        Checkout::Worktree { path, branch } => (path.clone(), branch.clone()),
+        Checkout::Worktree { path, branch, .. } => (path.clone(), branch.clone()),
         other => panic!("expected a worktree checkout, got {other:?}"),
     }
 }

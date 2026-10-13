@@ -56,6 +56,7 @@ import {
 import { hideWhitespaceChanges } from "./hideWhitespace";
 import { useResolvedTheme } from "./useResolvedTheme";
 import { useComposerContext } from "../chat/ComposerContextProvider";
+import { inSandbox } from "../lib/sandbox";
 import { truncateContextText } from "../chat/composerContext";
 import {
   buildDiffReviewContext,
@@ -573,7 +574,7 @@ export function DiffSurface({
                   setPathExpanded(name, !expandedPaths.has(name));
               }}
               onContextMenuCapture={(event) => {
-                if (view?.unavailable) return;
+                if (view?.unavailable || inSandbox(thread?.checkout)) return;
                 const header = event.nativeEvent
                   .composedPath()
                   .find(

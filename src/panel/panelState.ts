@@ -117,9 +117,12 @@ export function eligibleSurfaces(
   state: PanelState,
   repository: boolean,
   links?: PrLinks,
+  sandbox = false,
 ): PanelState {
   const allowed = (surface: Surface) => {
     switch (surface.kind) {
+      case "desktop":
+        return sandbox;
       case "pull_requests":
         return links !== undefined;
       case "pull_request":
@@ -168,6 +171,8 @@ export function surfaceTitle(
       return "Pull requests";
     case "agents":
       return "Agents";
+    case "desktop":
+      return "Desktop";
     case "pull_request":
       return `#${surface.key.split("/").at(-1)}`;
     case "file":

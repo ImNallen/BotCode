@@ -17,6 +17,8 @@ pub(super) struct ProviderSession {
     pub provider: Codex,
     pub modes: Vec<ModePreset>,
     pub models: Option<Vec<ModelOption>>,
+    /// The ChatGPT account the agent was signed in with, for a sandbox agent on ChatGPT tokens.
+    pub account: Option<String>,
 }
 pub(super) async fn discover(provider: Codex) -> ProviderSession {
     let modes = match provider
@@ -41,6 +43,7 @@ pub(super) async fn discover(provider: Codex) -> ProviderSession {
         provider,
         modes,
         models,
+        account: None,
     }
 }
 pub(super) async fn read_models(provider: &Codex) -> Result<Vec<ModelOption>> {
@@ -154,16 +157,13 @@ impl Owner {
                 "This question no longer has a live callback.",
             )
         })?;
-        if route.epoch != self.epoch {
+        let Some((_, provider)) = self.providers.live(route.epoch) else {
             return Err(AppError::new(
                 "question_expired",
                 "Codex restarted. This question expired.",
             ));
-        }
-        let provider = self
-            .provider
-            .clone()
-            .ok_or_else(|| AppError::new("provider_lost", "Codex is unavailable."))?;
+        };
+        let provider = provider.clone();
         let mut thread = self.thread(&route.thread)?.clone();
         let request = thread
             .user_questions
@@ -181,7 +181,7 @@ impl Owner {
         self.install(thread)?;
         self.callbacks.remove(&callback);
         let done = self.done.clone();
-        let epoch = self.epoch;
+        let epoch = route.epoch;
         tokio::spawn(async move {
             let result = provider
                 .respond(route.request, json!({"answers": answers}))

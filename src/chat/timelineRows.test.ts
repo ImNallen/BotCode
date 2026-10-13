@@ -326,6 +326,51 @@ it("renders a finished compaction as its own separator row and an unfinished one
   assert.equal(only(running, "thinking").compacting, true);
 });
 
+it("shows Starting sandbox in place of Thinking while a sandbox agent connects", () => {
+  const connecting = (checkout: Thread["checkout"]) =>
+    deriveRows(
+      { ...thread([], true), session: { kind: "connecting" }, checkout },
+      new Set(),
+      new Set(),
+    );
+  const sandbox = connecting({
+    kind: "worktree",
+    path: "/mirror",
+    branch: "botcode/abc",
+    sandbox: { kind: "docker", id: "0123456789ab" },
+  });
+  assert.deepEqual(kinds(sandbox), ["user", "working"]);
+  assert.equal(only(sandbox, "working").startingSandbox, true);
+  const sandboxThread: Thread = {
+    ...thread([], true),
+    session: { kind: "connecting" },
+    checkout: {
+      kind: "worktree",
+      path: "/mirror",
+      branch: "botcode/abc",
+      sandbox: { kind: "docker", id: "0123456789ab" },
+    },
+  };
+  const markup = renderToStaticMarkup(
+    createElement(Timeline, {
+      skills: [],
+      thread: sandboxThread,
+      clearance: 0,
+      reverting: false,
+      busy: false,
+      onEdit() {},
+      onExpandImage() {},
+      onRemoveQueued() {},
+      onOpenTurnDiff() {},
+    }),
+  );
+  assert.match(markup, /Starting sandbox…/);
+
+  const mac = connecting({ kind: "worktree", path: "/w", branch: "b" });
+  assert.deepEqual(kinds(mac), ["user", "working", "thinking"]);
+  assert.equal(only(mac, "working").startingSandbox, false);
+});
+
 it("renders nothing for item kinds T3 drops", () => {
   const rows = deriveRows(
     thread([

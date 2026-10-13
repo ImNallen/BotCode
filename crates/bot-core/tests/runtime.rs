@@ -928,6 +928,7 @@ fn legacy_snapshots_default_settings() {
         checkout: Checkout::Worktree {
             path: "/legacy".into(),
             branch: "bot-code/legacy".into(),
+            sandbox: None,
         },
         turns: vec![Turn {
             tasks: None,
@@ -1237,7 +1238,7 @@ async fn provider_loss_keeps_usage_limits_and_relaunch_reads_again() {
 }
 fn worktree(checkout: &Checkout) -> (std::path::PathBuf, String) {
     match checkout {
-        Checkout::Worktree { path, branch } => (path.clone(), branch.clone()),
+        Checkout::Worktree { path, branch, .. } => (path.clone(), branch.clone()),
         other => panic!("expected a worktree checkout, got {other:?}"),
     }
 }
@@ -1792,6 +1793,7 @@ async fn switch_branch_changes_the_checkout_unless_its_lease_is_held() {
     let expected = Checkout::Worktree {
         path: path.clone(),
         branch: "renamed".into(),
+        sandbox: None,
     };
     assert_eq!(
         app.thread(isolated.id.clone()).await.unwrap().checkout,

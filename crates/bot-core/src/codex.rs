@@ -1,5 +1,6 @@
 // Ported from T3 Code v0.0.45 apps/server/src/provider/Layers/CodexSessionRuntime.ts.
 pub(crate) mod approvals;
+pub(crate) mod auth;
 pub(crate) mod tools;
 mod turn_input;
 use crate::{
@@ -10,7 +11,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
-    path::PathBuf,
+    path::Path,
     process::ExitStatus,
     sync::{
         Arc,
@@ -26,21 +27,41 @@ use tokio::{
     time::{Instant, timeout, timeout_at},
 };
 pub(crate) use turn_input::turn_input;
+/// Where the agent runs, which decides Codex's own sandbox. Measured with Codex 0.162.0 in the
+/// sandbox image under Docker Desktop 29.7 (kernel 7.0.12-linuxkit): `codex sandbox` with
+/// `workspace-write` or `read-only` fails with "bwrap: No permissions to create a new
+/// namespace" under Docker's default seccomp profile, and works only with
+/// `--security-opt seccomp=unconfined`. The container is therefore the boundary, Codex runs
+/// with full access inside it, and the approval policy and reviewer stay as chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Environment {
+    Mac,
+    Container,
+}
 pub(crate) fn permission_protocol(
     mode: PermissionMode,
+    environment: Environment,
 ) -> (&'static str, &'static str, &'static str) {
-    match mode {
+    let (approval, reviewer, sandbox) = match mode {
         PermissionMode::ApprovalRequired => ("untrusted", "user", "read-only"),
         PermissionMode::AutoAcceptEdits => ("on-request", "user", "workspace-write"),
         PermissionMode::Auto => ("on-request", "auto_review", "workspace-write"),
         PermissionMode::FullAccess => ("never", "user", "danger-full-access"),
+    };
+    match environment {
+        Environment::Mac => (approval, reviewer, sandbox),
+        Environment::Container => (approval, reviewer, "danger-full-access"),
     }
 }
-pub(crate) fn sandbox_policy(mode: PermissionMode) -> Value {
-    match mode {
-        PermissionMode::ApprovalRequired => json!({"type":"readOnly"}),
-        PermissionMode::AutoAcceptEdits | PermissionMode::Auto => json!({"type":"workspaceWrite"}),
-        PermissionMode::FullAccess => json!({"type":"dangerFullAccess"}),
+pub(crate) fn sandbox_policy(mode: PermissionMode, environment: Environment) -> Value {
+    match (mode, environment) {
+        (_, Environment::Container) | (PermissionMode::FullAccess, _) => {
+            json!({"type":"dangerFullAccess"})
+        }
+        (PermissionMode::ApprovalRequired, _) => json!({"type":"readOnly"}),
+        (PermissionMode::AutoAcceptEdits | PermissionMode::Auto, _) => {
+            json!({"type":"workspaceWrite"})
+        }
     }
 }
 pub(crate) fn capabilities() -> ProviderCapabilities {
@@ -144,19 +165,27 @@ pub struct Codex {
     _alive: Arc<oneshot::Sender<()>>,
     pid: u32,
 }
+pub(crate) struct AgentProcess(std::process::Command);
+impl AgentProcess {
+    pub(crate) fn mac(binary: &Path) -> Self {
+        let mut command = crate::process::grouped(crate::onboarding::resolve_binary(binary));
+        command.arg("app-server");
+        Self(command)
+    }
+    pub(crate) fn new(command: std::process::Command) -> Self {
+        Self(command)
+    }
+}
 impl Codex {
     pub(crate) async fn launch(
-        binary: PathBuf,
+        process: AgentProcess,
         epoch: u64,
         events: mpsc::Sender<Signal>,
         log: RotatingLog,
         providers: crate::diagnostics::ProviderPids,
     ) -> Result<Self> {
-        let mut command = Command::from(crate::process::grouped(
-            crate::onboarding::resolve_binary(&binary),
-        ));
+        let mut command = Command::from(process.0);
         command
-            .arg("app-server")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -289,6 +318,10 @@ impl Codex {
     }
     pub async fn invalid_request(&self, id: Value, message: &str) -> Result<()> {
         self.write(json!({"id":id,"error":{"code":-32602,"message":message}}))
+            .await
+    }
+    pub async fn error(&self, id: Value, code: i64, message: &str) -> Result<()> {
+        self.write(json!({"id":id,"error":{"code":code,"message":message}}))
             .await
     }
     pub async fn refuse(&self, id: Value, method: &str) -> Result<()> {
@@ -497,6 +530,7 @@ async fn next_frame(reader: &mut BufReader<ChildStdout>, buf: &mut Vec<u8>) -> R
 mod tests {
     use super::*;
     use std::os::unix::{fs::PermissionsExt, process::ExitStatusExt};
+    use std::path::PathBuf;
 
     fn exit(status: Option<i32>, cause: Option<&str>, stderr: usize) -> Exit {
         Exit {
@@ -568,9 +602,15 @@ mod tests {
         );
         let log = RotatingLog::open(dir.path().join("codex.log"));
         let (events, mut signals) = mpsc::channel(4);
-        let _codex = Codex::launch(binary, 7, events, log, Default::default())
-            .await
-            .unwrap();
+        let _codex = Codex::launch(
+            AgentProcess::mac(&binary),
+            7,
+            events,
+            log,
+            Default::default(),
+        )
+        .await
+        .unwrap();
         let Some(Signal::Exited { epoch, exit }) = signals.recv().await else {
             panic!("expected an exit signal");
         };
@@ -611,7 +651,7 @@ mod tests {
         );
         let (events, _signals) = mpsc::channel(4);
         let codex = Codex::launch(
-            binary,
+            AgentProcess::mac(&binary),
             1,
             events,
             RotatingLog::open(dir.path().join("codex.log")),

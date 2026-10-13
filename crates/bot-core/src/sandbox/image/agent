@@ -1,0 +1,34 @@
+#!/bin/bash
+# A previous agent whose client died without the container noticing would keep its Codex home
+# locked and its turns running, so the group of the last agent this container recorded is
+# stopped first.
+set -u
+record=/botcode/agent.pgid
+if [[ -f $record ]]; then
+  previous=$(<"$record")
+  if [[ $previous =~ ^[0-9]+$ ]] && kill -0 -- "-$previous" 2>/dev/null; then
+    kill -TERM -- "-$previous" 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 -- "-$previous" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL -- "-$previous" 2>/dev/null
+  fi
+fi
+CODEX_HOME=/codex-home setsid codex app-server \
+  -c 'mcp_servers.browser.command="playwright-mcp"' \
+  -c 'mcp_servers.browser.args=["--config", "/opt/botcode/playwright-mcp.json"]' \
+  -c 'mcp_servers.browser.default_tools_approval_mode="approve"' \
+  <&0 &
+agent=$!
+echo "$agent" >"$record"
+wait "$agent"
+status=$?
+kill -TERM -- "-$agent" 2>/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  kill -0 -- "-$agent" 2>/dev/null || break
+  sleep 0.1
+done
+kill -KILL -- "-$agent" 2>/dev/null
+rm -f "$record"
+exit "$status"

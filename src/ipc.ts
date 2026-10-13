@@ -484,9 +484,31 @@ const checkout = z.discriminatedUnion("kind", [
     kind: z.literal("worktree"),
     path: z.string(),
     branch: z.string(),
+    sandbox: z.object({ kind: z.literal("docker"), id: z.string() }).optional(),
   }),
   z.object({ kind: z.literal("folder"), path: z.string() }),
 ]);
+export const sandboxAvailability = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("ready"),
+    memoryBytes: z.number(),
+    lowMemory: z.boolean(),
+  }),
+  z.object({ kind: z.literal("unavailable"), reason: z.string() }),
+]);
+export type SandboxAvailability = z.infer<typeof sandboxAvailability>;
+export const sandboxDesktop = z.object({
+  port: z.number().int().min(1).max(65535),
+  secret: z.string().regex(/^[A-Za-z0-9]{16,128}$/),
+});
+export type SandboxDesktop = z.infer<typeof sandboxDesktop>;
+export const sandboxState = z.enum([
+  "starting",
+  "running",
+  "paused",
+  "stopped",
+]);
+export type SandboxState = z.infer<typeof sandboxState>;
 const branches = z.object({
   branches: z.array(
     z.object({
@@ -925,6 +947,7 @@ export type NewCheckout =
   | { kind: "registered"; path: string }
   | { kind: "local" }
   | { kind: "worktree"; base: string; fromOrigin: boolean }
+  | { kind: "sandbox"; base: string; fromOrigin: boolean }
   | { kind: "folder"; prompt: string };
 export const registeredWorktree = z.object({
   path: z.string(),
@@ -1568,7 +1591,8 @@ export const ipc = {
       { ...identity, signal },
       z.object({ signaled: z.boolean(), message: z.string().nullable() }),
     ),
-  openUrl: (url: string) => call("open_url", { url }, z.null()),
+  openUrl: (url: string, threadId: string | null = null) =>
+    call("open_url", { url, threadId }, z.null()),
   availableEditors: () => call("available_editors", {}, z.array(editorId)),
   openInEditor: (
     target: OpenTarget,
@@ -1577,6 +1601,12 @@ export const ipc = {
   ) => call("open_in_editor", { target, editor, position }, z.null()),
   revealInFinder: (target: OpenTarget) =>
     call("reveal_in_finder", { target }, z.null()),
+  sandboxAvailability: () =>
+    call("sandbox_availability", {}, sandboxAvailability),
+  sandboxDesktop: (workspaceId: string, threadId: string) =>
+    call("sandbox_desktop", { workspaceId, threadId }, sandboxDesktop),
+  sandboxState: (workspaceId: string, threadId: string) =>
+    call("sandbox_state", { workspaceId, threadId }, sandboxState),
   create: (workspaceId: string, checkout: NewCheckout) =>
     call("create_thread", { workspaceId, checkout }, thread),
   listWorktrees: (workspaceId: string) =>
@@ -1727,8 +1757,12 @@ export async function subscribe(client: QueryClient): Promise<() => void> {
     if (timer) return;
     timer = setTimeout(() => {
       timer = undefined;
-      for (const threadId of hints)
+      for (const threadId of hints) {
         void client.invalidateQueries({ queryKey: ["thread", threadId] });
+        void client.invalidateQueries({
+          queryKey: ["sandbox-state", threadId],
+        });
+      }
       hints.clear();
       for (const workspaceId of workspaces)
         invalidateCheckouts(client, workspaceId);

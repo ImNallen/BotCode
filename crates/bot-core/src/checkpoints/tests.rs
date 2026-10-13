@@ -1,4 +1,10 @@
 use super::*;
+fn restore(root: &Path, checkpoint: &Checkpoint) -> Result<()> {
+    super::restore(
+        &crate::mirror::WriteRoot::mac(root.to_path_buf()),
+        checkpoint,
+    )
+}
 fn repository() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q"]).unwrap();

@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="botcode-discovery" content="none">
+<title>Sandbox desktop</title>
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #111; }
+#screen, #shield { position: fixed; inset: 0; }
+#shield[hidden] { display: none; }
+#status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 24px; text-align: center; font: 13px -apple-system, system-ui, sans-serif;
+  color: #8a8a8a; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="screen"></div>
+<div id="shield"></div>
+<div id="status">Connecting…</div>
+<script type="module">
+import RFB from "./core/rfb.js";
+const screen = document.getElementById("screen");
+const shield = document.getElementById("shield");
+const status = document.getElementById("status");
+const settings = () => new URLSearchParams(location.hash.slice(1));
+let rfb = null;
+// noVNC's viewOnly also stops it from resizing the remote screen, so view-only covers the
+// screen instead, and the desktop keeps the panel's size either way.
+function applyControl() {
+  shield.hidden = settings().get("control") === "1";
+  if (shield.hidden) rfb?.focus();
+  else rfb?.blur();
+}
+function connect() {
+  const secret = settings().get("secret") ?? "";
+  rfb = new RFB(screen, `ws://${location.host}/websockify?token=${encodeURIComponent(secret)}`, {
+    credentials: { password: secret },
+  });
+  rfb.resizeSession = true;
+  rfb.scaleViewport = true;
+  rfb.addEventListener("connect", () => {
+    status.textContent = "";
+    applyControl();
+  });
+  rfb.addEventListener("securityfailure", () => {
+    status.textContent = "The desktop refused the password.";
+  });
+  rfb.addEventListener("disconnect", () => {
+    rfb = null;
+    if (!status.textContent) status.textContent = "Reconnecting…";
+    setTimeout(connect, 1000);
+  });
+}
+addEventListener("hashchange", applyControl);
+applyControl();
+connect();
+</script>
+</body>
+</html>

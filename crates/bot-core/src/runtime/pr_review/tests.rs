@@ -53,7 +53,7 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
         attachments: Attachments::new(dir.path()),
         delete_jobs: JoinSet::new(),
         deleting: HashSet::new(),
-        terminals: Terminals::new(None, None, None),
+        terminals: Terminals::new(None, None, None, None),
         config: RuntimeConfig {
             data_dir: dir.path().into(),
             gh_binary: "/no/gh".into(),
@@ -71,15 +71,10 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
         leases: HashMap::new(),
         held: HashMap::new(),
         callbacks: HashMap::new(),
-        collaboration_modes: vec![],
         collaboration_waiters: vec![],
-        provider: None,
-        epoch: 0,
-        launching: false,
-        restarts: restarts::Restarts::default(),
+        providers: Default::default(),
         log: RotatingLog::open(dir.path().join("logs").join("codex.log")),
         provider_pids: Default::default(),
-        pending: vec![],
         models: None,
         model_waiters: vec![],
         listing_models: false,
@@ -91,6 +86,7 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
         changes: broadcast::channel(1).0,
         provider_events,
         done,
+        sandboxes: Arc::new(Sandboxes::for_tests(dir.path())),
     };
     let original = AppError::new(
         "process_cleanup",
@@ -148,7 +144,14 @@ async fn cleanup_failure_survives_receipt_storage_failure_and_later_shutdown() {
     let (commands, requests) = mpsc::channel(1);
     let (reply, shutdown) = oneshot::channel();
     commands.send(Command::Shutdown(reply)).await.unwrap();
-    owner.run(requests, signals, completions).await;
+    owner
+        .run(
+            requests,
+            signals,
+            completions,
+            tokio::sync::mpsc::unbounded_channel().1,
+        )
+        .await;
     assert_eq!(shutdown.await.unwrap().unwrap_err().code, "process_cleanup");
     let store = Store::open(dir.path()).unwrap();
     assert!(matches!(
@@ -234,7 +237,7 @@ async fn late_lifecycle_completion_preserves_supersession_and_cleanup_latch() {
         attachments: Attachments::new(dir.path()),
         delete_jobs: JoinSet::new(),
         deleting: HashSet::new(),
-        terminals: Terminals::new(None, None, None),
+        terminals: Terminals::new(None, None, None, None),
         config: RuntimeConfig {
             data_dir: dir.path().into(),
             gh_binary: "/no/gh".into(),
@@ -252,15 +255,10 @@ async fn late_lifecycle_completion_preserves_supersession_and_cleanup_latch() {
         leases: HashMap::new(),
         held: HashMap::new(),
         callbacks: HashMap::new(),
-        collaboration_modes: vec![],
         collaboration_waiters: vec![],
-        provider: None,
-        epoch: 0,
-        launching: false,
-        restarts: restarts::Restarts::default(),
+        providers: Default::default(),
         log: RotatingLog::open(dir.path().join("logs").join("codex.log")),
         provider_pids: Default::default(),
-        pending: vec![],
         models: None,
         model_waiters: vec![],
         listing_models: false,
@@ -272,6 +270,7 @@ async fn late_lifecycle_completion_preserves_supersession_and_cleanup_latch() {
         changes: broadcast::channel(1).0,
         provider_events,
         done,
+        sandboxes: Arc::new(Sandboxes::for_tests(dir.path())),
     };
 
     for result in [

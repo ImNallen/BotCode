@@ -48,7 +48,10 @@ it("treats only http and https as web links", () => {
 });
 
 function fakes(previewFails: boolean) {
-  const calls: { preview: [PreviewScope, string][]; external: string[] } = {
+  const calls: {
+    preview: [PreviewScope, string][];
+    external: [string, string | null][];
+  } = {
     preview: [],
     external: [],
   };
@@ -58,8 +61,8 @@ function fakes(previewFails: boolean) {
       calls.preview.push([scope, url]);
       if (previewFails) throw new Error("preview unavailable");
     },
-    openExternal: async (url: string) => {
-      calls.external.push(url);
+    openExternal: async (url: string, threadId: string | null) => {
+      calls.external.push([url, threadId]);
     },
   };
 }
@@ -90,7 +93,7 @@ it("falls back to the system browser when the Preview tab cannot open", async ()
     ...openers,
   });
   assert.equal(target, "system");
-  assert.deepEqual(calls, { preview: [[scope, url]], external: [url] });
+  assert.deepEqual(calls, { preview: [[scope, url]], external: [[url, "t"]] });
   assert.equal(
     logged[0]?.[0],
     "Failed to open link https://example.com in preview for thread:t.",
@@ -119,7 +122,36 @@ it("uses the system browser when there is no preview scope or a modifier is held
     }),
     "system",
   );
-  assert.deepEqual(calls, { preview: [], external: [url, url] });
+  assert.deepEqual(calls, {
+    preview: [],
+    external: [
+      [url, null],
+      [url, "t"],
+    ],
+  });
+});
+
+it("names the thread to the system browser so a sandbox thread's localhost maps", async () => {
+  const { calls, ...openers } = fakes(false);
+  const local = "http://localhost:5173/";
+  for (const linkScope of [
+    scope,
+    { kind: "draft", workspaceId: "w" } as const,
+    null,
+  ]) {
+    await openLink({
+      url: local,
+      event: plain,
+      preference: "system",
+      scope: linkScope,
+      ...openers,
+    });
+  }
+  assert.deepEqual(calls.external, [
+    [local, "t"],
+    [local, null],
+    [local, null],
+  ]);
 });
 
 it("rejects when the system browser fails after the preview fails", async () => {

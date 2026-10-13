@@ -196,7 +196,7 @@ fn writes_tracked_files_in_place_through_in_repo_symlinks_and_new_parents() {
             "base",
         ],
     );
-    let canonical = repo::open(root).unwrap();
+    let canonical = mirror::WriteRoot::mac(repo::open(root).unwrap());
     repo::write_file(&canonical, "a.txt", "edited\n").unwrap();
     assert_eq!(
         std::fs::read_to_string(root.join("a.txt")).unwrap(),
@@ -242,7 +242,7 @@ fn write_refuses_paths_outside_the_repository_and_inside_git() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     git(root, &["init", "-q"]);
-    let canonical = repo::open(root).unwrap();
+    let canonical = mirror::WriteRoot::mac(repo::open(root).unwrap());
     let config = std::fs::read(root.join(".git/config")).unwrap();
     for path in ["", "../x", "/abs/path", ".git/config", "./a.txt"] {
         assert_eq!(
@@ -324,7 +324,7 @@ fn write_refuses_symlinks_that_escape_the_repository() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     git(root, &["init", "-q"]);
-    let canonical = repo::open(root).unwrap();
+    let canonical = mirror::WriteRoot::mac(repo::open(root).unwrap());
     let elsewhere = tempfile::tempdir().unwrap();
     let outside_file = elsewhere.path().join("outside.txt");
     std::fs::write(&outside_file, "outside\n").unwrap();

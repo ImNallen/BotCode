@@ -1,6 +1,9 @@
 // Ports T3 Code v0.0.45 apps/server/src/project/ProjectSetupScriptRunner.ts (MIT).
 use super::*;
 use crate::project::{self, ProjectConfig, SetupState, WorktreeSetup};
+use crate::sandbox::Container;
+#[cfg(unix)]
+use crate::sandbox::{Attach, Exec, WORKSPACE};
 use std::io::{Read, Seek, SeekFrom};
 
 impl Owner {
@@ -72,9 +75,20 @@ impl Owner {
     }
     fn launch_setup(&mut self, id: &ThreadId) -> Result<()> {
         let mut thread = self.thread(id)?.clone();
-        let Some(setup) = thread.worktree_setup.as_mut() else {
+        if thread.worktree_setup.is_none() {
             return Ok(());
+        }
+        let container = match self.workdir(&thread) {
+            Workdir::Mac { .. } => None,
+            Workdir::Sandbox { handle, .. } => {
+                if !handle.is_ready() {
+                    handle.warm();
+                    return Ok(());
+                }
+                Some(handle.container.clone())
+            }
         };
+        let setup = thread.worktree_setup.as_mut().unwrap();
         let attempt_dir = self.setup_dir(setup);
         std::fs::create_dir_all(attempt_dir.parent().unwrap())?;
         if let Err(e) = std::fs::create_dir(&attempt_dir) {
@@ -99,6 +113,12 @@ impl Owner {
             shell: &project::shell(self.config.shell.as_deref()),
             script: script.as_deref(),
             submodules: &submodules,
+            container: container.as_ref(),
+        };
+        let stdin = if container.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
         };
         let result = attempt.spawn(lock, |process| {
             process
@@ -107,13 +127,15 @@ impl Owner {
                 .env("T3CODE_WORKTREE_PATH", cwd)
                 .env("NO_COLOR", "1")
                 .env("FORCE_COLOR", "0")
-                .stdin(std::process::Stdio::null())
+                .stdin(stdin)
                 .stdout(stdout)
                 .stderr(stderr);
         });
         match result {
             Ok(mut child) => {
+                let lifeline = child.stdin.take();
                 std::thread::spawn(move || {
+                    let _lifeline = lifeline;
                     let _ = child.wait();
                 });
             }
@@ -308,13 +330,31 @@ fn lock_attempt(dir: &Path) -> Result<Option<std::fs::File>> {
     }
 }
 
-/// A detached setup run that records its exit code in `receipt`.
 struct SetupAttempt<'a> {
     dir: &'a Path,
     #[cfg_attr(windows, allow(dead_code))]
     shell: &'a Path,
     script: Option<&'a str>,
     submodules: &'a str,
+    #[cfg_attr(windows, allow(dead_code))]
+    container: Option<&'a Container>,
+}
+#[cfg(unix)]
+fn shell_line(command: &std::process::Command) -> String {
+    let quote = |text: &std::ffi::OsStr| project::quote(&text.to_string_lossy());
+    let env: Vec<String> = command
+        .get_envs()
+        .filter_map(|(key, value)| Some(format!("{}={}", quote(key), quote(value?))))
+        .collect();
+    let argv: Vec<String> = std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(quote)
+        .collect();
+    if env.is_empty() {
+        argv.join(" ")
+    } else {
+        format!("env {} {}", env.join(" "), argv.join(" "))
+    }
 }
 impl SetupAttempt<'_> {
     #[cfg(unix)]
@@ -325,18 +365,40 @@ impl SetupAttempt<'_> {
     ) -> std::io::Result<std::process::Child> {
         use std::os::{fd::AsRawFd, unix::process::CommandExt};
         let quote = project::quote;
+        let in_container = |container: &Container, inner: &str| {
+            shell_line(&container.command(
+                &Exec {
+                    argv: &["bash", "-lc", inner],
+                    workdir: WORKSPACE,
+                    env: &[
+                        ("T3CODE_PROJECT_ROOT", WORKSPACE),
+                        ("T3CODE_WORKTREE_PATH", WORKSPACE),
+                        ("NO_COLOR", "1"),
+                        ("FORCE_COLOR", "0"),
+                    ],
+                },
+                Attach::Lifeline,
+            ))
+        };
         let submodules = match self.submodules {
             "recursive" => "git submodule update --init --recursive",
             "top-level" => "git submodule update --init",
             _ => ":",
         };
-        let run_script = self.script.map_or_else(String::new, |command| {
-            format!(
-                "{} -c {}; code=$?; ",
-                quote(&self.shell.to_string_lossy()),
-                quote(command)
-            )
-        });
+        let submodules = match self.container {
+            Some(container) if submodules != ":" => in_container(container, submodules),
+            _ => submodules.to_owned(),
+        };
+        let run_script = self
+            .script
+            .map_or_else(String::new, |command| match self.container {
+                Some(container) => format!("{}; code=$?; ", in_container(container, command)),
+                None => format!(
+                    "{} -c {}; code=$?; ",
+                    quote(&self.shell.to_string_lossy()),
+                    quote(command)
+                ),
+            });
         let wait_for_children = r#"while ps -eo pgid=,pid=,ppid= | awk -v group="$$" '$1 == group && $2 != group && $3 != group { found = 1 } END { exit !found }'; do sleep 0.2; done;"#;
         let wrapper = format!(
             "echo $$ > {pid_temp}; mv {pid_temp} {pid}; {submodules}; code=$?; if [ \"$code\" -ne 0 ]; then printf 'Submodule checkout failed with code %s.\\n' \"$code\"; fi; {run_script}printf '%s\\n' \"$code\" > {temp}; mv {temp} {receipt}; {wait_for_children} exit \"$code\"",

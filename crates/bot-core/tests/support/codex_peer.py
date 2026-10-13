@@ -5,6 +5,9 @@ def publish(path, text):
     temporary = path.with_name(path.name + '.tmp')
     temporary.write_text(text)
     temporary.replace(path)
+if len(sys.argv) > 1 and sys.argv[1] == '--version':
+    print('codex-cli 0.0.0-fixture')
+    sys.exit(0)
 if len(sys.argv) > 1 and sys.argv[1] == 'exec':
     prompt = sys.stdin.read()
     schema = json.loads(pathlib.Path(sys.argv[sys.argv.index('--output-schema') + 1]).read_text())
@@ -160,6 +163,8 @@ for line in sys.stdin:
             result(request, {'data': [{'model': 'model-two', 'displayName': 'Model Two', 'description': 'Another model',
                 'isDefault': False, 'hidden': False, 'defaultReasoningEffort': 'medium',
                 'supportedReasoningEfforts': [{'reasoningEffort': 'medium', 'description': 'Medium'}]}], 'nextCursor': None})
+    elif method == 'account/login/start':
+        result(request, {'loginId': 'fixture-login', 'authUrl': None})
     elif method == 'account/read':
         if (root / 'account_apikey').exists():
             result(request, {'account': {'type': 'apiKey'}, 'requiresOpenaiAuth': True})

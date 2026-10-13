@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use bot_core::{ListenerReading, SandboxNetwork};
 use serde::Serialize;
 use tauri::Url;
 use tokio::{
@@ -19,6 +20,7 @@ const COMMON_PORTS: &[u16] = &[
     3000, 3001, 3333, 4173, 4200, 4321, 5000, 5173, 5174, 5175, 5500, 8000, 8080, 8081, 8888, 9000,
 ];
 const MAX_LISTENERS: usize = 64;
+const DISCOVERY_OPT_OUT: &str = r#"<meta name="botcode-discovery" content="none">"#;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -158,7 +160,28 @@ pub async fn wait_local_ready(url: &Url) -> bool {
     }
 }
 
-async fn http_document(mut url: Url) -> Option<(String, Option<String>)> {
+pub async fn wait_sandbox_ready(network: &SandboxNetwork, port: u16) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if network
+            .listeners()
+            .await
+            .is_ok_and(|listeners| listeners.ports.contains(&port))
+        {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn http_document<F, C>(mut url: Url, open: F) -> Option<(String, Option<String>)>
+where
+    F: Fn(Url) -> C,
+    C: Future<Output = Option<TcpStream>>,
+{
     for _ in 0..=3 {
         if url.scheme() != "http"
             || !loopback(&url)
@@ -167,7 +190,7 @@ async fn http_document(mut url: Url) -> Option<(String, Option<String>)> {
         {
             return None;
         }
-        let mut stream = connect(&url).await?;
+        let mut stream = open(url.clone()).await?;
         let path = match url.query() {
             Some(query) => format!("{}?{query}", url.path()),
             None => url.path().to_owned(),
@@ -223,6 +246,9 @@ async fn http_document(mut url: Url) -> Option<(String, Option<String>)> {
             return None;
         }
         let lower = body.to_ascii_lowercase();
+        if lower.contains(DISCOVERY_OPT_OUT) {
+            return None;
+        }
         let title = lower.find("<title").and_then(|start| {
             let start = start + lower[start..].find('>')? + 1;
             let end = start + lower[start..].find("</title>")?;
@@ -237,9 +263,10 @@ async fn http_document(mut url: Url) -> Option<(String, Option<String>)> {
     None
 }
 
-pub async fn discover() -> Vec<LocalServer> {
+pub async fn discover(excluded: &BTreeSet<u16>) -> Vec<LocalServer> {
     let mut ports = listener_ports().await;
     ports.extend(COMMON_PORTS.iter().copied());
+    ports.retain(|port| !excluded.contains(port));
     let mut candidates = ports.into_iter().take(MAX_LISTENERS);
     let mut jobs = JoinSet::new();
     let mut result = Vec::new();
@@ -252,7 +279,7 @@ pub async fn discover() -> Vec<LocalServer> {
                 let probe = async {
                     for host in ["127.0.0.1", "[::1]"] {
                         let url = Url::parse(&format!("http://{host}:{port}/")).ok()?;
-                        if let Some((url, title)) = http_document(url).await {
+                        if let Some((url, title)) = http_document(url, mac).await {
                             return Some(LocalServer { port, url, title });
                         }
                     }
@@ -272,6 +299,42 @@ pub async fn discover() -> Vec<LocalServer> {
     }
     result.sort_by_key(|server| server.port);
     result
+}
+
+async fn mac(url: Url) -> Option<TcpStream> {
+    connect(&url).await
+}
+
+pub async fn discover_sandbox(network: &SandboxNetwork) -> Result<Vec<LocalServer>, String> {
+    let listeners = network.listeners().await.map_err(|error| error.message)?;
+    let mut jobs = JoinSet::new();
+    for port in listeners.ports.into_iter().take(MAX_LISTENERS) {
+        let network = network.clone();
+        let reading = listeners.reading;
+        jobs.spawn(async move {
+            let url = Url::parse(&format!("http://localhost:{port}/")).ok()?;
+            if reading == ListenerReading::LastSeen {
+                return Some(LocalServer {
+                    port,
+                    url: url.to_string(),
+                    title: None,
+                });
+            }
+            let open = |url: Url| {
+                let network = network.clone();
+                async move { network.dial(url.port_or_known_default()?).await.ok() }
+            };
+            let (url, title) =
+                tokio::time::timeout(Duration::from_secs(1), http_document(url, open))
+                    .await
+                    .ok()
+                    .flatten()?;
+            Some(LocalServer { port, url, title })
+        });
+    }
+    let mut result: Vec<LocalServer> = jobs.join_all().await.into_iter().flatten().collect();
+    result.sort_by_key(|server| server.port);
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -309,6 +372,32 @@ Aktive Verbindungen
         assert_eq!(ports, BTreeSet::from([3000, 5173, 8000, 8080]));
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn mac_discovery_leaves_out_sandbox_forwarders() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 4096];
+                let _ = stream.read(&mut buffer).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><title>Forwarded</title></html>")
+                    .await;
+            }
+        });
+        let listed = |servers: Vec<LocalServer>| servers.iter().any(|server| server.port == port);
+        assert!(
+            listed(discover(&BTreeSet::new()).await),
+            "a Mac server is listed"
+        );
+        assert!(
+            !listed(discover(&BTreeSet::from([port])).await),
+            "a forwarder is a sandbox's server"
+        );
+    }
+
     #[tokio::test]
     async fn probes_html_and_follows_only_local_redirects() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -319,6 +408,7 @@ Aktive Verbindungen
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><title> Fixture page </title></html>",
                 "HTTP/1.1 302 Found\r\nLocation: http://example.com/\r\nConnection: close\r\n\r\n",
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"ok\":true}",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><meta name=\"botcode-discovery\" content=\"none\"><title>Sandbox desktop</title></html>",
             ] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut buffer = [0; 4096];
@@ -328,11 +418,15 @@ Aktive Verbindungen
             }
         });
         let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
-        let document = http_document(url.clone()).await.unwrap();
+        let document = http_document(url.clone(), mac).await.unwrap();
         assert_eq!(document.0, format!("http://127.0.0.1:{port}/page"));
         assert_eq!(document.1.as_deref(), Some("Fixture page"));
-        assert!(http_document(url.clone()).await.is_none());
-        assert!(http_document(url).await.is_none());
+        assert!(http_document(url.clone(), mac).await.is_none());
+        assert!(http_document(url.clone(), mac).await.is_none());
+        assert!(
+            http_document(url, mac).await.is_none(),
+            "a page that opts out of discovery"
+        );
         server.await.unwrap();
     }
 }

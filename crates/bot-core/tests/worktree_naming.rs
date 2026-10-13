@@ -94,7 +94,7 @@ fn git(path: &Path, args: &[&str]) -> String {
 }
 fn checkout(t: &ThreadSnapshot) -> (&Path, &str) {
     match &t.checkout {
-        Checkout::Worktree { path, branch } => (path, branch),
+        Checkout::Worktree { path, branch, .. } => (path, branch),
         _ => panic!("worktree expected"),
     }
 }

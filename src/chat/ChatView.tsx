@@ -53,11 +53,7 @@ import type {
 import { cn } from "../lib/cn";
 import { workingSessions } from "../lib/sessions";
 import { useShortcutLabel } from "../lib/shortcuts";
-import {
-  type CheckoutMode,
-  projectSetting,
-  usePreferences,
-} from "../settings/preferences";
+import { projectSetting, usePreferences } from "../settings/preferences";
 import { WorkspaceBadge } from "../ProjectBadge";
 import {
   WorkspaceBreadcrumb,
@@ -196,6 +192,13 @@ import {
 } from "../terminal/terminalStore";
 
 import { resolveThreadEnvMode } from "./projectScripts";
+import { inSandbox } from "../lib/sandbox";
+import {
+  draftNewCheckout,
+  picksBase,
+  sandboxOption,
+  type DraftCheckout,
+} from "./draftCheckout";
 import { ProjectScriptsControl } from "./ProjectScriptsControl";
 import { ChatHeaderActions } from "./ChatHeaderActions";
 import { MenuSeparator } from "../ui/menu";
@@ -221,11 +224,6 @@ import {
 } from "./ExpandedImagePreview";
 import { makeWorkspaceFileDropHandlers } from "./workspaceFileDrop";
 
-type DraftCheckout = {
-  mode: CheckoutMode;
-  base: string | null;
-  fromOrigin: boolean;
-};
 type PullRequestHandoff = {
   preparation: PullRequestPreparation;
 } & (
@@ -379,6 +377,12 @@ export function ChatView({
     enabled: !isScratch && (!threadId || prHandoff !== null),
     retry: false,
   });
+  const sandboxAvailability = useQuery({
+    queryKey: ["sandbox-availability"],
+    queryFn: ipc.sandboxAvailability,
+    enabled: !isScratch && !threadId,
+    retry: false,
+  });
   useSyncExternalStore(
     followUps.subscribe,
     followUps.snapshot,
@@ -528,6 +532,7 @@ export function ChatView({
     "newWorktreesStartFromOrigin",
   ).value;
   const draftDefaults = (): DraftCheckout => ({
+    placement: "mac",
     mode: newThreadCheckout,
     base: null,
     fromOrigin: newWorktreesStartFromOrigin,
@@ -660,9 +665,16 @@ export function ChatView({
       ? view.workspace.root
       : undefined;
   const skills = useCheckoutSkills(skillsRoot);
-  const checkoutOpenable = Boolean(
-    view && !view.unavailable && (threadId ? thread : !isScratch),
-  );
+  const sandboxed = inSandbox(thread?.checkout);
+  const sandboxState = useQuery({
+    queryKey: ["sandbox-state", threadId],
+    queryFn: () => ipc.sandboxState(workspaceId, threadId ?? ""),
+    enabled: sandboxed && Boolean(threadId),
+    retry: false,
+  });
+  const checkoutOpenable =
+    Boolean(view && !view.unavailable && (threadId ? thread : !isScratch)) &&
+    !sandboxed;
   const gitThread = !isScratch && !view?.unavailable ? thread : undefined;
   const fileContextMenu = useFileContextMenu();
   const summary = view?.threads.find((row) => row.id === threadId);
@@ -789,13 +801,7 @@ export function ChatView({
           workspaceId,
           isScratch
             ? { kind: "folder", prompt: text }
-            : draftCheckout.mode === "worktree"
-              ? {
-                  kind: "worktree",
-                  base: base ?? "",
-                  fromOrigin: baseFromOrigin,
-                }
-              : { kind: "local" },
+            : draftNewCheckout(draftCheckout, base ?? "", baseFromOrigin),
         );
         setThreadSnapshot(client, created);
         target = created.id;
@@ -1023,18 +1029,27 @@ export function ChatView({
         setPanelOpen(true);
         setPanel((current) => openFile(current, path));
       },
-      target: (link) =>
-        link.kind === "external"
-          ? { kind: "chat_link", thread_id: link.threadId, path: link.path }
-          : workspaceTarget(
-              { workspaceId: checkoutWorkspace, threadId: checkoutThread },
-              link.path,
-            ),
+      target: sandboxed
+        ? null
+        : (link) =>
+            link.kind === "external"
+              ? { kind: "chat_link", thread_id: link.threadId, path: link.path }
+              : workspaceTarget(
+                  { workspaceId: checkoutWorkspace, threadId: checkoutThread },
+                  link.path,
+                ),
       absolutePath: (link) =>
         link.kind === "external" || !root ? link.path : `${root}/${link.path}`,
       previewScope: scopeForPreview(workspaceId, threadId),
     };
-  }, [view, workspaceId, threadId, checkoutWorkspace, checkoutThread]);
+  }, [
+    view,
+    workspaceId,
+    threadId,
+    checkoutWorkspace,
+    checkoutThread,
+    sandboxed,
+  ]);
   const terminalAvailable = !(isScratch && !threadId);
   const terminalScope = terminalScopeKey(workspaceId, threadId ?? null);
   const terminalState = useTerminalState(terminalScope);
@@ -1676,8 +1691,7 @@ export function ChatView({
     });
   };
   const title = isDraft ? "New thread" : (thread?.title ?? "");
-  const worktreeDraft =
-    isDraft && !createdDraft && draftCheckout.mode === "worktree";
+  const worktreeDraft = isDraft && !createdDraft && picksBase(draftCheckout);
   const controlsDisabled =
     selectingWorktree ||
     prHandoff?.kind === "appending" ||
@@ -1695,6 +1709,17 @@ export function ChatView({
           isDraft && !createdDraft
             ? {
                 kind: "draft",
+                placement: draftCheckout.placement,
+                sandbox: sandboxOption(
+                  sandboxAvailability.data,
+                  sandboxAvailability.error?.message,
+                ),
+                onSandboxMenuOpen: () => void sandboxAvailability.refetch(),
+                onPlacementChange: (placement) =>
+                  setDraftCheckout((current) => ({
+                    ...current,
+                    placement,
+                  })),
                 mode: draftCheckout.mode,
                 onChange: (mode) =>
                   setDraftCheckout((current) => ({
@@ -1707,6 +1732,7 @@ export function ChatView({
                 onSelectWorktree: (path) => void selectRegisteredWorktree(path),
               }
             : (thread ?? createdDraft)?.checkout,
+        sandboxState: sandboxState.data,
         branch: (
           <BranchPicker
             checkout={checkout}

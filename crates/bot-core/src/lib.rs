@@ -42,6 +42,7 @@ mod editors;
 pub use editors::{EditorId, OpenTarget, Position, available_editors};
 mod keybindings;
 mod log;
+pub mod mirror;
 mod native_app_icon;
 pub use keybindings::KeybindingsFile;
 mod pr_inbox;
@@ -69,6 +70,7 @@ pub use pull_requests::{
     ThreadPrSummary,
 };
 mod runtime;
+pub mod sandbox;
 mod settings;
 mod skills;
 pub use skills::Skill;
@@ -88,6 +90,8 @@ pub use usage::{
 mod text_generation;
 mod thread_title;
 mod vcs;
+mod workdir;
+pub use workdir::{ListenerReading, Listeners, LocalNetwork, SandboxNetwork};
 pub mod workspace_files;
 pub use domain::*;
 pub use runtime::{App, RuntimeConfig};

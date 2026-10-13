@@ -21,6 +21,7 @@ struct Scope {
 }
 pub(super) enum ToolReply {
     Dynamic {
+        epoch: u64,
         request: Value,
     },
     Mcp {
@@ -44,14 +45,15 @@ impl ToolReply {
 }
 type CallKey = (ThreadId, TurnId, String);
 pub(super) struct ToolCompletion {
-    context: ToolContext,
-    caller: Caller,
-    reply: ToolReply,
-    result: ToolResult,
+    pub(super) context: ToolContext,
+    pub(super) caller: Caller,
+    pub(super) reply: ToolReply,
+    pub(super) result: ToolResult,
 }
 pub(super) struct ToolWork {
     registry: Registry,
     registration: Registration,
+    sandbox: Registry,
     server: Option<BridgeServer>,
     pub incoming: mpsc::Receiver<Envelope>,
     pub jobs: JoinSet<ToolCompletion>,
@@ -60,12 +62,21 @@ pub(super) struct ToolWork {
     sessions: HashMap<ThreadId, String>,
     declarations: BTreeMap<String, String>,
     fingerprint: String,
+    sandbox_fingerprint: String,
     seen: HashMap<ThreadId, (TurnId, HashSet<String>)>,
+}
+fn catalog_fingerprint(registry: &Registry) -> Result<String> {
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&registry.specs)?)
+    ))
 }
 impl ToolWork {
     pub fn new(config: &RuntimeConfig, tools: AgentTools, store: &Store) -> Result<Self> {
         let registry = Registry::new(tools.backend)?;
-        let fingerprint = format!("{:x}", Sha256::digest(serde_json::to_vec(&registry.specs)?));
+        let sandbox = Registry::new(None)?;
+        let fingerprint = catalog_fingerprint(&registry)?;
+        let sandbox_fingerprint = catalog_fingerprint(&sandbox)?;
         let (server, incoming) = match tools.registration {
             Registration::Stdio { .. } => {
                 let (server, incoming) = BridgeServer::open(&config.data_dir)?;
@@ -84,6 +95,7 @@ impl ToolWork {
         Ok(Self {
             registry,
             registration: tools.registration,
+            sandbox,
             server,
             incoming,
             jobs: JoinSet::new(),
@@ -92,7 +104,22 @@ impl ToolWork {
             sessions: HashMap::new(),
             declarations,
             fingerprint,
+            sandbox_fingerprint,
             seen: HashMap::new(),
+        })
+    }
+    fn dynamic(&self, key: &EnvKey) -> Option<(&Registry, &str)> {
+        match key {
+            EnvKey::Mac => match self.registration {
+                Registration::Dynamic => Some((&self.registry, &self.fingerprint)),
+                Registration::Stdio { .. } => None,
+            },
+            EnvKey::Sandbox(_) => Some((&self.sandbox, &self.sandbox_fingerprint)),
+        }
+    }
+    fn declared(&self, key: &EnvKey, native: &str) -> bool {
+        self.dynamic(key).is_some_and(|(_, fingerprint)| {
+            self.declarations.get(native).map(String::as_str) == Some(fingerprint)
         })
     }
     fn config(&mut self, thread: &ThreadId, epoch: u64) -> Option<Value> {
@@ -119,15 +146,18 @@ impl ToolWork {
             &self.registry.specs,
         ))
     }
-    pub fn guidance(&self, native: &str) -> Option<&'static str> {
-        if matches!(self.registration, Registration::Dynamic)
-            && self.declarations.get(native) != Some(&self.fingerprint)
-        {
-            return None;
-        }
+    pub fn guidance(&self, key: &EnvKey, native: &str) -> Option<&'static str> {
+        let registry = match self.dynamic(key) {
+            Some((registry, _)) => {
+                if !self.declared(key, native) {
+                    return None;
+                }
+                registry
+            }
+            None => &self.registry,
+        };
         Some(
-            if self
-                .registry
+            if registry
                 .specs
                 .iter()
                 .any(|spec| spec.name.starts_with("preview_"))
@@ -138,12 +168,18 @@ impl ToolWork {
             },
         )
     }
-    pub fn revoke(&mut self) {
-        self.jobs.abort_all();
-        self.running.clear();
-        self.credentials.clear();
-        self.sessions.clear();
-        self.seen.clear();
+    pub fn revoke(&mut self, spared: &HashSet<ThreadId>) {
+        self.running.retain(|(thread, _, _), abort| {
+            if spared.contains(thread) {
+                return true;
+            }
+            abort.abort();
+            false
+        });
+        self.credentials
+            .retain(|_, scope| spared.contains(&scope.thread));
+        self.sessions.retain(|thread, _| spared.contains(thread));
+        self.seen.retain(|thread, _| spared.contains(thread));
     }
     pub fn cancel_thread(&mut self, thread: &ThreadId) {
         self.running.retain(|(id, _, _), abort| {
@@ -167,29 +203,33 @@ impl ToolWork {
 impl Owner {
     pub(super) fn tools_thread_params(
         &mut self,
+        key: &EnvKey,
         thread: &ThreadId,
+        epoch: u64,
         params: &mut Value,
         creating: bool,
     ) {
-        match &self.tools.registration {
-            Registration::Dynamic if creating => {
-                params["dynamicTools"] = adapter::dynamic_specs(&self.tools.registry.specs)
+        match self.tools.dynamic(key) {
+            Some((registry, _)) if creating => {
+                params["dynamicTools"] = adapter::dynamic_specs(&registry.specs)
             }
-            Registration::Dynamic => {}
-            Registration::Stdio { .. } => {
-                params["config"] = self.tools.config(thread, self.epoch).unwrap();
+            Some(_) => {}
+            None => {
+                params["config"] = self.tools.config(thread, epoch).unwrap();
             }
         }
     }
-    pub(super) fn tools_prepared(&mut self, native: &str, created: bool) -> Result<()> {
-        if created && matches!(self.tools.registration, Registration::Dynamic) {
-            self.store.set_ui_state(
-                &format!("{DECLARATION_KEY}{native}"),
-                Some(&self.tools.fingerprint),
-            )?;
-            self.tools
-                .declarations
-                .insert(native.into(), self.tools.fingerprint.clone());
+    pub(super) fn tools_prepared(
+        &mut self,
+        key: &EnvKey,
+        native: &str,
+        created: bool,
+    ) -> Result<()> {
+        if created && let Some((_, fingerprint)) = self.tools.dynamic(key) {
+            let fingerprint = fingerprint.to_owned();
+            self.store
+                .set_ui_state(&format!("{DECLARATION_KEY}{native}"), Some(&fingerprint))?;
+            self.tools.declarations.insert(native.into(), fingerprint);
         }
         Ok(())
     }
@@ -208,7 +248,7 @@ impl Owner {
         Ok(())
     }
     fn tool_context(&self, thread: &ThreadId, epoch: u64, caller: &Caller) -> Result<ToolContext> {
-        if epoch != self.epoch || self.provider.is_none() {
+        if self.providers.live(epoch).is_none() {
             return Err(AppError::new(
                 "tool_expired",
                 "This tool session expired after Codex restarted.",
@@ -242,32 +282,31 @@ impl Owner {
             call_id: caller.call_id.clone(),
         })
     }
-    pub(super) async fn dynamic_tool(&mut self, request: Value, params: Value) -> Result<()> {
+    pub(super) async fn dynamic_tool(
+        &mut self,
+        epoch: u64,
+        request: Value,
+        params: Value,
+    ) -> Result<()> {
         let (caller, call) = match adapter::dynamic_call(params) {
             Ok(decoded) => decoded,
             Err(problem) => {
-                if let Some(provider) = &self.provider {
+                if let Some((_, provider)) = self.providers.live(epoch) {
                     provider.invalid_request(request, &problem.message).await?;
                 }
                 return Ok(());
             }
         };
-        let target = self
-            .threads
-            .values()
-            .find(|thread| {
-                thread.native_thread_id.as_deref() == Some(caller.native_thread.as_str())
-            })
-            .map(|thread| thread.id.clone());
-        let reply = ToolReply::Dynamic { request };
-        let context = match target
-            .and_then(|thread| self.tool_context(&thread, self.epoch, &caller).ok())
-        {
-            Some(context)
-                if matches!(self.tools.registration, Registration::Dynamic)
-                    && self.tools.declarations.get(&caller.native_thread)
-                        == Some(&self.tools.fingerprint) =>
-            {
+        let key = self.providers.key(epoch).cloned();
+        let target = key
+            .as_ref()
+            .and_then(|key| self.thread_by_native(key, &caller.native_thread));
+        let reply = ToolReply::Dynamic { epoch, request };
+        let context = match (
+            &key,
+            target.and_then(|thread| self.tool_context(&thread, epoch, &caller).ok()),
+        ) {
+            (Some(key), Some(context)) if self.tools.declared(key, &caller.native_thread) => {
                 context
             }
             _ => return self
@@ -279,25 +318,37 @@ impl Owner {
                 )
                 .await,
         };
-        self.dispatch_tool(context, caller, call, reply).await
+        let registry = match key {
+            Some(EnvKey::Sandbox(_)) => &self.tools.sandbox,
+            Some(EnvKey::Mac) | None => &self.tools.registry,
+        };
+        let action = match registry.decode(call) {
+            Ok(action) => action,
+            Err(problem) => {
+                return self
+                    .send_tool_result(reply, ToolResult::failure(problem.message))
+                    .await;
+            }
+        };
+        self.dispatch_tool(context, caller, action, reply).await
     }
-    pub(super) async fn mcp_tool(&mut self, envelope: Envelope) -> Result<()> {
+    pub(super) async fn mcp_tool(&mut self, envelope: Envelope) {
         let Envelope { request, reply } = envelope;
         let Some(scope) = self
             .tools
             .credentials
             .get(&request.credential)
-            .filter(|scope| scope.epoch == self.epoch)
+            .filter(|scope| self.providers.current(scope.epoch))
         else {
             let _ = reply.send(Err(AppError::new(
                 "tool_expired",
                 "Agent tool credential expired or is unknown.",
             )));
-            return Ok(());
+            return;
         };
         let thread = scope.thread.clone();
         let epoch = scope.epoch;
-        match request.operation {
+        let sent = match request.operation {
             BridgeOperation::List => {
                 let result = self
                     .thread(&thread)
@@ -310,21 +361,36 @@ impl Owner {
                     credential: request.credential,
                     reply,
                 };
-                match self.tool_context(&thread, epoch, &caller) {
-                    Ok(context) => self.dispatch_tool(context, caller, call, reply).await,
+                let decoded = self
+                    .tool_context(&thread, epoch, &caller)
+                    .and_then(|context| Ok((context, self.tools.registry.decode(call)?)));
+                match decoded {
+                    Ok((context, action)) => {
+                        self.dispatch_tool(context, caller, action, reply).await
+                    }
                     Err(problem) => {
                         self.send_tool_result(reply, ToolResult::failure(problem.message))
                             .await
                     }
                 }
             }
+        };
+        if let Err(error) = sent {
+            self.lose_tool_slot(epoch, &error).await;
+        }
+    }
+    /// A tool reply that could not be delivered means the agent it was for is broken. Only
+    /// that agent's slot is lost; the other environments keep their work.
+    async fn lose_tool_slot(&mut self, epoch: u64, error: &AppError) {
+        if let Some(key) = self.providers.key(epoch).cloned() {
+            self.lose_env(&key, &error.message, &error.message).await;
         }
     }
     async fn dispatch_tool(
         &mut self,
         context: ToolContext,
         caller: Caller,
-        call: crate::ToolCall,
+        action: Action,
         reply: ToolReply,
     ) -> Result<()> {
         if reply.is_closed() {
@@ -348,14 +414,6 @@ impl Owner {
                 )
                 .await;
         }
-        let action = match self.tools.registry.decode(call) {
-            Ok(action) => action,
-            Err(problem) => {
-                return self
-                    .send_tool_result(reply, ToolResult::failure(problem.message))
-                    .await;
-            }
-        };
         match action {
             Action::Preview(call) => {
                 if self.tools.jobs.len() >= MAX_JOBS {
@@ -437,7 +495,7 @@ impl Owner {
     pub(super) async fn finish_tool(
         &mut self,
         completion: std::result::Result<ToolCompletion, tokio::task::JoinError>,
-    ) -> Result<()> {
+    ) {
         let Ok(ToolCompletion {
             context,
             caller,
@@ -445,7 +503,7 @@ impl Owner {
             result,
         }) = completion
         else {
-            return Ok(());
+            return;
         };
         self.tools.running.remove(&(
             context.thread_id.clone(),
@@ -463,16 +521,17 @@ impl Owner {
                 })
             }
         };
-        if current && scope_current {
-            self.send_tool_result(reply, result).await
-        } else {
-            Ok(())
+        if current
+            && scope_current
+            && let Err(error) = self.send_tool_result(reply, result).await
+        {
+            self.lose_tool_slot(context.session_epoch, &error).await;
         }
     }
     async fn send_tool_result(&mut self, reply: ToolReply, result: ToolResult) -> Result<()> {
         match reply {
-            ToolReply::Dynamic { request } => {
-                if let Some(provider) = &self.provider {
+            ToolReply::Dynamic { epoch, request } => {
+                if let Some((_, provider)) = self.providers.live(epoch) {
                     provider
                         .respond(request, adapter::dynamic_result(result.bounded()))
                         .await?;

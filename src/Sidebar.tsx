@@ -41,6 +41,7 @@ import {
   PinIcon,
   PinOffIcon,
   ShieldQuestionIcon,
+  ContainerIcon,
   FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
@@ -58,7 +59,13 @@ import {
   TimerIcon,
   type LucideIcon,
 } from "lucide-react";
-import { ipc, type Arrange, type Workspace, type WorkspaceView } from "./ipc";
+import {
+  ipc,
+  type Arrange,
+  type Checkout,
+  type Workspace,
+  type WorkspaceView,
+} from "./ipc";
 import { cn } from "./lib/cn";
 import { resolveWorktreeCleanup, usePreferences } from "./settings/preferences";
 import {
@@ -2371,17 +2378,33 @@ function SlimRow({
   );
 }
 
-function WorktreeIndicator({ path, branch }: { path: string; branch: string }) {
+function WorktreeIndicator({
+  path,
+  branch,
+  sandbox,
+}: Extract<Checkout, { kind: "worktree" }>) {
   const label = `Worktree: ${pathBasename(path)} (${branch})`;
   return (
-    <span
-      role="img"
-      aria-label={label}
-      title={label}
-      className="inline-flex items-center justify-center"
-    >
-      <FolderGit2Icon className="size-3 text-muted-foreground/40" />
-    </span>
+    <>
+      <span
+        role="img"
+        aria-label={label}
+        title={label}
+        className="inline-flex items-center justify-center"
+      >
+        <FolderGit2Icon className="size-3 text-muted-foreground/40" />
+      </span>
+      {sandbox ? (
+        <span
+          role="img"
+          aria-label="Sandbox"
+          title="Runs in a sandbox"
+          className="inline-flex items-center justify-center"
+        >
+          <ContainerIcon className="size-3 text-muted-foreground/40" />
+        </span>
+      ) : null}
+    </>
   );
 }
 

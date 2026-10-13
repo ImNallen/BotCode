@@ -35,7 +35,11 @@ impl Owner {
             }
         }
         for thread in self.threads.values() {
-            if let Checkout::Worktree { path, .. } = &thread.checkout
+            if let Checkout::Worktree {
+                path,
+                sandbox: None,
+                ..
+            } = &thread.checkout
                 && let Some(workspace) = self.workspaces.get(&thread.workspace_id)
                 && workspace.kind == WorkspaceKind::Repository
                 && let Ok(root) = dunce::canonicalize(path)

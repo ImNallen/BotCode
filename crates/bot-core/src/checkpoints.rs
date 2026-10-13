@@ -835,7 +835,8 @@ fn restore_exclusions(root: &Path, checkpoint: &Checkpoint) -> Result<Vec<String
 pub(crate) fn preflight_restore(root: &Path, checkpoint: &Checkpoint) -> Result<()> {
     restore_exclusions(root, checkpoint).map(drop)
 }
-pub(crate) fn restore(root: &Path, checkpoint: &Checkpoint) -> Result<()> {
+pub(crate) fn restore(root: &crate::mirror::WriteRoot, checkpoint: &Checkpoint) -> Result<()> {
+    let root: &Path = root;
     let exclusions = restore_exclusions(root, checkpoint)?;
     let tracked = git(
         root,

@@ -1,0 +1,82 @@
+#!/bin/bash
+# One secret gates both the websocket, as its token, and VNC, as its password, which VNC cuts
+# to 8 characters.
+set -u
+state=/dev/shm/botcode-desktop
+display=:1
+vnc_port=5900
+web_port=6080
+web=/opt/botcode/desktop
+
+running() { pgrep -u "$(id -u)" -f "$1" >/dev/null; }
+listening() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+wait_for() {
+  for _ in $(seq 1 200); do "$@" && return 0; sleep 0.05; done
+  echo "desktop: $* did not come up; see $state/xvnc.log and $state/wm.log" >&2
+  exit 1
+}
+set_secret() {
+  [[ $1 =~ ^[A-Za-z0-9]{16,128}$ ]] || { echo "desktop: invalid secret" >&2; exit 2; }
+  printf '%s\n' "${1:0:8}" | vncpasswd -f >"$state/passwd.new" 2>/dev/null \
+    && mv -f "$state/passwd.new" "$state/passwd"
+  printf '%s: 127.0.0.1:%s\n' "$1" "$vnc_port" >"$state/tokens.new" \
+    && mv -f "$state/tokens.new" "$state/tokens"
+}
+
+case ${1-} in
+  start)
+    umask 077
+    mkdir -p "$state"
+    exec 9>"$state/lock"
+    flock 9
+    if [[ ${2-} == --secret-stdin ]]; then
+      IFS= read -r secret || true
+      set_secret "${secret-}"
+    elif [[ ! -f $state/passwd ]]; then
+      set_secret "$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+    fi
+    # The daemons must not inherit the lock, or the next start would wait on them forever.
+    if ! running "^Xvnc $display"; then
+      rm -f "/tmp/.X${display#:}-lock" "/tmp/.X11-unix/X${display#:}"
+      setsid -f Xvnc "$display" -geometry 1280x800 -depth 24 -localhost -rfbport "$vnc_port" \
+        -SecurityTypes VncAuth -PasswordFile "$state/passwd" -AlwaysShared -nolisten tcp \
+        -desktop "Sandbox desktop" </dev/null >"$state/xvnc.log" 2>&1 9>&-
+    fi
+    wait_for listening "$vnc_port"
+    wait_for test -S "/tmp/.X11-unix/X${display#:}"
+    if ! running "^matchbox-window-manager"; then
+      DISPLAY=$display setsid -f matchbox-window-manager -use_titlebar no \
+        </dev/null >"$state/wm.log" 2>&1 9>&-
+    fi
+    # Its log would name the secret, which arrives as the token in each websocket path.
+    if ! running "websockify --web $web"; then
+      setsid -f websockify --web "$web" --token-plugin TokenFile --token-source "$state/tokens" \
+        "0.0.0.0:$web_port" </dev/null >/dev/null 2>&1 9>&-
+    fi
+    wait_for listening "$web_port"
+    ;;
+  status)
+    running "^Xvnc $display" && running "^matchbox-window-manager" && listening "$web_port"
+    ;;
+  clients)
+    # Established connections whose local port is 5900 (0x170C): one per VNC client, which
+    # is one per connected Desktop tab, because websockify opens one for each websocket.
+    awk '$4 == "01" && $2 ~ /:170C$/ { n++ } END { print n + 0 }' /proc/net/tcp
+    ;;
+  stop)
+    # Windows die with their X server, and Chromium is killed too in case it lingers while
+    # it reconnects.
+    pkill -u "$(id -u)" -f "^Xvnc $display"
+    pkill -u "$(id -u)" -f "^matchbox-window-manager"
+    pkill -u "$(id -u)" -f "websockify --web $web"
+    pkill -u "$(id -u)" -f "chrome-linux.*/chrome|/opt/botcode/chromium"
+    for _ in $(seq 1 100); do
+      running "^Xvnc $display|^matchbox-window-manager|websockify --web $web|chrome-linux.*/chrome" || break
+      sleep 0.05
+    done
+    pkill -KILL -u "$(id -u)" -f "^Xvnc $display|^matchbox-window-manager|websockify --web $web|chrome-linux.*/chrome" 2>/dev/null
+    rm -f "/tmp/.X${display#:}-lock" "/tmp/.X11-unix/X${display#:}"
+    exit 0
+    ;;
+  *) echo "usage: desktop start [--secret-stdin] | status | clients | stop" >&2; exit 2 ;;
+esac

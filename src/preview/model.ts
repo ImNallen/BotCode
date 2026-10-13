@@ -4,6 +4,7 @@ import { z } from "zod";
 export const previewScope = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("thread"), threadId: z.uuid() }).strict(),
   z.object({ kind: z.literal("draft"), workspaceId: z.uuid() }).strict(),
+  z.object({ kind: z.literal("desktop"), threadId: z.uuid() }).strict(),
 ]);
 export type PreviewScope = z.infer<typeof previewScope>;
 export const viewportSize = z
@@ -72,9 +73,9 @@ export function scopeForPreview(
     : { kind: "draft", workspaceId };
 }
 export function previewScopeKey(scope: PreviewScope): string {
-  return scope.kind === "thread"
-    ? `thread:${scope.threadId}`
-    : `draft:${scope.workspaceId}`;
+  return scope.kind === "draft"
+    ? `draft:${scope.workspaceId}`
+    : `${scope.kind}:${scope.threadId}`;
 }
 export function acceptsPreviewEvent(
   scope: PreviewScope,

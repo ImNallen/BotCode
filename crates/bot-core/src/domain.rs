@@ -925,6 +925,84 @@ pub struct UserQuestionAnswer {
 }
 pub type UserQuestionAnswers = std::collections::BTreeMap<String, UserQuestionAnswer>;
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SandboxId(String);
+impl SandboxId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4().simple().to_string()[..12].into())
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl Default for SandboxId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl std::str::FromStr for SandboxId {
+    type Err = AppError;
+    fn from_str(s: &str) -> Result<Self> {
+        if s.len() == 12 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            Ok(Self(s.into()))
+        } else {
+            Err(AppError::new("invalid_id", "Invalid sandbox id."))
+        }
+    }
+}
+impl TryFrom<String> for SandboxId {
+    type Error = AppError;
+    fn try_from(s: String) -> Result<Self> {
+        s.parse()
+    }
+}
+impl From<SandboxId> for String {
+    fn from(id: SandboxId) -> Self {
+        id.0
+    }
+}
+impl std::fmt::Display for SandboxId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Sandbox {
+    Docker { id: SandboxId },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SandboxAvailability {
+    Ready { memory_bytes: u64, low_memory: bool },
+    Unavailable { reason: String },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxState {
+    Starting,
+    Running,
+    Paused,
+    Stopped,
+}
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxDesktop {
+    pub port: u16,
+    pub secret: String,
+}
+impl std::fmt::Debug for SandboxDesktop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SandboxDesktop")
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Checkout {
@@ -933,10 +1011,30 @@ pub enum Checkout {
     Worktree {
         path: PathBuf,
         branch: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox: Option<Sandbox>,
     },
     Folder {
         path: PathBuf,
     },
+}
+impl Checkout {
+    pub fn sandbox(&self) -> Option<&Sandbox> {
+        match self {
+            Self::Worktree { sandbox, .. } => sandbox.as_ref(),
+            Self::Local | Self::Folder { .. } => None,
+        }
+    }
+    pub fn into_sandbox(self, sandbox: Sandbox) -> Self {
+        match self {
+            Self::Worktree { path, branch, .. } => Self::Worktree {
+                path,
+                branch,
+                sandbox: Some(sandbox),
+            },
+            other => other,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -947,6 +1045,7 @@ pub enum Checkout {
 pub enum NewCheckout {
     Local,
     Worktree { base: String, from_origin: bool },
+    Sandbox { base: String, from_origin: bool },
     Folder { prompt: String },
     Existing { thread_id: ThreadId },
     Registered { path: PathBuf },
@@ -2095,4 +2194,78 @@ pub enum PublishOutcome {
         repository: String,
         message: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PRE_SANDBOX_SNAPSHOT: &str = r#"{"worktreeSetup":null,"createdAtMs":null,"latestUserActivityAtMs":null,"unsettledAtMs":null,"id":"0b0f4c1e-9f5a-4c8e-8f43-2b1d6f0c9a11","workspaceId":"5e1b2c3d-4f5a-4b6c-8d7e-9f0a1b2c3d4e","title":"Fix the build","nativeThreadId":"019a","revision":7,"session":{"kind":"dormant"},"settings":{"model":null,"effort":null,"permissionMode":"approval-required","interactionMode":"default"},"checkout":{"kind":"worktree","path":"/Users/me/.z1/worktrees/app/botcode-1a2b","branch":"botcode/1a2b"},"turns":[],"approvals":[],"userQuestions":[],"diagnostic":null,"placement":{"kind":"auto"},"snooze":null,"context":null,"pendingRevert":null,"lastRevert":null,"subagents":[]}"#;
+
+    #[test]
+    fn a_saved_worktree_snapshot_loads_without_a_sandbox_and_saves_unchanged() {
+        let snapshot: ThreadSnapshot = serde_json::from_str(PRE_SANDBOX_SNAPSHOT).unwrap();
+        assert_eq!(
+            snapshot.checkout,
+            Checkout::Worktree {
+                path: "/Users/me/.z1/worktrees/app/botcode-1a2b".into(),
+                branch: "botcode/1a2b".into(),
+                sandbox: None,
+            }
+        );
+        assert_eq!(snapshot.checkout.sandbox(), None);
+        assert_eq!(
+            serde_json::to_string(&snapshot).unwrap(),
+            PRE_SANDBOX_SNAPSHOT
+        );
+    }
+
+    #[test]
+    fn a_sandbox_checkout_round_trips() {
+        let checkout = Checkout::Worktree {
+            path: "/w".into(),
+            branch: "botcode/1".into(),
+            sandbox: None,
+        }
+        .into_sandbox(Sandbox::Docker {
+            id: "0123456789ab".parse().unwrap(),
+        });
+        let json = serde_json::to_string(&checkout).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"worktree","path":"/w","branch":"botcode/1","sandbox":{"kind":"docker","id":"0123456789ab"}}"#
+        );
+        let loaded: Checkout = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, checkout);
+        assert_eq!(
+            loaded.sandbox(),
+            Some(&Sandbox::Docker {
+                id: "0123456789ab".parse().unwrap()
+            })
+        );
+    }
+
+    #[test]
+    fn sandbox_ids_are_twelve_lowercase_hex_digits() {
+        let fresh = SandboxId::new();
+        assert_eq!(fresh.as_str().parse::<SandboxId>().unwrap(), fresh);
+        assert_ne!(SandboxId::new(), fresh);
+        for bad in [
+            "",
+            "0123456789a",
+            "0123456789abc",
+            "0123456789AB",
+            "0123456789ag",
+            "01234567-9ab",
+            "../../etc/pa",
+            "0123456789a ",
+        ] {
+            assert!(bad.parse::<SandboxId>().is_err(), "{bad:?} parsed");
+            let json = format!(r#"{{"kind":"docker","id":{bad:?}}}"#);
+            assert!(
+                serde_json::from_str::<Sandbox>(&json).is_err(),
+                "{json} loaded"
+            );
+        }
+    }
 }

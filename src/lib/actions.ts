@@ -100,7 +100,6 @@ export type ActionContext = {
   renamePending: boolean;
   queued: boolean;
   archiveTarget: ArchivedThread | undefined;
-  // The open conversation's checkout root, absent for a no-project draft or a removed worktree.
   checkoutTarget: OpenTarget | null;
   editorLabel: string | null;
   projectScopeId: string | null;

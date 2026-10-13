@@ -1,4 +1,6 @@
 use super::*;
+use crate::mirror::WriteRoot;
+use crate::workdir::Workdir;
 use serde::Deserialize;
 use tokio::sync::watch;
 
@@ -65,8 +67,14 @@ impl Owner {
     pub(super) fn cancel_name(&mut self, id: &ThreadId) {
         self.naming.cancel(id);
     }
-    pub(super) fn cancel_names(&mut self) {
-        let ids: Vec<_> = self.naming.pending.keys().cloned().collect();
+    pub(super) fn cancel_names(&mut self, spared: &HashSet<ThreadId>) {
+        let ids: Vec<_> = self
+            .naming
+            .pending
+            .keys()
+            .filter(|id| !spared.contains(id))
+            .cloned()
+            .collect();
         for id in ids {
             self.naming.cancel(&id);
         }
@@ -81,7 +89,7 @@ impl Owner {
         if first.prompt.is_empty() {
             return;
         }
-        let Checkout::Worktree { path, branch } = &t.checkout else {
+        let Checkout::Worktree { path, branch, .. } = &t.checkout else {
             return;
         };
         if self.owners(path) != 1 || temporary_suffix(branch).is_none() {
@@ -126,7 +134,7 @@ impl Owner {
             && self.checkout_generation(&job.path) == job.generation
             && self.threads.get(&job.thread).is_some_and(|t| {
                 matches!(t.turns.as_slice(), [first] if first.id == job.first_turn)
-                    && matches!(&t.checkout, Checkout::Worktree { path, branch }
+                    && matches!(&t.checkout, Checkout::Worktree { path, branch, .. }
                         if path == &job.path && branch == &job.temporary_branch)
             })
     }
@@ -153,16 +161,16 @@ impl Owner {
             }
             self.held.insert(job.path.clone(), Hold::Naming);
             self.naming.pending.get_mut(&job.thread).unwrap().phase = Phase::Applying;
-            let path = job.path.clone();
+            let workdir = self.workdir(&self.threads[&job.thread]);
             let temporary_branch = job.temporary_branch.clone();
             self.naming.active.spawn(async move {
                 let result =
-                    tokio::spawn(async move { rename(&path, &temporary_branch, &branch).await })
-                        .await
-                        .map_err(|_| {
-                            AppError::new("naming_worker", "Branch rename worker stopped.")
-                        })
-                        .and_then(|result| result);
+                    tokio::spawn(
+                        async move { rename_in(&workdir, &temporary_branch, &branch).await },
+                    )
+                    .await
+                    .map_err(|_| AppError::new("naming_worker", "Branch rename worker stopped."))
+                    .and_then(|result| result);
                 NameCompletion::Applied(job, result)
             });
         }
@@ -204,6 +212,7 @@ impl Owner {
                             t.checkout = Checkout::Worktree {
                                 path: job.path.clone(),
                                 branch,
+                                sandbox: t.checkout.sandbox().cloned(),
                             };
                             if let Err(error) = self.commit(&job.thread) {
                                 let _ = self
@@ -222,7 +231,7 @@ impl Owner {
         self.apply_ready_names();
     }
     pub(super) async fn stop_names(&mut self) {
-        self.cancel_names();
+        self.cancel_names(&HashSet::new());
         while let Some(done) = self.naming.active.join_next().await {
             self.finish_name(done);
         }
@@ -278,7 +287,22 @@ async fn generate(
     normalize(&output)
 }
 
-async fn rename(path: &Path, old: &str, requested: &str) -> Result<String> {
+async fn rename_in(workdir: &Workdir, old: &str, requested: &str) -> Result<String> {
+    let write = workdir.begin_write().await?;
+    let branch = rename(write.root(), old, requested).await?;
+    match write {
+        crate::workdir::Write::Mac(_) => Ok(branch),
+        crate::workdir::Write::Sandbox(mut session) => {
+            if let Err(error) = session.rename_branch(old, &branch).await {
+                let _ = rename(session.root(), &branch, old).await;
+                return Err(error);
+            }
+            session.pull().await?;
+            Ok(branch)
+        }
+    }
+}
+async fn rename(path: &WriteRoot, old: &str, requested: &str) -> Result<String> {
     let tool = vcs::Tool {
         program: Path::new("git"),
         cwd: path,

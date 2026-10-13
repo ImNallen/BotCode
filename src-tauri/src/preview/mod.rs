@@ -4,6 +4,7 @@ mod discovery;
 mod keyboard;
 mod model;
 mod platform;
+pub mod route;
 pub mod tools;
 
 use std::{
@@ -18,6 +19,7 @@ use tauri::{
     webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder},
 };
 
+use bot_core::LocalNetwork;
 use model::{Model, Result, geometry, parse_url};
 pub use model::{Navigation, PreviewScope, PreviewState, Rect, Viewport};
 
@@ -199,8 +201,11 @@ impl PreviewManager {
         url: tauri::Url,
         open_panel: bool,
     ) -> Result<PreviewState> {
+        let network = route::network(&self.0.app, &scope).await?;
+        let (load, alias) = route::load(&network, &url)?;
         let prepare_scope = scope.clone();
         let requested_url = url.to_string();
+        let entry_alias = alias.clone();
         let (navigation, mut pending) = self
             .on_main(move |manager| {
                 manager.ensure(&prepare_scope)?;
@@ -210,6 +215,7 @@ impl PreviewManager {
                         .entries
                         .get_mut(&prepare_scope)
                         .ok_or("Preview scope disappeared.")?;
+                    entry.alias = entry_alias;
                     entry.navigation = entry
                         .navigation
                         .checked_add(1)
@@ -230,7 +236,12 @@ impl PreviewManager {
                 Ok((navigation, pending))
             })
             .await?;
-        let ready = discovery::wait_local_ready(&url).await;
+        let ready = match (&network, &alias) {
+            (LocalNetwork::Sandbox(sandbox), Some(alias)) => {
+                discovery::wait_sandbox_ready(sandbox, alias.container_port).await
+            }
+            _ => discovery::wait_local_ready(&load).await,
+        };
         let manager_scope = scope.clone();
         let result = self
             .on_main(move |manager| {
@@ -262,10 +273,10 @@ impl PreviewManager {
                 }
                 match manager.view(&manager_scope) {
                     Ok(view) => {
-                        view.navigate(url).map_err(|error| error.to_string())?;
+                        view.navigate(load).map_err(|error| error.to_string())?;
                     }
                     Err(_) => {
-                        manager.create(&manager_scope, url)?;
+                        manager.create(&manager_scope, load)?;
                     }
                 }
                 manager.apply_layout()?;
@@ -327,7 +338,8 @@ impl PreviewManager {
                 false
             })
             .on_new_window(move |url, _| {
-                if parse_url(url.as_str()).is_ok() {
+                let url = window_manager.shown(&window_scope, url.as_str());
+                if let Ok(url) = parse_url(&url) {
                     let manager = window_manager.clone();
                     let scope = window_scope.clone();
                     tauri::async_runtime::spawn(async move {
@@ -386,6 +398,13 @@ impl PreviewManager {
         }
     }
 
+    fn shown(&self, scope: &PreviewScope, url: &str) -> String {
+        self.lock()
+            .ok()
+            .and_then(|model| Some(model.entries.get(scope)?.shown(url)))
+            .unwrap_or_else(|| url.to_owned())
+    }
+
     fn set_error(&self, scope: &PreviewScope, label: &str, error: &str) {
         self.set_navigation_error(scope, label, None, error);
     }
@@ -439,8 +458,9 @@ impl PreviewManager {
                 entry.pending_url = None;
                 entry.state.error = None;
             }
-            if parse_url(url).is_ok() {
-                entry.state.url = Some(url.to_owned());
+            let url = entry.shown(url);
+            if parse_url(&url).is_ok() {
+                entry.state.url = Some(url);
             }
             entry.navigation
         };
@@ -512,7 +532,7 @@ impl PreviewManager {
     ) -> bool {
         let state = platform::browser_state(view).await;
         let measured = platform::measured_viewport(view).await.ok();
-        let Ok(state) = state else {
+        let Ok(mut state) = state else {
             return false;
         };
         let Ok(mut model) = self.lock() else {
@@ -524,6 +544,7 @@ impl PreviewManager {
         if entry.label.as_deref() != Some(label) || entry.navigation != navigation {
             return false;
         }
+        state.url = state.url.map(|url| entry.shown(&url));
         let blank = state.url.as_deref() == Some("about:blank") && entry.state.url.is_none();
         if entry.state.error.is_some() && state.url != entry.state.url && !blank {
             return false;
@@ -627,20 +648,64 @@ impl PreviewManager {
     }
 
     pub async fn attach(&self, scope: PreviewScope) -> Result<AttachmentResult> {
-        self.on_main(move |manager| {
-            manager.ensure(&scope)?;
-            let result = {
-                let mut model = manager.lock()?;
-                AttachmentResult {
-                    lease: model.attach(scope.clone())?,
-                    state: model.state(&scope),
+        let (result, resume) = self
+            .on_main(move |manager| {
+                manager.ensure(&scope)?;
+                let (result, previous, resume) = {
+                    let mut model = manager.lock()?;
+                    let previous = model.attachment.as_ref().map(|a| a.scope.clone());
+                    let entry = model
+                        .entries
+                        .get(&scope)
+                        .ok_or("Preview scope disappeared.")?;
+                    let resume = entry
+                        .state
+                        .url
+                        .clone()
+                        .filter(|_| entry.alias.is_some() && entry.label.is_none());
+                    let result = AttachmentResult {
+                        lease: model.attach(scope.clone())?,
+                        state: model.state(&scope),
+                    };
+                    (result, previous, resume)
+                };
+                if let Some(previous) = previous.filter(|previous| *previous != scope) {
+                    manager.suspend(&previous)?;
                 }
+                manager.apply_layout()?;
+                manager.poll_attachment(scope.clone(), result.lease);
+                Ok((result, resume.map(|url| (scope, url))))
+            })
+            .await?;
+        if let Some((scope, url)) = resume {
+            let manager = self.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Ok(url) = parse_url(&url) {
+                    let _ = manager.open_url(scope, url, false).await;
+                }
+            });
+        }
+        Ok(result)
+    }
+
+    fn suspend(&self, scope: &PreviewScope) -> Result<()> {
+        let label = {
+            let mut model = self.lock()?;
+            let Some(entry) = model.entries.get_mut(scope) else {
+                return Ok(());
             };
-            manager.apply_layout()?;
-            manager.poll_attachment(scope, result.lease);
-            Ok(result)
-        })
-        .await
+            if entry.alias.is_none() {
+                return Ok(());
+            }
+            entry.pending_url = None;
+            entry.state.loading = false;
+            entry.label.take()
+        };
+        if let Some(view) = label.and_then(|label| self.0.app.get_webview(&label)) {
+            keyboard::remove_view(view.label());
+            view.close().map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     pub async fn layout(
@@ -662,10 +727,32 @@ impl PreviewManager {
 
     pub async fn detach(&self, lease: u32) -> Result<()> {
         self.on_main(move |manager| {
-            if manager.lock()?.detach(lease) {
+            let detached = {
+                let mut model = manager.lock()?;
+                let scope = model.attachment.as_ref().map(|a| a.scope.clone());
+                scope.filter(|_| model.detach(lease))
+            };
+            if let Some(scope) = detached {
+                manager.suspend(&scope)?;
                 manager.apply_layout()?;
             }
             Ok(())
+        })
+        .await
+    }
+
+    pub async fn close(&self, scope: PreviewScope) -> Result<()> {
+        self.on_main(move |manager| {
+            let label = manager
+                .lock()?
+                .entries
+                .remove(&scope)
+                .and_then(|entry| entry.label);
+            if let Some(view) = label.and_then(|label| manager.0.app.get_webview(&label)) {
+                keyboard::remove_view(view.label());
+                view.close().map_err(|error| error.to_string())?;
+            }
+            manager.apply_layout()
         })
         .await
     }
@@ -835,8 +922,25 @@ pub async fn preview_detach(manager: State<'_, PreviewManager>, lease: u32) -> R
 }
 
 #[tauri::command]
-pub async fn preview_discover() -> Vec<discovery::LocalServer> {
-    discovery::discover().await
+pub async fn preview_close(manager: State<'_, PreviewManager>, scope: PreviewScope) -> Result<()> {
+    manager.close(scope).await
+}
+
+#[tauri::command]
+pub async fn preview_discover(
+    app: AppHandle,
+    scope: PreviewScope,
+) -> Result<Vec<discovery::LocalServer>> {
+    match route::network(&app, &scope).await? {
+        LocalNetwork::Mac => {
+            let forwarders = app
+                .try_state::<bot_core::App>()
+                .map(|runtime| runtime.forwarder_ports())
+                .unwrap_or_default();
+            Ok(discovery::discover(&forwarders).await)
+        }
+        LocalNetwork::Sandbox(sandbox) => discovery::discover_sandbox(&sandbox).await,
+    }
 }
 
 #[tauri::command]
