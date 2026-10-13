@@ -1,5 +1,9 @@
-<p align="center">
-  <img src="src-tauri/icons/icon.png" alt="L1 Code logo" width="120" height="120" />
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/l1-logo-white.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/l1-logo-black.svg" />
+    <img src="docs/assets/l1-logo-black.svg" alt="L1 Code logo" height="96" />
+  </picture>
 </p>
 
 # L1 Code
