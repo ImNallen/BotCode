@@ -426,7 +426,7 @@ mod tests {
         assert_eq!(handle.mirror.root(), root.as_path());
         assert_eq!(first.root(), root.as_path());
         assert!(!handle.is_ready(), "nothing has started the container");
-        assert_eq!(handle.phase(), Phase::Stopped);
+        assert_eq!(handle.phase(), Phase::Unstarted);
 
         let renamed = Checkout::Worktree {
             path: root.clone(),

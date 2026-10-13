@@ -31,22 +31,29 @@ pub enum LocalNetwork {
 }
 #[derive(Clone)]
 pub struct SandboxNetwork(pub(crate) Arc<SandboxHandle>);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListenerReading {
+    Fresh,
+    LastSeen,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Listeners {
     pub ports: BTreeSet<u16>,
-    pub live: bool,
+    pub reading: ListenerReading,
 }
 impl SandboxNetwork {
     pub async fn listeners(&self) -> Result<Listeners> {
         let handle = &self.0;
-        let live = handle.phase() == Phase::Running;
-        if live {
+        let reading = if handle.phase() == Phase::Running {
             let probe = handle.container.probe().await?;
             handle.observe_network(&probe).await;
-        }
+            ListenerReading::Fresh
+        } else {
+            ListenerReading::LastSeen
+        };
         Ok(Listeners {
             ports: handle.forwards.servers.lock().unwrap().clone(),
-            live,
+            reading,
         })
     }
     pub async fn dial(&self, port: u16) -> Result<TcpStream> {

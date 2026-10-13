@@ -1,4 +1,4 @@
-use super::{ImageVersion, Observed, Output, RunState, identity::SANDBOX_LABEL};
+use super::{Observed, ObservedImage, Output, RunState, identity::SANDBOX_LABEL};
 use crate::domain::{AppError, Result};
 use serde::Deserialize;
 use std::{
@@ -293,7 +293,7 @@ pub(super) fn parse_inspect(json: &[u8]) -> Result<Vec<Observed>> {
             Ok(Observed {
                 id: label(&mut labels, SANDBOX_LABEL)?.parse()?,
                 run: run_state(&container.state.status)?,
-                image: ImageVersion(label(&mut labels, super::identity::IMAGE_LABEL)?),
+                image: ObservedImage(label(&mut labels, super::identity::IMAGE_LABEL)?),
             })
         })
         .collect()

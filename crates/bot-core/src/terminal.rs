@@ -301,7 +301,7 @@ impl Registry {
             })
             .collect()
     }
-    fn publish_labels(&self, found: Vec<(TerminalKey, u32, String)>, kept: &[TerminalKey]) {
+    fn publish_labels(&self, found: Vec<(TerminalKey, u32, String)>, unreadable: &[TerminalKey]) {
         let Some(sender) = &self.labels else { return };
         let sessions = lock(&self.sessions);
         let mut labels: Vec<TerminalLabel> = found
@@ -319,7 +319,7 @@ impl Registry {
                 current
                     .labels
                     .iter()
-                    .filter(|label| kept.iter().any(|key| names(key, label)))
+                    .filter(|label| unreadable.iter().any(|key| names(key, label)))
                     .cloned(),
             );
             labels.sort_by(|a, b| {

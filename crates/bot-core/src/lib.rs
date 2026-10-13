@@ -91,7 +91,7 @@ mod text_generation;
 mod thread_title;
 mod vcs;
 mod workdir;
-pub use workdir::{Listeners, LocalNetwork, SandboxNetwork};
+pub use workdir::{ListenerReading, Listeners, LocalNetwork, SandboxNetwork};
 pub mod workspace_files;
 pub use domain::*;
 pub use runtime::{App, RuntimeConfig};

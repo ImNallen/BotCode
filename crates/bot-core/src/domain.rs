@@ -2200,11 +2200,11 @@ pub enum PublishOutcome {
 mod tests {
     use super::*;
 
-    const SAVED_SNAPSHOT: &str = r#"{"worktreeSetup":null,"createdAtMs":null,"latestUserActivityAtMs":null,"unsettledAtMs":null,"id":"0b0f4c1e-9f5a-4c8e-8f43-2b1d6f0c9a11","workspaceId":"5e1b2c3d-4f5a-4b6c-8d7e-9f0a1b2c3d4e","title":"Fix the build","nativeThreadId":"019a","revision":7,"session":{"kind":"dormant"},"settings":{"model":null,"effort":null,"permissionMode":"approval-required","interactionMode":"default"},"checkout":{"kind":"worktree","path":"/Users/me/.z1/worktrees/app/botcode-1a2b","branch":"botcode/1a2b"},"turns":[],"approvals":[],"userQuestions":[],"diagnostic":null,"placement":{"kind":"auto"},"snooze":null,"context":null,"pendingRevert":null,"lastRevert":null,"subagents":[]}"#;
+    const PRE_SANDBOX_SNAPSHOT: &str = r#"{"worktreeSetup":null,"createdAtMs":null,"latestUserActivityAtMs":null,"unsettledAtMs":null,"id":"0b0f4c1e-9f5a-4c8e-8f43-2b1d6f0c9a11","workspaceId":"5e1b2c3d-4f5a-4b6c-8d7e-9f0a1b2c3d4e","title":"Fix the build","nativeThreadId":"019a","revision":7,"session":{"kind":"dormant"},"settings":{"model":null,"effort":null,"permissionMode":"approval-required","interactionMode":"default"},"checkout":{"kind":"worktree","path":"/Users/me/.z1/worktrees/app/botcode-1a2b","branch":"botcode/1a2b"},"turns":[],"approvals":[],"userQuestions":[],"diagnostic":null,"placement":{"kind":"auto"},"snooze":null,"context":null,"pendingRevert":null,"lastRevert":null,"subagents":[]}"#;
 
     #[test]
     fn a_saved_worktree_snapshot_loads_without_a_sandbox_and_saves_unchanged() {
-        let snapshot: ThreadSnapshot = serde_json::from_str(SAVED_SNAPSHOT).unwrap();
+        let snapshot: ThreadSnapshot = serde_json::from_str(PRE_SANDBOX_SNAPSHOT).unwrap();
         assert_eq!(
             snapshot.checkout,
             Checkout::Worktree {
@@ -2214,7 +2214,10 @@ mod tests {
             }
         );
         assert_eq!(snapshot.checkout.sandbox(), None);
-        assert_eq!(serde_json::to_string(&snapshot).unwrap(), SAVED_SNAPSHOT);
+        assert_eq!(
+            serde_json::to_string(&snapshot).unwrap(),
+            PRE_SANDBOX_SNAPSHOT
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use bot_core::SandboxNetwork;
+use bot_core::{ListenerReading, SandboxNetwork};
 use serde::Serialize;
 use tauri::Url;
 use tokio::{
@@ -310,10 +310,10 @@ pub async fn discover_sandbox(network: &SandboxNetwork) -> Result<Vec<LocalServe
     let mut jobs = JoinSet::new();
     for port in listeners.ports.into_iter().take(MAX_LISTENERS) {
         let network = network.clone();
-        let live = listeners.live;
+        let reading = listeners.reading;
         jobs.spawn(async move {
             let url = Url::parse(&format!("http://localhost:{port}/")).ok()?;
-            if !live {
+            if reading == ListenerReading::LastSeen {
                 return Some(LocalServer {
                     port,
                     url: url.to_string(),

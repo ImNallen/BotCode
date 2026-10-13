@@ -19,7 +19,7 @@ const DESIRED: [Desired; 4] = [
 const fn present(run: RunState) -> ContainerState {
     ContainerState::Present {
         run,
-        image: ImageVersion(String::new()),
+        image: ObservedImage(String::new()),
     }
 }
 fn id(text: &str) -> SandboxId {
@@ -112,7 +112,7 @@ fn reconciliation_stops_live_referenced_containers_and_removes_orphans() {
     .map(|(text, run)| Observed {
         id: id(text),
         run,
-        image: ImageVersion("old".into()),
+        image: ObservedImage("old".into()),
     })
     .collect();
     let referenced: HashSet<_> = [
@@ -244,7 +244,7 @@ fn listeners_are_the_listen_rows_that_localhost_reaches() {
 #[test]
 fn a_probe_reads_its_line_and_leaves_bot_codes_own_listeners_out() {
     let probe = Probe::parse(&format!("cpu_usec=1500 clients=2 desktop=1\n{PROC_NET}")).unwrap();
-    assert_eq!(probe.cpu, Duration::from_micros(1500));
+    assert_eq!(probe.cpu_total, Duration::from_micros(1500));
     assert_eq!(probe.desktop_clients, 2);
     assert!(probe.desktop_running);
     assert!(probe.gateway_running);
@@ -480,7 +480,7 @@ async fn converge_walks_the_lifecycle_and_repeats_as_no_ops() {
     assert_eq!(container.state().await.unwrap(), ContainerState::Absent);
     let at = |run| ContainerState::Present {
         run,
-        image: image.clone(),
+        image: ObservedImage(image.as_str().into()),
     };
     for (desired, expected) in [
         (Desired::Running, at(RunState::Running)),
@@ -663,7 +663,7 @@ async fn instances_never_see_or_touch_each_others_containers() {
         [Observed {
             id: shared,
             run: RunState::Running,
-            image: a.docker.image(&|_| {}).await.unwrap(),
+            image: ObservedImage(a.docker.image(&|_| {}).await.unwrap().as_str().into()),
         }]
     );
 }

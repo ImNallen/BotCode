@@ -943,7 +943,7 @@ impl App {
             Some(Phase::Starting) => Ok(SandboxState::Starting),
             Some(Phase::Running) => Ok(SandboxState::Running),
             Some(Phase::Paused) => Ok(SandboxState::Paused),
-            Some(Phase::Stopped) => Ok(SandboxState::Stopped),
+            Some(Phase::Unstarted | Phase::Stopped) => Ok(SandboxState::Stopped),
             None => Err(not_a_sandbox()),
         }
     }

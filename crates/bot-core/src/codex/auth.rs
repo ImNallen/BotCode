@@ -69,20 +69,20 @@ fn parse(text: &str) -> Result<Credentials> {
     if let Some(tokens) = file.tokens
         && let Some(access_token) = nonempty(tokens.access_token)
     {
-        let claims = tokens.id_token.as_deref().and_then(claims);
-        let claim = |key: &str| {
-            claims
+        let unverified_claims = tokens.id_token.as_deref().and_then(unverified_claims);
+        let unverified_claim = |key: &str| {
+            unverified_claims
                 .as_ref()
                 .and_then(|claims| claims[PLAN_CLAIM][key].as_str())
                 .map(str::to_owned)
         };
         let account_id = nonempty(tokens.account_id)
-            .or_else(|| claim("chatgpt_account_id"))
+            .or_else(|| unverified_claim("chatgpt_account_id"))
             .ok_or_else(sign_in_required)?;
         return Ok(Credentials::Chatgpt(ChatgptTokens {
             access_token: Secret(access_token),
             account_id,
-            plan_type: claim("chatgpt_plan_type"),
+            plan_type: unverified_claim("chatgpt_plan_type"),
         }));
     }
     match nonempty(file.api_key) {
@@ -90,7 +90,7 @@ fn parse(text: &str) -> Result<Credentials> {
         None => Err(sign_in_required()),
     }
 }
-fn claims(jwt: &str) -> Option<Value> {
+fn unverified_claims(jwt: &str) -> Option<Value> {
     let payload = jwt.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload.trim_end_matches('='))

@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 #[cfg(test)]
 mod docker_tests;
 mod forward;
-pub use forward::{Listeners, LocalNetwork, SandboxNetwork};
+pub use forward::{ListenerReading, Listeners, LocalNetwork, SandboxNetwork};
 pub(crate) mod idle;
 pub(crate) use idle::{Activity, Limits};
 
@@ -42,6 +42,7 @@ pub(crate) enum Workdir {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
+    Unstarted,
     Starting,
     Running,
     Paused,
@@ -95,7 +96,7 @@ impl SandboxHandle {
             log,
             branch: Mutex::new(branch),
             flight: tokio::sync::Mutex::new(()),
-            phase: Mutex::new(Phase::Stopped),
+            phase: Mutex::new(Phase::Unstarted),
             changed,
             activity: Mutex::new(Activity::new(Instant::now())),
             stop_requested: Mutex::new(None),

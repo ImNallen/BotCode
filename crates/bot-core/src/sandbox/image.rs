@@ -74,6 +74,14 @@ impl ImageVersion {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservedImage(pub(super) String);
+impl PartialEq<ImageVersion> for ObservedImage {
+    fn eq(&self, version: &ImageVersion) -> bool {
+        self.0 == version.0
+    }
+}
+
 pub(super) fn write_context(dir: &Path) -> std::io::Result<()> {
     for (name, bytes) in CONTEXT {
         std::fs::write(dir.join(name), bytes)?;

@@ -104,7 +104,7 @@ impl Activity {
     pub fn observe(&mut self, now: Instant, probe: &Probe) -> Option<f64> {
         let percent = self.probed.and_then(|(at, cpu)| {
             let wall = now.saturating_duration_since(at).as_secs_f64();
-            let used = probe.cpu.checked_sub(cpu)?.as_secs_f64();
+            let used = probe.cpu_total.checked_sub(cpu)?.as_secs_f64();
             (wall > 0.0).then(|| used / wall * 100.0)
         });
         if percent.is_some_and(|percent| percent >= CPU_BUSY_PERCENT) {
@@ -114,7 +114,7 @@ impl Activity {
             self.desktop_client = now;
         }
         self.desktop_running = probe.desktop_running;
-        self.probed = Some((now, probe.cpu));
+        self.probed = Some((now, probe.cpu_total));
         percent
     }
     pub fn forget_probe(&mut self) {
@@ -133,7 +133,7 @@ mod tests {
     };
     fn probe(cpu_secs: f64, clients: u32, desktop: bool) -> Probe {
         Probe {
-            cpu: Duration::from_secs_f64(cpu_secs),
+            cpu_total: Duration::from_secs_f64(cpu_secs),
             desktop_clients: clients,
             desktop_running: desktop,
             gateway_running: false,

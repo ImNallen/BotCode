@@ -332,7 +332,7 @@ async fn servers_on_either_loopback_are_reachable_through_the_mac_forwarder() {
     serve(&handle, "127.0.0.1", 8002, "four").await;
     handle.desktop().await.unwrap();
     let listeners = listening(&network, &[8001, 8002]).await;
-    assert!(listeners.live);
+    assert_eq!(listeners.reading, ListenerReading::Fresh);
 
     let six = network.forward(8001).unwrap();
     let four = network.forward(8002).unwrap();
@@ -526,7 +526,7 @@ async fn a_connection_to_a_paused_sandbox_wakes_it_and_a_stop_closes_the_forward
     handle.retire(Desired::Paused).await.unwrap();
     assert_eq!(status(&handle), "paused");
     let paused = network.listeners().await.unwrap();
-    assert!(!paused.live);
+    assert_eq!(paused.reading, ListenerReading::LastSeen);
     assert!(
         paused.ports.contains(&8001),
         "a paused container keeps its servers"
@@ -546,5 +546,5 @@ async fn a_connection_to_a_paused_sandbox_wakes_it_and_a_stop_closes_the_forward
         "the forwarder closed with the container"
     );
     let stopped = network.listeners().await.unwrap();
-    assert!(!stopped.live && stopped.ports.is_empty());
+    assert!(stopped.reading == ListenerReading::LastSeen && stopped.ports.is_empty());
 }

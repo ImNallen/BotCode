@@ -7,7 +7,7 @@ pub(crate) mod tests;
 use crate::domain::{AppError, Result, SandboxId};
 use docker::{Cli, Stdin};
 pub use identity::{IMAGE_LABEL, INSTANCE_LABEL, Instance, SANDBOX_LABEL};
-pub use image::{CodexVersion, ImageVersion};
+pub use image::{CodexVersion, ImageVersion, ObservedImage};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
@@ -84,7 +84,7 @@ pub enum RunState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContainerState {
     Absent,
-    Present { run: RunState, image: ImageVersion },
+    Present { run: RunState, image: ObservedImage },
 }
 impl ContainerState {
     pub fn stale(&self, current: &ImageVersion) -> bool {
@@ -137,7 +137,7 @@ fn plan(current: &ContainerState, desired: Desired) -> Vec<Step> {
 pub struct Observed {
     pub id: SandboxId,
     pub run: RunState,
-    pub image: ImageVersion,
+    pub image: ObservedImage,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reconcile {
@@ -677,7 +677,7 @@ pub(crate) async fn dial(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Probe {
-    pub cpu: Duration,
+    pub cpu_total: Duration,
     pub desktop_clients: u32,
     pub desktop_running: bool,
     pub gateway_running: bool,
@@ -697,7 +697,7 @@ impl Probe {
         let gateway_running = listeners.contains(&GATEWAY_PORT);
         listeners.retain(|port| !OWN_PORTS.contains(port));
         Ok(Self {
-            cpu: Duration::from_micros(field("cpu_usec")?),
+            cpu_total: Duration::from_micros(field("cpu_usec")?),
             desktop_clients: u32::try_from(field("clients")?).map_err(|_| invalid())?,
             desktop_running: field("desktop")? == 1,
             gateway_running,
