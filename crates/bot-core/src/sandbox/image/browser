@@ -1,0 +1,6 @@
+#!/bin/bash
+# browser: the Chromium that the agent's browser tools launch, shown on the sandbox desktop so
+# the Desktop tab shows each action. It starts the desktop first when nothing has yet.
+/opt/botcode/bin/desktop start </dev/null >/dev/null || exit 1
+export DISPLAY=:1
+exec /opt/botcode/chromium "$@"

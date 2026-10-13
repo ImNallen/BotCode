@@ -19,6 +19,11 @@ pub enum PreviewScope {
         #[serde(rename = "workspaceId")]
         workspace_id: WorkspaceId,
     },
+    /// A sandbox thread's Desktop tab. Agent tools never address it.
+    Desktop {
+        #[serde(rename = "threadId")]
+        thread_id: ThreadId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

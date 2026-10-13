@@ -5,6 +5,7 @@ import {
   GitPullRequestIcon,
   FilesIcon,
   GlobeIcon,
+  MonitorIcon,
   PlusIcon,
   TerminalSquareIcon,
   type LucideIcon,
@@ -21,6 +22,8 @@ import type { AgentPanelModel } from "../chat/subagents";
 import type { CheckoutRef, WorkspaceView, Thread } from "../ipc";
 import type { TurnDiffSelection } from "./turnDiffSelection";
 import { cn } from "../lib/cn";
+import { inSandbox } from "../lib/sandbox";
+import { usePreferences } from "../settings/preferences";
 import {
   PersistentThreadTerminalPanel,
   requestClosePanelSurface,
@@ -38,6 +41,8 @@ import { Button } from "../ui/controls";
 import { Menu, MenuItem } from "../ui/menu";
 import { AgentsPanel } from "./AgentsPanel";
 import { MenuShortcut, PanelTabCloseButton, ScrollRow } from "./chrome";
+import { DesktopSurface } from "./DesktopSurface";
+import { streamingDesktop } from "./desktop";
 import { DiffSurface } from "./DiffSurface";
 import { usePendingFiles } from "./fileDrafts";
 import { FileEntryIcon } from "./FileEntryIcon";
@@ -78,7 +83,8 @@ export type Surface =
   | { kind: "pull_request"; key: PullRequestKey }
   | { kind: "file"; path: string; line: number | null; revealSequence: number }
   | { kind: "terminal"; id: TerminalSurfaceId }
-  | { kind: "agents" };
+  | { kind: "agents" }
+  | { kind: "desktop" };
 
 export type PanelState = { surfaces: Surface[]; active: number | null };
 
@@ -154,11 +160,14 @@ export function RightPanel({
   onSelectTurn: (turnId: string | null, filePath?: string) => void;
   agents: AgentPanelModel;
 }) {
+  const sandbox = conversationId !== undefined && inSandbox(thread?.checkout);
   const state = eligibleSurfaces(
     savedState,
     git,
     conversationId ? pullRequests : undefined,
+    sandbox,
   );
+  const desktopThread = streamingDesktop(state, sandbox, conversationId);
   const host = useRef<HTMLDivElement>(null);
   const { width, handlers } = usePanelWidth(host, !maximized);
   // Derive suppression before the layout commits so the browser never creates
@@ -236,6 +245,16 @@ export function RightPanel({
       shortcut: "B",
       surface: { kind: "preview" },
     }),
+    ...(sandbox
+      ? [
+          surfaceAction({
+            label: "Desktop",
+            icon: MonitorIcon,
+            shortcut: "S",
+            surface: { kind: "desktop" },
+          }),
+        ]
+      : []),
     ...(conversationId && pullRequests.length > 0
       ? [
           surfaceAction({
@@ -505,6 +524,12 @@ export function RightPanel({
                 />
               ) : active?.kind === "agents" ? (
                 <AgentsPanel model={agents} />
+              ) : desktopThread ? (
+                <DesktopSurface
+                  key={desktopThread}
+                  workspaceId={checkout.workspaceId}
+                  threadId={desktopThread}
+                />
               ) : view?.unavailable && active && active.kind !== "diff" ? (
                 <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
                   <p className="text-center">{view.unavailable}</p>
@@ -573,5 +598,7 @@ function SurfaceIcon({
       return <TerminalSquareIcon className="size-3 shrink-0" />;
     case "agents":
       return <BotIcon className="size-3 shrink-0" />;
+    case "desktop":
+      return <MonitorIcon className="size-3 shrink-0" />;
   }
 }

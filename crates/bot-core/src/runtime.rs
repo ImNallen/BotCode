@@ -203,6 +203,9 @@ fn sandbox_not_openable() -> AppError {
         "Sandbox files open only in Bot Code, because the next sync from the sandbox overwrites edits made on this Mac.",
     )
 }
+fn not_a_sandbox() -> AppError {
+    AppError::new("not_a_sandbox", "This thread does not run in a sandbox.")
+}
 fn worktree_removed() -> AppError {
     AppError::new(
         "worktree_removed",
@@ -894,6 +897,25 @@ impl App {
     }
     pub async fn sandbox_availability(&self) -> SandboxAvailability {
         self.sandboxes.availability().await
+    }
+    /// Starts a sandbox thread's desktop when it is not running and returns where its Desktop
+    /// tab connects.
+    pub async fn sandbox_desktop(
+        &self,
+        workspace: WorkspaceId,
+        thread: ThreadId,
+    ) -> Result<SandboxDesktop> {
+        let (_, location) = self
+            .call(|r| Command::Checkout(workspace, Some(thread), r))
+            .await?;
+        match &location {
+            Location::Repository(workdir) => match workdir.sandbox() {
+                Some(handle) => handle.desktop().await,
+                None => Err(not_a_sandbox()),
+            },
+            Location::Removed { .. } => Err(worktree_removed()),
+            Location::Folder(_) | Location::Unassigned => Err(not_a_sandbox()),
+        }
     }
     pub async fn list_thread_summaries(
         &self,

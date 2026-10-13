@@ -670,6 +670,23 @@ impl PreviewManager {
         .await
     }
 
+    /// Closes the scope's view and forgets its state, which ends whatever the page streams.
+    pub async fn close(&self, scope: PreviewScope) -> Result<()> {
+        self.on_main(move |manager| {
+            let label = manager
+                .lock()?
+                .entries
+                .remove(&scope)
+                .and_then(|entry| entry.label);
+            if let Some(view) = label.and_then(|label| manager.0.app.get_webview(&label)) {
+                keyboard::remove_view(view.label());
+                view.close().map_err(|error| error.to_string())?;
+            }
+            manager.apply_layout()
+        })
+        .await
+    }
+
     #[cfg(target_os = "macos")]
     fn visible_label(&self) -> Option<(String, PreviewScope)> {
         let model = self.lock().ok()?;
@@ -832,6 +849,11 @@ pub async fn preview_layout(
 #[tauri::command]
 pub async fn preview_detach(manager: State<'_, PreviewManager>, lease: u32) -> Result<()> {
     manager.detach(lease).await
+}
+
+#[tauri::command]
+pub async fn preview_close(manager: State<'_, PreviewManager>, scope: PreviewScope) -> Result<()> {
+    manager.close(scope).await
 }
 
 #[tauri::command]

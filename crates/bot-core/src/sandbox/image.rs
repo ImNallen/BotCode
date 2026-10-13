@@ -3,12 +3,19 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 pub(super) const REPOSITORY: &str = "botcode-sandbox";
-const CONTEXT: [(&str, &[u8]); 5] = [
+const CONTEXT: [(&str, &[u8]); 9] = [
     ("Dockerfile", include_bytes!("image/Dockerfile")),
     ("run", include_bytes!("image/run")),
     ("sync", include_bytes!("image/sync")),
     ("agent", include_bytes!("image/agent")),
     ("terminal", include_bytes!("image/terminal")),
+    ("desktop", include_bytes!("image/desktop")),
+    ("browser", include_bytes!("image/browser")),
+    ("desktop.html", include_bytes!("image/desktop.html")),
+    (
+        "playwright-mcp.json",
+        include_bytes!("image/playwright-mcp.json"),
+    ),
 ];
 
 /// The host Codex version, installed in the image so the agent speaks the host's protocol.

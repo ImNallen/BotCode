@@ -93,12 +93,18 @@ Inbound mapping is partial on purpose. A path a sandbox agent names is never res
 2. `Owner::workdir` is the only match from checkout to location. Everything below dispatches on `Workdir` or `EnvKey`.
 3. `Workdir` operations, such as sync, write, commit and agent paths, are a no-op or the identity on the Mac.
 4. `EnvKey` and `Launcher` route and start agents.
-5. Tool registration forces dynamic tools for a sandbox and leaves out the host preview backend.
+5. Tool registration forces dynamic tools for a sandbox and leaves out the host preview backend. The in-image `agent` script adds the in-container browser tools instead.
 6. Background source-control refresh skips sandbox checkouts, because a Mac-side fast-forward would bypass the write session.
 
 The renderer reads `checkout.sandbox` for the composer's Run on choice, the sidebar indicator, and hiding Open in.
 
 `Workdir::terminal` picks a terminal's launch, so the terminal module dispatches on `Launch` and never on the checkout.
+
+### Desktop
+
+The desktop starts lazily, because a sandbox that never opens a browser should not pay for an X server. It is one script with a lock, so a Desktop tab and the agent's first browser call can race and still start one of each process. One secret per sandbox handle, made in memory and passed on stdin, is the websocket token and the VNC password. Each start from the Desktop tab writes it again, so a secret from an earlier Bot Code run, or one the agent's first browser call made up, stops working. The remote screen follows the panel through ExtendedDesktopSize, which `Xvnc` supports, because a fixed 1280x800 screen scaled into a 540px panel is unreadable. noVNC refuses to resize the remote screen in its own view-only mode, so the page covers its canvas instead.
+
+The Desktop tab reuses the native Preview host with a `desktop` scope and closes its view whenever it is not shown. Closing ends the websocket, and `Xvnc` stops encoding frames.
 
 ## Tradeoffs accepted
 
@@ -136,5 +142,6 @@ Each slice ends verified in the real Tauri app.
 1. **Done.** The domain field and variant, `sandbox.rs` and `reconcile_plan`, tested against real Docker: status, image build, every `plan` pair, converge idempotence, labels and instance scoping, and lifeline cleanup.
 2. **Done.** `workdir.rs`, `mirror.rs`, `providers.rs`, `codex/auth.rs`, the agent process and the `WriteRoot` signatures, then the composer's Run on choice and `App::sandbox_availability`. Worktree setup runs in the container. Shutdown stops every agent and then stops every running sandbox, which pulls first.
 3. **Done.** The terminal runs `bash -l` inside the container through `docker exec --tty` and the in-image `terminal` script, which records each shell so Bot Code stops its whole session when the client ends. Labels come from one `ps` exec per watched container, and a prompt mark from the shell pulls the mirror after each command. Project scripts run there with container paths.
-4. A Desktop tab shows noVNC on a published loopback port. Preview reaches the container's dev server, and agent browser tools run in the container.
+4. **Done.** The image carries a desktop: TigerVNC's `Xvnc`, `matchbox-window-manager`, `websockify` with noVNC, and Playwright's Chromium. The in-image `desktop` script starts it on first use, from the Desktop tab or the agent's browser. A Desktop tab on sandbox threads shows it through noVNC on a published loopback port, gated by a per-sandbox secret, view-only until the user takes control and connected only while visible. The agent's browser tools are `@playwright/mcp`, running headed in the container.
+   - 4b, **planned.** Preview reaches the container's dev servers.
 5. Idle sandboxes pause after about 10 minutes and stop after about 2 hours. Settle and archive stop the container. Cleanup and delete do a final sync and remove it, and delete also removes the sandbox's Codex home. The next message after removal recreates the container from the Mac worktree and the kept Codex home.

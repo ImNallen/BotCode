@@ -409,6 +409,14 @@ pub async fn sandbox_availability(app: State<'_, App>) -> Result<SandboxAvailabi
     Ok(app.sandbox_availability().await)
 }
 #[tauri::command]
+pub async fn sandbox_desktop(
+    app: State<'_, App>,
+    workspace_id: WorkspaceId,
+    thread_id: ThreadId,
+) -> Result<SandboxDesktop> {
+    app.sandbox_desktop(workspace_id, thread_id).await
+}
+#[tauri::command]
 pub async fn create_thread(
     app: State<'_, App>,
     workspace_id: WorkspaceId,

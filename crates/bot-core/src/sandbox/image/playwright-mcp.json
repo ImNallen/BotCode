@@ -1,0 +1,9 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "launchOptions": { "executablePath": "/opt/botcode/bin/browser", "headless": false },
+    "contextOptions": { "viewport": null }
+  },
+  "outputDir": "/home/botcode/.cache/playwright-mcp",
+  "filePaths": "absolute"
+}

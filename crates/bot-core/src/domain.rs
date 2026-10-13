@@ -992,6 +992,21 @@ pub enum SandboxAvailability {
         reason: String,
     },
 }
+/// Where a sandbox's Desktop tab connects: the Mac loopback port of its noVNC page and the
+/// secret that both the websocket and VNC require.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxDesktop {
+    pub port: u16,
+    pub secret: String,
+}
+impl std::fmt::Debug for SandboxDesktop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SandboxDesktop")
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Checkout {

@@ -17,7 +17,11 @@ import {
   type PreviewState,
   type ViewportSize,
 } from "./model";
-import { attachPreviewHost, measurePreviewHost } from "./nativeHost";
+import {
+  attachPreviewHost,
+  measurePreviewHost,
+  watchPreviewHost,
+} from "./nativeHost";
 
 export function PreviewSurface({ scope }: { scope: PreviewScope }) {
   const [state, setState] = useState<PreviewState>(initialPreview);
@@ -67,38 +71,14 @@ export function PreviewSurface({ scope }: { scope: PreviewScope }) {
       },
       onError: report,
     });
-    let scheduled = false;
-    const refresh = () => {
-      if (disposed || scheduled) return;
-      scheduled = true;
-      queueMicrotask(() => {
-        scheduled = false;
-        if (!disposed) binding.refresh();
-      });
-    };
-    refreshGeometry.current = refresh;
-    const size = new ResizeObserver(refresh);
-    if (host.current) size.observe(host.current);
-    const overlays = new MutationObserver(refresh);
-    overlays.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["open", "inert", "aria-hidden", "style", "class"],
-    });
-    window.addEventListener("resize", refresh);
-    window.addEventListener("scroll", refresh, true);
-    document.addEventListener("visibilitychange", refresh);
+    const unwatch = watchPreviewHost(host.current, binding.refresh);
+    refreshGeometry.current = () => queueMicrotask(binding.refresh);
     return () => {
       disposed = true;
       active.current = false;
       operation.current++;
       off?.();
-      size.disconnect();
-      overlays.disconnect();
-      window.removeEventListener("resize", refresh);
-      window.removeEventListener("scroll", refresh, true);
-      document.removeEventListener("visibilitychange", refresh);
+      unwatch();
       refreshGeometry.current = () => {};
       binding.dispose();
     };

@@ -19,6 +19,7 @@ const COMMON_PORTS: &[u16] = &[
     3000, 3001, 3333, 4173, 4200, 4321, 5000, 5173, 5174, 5175, 5500, 8000, 8080, 8081, 8888, 9000,
 ];
 const MAX_LISTENERS: usize = 64;
+const DISCOVERY_OPT_OUT: &str = r#"<meta name="botcode-discovery" content="none">"#;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -223,6 +224,10 @@ async fn http_document(mut url: Url) -> Option<(String, Option<String>)> {
             return None;
         }
         let lower = body.to_ascii_lowercase();
+        // A sandbox's Desktop page is reachable only with its secret and has its own tab.
+        if lower.contains(DISCOVERY_OPT_OUT) {
+            return None;
+        }
         let title = lower.find("<title").and_then(|start| {
             let start = start + lower[start..].find('>')? + 1;
             let end = start + lower[start..].find("</title>")?;
@@ -319,6 +324,7 @@ Aktive Verbindungen
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><title> Fixture page </title></html>",
                 "HTTP/1.1 302 Found\r\nLocation: http://example.com/\r\nConnection: close\r\n\r\n",
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"ok\":true}",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><meta name=\"botcode-discovery\" content=\"none\"><title>Sandbox desktop</title></html>",
             ] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut buffer = [0; 4096];
@@ -332,7 +338,11 @@ Aktive Verbindungen
         assert_eq!(document.0, format!("http://127.0.0.1:{port}/page"));
         assert_eq!(document.1.as_deref(), Some("Fixture page"));
         assert!(http_document(url.clone()).await.is_none());
-        assert!(http_document(url).await.is_none());
+        assert!(http_document(url.clone()).await.is_none());
+        assert!(
+            http_document(url).await.is_none(),
+            "a page that opts out of discovery"
+        );
         server.await.unwrap();
     }
 }

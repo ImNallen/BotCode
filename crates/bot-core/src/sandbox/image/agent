@@ -18,7 +18,13 @@ if [[ -f $record ]]; then
     kill -KILL -- "-$previous" 2>/dev/null
   fi
 fi
-CODEX_HOME=/codex-home setsid codex app-server <&0 &
+# The browser tools drive a visible Chromium on the sandbox desktop. They are approved like
+# Bot Code's own tools, because the container is the boundary.
+CODEX_HOME=/codex-home setsid codex app-server \
+  -c 'mcp_servers.browser.command="playwright-mcp"' \
+  -c 'mcp_servers.browser.args=["--config", "/opt/botcode/playwright-mcp.json"]' \
+  -c 'mcp_servers.browser.default_tools_approval_mode="approve"' \
+  <&0 &
 agent=$!
 echo "$agent" >"$record"
 wait "$agent"

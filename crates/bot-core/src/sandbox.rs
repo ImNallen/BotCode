@@ -21,6 +21,10 @@ use std::{
 pub const WORKSPACE: &str = "/workspace";
 pub const ATTACHMENTS: &str = "/botcode/attachments";
 pub const CODEX_HOME: &str = "/codex-home";
+pub const DESKTOP: &str = "/opt/botcode/bin/desktop";
+/// The container port of the desktop's noVNC page and websocket. Docker publishes it on a
+/// random loopback port of the Mac.
+pub const DESKTOP_PORT: u16 = 6080;
 const RUN: &str = "/opt/botcode/bin/run";
 
 const STATUS: Duration = Duration::from_secs(10);
@@ -467,9 +471,42 @@ impl Container {
         args.extend([
             "--mount".into(),
             format!("type=bind,{source},target={CODEX_HOME}"),
+            "--publish".into(),
+            format!("127.0.0.1::{DESKTOP_PORT}"),
             image.tag(),
         ]);
         Ok(args)
+    }
+    /// The Mac loopback port Docker published for a container port. Docker picks a new one each
+    /// time the container starts.
+    pub async fn published(&self, port: u16) -> Result<u16> {
+        let output = self
+            .docker
+            .inner
+            .cli
+            .run(["port", &self.name, &format!("{port}/tcp")], CONTROL)
+            .await?;
+        let unpublished = || {
+            AppError::new(
+                "sandbox",
+                format!("The sandbox container does not publish port {port}."),
+            )
+        };
+        if output.code != Some(0) {
+            return Err(
+                if String::from_utf8_lossy(&output.stderr).contains("no public port") {
+                    unpublished()
+                } else {
+                    docker::failure(&output)
+                },
+            );
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.trim().rsplit_once(':'))
+            .find(|(host, _)| *host == "127.0.0.1")
+            .and_then(|(_, port)| port.parse().ok())
+            .ok_or_else(unpublished)
     }
     /// Runs through `/opt/botcode/bin/run` with bounded output. A timeout or overflow stops
     /// the client, which with [`Input::Lifeline`] also stops the work in the container.

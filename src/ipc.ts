@@ -497,6 +497,11 @@ export const sandboxAvailability = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("unavailable"), reason: z.string() }),
 ]);
 export type SandboxAvailability = z.infer<typeof sandboxAvailability>;
+export const sandboxDesktop = z.object({
+  port: z.number().int().min(1).max(65535),
+  secret: z.string().regex(/^[A-Za-z0-9]{16,128}$/),
+});
+export type SandboxDesktop = z.infer<typeof sandboxDesktop>;
 const branches = z.object({
   branches: z.array(
     z.object({
@@ -1590,6 +1595,8 @@ export const ipc = {
     call("reveal_in_finder", { target }, z.null()),
   sandboxAvailability: () =>
     call("sandbox_availability", {}, sandboxAvailability),
+  sandboxDesktop: (workspaceId: string, threadId: string) =>
+    call("sandbox_desktop", { workspaceId, threadId }, sandboxDesktop),
   create: (workspaceId: string, checkout: NewCheckout) =>
     call("create_thread", { workspaceId, checkout }, thread),
   listWorktrees: (workspaceId: string) =>

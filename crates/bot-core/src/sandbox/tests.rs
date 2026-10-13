@@ -692,3 +692,202 @@ async fn run_bounds_output_and_time_inside_the_container() {
     assert_eq!(error.code, "timeout");
     assert!(gone_within(&container, "sleep 4243", Duration::from_secs(3)).await);
 }
+
+async fn start_desktop(container: &Container, secret: Option<&str>) -> Output {
+    let line = secret.map(|secret| format!("{secret}\n"));
+    let (argv, input): (&[&str], _) = match &line {
+        Some(line) => (
+            &[DESKTOP, "start", "--secret-stdin"],
+            Input::Bytes(line.as_bytes()),
+        ),
+        None => (&[DESKTOP, "start"], Input::Lifeline),
+    };
+    container
+        .run(&exec(argv), input, Duration::from_secs(30))
+        .await
+        .unwrap()
+}
+
+/// Opens a websocket to the published desktop port with `token` and returns the first binary
+/// frame, which is the RFB banner when the proxy reached VNC, or `None` when it closed first.
+async fn first_frame(port: u16, token: Option<&str>) -> Option<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let path = token.map_or("/websockify".into(), |token| {
+        format!("/websockify?token={token}")
+    });
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\n\r\n"
+    );
+    socket.write_all(request.as_bytes()).await.unwrap();
+    let mut received = Vec::new();
+    let mut buffer = [0u8; 4096];
+    let read = async {
+        loop {
+            let headers_end = received
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|at| at + 4);
+            if let Some(end) = headers_end
+                && received.len() >= end + 2
+            {
+                let header = String::from_utf8_lossy(&received[..end]).into_owned();
+                if !header.starts_with("HTTP/1.1 101") {
+                    return None;
+                }
+                let (opcode, length) =
+                    (received[end] & 0x0f, usize::from(received[end + 1] & 0x7f));
+                if opcode == 0x8 {
+                    return None;
+                }
+                if received.len() >= end + 2 + length {
+                    return Some(received[end + 2..end + 2 + length].to_vec());
+                }
+            }
+            match socket.read(&mut buffer).await {
+                Ok(0) | Err(_) => return None,
+                Ok(read) => received.extend_from_slice(&buffer[..read]),
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), read)
+        .await
+        .expect("the desktop proxy neither answered nor closed")
+}
+
+#[tokio::test]
+#[ignore = "needs Docker"]
+async fn the_desktop_starts_once_and_answers_only_with_its_secret() {
+    let fixture = Fixture::new().await;
+    let container = fixture.container();
+    container.converge(Desired::Running).await.unwrap();
+    let secret = "0123456789abcdef0123456789abcdef";
+    let started = Instant::now();
+    let first = start_desktop(&container, Some(secret)).await;
+    eprintln!("first desktop start: {:?}", started.elapsed());
+    assert_eq!(first.code, Some(0), "{first:?}");
+    let started = Instant::now();
+    assert_eq!(start_desktop(&container, Some(secret)).await.code, Some(0));
+    assert_eq!(start_desktop(&container, None).await.code, Some(0));
+    eprintln!("repeated desktop starts: {:?}", started.elapsed());
+    for (name, pattern) in [
+        ("X server", "^Xvnc :1"),
+        ("window manager", "^matchbox-window-manager"),
+        ("websocket proxy", "[w]ebsockify --web"),
+    ] {
+        let pids = stdout(&container, &["pgrep", "-f", pattern]).await;
+        assert_eq!(pids.lines().count(), 1, "one {name}: {pids:?}");
+    }
+    assert_eq!(
+        stdout(&container, &[DESKTOP, "status"]).await,
+        "",
+        "status succeeds silently"
+    );
+    let idle = stdout(
+        &container,
+        &[
+            "sh",
+            "-c",
+            "ps -o rss= -C Xvnc,matchbox-window,websockify | awk '{kb += $1} END {print kb}'",
+        ],
+    )
+    .await;
+    eprintln!("desktop resident memory while idle: {} KiB", idle.trim());
+
+    let port = container.published(DESKTOP_PORT).await.unwrap();
+    let banner = first_frame(port, Some(secret)).await;
+    assert_eq!(banner.as_deref(), Some(&b"RFB 003.008\n"[..]));
+    assert_eq!(
+        first_frame(port, Some("ffffffffffffffffffffffffffffffff")).await,
+        None
+    );
+    assert_eq!(first_frame(port, None).await, None);
+    let page = reqwest::get(format!("http://127.0.0.1:{port}/"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("<title>Sandbox desktop</title>"), "{page}");
+    let module = reqwest::get(format!("http://127.0.0.1:{port}/core/rfb.js"))
+        .await
+        .unwrap();
+    assert!(module.status().is_success(), "{module:?}");
+
+    container.converge(Desired::Stopped).await.unwrap();
+    container.converge(Desired::Running).await.unwrap();
+    assert_eq!(
+        start_desktop(&container, Some(secret)).await.code,
+        Some(0),
+        "a restarted container starts the desktop again"
+    );
+    let port = container.published(DESKTOP_PORT).await.unwrap();
+    assert!(first_frame(port, Some(secret)).await.is_some());
+}
+
+#[tokio::test]
+#[ignore = "needs Docker"]
+async fn the_browser_tools_open_a_visible_chromium_on_the_desktop() {
+    let fixture = Fixture::new().await;
+    let container = fixture.container();
+    container.converge(Desired::Running).await.unwrap();
+    let tools = stdout(
+        &container,
+        &[
+            "sh",
+            "-c",
+            r#"(printf '%s\n' \
+                '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"test","version":"1"}}}' \
+                '{"method":"initialized"}'
+              sleep 2
+              printf '%s\n' '{"id":2,"method":"mcpServerStatus/list","params":{}}'
+              sleep 6) | /opt/botcode/bin/agent 2>/dev/null"#,
+        ],
+    )
+    .await;
+    assert!(
+        tools.contains(r#""name":"browser""#) && tools.contains("browser_navigate"),
+        "the agent lists the browser server and its tools: {tools}"
+    );
+    assert!(
+        !running(&container, "Xvnc :1.*").await,
+        "starting the agent leaves the desktop stopped"
+    );
+
+    let windows = stdout(
+        &container,
+        &[
+            "sh",
+            "-c",
+            r#"((printf '%s\n' \
+                '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}' \
+                '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+                '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:6080/"}}}'
+              sleep 60) | playwright-mcp --config /opt/botcode/playwright-mcp.json) \
+              </dev/null >/tmp/mcp.out 2>&1 &
+            for _ in $(seq 1 600); do grep -q '"id":2' /tmp/mcp.out && break; sleep 0.1; done
+            cat /tmp/mcp.out
+            DISPLAY=:1 xwininfo -root -tree
+            DISPLAY=:1 xwininfo -root | grep -E 'Width|Height'"#,
+        ],
+    )
+    .await;
+    let browser = windows
+        .lines()
+        .find(|line| line.contains(r#""Sandbox desktop - "#))
+        .unwrap_or_else(|| panic!("a headed Chromium window shows the page: {windows}"));
+    assert!(
+        browser.contains("1280x800+0+0"),
+        "the window manager fills the screen with it: {browser}"
+    );
+    assert!(
+        windows.contains("Page Title: Sandbox desktop"),
+        "the tool call succeeded: {windows}"
+    );
+    assert!(
+        running(&container, "Xvnc :1.*").await,
+        "the browser started the desktop"
+    );
+}

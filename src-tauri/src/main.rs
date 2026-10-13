@@ -5,6 +5,7 @@ mod edit_history;
 mod filesystem;
 mod ipc;
 mod mac_permissions;
+mod main_view_plugin;
 mod notifications;
 mod preview;
 #[cfg(any(target_os = "macos", test))]
@@ -26,8 +27,10 @@ fn main() {
         .menu(edit_history::menu)
         .on_menu_event(edit_history::on_menu_event);
     let app = builder
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(main_view_plugin::MainViewOnly(tauri_plugin_dialog::init()))
+        .plugin(main_view_plugin::MainViewOnly(
+            tauri_plugin_notification::init(),
+        ))
         .manage(notifications::NotificationActions::default())
         .register_asynchronous_uri_scheme_protocol(
             "botcode-attachment",
@@ -123,6 +126,7 @@ fn main() {
                 preview::preview_attach,
                 preview::preview_layout,
                 preview::preview_detach,
+                preview::preview_close,
                 preview::preview_discover,
                 preview::preview_application_shortcuts,
                 notifications::notification_actions,
@@ -194,6 +198,7 @@ fn main() {
                 ipc::open_in_editor,
                 ipc::reveal_in_finder,
                 ipc::sandbox_availability,
+                ipc::sandbox_desktop,
                 ipc::create_thread,
                 ipc::thread_snapshot,
                 ipc::open_thread,

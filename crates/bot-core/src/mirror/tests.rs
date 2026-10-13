@@ -251,6 +251,7 @@ struct Fixture {
     _repos: tempfile::TempDir,
     main: PathBuf,
     root: PathBuf,
+    docker: Docker,
     container: Container,
     mirror: Mirror,
     _removal: Removal,
@@ -343,6 +344,7 @@ impl Fixture {
             _repos: repos,
             main,
             root,
+            docker,
             container,
             mirror,
             _removal: removal,
@@ -962,4 +964,77 @@ async fn timing_on_a_twenty_thousand_file_repository() {
     session.finish().await.unwrap();
     eprintln!("push with one new file: {:?}", started.elapsed());
     assert_eq!(f.ctr("cat src/from-host.txt").await, "host\n");
+}
+
+#[tokio::test]
+#[ignore = "needs Docker"]
+async fn a_stale_container_without_the_desktop_port_is_pulled_then_recreated_with_it() {
+    use crate::sandbox::{DESKTOP_PORT, IMAGE_LABEL, INSTANCE_LABEL, SANDBOX_LABEL};
+    let f = Fixture::new().await;
+    let docker = |args: &[&str]| {
+        let output = crate::process::command(docker_binary())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "docker {args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    // Shaped like a container from a slice 3 image: another image label and no published port.
+    let name = f.container.name();
+    let image = f.docker.image(&|_| {}).await.unwrap();
+    let home = f.container.codex_home();
+    docker(&["rm", "--force", name]);
+    docker(&[
+        "create",
+        "--name",
+        name,
+        "--init",
+        "--label",
+        &format!("{INSTANCE_LABEL}={}", f.docker.instance().as_str()),
+        "--label",
+        &format!("{SANDBOX_LABEL}={}", f.container.id()),
+        "--label",
+        &format!("{IMAGE_LABEL}=000000000000"),
+        "--volume",
+        &format!("{}:{}", home.display(), crate::sandbox::CODEX_HOME),
+        &image.tag(),
+    ]);
+    docker(&["start", name]);
+    f.mirror.seed(OWN).await.unwrap();
+    assert!(f.container.published(DESKTOP_PORT).await.is_err());
+    f.ctr("echo from the old container > agent.txt").await;
+
+    let handle = crate::workdir::SandboxHandle::new(
+        f.docker.clone(),
+        f.container.id().clone(),
+        f.root.clone(),
+        OWN.into(),
+        crate::log::RotatingLog::silent(),
+    );
+    handle.ready().await.unwrap();
+    assert_eq!(
+        f.read("agent.txt"),
+        "from the old container\n",
+        "the old container was pulled before its removal"
+    );
+    assert_eq!(
+        docker(&[
+            "container",
+            "inspect",
+            "--format",
+            &format!("{{{{index .Config.Labels \"{IMAGE_LABEL}\"}}}}"),
+            name
+        ])
+        .trim(),
+        image.as_str()
+    );
+    let port = f.container.published(DESKTOP_PORT).await.unwrap();
+    eprintln!("recreated with the desktop on 127.0.0.1:{port}");
+    assert_eq!(
+        f.ctr("cat agent.txt").await,
+        "from the old container\n",
+        "the new container is seeded from the mirror"
+    );
+    let desktop = handle.desktop().await.unwrap();
+    assert_eq!(desktop.port, port);
 }

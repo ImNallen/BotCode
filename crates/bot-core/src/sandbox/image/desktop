@@ -1,0 +1,73 @@
+#!/bin/bash
+# desktop start [--secret-stdin]   start whatever of the desktop is not running: the X server
+#                                  with VNC, the window manager and the websocket proxy for
+#                                  noVNC, then wait until they answer
+# desktop status                   exit 0 when the whole desktop is running
+#
+# Nothing starts the desktop with the container. The Desktop tab and the agent's browser start
+# it on first use. Each part runs in its own session, so the lifeline exec that started it
+# does not take it down. State lives in /dev/shm, which a container restart empties along with
+# the processes.
+#
+# One secret gates both the websocket, as its token, and VNC, as its password, which VNC cuts
+# to 8 characters. Bot Code passes its secret on stdin. A start without one keeps the current
+# secret or makes one nobody knows, so the desktop never runs open.
+set -u
+state=/dev/shm/botcode-desktop
+display=:1
+vnc_port=5900
+web_port=6080
+web=/opt/botcode/desktop
+
+running() { pgrep -u "$(id -u)" -f "$1" >/dev/null; }
+listening() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+wait_for() {
+  for _ in $(seq 1 200); do "$@" && return 0; sleep 0.05; done
+  echo "desktop: $* did not come up; see $state/xvnc.log and $state/wm.log" >&2
+  exit 1
+}
+set_secret() {
+  [[ $1 =~ ^[A-Za-z0-9]{16,128}$ ]] || { echo "desktop: invalid secret" >&2; exit 2; }
+  printf '%s\n' "${1:0:8}" | vncpasswd -f >"$state/passwd.new" 2>/dev/null \
+    && mv -f "$state/passwd.new" "$state/passwd"
+  printf '%s: 127.0.0.1:%s\n' "$1" "$vnc_port" >"$state/tokens.new" \
+    && mv -f "$state/tokens.new" "$state/tokens"
+}
+
+case ${1-} in
+  start)
+    umask 077
+    mkdir -p "$state"
+    exec 9>"$state/lock"
+    flock 9
+    if [[ ${2-} == --secret-stdin ]]; then
+      IFS= read -r secret || true
+      set_secret "${secret-}"
+    elif [[ ! -f $state/passwd ]]; then
+      set_secret "$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+    fi
+    # The daemons must not inherit the lock, or the next start would wait on them forever.
+    if ! running "^Xvnc $display"; then
+      rm -f "/tmp/.X${display#:}-lock" "/tmp/.X11-unix/X${display#:}"
+      setsid -f Xvnc "$display" -geometry 1280x800 -depth 24 -localhost -rfbport "$vnc_port" \
+        -SecurityTypes VncAuth -PasswordFile "$state/passwd" -AlwaysShared -nolisten tcp \
+        -desktop "Sandbox desktop" </dev/null >"$state/xvnc.log" 2>&1 9>&-
+    fi
+    wait_for listening "$vnc_port"
+    wait_for test -S "/tmp/.X11-unix/X${display#:}"
+    if ! running "^matchbox-window-manager"; then
+      DISPLAY=$display setsid -f matchbox-window-manager -use_titlebar no \
+        </dev/null >"$state/wm.log" 2>&1 9>&-
+    fi
+    # Its log would name the secret, which arrives as the token in each websocket path.
+    if ! running "websockify --web $web"; then
+      setsid -f websockify --web "$web" --token-plugin TokenFile --token-source "$state/tokens" \
+        "0.0.0.0:$web_port" </dev/null >/dev/null 2>&1 9>&-
+    fi
+    wait_for listening "$web_port"
+    ;;
+  status)
+    running "^Xvnc $display" && running "^matchbox-window-manager" && listening "$web_port"
+    ;;
+  *) echo "usage: desktop start [--secret-stdin] | status" >&2; exit 2 ;;
+esac

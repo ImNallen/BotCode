@@ -8,7 +8,8 @@ use crate::{
     log::RotatingLog,
     mirror::{Freshness, Mirror, Synced, WriteRoot, WriteSession},
     sandbox::{
-        ATTACHMENTS, Container, ContainerState, Desired, Docker, Exec, Input, RunState, WORKSPACE,
+        ATTACHMENTS, Container, ContainerState, DESKTOP, DESKTOP_PORT, Desired, Docker, Exec,
+        Input, RunState, WORKSPACE,
     },
     terminal::Launch,
 };
@@ -22,6 +23,7 @@ use std::{
 };
 
 const COPY: Duration = Duration::from_secs(60);
+const DESKTOP_START: Duration = Duration::from_secs(30);
 /// Bounds a file fetched out of the container for display, which is also the largest image
 /// the preview tools produce.
 pub(crate) const FETCH_LIMIT: u64 = 4_400_000;
@@ -52,6 +54,9 @@ pub(crate) struct SandboxHandle {
     /// Set by a completed `ready`, cleared by `retire`. While clear, the container is not
     /// running on this process's account, so the mirror is exact and reads skip the pull.
     ready: AtomicBool,
+    /// Made for each handle and kept only in memory. Every desktop start sets it again, so it
+    /// also replaces the secret of a desktop that the agent or an earlier run started.
+    desktop_secret: String,
 }
 impl SandboxHandle {
     pub(crate) fn new(
@@ -71,6 +76,7 @@ impl SandboxHandle {
             branch: std::sync::Mutex::new(branch),
             flight: tokio::sync::Mutex::new(()),
             ready: AtomicBool::new(false),
+            desktop_secret: uuid::Uuid::new_v4().simple().to_string(),
         })
     }
     pub(crate) fn set_branch(&self, branch: &str) {
@@ -105,6 +111,34 @@ impl SandboxHandle {
         self.mirror.seed(&own).await?;
         self.ready.store(true, Ordering::Release);
         Ok(())
+    }
+    /// Readies the container, starts whatever of its desktop is not running and returns where
+    /// the Desktop tab connects.
+    pub(crate) async fn desktop(&self) -> Result<SandboxDesktop> {
+        self.ready().await?;
+        let output = self
+            .container
+            .run(
+                &Exec {
+                    argv: &[DESKTOP, "start", "--secret-stdin"],
+                    workdir: WORKSPACE,
+                    env: &[],
+                },
+                Input::Bytes(format!("{}\n", self.desktop_secret).as_bytes()),
+                DESKTOP_START,
+            )
+            .await?;
+        if output.code != Some(0) {
+            let reason = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::new(
+                "sandbox",
+                format!("The sandbox desktop did not start. {}", reason.trim()),
+            ));
+        }
+        Ok(SandboxDesktop {
+            port: self.container.published(DESKTOP_PORT).await?,
+            secret: self.desktop_secret.clone(),
+        })
     }
     /// `ready` in the background, unless it is already running or done.
     pub(crate) fn warm(self: &Arc<Self>) {
